@@ -4,6 +4,33 @@ builtins = []
 filters = []
 routes = []
 
+[[semantic_rules]]
+id = "table-datasource"
+namespace = "gridviewspec"
+scope = "project"
+activation = []
+operation = { kind = "endpoint_projection", language = "python", callee = { kind = "imported", module = "grid_view_spec.types.table_v2", export = "GridViewDataSource" }, attachment = { callee = { kind = "imported", module = "grid_view_spec.types.table_v2", export = "GridViewTable" }, keyword = "datasource" }, url_keyword = "endpoint", method_keyword = "method", default_method = "GET" }
+
+[[syntax_rules]]
+id = "renderer-definition"
+language = "javascript"
+operation = { kind = "named_binding", domain = "gridviewspec_renderer", binding = { kind = "call_definition", callee = { kind = "global_member", receiver = "window.GridView", member = "registerRenderer" }, key = { kind = "argument", index = 0 }, target = { kind = "argument", index = 1 }, target_kind = "callable" } }
+
+[[syntax_rules]]
+id = "renderer-reference"
+language = "python"
+operation = { kind = "named_binding", domain = "gridviewspec_renderer", binding = { kind = "call_reference", callee = { kind = "imported", module = "grid_view_spec.types.table_v2", export = "GridViewColumn" }, key = { kind = "keyword", name = "renderer" } } }
+
+[[syntax_rules]]
+id = "action-definition"
+language = "javascript"
+operation = { kind = "named_binding", domain = "gridviewspec_action", binding = { kind = "call_definition", callee = { kind = "global_member", receiver = "window.GridView", member = "registerAction" }, key = { kind = "argument", index = 0 }, target = { kind = "argument", index = 1 }, target_kind = "callable" } }
+
+[[syntax_rules]]
+id = "action-reference"
+language = "python"
+operation = { kind = "named_binding", domain = "gridviewspec_action", binding = { kind = "call_reference", callee = { kind = "imported", module = "grid_view_spec.types.table_v2", export = "GridViewColumn" }, key = { kind = "keyword_member", name = "extra", member = "action" } } }
+
 [[class_hierarchy_receivers]]
 bases = ["grid_view_spec.types.spec.GridViewSpec", "grid_view_spec.types.GridViewSpec"]
 provider = "grid_view_spec.types.spec.GridViewSpec"
@@ -207,3 +234,26 @@ provider = "grid_view_spec.types.actions.GridViewMenuAction"
 members = [
     "id", "type", "label", "icon", "variant", "tone", "target", "disabled", "reason", "params", "confirm", "items",
 ]
+
+[[syntax_rules]]
+id = "runtime-globals-javascript"
+language = "javascript"
+display = { builtin = "framework builtin: GridView runtime" }
+operation = { kind = "implicit_builtins", names = ["window.GridView.boot", "window.GridView.bootScope", "window.GridView.byId.get", "window.GridView.byId.register", "window.GridView.matchToolbarQuery", "window.GridView.FilterBar.selectedFilterValues", "window.GridView.AgGrid.getQuickSearchText", "window.GridView.AgGrid.syncExportLinks", "window.GridViewColumnLayout.rebalance"] }
+
+[[syntax_rules]]
+id = "runtime-globals-typescript"
+language = "typescript"
+display = { builtin = "framework builtin: GridView runtime" }
+operation = { kind = "implicit_builtins", names = ["window.GridView.boot", "window.GridView.bootScope", "window.GridView.byId.get", "window.GridView.byId.register", "window.GridView.matchToolbarQuery", "window.GridView.FilterBar.selectedFilterValues", "window.GridView.AgGrid.getQuickSearchText", "window.GridView.AgGrid.syncExportLinks", "window.GridViewColumnLayout.rebalance"] }
+
+[[syntax_rules]]
+id = "runtime-globals-html"
+language = "html"
+display = { builtin = "framework builtin: GridView runtime" }
+operation = { kind = "implicit_builtins", names = ["window.GridView.boot", "window.GridView.bootScope", "window.GridView.byId.get", "window.GridView.byId.register", "window.GridView.matchToolbarQuery", "window.GridView.FilterBar.selectedFilterValues", "window.GridView.AgGrid.getQuickSearchText", "window.GridView.AgGrid.syncExportLinks", "window.GridViewColumnLayout.rebalance"] }
+
+[[syntax_rules]]
+id = "builtin-renderer-import-definition"
+language = "typescript"
+operation = { kind = "named_binding", domain = "gridviewspec_renderer", binding = { kind = "call_definition", callee = { kind = "imported", module = "../../grid-view/registry-api", export = "registerRenderer" }, key = { kind = "argument", index = 0 }, target = { kind = "argument", index = 1 }, target_kind = "callable" } }
