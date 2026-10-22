@@ -1,9 +1,5 @@
 use super::*;
 
-const HTMX_ATTRIBUTES: &[&str] = &[
-    "get", "post", "put", "patch", "delete", "trigger", "target", "swap", "include", "vals",
-];
-
 struct HtmxAttribute<'a> {
     value: &'a str,
     line: usize,
@@ -16,7 +12,25 @@ pub(super) fn extract_htmx(
     path: &str,
     module: &str,
     facts: &mut Facts,
+    rule: &manifests::syntax::SyntaxRule,
 ) {
+    let manifests::syntax::SyntaxOperation::HtmlRequestAttributes {
+        request_node,
+        context_node,
+        namespace,
+        context_label,
+        prefixes,
+        methods,
+        contexts,
+        values: values_attribute,
+    } = &rule.operation
+    else {
+        return;
+    };
+    let origin = crate::core::semantic::ExtractionRuleOrigin {
+        pack: rule.pack.clone(),
+        rule: rule.id.clone(),
+    };
     let mut values = std::collections::BTreeMap::new();
     let mut cursor = tag.walk();
     for attribute in tag
@@ -27,14 +41,18 @@ pub(super) fn extract_htmx(
             continue;
         };
         let lower = name.to_ascii_lowercase();
-        let (key, primary) = if let Some(key) = lower.strip_prefix("hx-") {
-            (key, true)
-        } else if let Some(key) = lower.strip_prefix("data-hx-") {
-            (key, false)
-        } else {
+        let Some((priority, key)) = prefixes
+            .iter()
+            .enumerate()
+            .find_map(|(priority, prefix)| lower.strip_prefix(prefix).map(|key| (priority, key)))
+        else {
             continue;
         };
-        if !HTMX_ATTRIBUTES.contains(&key) {
+        let primary = priority == 0;
+        if !methods.contains_key(key)
+            && !contexts.iter().any(|context| context == key)
+            && key != values_attribute
+        {
             continue;
         }
         let value = attribute
@@ -56,12 +74,19 @@ pub(super) fn extract_htmx(
         return;
     }
     let mut context = Map::new();
-    for key in ["trigger", "target", "swap", "include"] {
+    context.insert(
+        "value_flow".into(),
+        json!(crate::core::semantic::ValueFlowFacts {
+            rule_origins: vec![origin],
+            ..Default::default()
+        }),
+    );
+    for key in contexts {
         if let Some(attribute) = values.get(key) {
             context.insert(key.into(), json!(ast::bounded_expression(attribute.value)));
         }
     }
-    if let Some(attribute) = values.get("vals") {
+    if let Some(attribute) = values.get(values_attribute) {
         let value = attribute.value;
         if value.starts_with("js:") || value.starts_with("javascript:") {
             context.insert("vals_status".into(), json!("dynamic"));
@@ -73,23 +98,19 @@ pub(super) fn extract_htmx(
         }
     }
     let mut found_request = false;
-    for method in ["get", "post", "put", "patch", "delete"] {
+    for (method, verb) in methods {
         let Some(attribute) = values.get(method) else {
             continue;
         };
         found_request = true;
-        let id = format!("htmx:{path}:{}:{method}", tag.start_byte());
+        let id = format!("{namespace}:{path}:{}:{method}", tag.start_byte());
         let mut details = context.clone();
         details.insert("url_status".into(), json!(htmx_url_status(attribute.value)));
         facts.nodes.push(Node {
             id: id.clone(),
-            kind: "htmx_request".into(),
-            name: format!(
-                "{} {}",
-                method.to_ascii_uppercase(),
-                ast::bounded_expression(attribute.value)
-            ),
-            qualname: format!("{module}.htmx.{}.{method}", tag.start_byte()),
+            kind: request_node.clone(),
+            name: format!("{} {}", verb, ast::bounded_expression(attribute.value)),
+            qualname: format!("{module}.{namespace}.{}.{method}", tag.start_byte()),
             path: path.into(),
             line: attribute.line,
             end_line: attribute.end_line,
@@ -104,18 +125,18 @@ pub(super) fn extract_htmx(
             kind: "contains".into(),
             path: path.into(),
             line: attribute.line,
-            evidence: format!("hx-{method}"),
+            evidence: format!("{}{method}", prefixes[0]),
             confidence: "exact".into(),
         });
     }
     if !found_request {
-        let id = format!("htmx:{path}:{}:context", tag.start_byte());
+        let id = format!("{namespace}:{path}:{}:context", tag.start_byte());
         let line = tag.start_position().row + 1;
         facts.nodes.push(Node {
             id: id.clone(),
-            kind: "htmx_context".into(),
-            name: "HTMX context".into(),
-            qualname: format!("{module}.htmx.{}.context", tag.start_byte()),
+            kind: context_node.clone(),
+            name: context_label.clone(),
+            qualname: format!("{module}.{namespace}.{}.context", tag.start_byte()),
             path: path.into(),
             line,
             end_line: tag.end_position().row + 1,
@@ -130,7 +151,7 @@ pub(super) fn extract_htmx(
             kind: "contains".into(),
             path: path.into(),
             line,
-            evidence: "htmx attributes".into(),
+            evidence: format!("{namespace} attributes"),
             confidence: "exact".into(),
         });
     }

@@ -1,0 +1,10 @@
+receivers = []
+builtins = []
+filters = []
+routes = []
+
+[[syntax_rules]]
+id = "async-connection"
+language = "python"
+activation = [{ kind = "package", name = "psycopg" }]
+operation = { kind = "receiver_type", receiver = { name = "psycopg.AsyncConnection", module = "psycopg", export = "AsyncConnection", members = ["execute", "cursor"], properties = {}, callback_callees = [], generic = true } }

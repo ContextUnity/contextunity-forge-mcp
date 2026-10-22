@@ -100,6 +100,13 @@ fn module_declarations<'tree>(
     declarations
 }
 
+pub(crate) fn finalize_configured_projections(
+    facts: &mut Facts,
+    flows: Option<&mut crate::core::typed_facts::FlowStore>,
+    file: &FileContext,
+) {
+    frameworks::finalize_projections(facts, flows, file);
+}
 /// Performs language.
 pub fn language(path: &str, language: &str) -> tree_sitter::Language {
     if language == "javascript"
@@ -323,7 +330,6 @@ pub(crate) fn typed_dom_receiver(name: &str) -> Option<&'static str> {
         "URLSearchParams" => Some("URLSearchParams"),
         "Headers" => Some("Headers"),
         "DOMTokenList" => Some("DOMTokenList"),
-        "H3Event" => Some("H3Event"),
         "Storage" => Some("Storage"),
         "Element" | "HTMLElement" | "Node" => Some("Element"),
         "ParentNode" => Some("ParentNode"),
@@ -353,7 +359,6 @@ pub(crate) fn typed_dom_property(receiver: &str, property: &str) -> Option<&'sta
         ("Window", "document") => Some("Document"),
         ("Event", "target" | "currentTarget") => Some("Element"),
         ("URL", "searchParams") => Some("URLSearchParams"),
-        ("H3Event", "headers") => Some("Headers"),
         _ => None,
     }
 }
@@ -388,6 +393,7 @@ struct JsPrototypeAlias {
 
 #[derive(Default)]
 struct TypeScriptScratch {
+    path: String,
     candidates: Vec<TsCandidate>,
     assigned: std::collections::HashSet<String>,
     assignment_overflow: bool,
@@ -619,19 +625,35 @@ impl TypeScript {
                 param_types
                     .entry(event.to_owned())
                     .or_insert_with(|| "Event".to_owned());
-            } else if let Some(event) = nitro_event_callback_parameter(node, source) {
-                param_types
-                    .entry(event.to_owned())
-                    .or_insert_with(|| "H3Event".to_owned());
+            } else {
+                for rule in &file.rules.syntax_rules {
+                    let manifests::syntax::SyntaxOperation::ReceiverType { receiver } =
+                        &rule.operation
+                    else {
+                        continue;
+                    };
+                    if let Some(event) =
+                        configured_callback_parameter(node, source, &receiver.callback_callees)
+                    {
+                        param_types
+                            .entry(event.to_owned())
+                            .or_insert_with(|| receiver.name.clone());
+                    }
+                }
             }
         }
         let is_async = text(node, source).trim_start().starts_with("async ");
         let is_method_node = matches!(node.kind(), "method_definition" | "method_signature");
-        let local_object = if self.javascript {
+        let local_object = if self.javascript
+            || node.parent().is_some_and(|object| {
+                projected_members_object(object, source, &file.rules.syntax_rules)
+                    || configured_projection_object(object, source, &file.rules.syntax_rules)
+            }) {
             if node.kind() == "pair" {
-                node.parent().and_then(|object| same_object(object, source))
+                node.parent()
+                    .and_then(|object| same_object(object, source, &file.rules.syntax_rules))
             } else {
-                same_object_receiver(node, source)
+                same_object_receiver(node, source, &file.rules.syntax_rules)
             }
         } else {
             None
@@ -746,7 +768,10 @@ impl TypeScript {
             } else {
                 None
             },
-            receiver: local_object.map(|object| object_marker(object, source)),
+            receiver: local_object
+                .map(|object| object_marker(object, source, &file.rules.syntax_rules)),
+            object_ownership: local_object
+                .and_then(|object| factory_ownership(object, source, &file.rules.syntax_rules)),
             receiver_type,
             is_method,
             is_static,
@@ -932,7 +957,7 @@ impl LanguageProfile for TypeScript {
             })
             && node
                 .parent()
-                .and_then(|object| same_object(object, source))
+                .and_then(|object| same_object(object, source, &[]))
                 .is_some()
         {
             return Some("field");
@@ -946,7 +971,40 @@ impl LanguageProfile for TypeScript {
         }
         self.symbol(node)
     }
+    fn symbol_with_context(
+        &self,
+        node: Syntax<'_>,
+        source: &str,
+        file: &FileContext,
+    ) -> Option<&'static str> {
+        if configured_projection_object(node, source, &file.rules.syntax_rules) {
+            return Some("object");
+        }
+        if (self.javascript
+            || node.parent().is_some_and(|object| {
+                projected_members_object(object, source, &file.rules.syntax_rules)
+                    || configured_projection_object(object, source, &file.rules.syntax_rules)
+            }))
+            && node.kind() == "pair"
+            && node
+                .child_by_field_name("key")
+                .is_some_and(|key| matches!(key.kind(), "property_identifier" | "identifier"))
+            && node.child_by_field_name("value").is_some_and(|value| {
+                !matches!(value.kind(), "arrow_function" | "function_expression")
+            })
+            && node
+                .parent()
+                .and_then(|object| same_object(object, source, &file.rules.syntax_rules))
+                .is_some()
+        {
+            return Some("field");
+        }
+        self.symbol_with_source(node, source)
+    }
     fn symbol_name<'a>(&self, node: Syntax<'_>, source: &'a str) -> Option<&'a str> {
+        if node.kind() == "object" {
+            return Some("object");
+        }
         if self.javascript {
             if let Some((_, member)) = prototype_assignment(node, source) {
                 return Some(member);
@@ -986,16 +1044,6 @@ impl LanguageProfile for TypeScript {
     }
     fn extract_imports(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         let (node, source) = (ctx.node, ctx.source);
-        if let Some(module) = facts.nodes.iter_mut().find(|node| node.kind == "module") {
-            if module.path.ends_with("/nuxt.config.ts") || module.path == "nuxt.config.ts" {
-                if nuxt_module_declared(node, source, "radix-vue/nuxt") {
-                    module.details["nuxt_radix_vue_enabled"] = serde_json::json!(true);
-                }
-                if let Some(enabled) = nuxt_default_components_enabled(node, source) {
-                    module.details["nuxt_default_components_enabled"] = serde_json::json!(enabled);
-                }
-            }
-        }
         if node.kind() == "import_statement" {
             let before = facts.references.len();
             let module =
@@ -1157,40 +1205,39 @@ impl LanguageProfile for TypeScript {
             } else {
                 let reference_count = facts.references.len();
                 call(ctx, facts, true);
-                if self.javascript {
+                if let Some(reference) =
+                    facts
+                        .references
+                        .get_mut(reference_count)
+                        .filter(|reference| {
+                            reference.dynamic
+                                && reference.source == ctx.owner
+                                && reference.kind == "calls"
+                                && reference.line == ctx.line()
+                        })
+                {
                     if let Some(function) = ctx.node.child_by_field_name("function") {
                         if let Some(expression) = static_member_callee(function, ctx.source) {
-                            if let Some(reference) = facts
-                                .references
-                                .get_mut(reference_count)
-                                .filter(|reference| {
-                                    reference.source == ctx.owner
-                                        && reference.kind == "calls"
-                                        && reference.line == ctx.line()
-                                })
+                            // Retain the existing direct JavaScript literal/optional
+                            // normalization; newly admitted nested paths keep raw identity.
+                            if self.javascript
+                                && function
+                                    .child_by_field_name("object")
+                                    .is_some_and(|object| object.kind() == "identifier")
+                                && (function.kind() == "subscript_expression"
+                                    || (function.child_by_field_name("optional_chain").is_some()
+                                        && expression.rsplit_once('.').is_some_and(
+                                            |(_, member)| {
+                                                member.bytes().all(|byte| {
+                                                    byte.is_ascii_alphanumeric()
+                                                        || matches!(byte, b'_' | b'$')
+                                                })
+                                            },
+                                        )))
                             {
                                 reference.expression = expression;
-                                reference.dynamic = false;
                             }
-                        }
-                    }
-                }
-                if !self.javascript {
-                    if let Some(reference) = facts.references.get_mut(reference_count) {
-                        if reference.source == ctx.owner
-                            && reference.kind == "calls"
-                            && reference.line == ctx.line()
-                            && reference.expression.contains("?.")
-                        {
-                            let normalized = reference.expression.replace("?.", ".");
-                            if normalized.split('.').all(|part| {
-                                !part.is_empty()
-                                    && part
-                                        .chars()
-                                        .all(|c| c.is_alphanumeric() || c == '_' || c == '$')
-                            }) {
-                                reference.dynamic = false;
-                            }
+                            reference.dynamic = false;
                         }
                     }
                 }
@@ -1372,15 +1419,6 @@ impl LanguageProfile for TypeScript {
                 | "Array.from"
                 | "Array.of"
                 | "getComputedStyle"
-                | "Alpine"
-                | "Alpine.data"
-                | "Alpine.store"
-                | "Alpine.start"
-                | "Alpine.plugin"
-                | "Alpine.directive"
-                | "Alpine.magic"
-                | "Alpine.$data"
-                | "window.Alpine"
         ) {
             return true;
         }
@@ -1474,7 +1512,6 @@ impl LanguageProfile for TypeScript {
                 member,
                 "json" | "text" | "arrayBuffer" | "blob" | "formData" | "clone"
             ),
-            "H3Event" => matches!(member, "headers" | "context" | "node"),
             "Document" => matches!(
                 member,
                 "querySelector"
@@ -1513,10 +1550,6 @@ impl LanguageProfile for TypeScript {
             "Window" => matches!(
                 member,
                 "addEventListener" | "removeEventListener" | "dispatchEvent"
-            ),
-            "Alpine" => matches!(
-                member,
-                "data" | "store" | "start" | "plugin" | "directive" | "magic" | "$data"
             ),
             "EventTarget" => matches!(
                 member,
@@ -1985,6 +2018,17 @@ impl LanguageProfile for TypeScript {
 
     fn extract_mutations(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         let kind = ctx.node.kind();
+        if kind == "program" {
+            if let Some(owner) = facts.nodes.first() {
+                TS_SCRATCH.with(|scratch| {
+                    let mut scratch = scratch.borrow_mut();
+                    if scratch.path != owner.path {
+                        scratch.reset();
+                        scratch.path.clone_from(&owner.path);
+                    }
+                });
+            }
+        }
         if !matches!(
             kind,
             "identifier"
@@ -2021,12 +2065,21 @@ impl LanguageProfile for TypeScript {
                 });
             }
         }
-        if !self.javascript && ctx.node.kind() == "member_expression" {
+        if ctx.node.kind() == "member_expression" {
             let called = ctx.node.parent().is_some_and(|parent| {
                 parent.kind() == "call_expression"
                     && parent.child_by_field_name("function") == Some(ctx.node)
             });
-            if !called {
+            let write_only = ctx.node.parent().is_some_and(|parent| {
+                (matches!(
+                    parent.kind(),
+                    "assignment_expression" | "augmented_assignment_expression"
+                ) && parent.child_by_field_name("left") == Some(ctx.node))
+                    || parent.kind() == "update_expression"
+                    || (parent.kind() == "unary_expression"
+                        && text(parent, ctx.source).trim_start().starts_with("delete "))
+            });
+            if !called && !write_only {
                 if let (Some(object), Some(property)) = (
                     ctx.node
                         .child_by_field_name("object")
@@ -2159,16 +2212,6 @@ impl LanguageProfile for TypeScript {
             reference.column = ctx.node.start_position().column;
         }
     }
-    fn extract_routes(
-        &self,
-        ctx: &SyntaxContext<'_, '_>,
-        facts: &mut Facts,
-        _symbols: &HashMap<usize, String>,
-    ) {
-        if matches!(ctx.node.kind(), "call_expression" | "object") {
-            routes::client_call(ctx.node, ctx.source, ctx.owner, facts, ctx.offset);
-        }
-    }
     fn extract_routes_with_context(
         &self,
         ctx: &SyntaxContext<'_, '_>,
@@ -2177,34 +2220,31 @@ impl LanguageProfile for TypeScript {
         rules: &super::LanguageContext,
         route_context: &crate::engine::ast::routes::RouteContext,
     ) {
-        self.extract_routes_with_rule_ir(
-            ctx,
-            facts,
-            symbols,
-            rules,
-            &rules.rule_ir,
-            route_context,
-        );
+        self.extract_routes_with_rule_ir(ctx, facts, symbols, rules, &rules.rule_ir, route_context);
     }
     fn extract_routes_with_rule_ir(
         &self,
         ctx: &SyntaxContext<'_, '_>,
         facts: &mut Facts,
         symbols: &HashMap<usize, String>,
-        _rules: &super::LanguageContext,
+        rules: &super::LanguageContext,
         rule_ir: &super::manifests::RuleIRHandle,
         route_context: &crate::engine::ast::routes::RouteContext,
     ) {
+        extract_projections(ctx, rules);
         if matches!(ctx.node.kind(), "method_definition" | "method_declaration") {
             routes::declaration_with_context(ctx, facts, rule_ir, route_context);
         }
         if matches!(ctx.node.kind(), "call_expression" | "object") {
             routes::registration_with_context(ctx, facts, symbols, rule_ir, route_context);
+            routes::object_registration(ctx, facts, symbols, rules, self.id());
+            routes::client_call(ctx, facts, rules, self.id());
+            extract_configuration(ctx, facts, rules);
         }
         self.extract_routes(ctx, facts, symbols);
     }
     fn finish(&self, facts: &mut Facts) {
-        if !self.javascript {
+        {
             let enums: HashSet<String> = facts
                 .nodes
                 .iter()
@@ -2230,7 +2270,25 @@ impl LanguageProfile for TypeScript {
                 .filter_map(|reference| reference.alias.clone())
                 .collect();
             let candidates = TS_SCRATCH.with(|s| std::mem::take(&mut s.borrow_mut().candidates));
+            let bindings: HashMap<&str, HashSet<&str>> = facts
+                .nodes
+                .iter()
+                .map(|node| {
+                    (
+                        node.id.as_str(),
+                        node.details["bindings"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|name| name.as_str())
+                            .collect(),
+                    )
+                })
+                .collect();
             for candidate in candidates {
+                if !bindings.contains_key(candidate.source.as_str()) {
+                    continue;
+                }
                 if !candidate.is_member {
                     if type_imports.contains(&candidate.expression) {
                         facts.references.push(Reference {
@@ -2249,7 +2307,10 @@ impl LanguageProfile for TypeScript {
                     let Some((receiver, _)) = candidate.expression.split_once('.') else {
                         continue;
                     };
-                    if enums.contains(receiver) || imports.contains(receiver) {
+                    let local = bindings
+                        .get(candidate.source.as_str())
+                        .is_some_and(|names| names.contains(receiver));
+                    if enums.contains(receiver) || imports.contains(receiver) || local {
                         let hint = if type_imports.contains(receiver) {
                             Some(ReceiverHint::TypeOnlyImport)
                         } else {

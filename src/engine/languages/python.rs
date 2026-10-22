@@ -10,6 +10,8 @@ mod lazy_exports;
 mod logging_factories;
 #[path = "python/module_exports.rs"]
 mod module_exports;
+#[path = "python/projections.rs"]
+mod projections;
 #[path = "python/render_context.rs"]
 mod render_context;
 #[path = "python/template_loaders.rs"]
@@ -23,7 +25,7 @@ pub(crate) fn logging_factories(
     logging_factories::collect(root, source, offset)
 }
 #[path = "python/dependencies.rs"]
-mod dependencies;
+pub(crate) mod dependencies;
 #[path = "python/linker.rs"]
 pub(crate) mod linker;
 #[path = "python/value_flow.rs"]
@@ -84,6 +86,59 @@ fn is_static_decorator(decorator: &str) -> bool {
         .rsplit('.')
         .next()
         == Some("staticmethod")
+}
+
+pub(crate) use template_loaders::{BindingWriteCollector, BindingWrites};
+
+pub(crate) fn lexical_type_parameters(scope: Syntax<'_>, source: &str) -> Vec<String> {
+    template_loaders::type_parameter_names(scope, source)
+}
+
+pub(crate) fn lexical_binding_owner<'tree>(
+    node: Syntax<'tree>,
+    source: &str,
+    name: &str,
+) -> Option<Syntax<'tree>> {
+    lexical_binding_owner_with(node, |scope| {
+        template_loaders::type_parameter_names(scope, source)
+            .iter()
+            .any(|bound| bound == name)
+            || ast::scope_bindings(scope, source)
+                .all
+                .iter()
+                .any(|bound| bound == name)
+            || scope
+                .child_by_field_name("body")
+                .is_some_and(|body| template_loaders::binding_count(body, source, name) != 0)
+    })
+}
+
+/// Applies Python lexical boundaries to a caller-owned, completed binding proof.
+pub(crate) fn lexical_binding_owner_with<'tree>(
+    node: Syntax<'tree>,
+    mut binds: impl FnMut(Syntax<'tree>) -> bool,
+) -> Option<Syntax<'tree>> {
+    let mut parent = node.parent();
+    while let Some(scope) = parent {
+        match scope.kind() {
+            "function_definition" => {
+                if binds(scope) {
+                    return Some(scope);
+                }
+                scope.child_by_field_name("body")?;
+            }
+            "class_definition"
+            | "lambda"
+            | "list_comprehension"
+            | "set_comprehension"
+            | "dictionary_comprehension"
+            | "generator_expression" => return None,
+            "module" => return Some(scope),
+            _ => {}
+        }
+        parent = scope.parent();
+    }
+    None
 }
 
 fn module_scope(node: Syntax<'_>) -> bool {
@@ -302,13 +357,9 @@ impl LanguageProfile for Python {
         &self,
         node: Syntax<'tree>,
         source: &'source str,
-        file: &FileContext,
+        _file: &FileContext,
     ) -> Option<ast::ScopeAnalysis<'source, 'tree>> {
-        Some(ast::ScopeAnalysis::python(
-            node,
-            source,
-            file.has_django_shortcuts_import,
-        ))
+        Some(ast::ScopeAnalysis::python(node, source))
     }
 
     fn bindings(&self, node: Syntax<'_>, source: &str) -> ast::ScopeBindings {
@@ -402,25 +453,29 @@ impl LanguageProfile for Python {
         parse_file(self, path, source, module, facts)
     }
     fn prepare(&self, root: Syntax<'_>, source: &str) -> FileContext {
+        projections::clear();
         let mut type_checking_aliases = HashMap::new();
-        let mut has_django_shortcuts_import = false;
-        module_exports::prepare(
-            root,
-            source,
-            &mut type_checking_aliases,
-            &mut has_django_shortcuts_import,
-        );
+        module_exports::prepare(root, source, &mut type_checking_aliases);
         FileContext {
             type_checking_aliases,
-            has_django_shortcuts_import,
             ..FileContext::default()
         }
+    }
+    fn prepare_with_context(
+        &self,
+        root: Syntax<'_>,
+        source: &str,
+        rules: &LanguageContext,
+    ) -> FileContext {
+        render_context::prepare_file(root, source, &rules.syntax_rules);
+        self.prepare(root, source)
     }
     fn extract_imports(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         let (node, source) = (ctx.node, ctx.source);
         if !matches!(node.kind(), "import_from_statement" | "import_statement") {
             return;
         }
+        projections::observe_import(ctx);
         let statement = text(node, source);
         let is_type_only = ctx
             .type_checking_aliases
@@ -477,6 +532,9 @@ impl LanguageProfile for Python {
         if matches!(ctx.node.kind(), "call") {
             call(ctx, facts, false);
             template_loaders::extract(ctx, facts);
+            render_context::extract_reverse_route(
+                ctx.node, ctx.source, ctx.owner, ctx.offset, facts,
+            );
             if let Some(hint) = computed_receivers::receiver_hint(ctx.node, ctx.source) {
                 if let Some(reference) = facts.references.last_mut() {
                     reference.receiver_hint = Some(hint);
@@ -702,15 +760,15 @@ impl LanguageProfile for Python {
         matches!(name, "self" | "cls") && owner.details["receiver_name"] == name
     }
     fn value_flow(&self, node: Syntax<'_>, source: &str) -> crate::core::semantic::ValueFlowFacts {
-        value_flow::extract(node, source, true)
+        value_flow::extract(node, source)
     }
     fn value_flow_with_context(
         &self,
         node: Syntax<'_>,
         source: &str,
-        file: &FileContext,
+        _file: &FileContext,
     ) -> crate::core::semantic::ValueFlowFacts {
-        value_flow::extract(node, source, file.has_django_shortcuts_import)
+        value_flow::extract(node, source)
     }
     fn metadata(
         &self,
@@ -894,7 +952,10 @@ impl LanguageProfile for Python {
         fastmcp::decorator_candidates(ctx, facts);
     }
     fn extract_mutations(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
-        if !matches!(ctx.node.kind(), "assignment" | "augmented_assignment" | "attribute") {
+        if !matches!(
+            ctx.node.kind(),
+            "assignment" | "augmented_assignment" | "attribute"
+        ) {
             return;
         }
         relations::mutation(
@@ -912,9 +973,6 @@ impl LanguageProfile for Python {
         facts: &mut Facts,
         _symbols: &HashMap<usize, String>,
     ) {
-        if ctx.node.kind() == "call" {
-            routes::client_call(ctx.node, ctx.source, ctx.owner, facts, ctx.offset);
-        }
         if ctx.node.kind() == "assignment" && !ctx.owner.starts_with("module:") {
             let module_id = facts
                 .nodes
@@ -951,14 +1009,7 @@ impl LanguageProfile for Python {
         rules: &super::LanguageContext,
         route_context: &crate::engine::ast::routes::RouteContext,
     ) {
-        self.extract_routes_with_rule_ir(
-            ctx,
-            facts,
-            symbols,
-            rules,
-            &rules.rule_ir,
-            route_context,
-        );
+        self.extract_routes_with_rule_ir(ctx, facts, symbols, rules, &rules.rule_ir, route_context);
     }
     fn extract_routes_with_rule_ir(
         &self,
@@ -969,18 +1020,48 @@ impl LanguageProfile for Python {
         rule_ir: &super::manifests::RuleIRHandle,
         route_context: &crate::engine::ast::routes::RouteContext,
     ) {
+        if matches!(ctx.node.kind(), "assignment" | "annotated_assignment") {
+            render_context::extract_class_attribute(
+                ctx.node, ctx.source, ctx.owner, ctx.offset, facts, rules,
+            );
+        }
         if matches!(ctx.node.kind(), "function_definition" | "class_definition") {
             routes::declaration_with_context(ctx, facts, rule_ir, route_context);
         }
         if ctx.node.kind() == "call" {
-            routes::registration_with_context(ctx, facts, symbols, rule_ir, route_context);
+            let proven: HashSet<&str> = rules
+                .route_calls
+                .iter()
+                .filter_map(|rule| rule.registration_guard.as_deref())
+                .filter(|guard| {
+                    render_context::is_receiver_registration(
+                        ctx.node, ctx.source, symbols, facts, guard,
+                    )
+                })
+                .collect();
+            routes::registration_with_context_filtered(
+                ctx,
+                facts,
+                symbols,
+                rule_ir,
+                route_context,
+                |rule| {
+                    rule.registration_guard
+                        .as_deref()
+                        .is_none_or(|guard| proven.contains(guard))
+                },
+            );
             call_to_file(ctx, facts, rules);
+            routes::client_call(ctx, facts, rules, self.id());
         }
         self.extract_routes(ctx, facts, symbols);
+        projections::extract(ctx, facts, rules, route_context, symbols);
     }
     fn finish(&self, facts: &mut Facts) {
+        projections::clear();
         relations::implicit_fields(facts);
         fastmcp::registrations(facts);
+        render_context::clear_file_context();
     }
     fn ast_search_capabilities(&self) -> AstSearchCapabilities {
         AstSearchCapabilities {
@@ -1050,7 +1131,10 @@ fn call_to_file(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts, rules: &Language
             argument,
             relation,
             ..
-        } = &effective.rule.operation;
+        } = &effective.rule.operation
+        else {
+            continue;
+        };
         if language != "python" {
             continue;
         }

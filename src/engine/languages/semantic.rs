@@ -5,7 +5,7 @@ use super::{
 };
 use serde::{Deserialize, Serialize};
 
-pub(crate) use super::manifests::semantic::{FileProjection, SemanticRelation};
+pub(crate) use super::manifests::semantic::{SemanticRelation, SemanticTarget};
 
 #[derive(Clone, Debug)]
 pub(crate) struct EffectiveSemanticRule {
@@ -20,7 +20,7 @@ pub(crate) struct EffectiveSemanticRule {
 pub(crate) struct SemanticIdentity {
     pub(crate) scope: String,
     pub(crate) namespace: String,
-    pub(crate) target: FileProjection,
+    pub(crate) target: SemanticTarget,
     pub(crate) path: String,
 }
 
@@ -43,6 +43,14 @@ pub(crate) enum SemanticFactRole {
         alias: String,
         module: String,
         export: String,
+        relation: SemanticRelation,
+    },
+    ClassAttributeToFile {
+        attribute: String,
+        relation: SemanticRelation,
+    },
+    ClassAttributeToSymbol {
+        attribute: String,
         relation: SemanticRelation,
     },
 }
@@ -68,14 +76,22 @@ impl EffectiveSemanticRule {
         expression: String,
         role: SemanticFactRole,
     ) -> SemanticFact {
-        let SemanticOperation::CallToFile { target, .. } = &self.rule.operation;
+        let target = match &self.rule.operation {
+            SemanticOperation::CallToFile { target, .. }
+            | SemanticOperation::ClassAttributeToFile { target, .. }
+            | SemanticOperation::ClassAttributeToSymbol { target, .. } => target.clone(),
+            SemanticOperation::SymbolAttachment { .. }
+            | SemanticOperation::EndpointProjection { .. } => SemanticTarget::ImportedSymbol {
+                language: "python".into(),
+            },
+        };
         SemanticFact {
             pack: self.pack.clone(),
             rule: self.rule.id.clone(),
             identity: SemanticIdentity {
                 scope: self.scope.clone(),
                 namespace: self.rule.namespace.clone(),
-                target: target.clone(),
+                target,
                 path,
             },
             occurrence: SemanticOccurrence {
@@ -100,7 +116,13 @@ pub(crate) fn file_providers(facts: &mut Facts, context: &super::LanguageContext
         module.language.clone(),
     );
     for effective in context.semantic_rules.iter().filter(|rule| rule.active) {
-        let SemanticOperation::CallToFile { target, .. } = &effective.rule.operation;
+        let target = match &effective.rule.operation {
+            SemanticOperation::CallToFile { target, .. }
+            | SemanticOperation::ClassAttributeToFile { target, .. } => target,
+            SemanticOperation::ClassAttributeToSymbol { .. }
+            | SemanticOperation::SymbolAttachment { .. }
+            | SemanticOperation::EndpointProjection { .. } => continue,
+        };
         for literal in target.paths(&path, &language) {
             push(
                 facts,
@@ -118,6 +140,9 @@ pub(crate) fn file_providers(facts: &mut Facts, context: &super::LanguageContext
 }
 
 pub(crate) fn push(facts: &mut Facts, fact: SemanticFact) {
+    if matches!(&fact.identity.target, SemanticTarget::ImportedSymbol { .. }) {
+        return;
+    }
     let key = dependency_key(&fact.identity);
     let occurrence = fact.occurrence.clone();
     if let Some(owner) = facts

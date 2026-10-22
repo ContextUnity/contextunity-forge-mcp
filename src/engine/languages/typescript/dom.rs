@@ -1020,9 +1020,10 @@ pub(super) fn dom_event_callback_parameter<'a>(
     first_callback_parameter(callback).map(|parameter| text(parameter, source))
 }
 
-pub(super) fn nitro_event_callback_parameter<'a>(
+pub(super) fn configured_callback_parameter<'a>(
     callback: Syntax<'_>,
     source: &'a str,
+    callees: &[String],
 ) -> Option<&'a str> {
     let call = callback
         .parent()
@@ -1032,7 +1033,11 @@ pub(super) fn nitro_event_callback_parameter<'a>(
         return None;
     }
     let callee = call.child_by_field_name("function")?;
-    if callee.kind() != "identifier" || text(callee, source) != "defineEventHandler" {
+    if callee.kind() != "identifier"
+        || !callees
+            .iter()
+            .any(|configured| text(callee, source) == configured)
+    {
         return None;
     }
     first_callback_parameter(callback).map(|parameter| text(parameter, source))

@@ -60,7 +60,7 @@ impl LanguageProfile for Vue {
         typescript::TYPESCRIPT.external_import(module)
     }
     fn builtin(&self, name: &str) -> bool {
-        typescript::TYPESCRIPT.builtin(name) || compiler_macro(name) || runtime_builtin(name)
+        typescript::TYPESCRIPT.builtin(name)
     }
     fn builtin_type(&self, name: &str) -> bool {
         typescript::TYPESCRIPT.builtin_type(name)
@@ -78,7 +78,9 @@ impl LanguageProfile for Vue {
         module: &str,
         facts: &mut Facts,
     ) -> Result<()> {
-        extract_file_impl(path, source, module, facts, None)
+        let registry = dependency_registry::DependencyRegistry::bundled_framework_rules();
+        let rules = registry.language_context_for_path(path);
+        extract_file_impl(path, source, module, facts, None, &rules)
     }
 
     fn finish(&self, facts: &mut Facts) {
@@ -104,7 +106,9 @@ fn extract_file_impl(
     module: &str,
     facts: &mut Facts,
     mut flows: Option<&mut crate::core::typed_facts::FlowStore>,
+    rules: &LanguageContext,
 ) -> Result<()> {
+    extract_file_routes(path, module, facts, rules);
     let mut rest = source;
     let mut base = 0;
     let mut script_setup_ranges = Vec::new();
@@ -115,6 +119,7 @@ fn extract_file_impl(
     let mut typed_props = BTreeMap::new();
     let mut typed_iterables = BTreeMap::new();
     let mut typed_slots = Vec::new();
+    let mut macro_calls = Vec::new();
     let mut typed_slots_invalid = false;
     let mut typed_slot_calls = 0;
     let mut duplicate_typed_iterables = HashSet::new();
@@ -183,6 +188,7 @@ fn extract_file_impl(
         .context("Tree-sitter parse cancelled")?;
         {
             let mut output = SetupFactOutputs {
+                macro_calls: &mut macro_calls,
                 setup_callables: &mut setup_callables,
                 duplicate_callables: &mut duplicate_callables,
                 typed_props: &mut typed_props,
@@ -204,9 +210,10 @@ fn extract_file_impl(
                 setup_script,
                 lang == "typescript",
                 &mut output,
+                rules,
             );
         }
-        let bindings = ast::extract_tree_with_flows(
+        let bindings = ast::extract_tree_with_language_context(
             profile,
             tree.root_node(),
             path,
@@ -215,6 +222,7 @@ fn extract_file_impl(
             &format!("module:{path}"),
             facts,
             flows.as_deref_mut(),
+            rules,
         );
         if setup_script {
             script_setup_bindings.extend(bindings.all);
@@ -223,6 +231,14 @@ fn extract_file_impl(
         rest = &source[base..];
     }
 
+    macro_calls.retain(|fact| {
+        !shadowed_producers.contains(&fact.callee)
+            && !setup_reassignments.contains(&fact.callee)
+            && fact
+                .binding
+                .as_ref()
+                .is_none_or(|binding| !setup_reassignments.contains(binding))
+    });
     if let Some(module_node) = facts
         .nodes
         .iter_mut()
@@ -234,33 +250,53 @@ fn extract_file_impl(
             } else {
                 script_setup_ranges
             });
-        if !script_setup_ranges_overflowed
-            && !typed_slots_invalid
-            && !shadowed_producers.contains("defineSlots")
-            && !typed_slots.is_empty()
+        if script_setup_ranges_overflowed {
+            macro_calls.clear();
+        }
+        if typed_slots_invalid
+            || !macro_calls
+                .iter()
+                .any(|fact| fact.role == crate::core::semantic::ComponentMacroRole::Slots)
         {
+            typed_slots.clear();
+        }
+        if !macro_calls.is_empty() || !typed_slots.is_empty() {
+            let mut enrich = |flow: &mut ValueFlowFacts| {
+                flow.vue_slots.append(&mut typed_slots);
+                flow.component_macros.extend(macro_calls.iter().cloned());
+                for fact in &macro_calls {
+                    if let (Some(binding), Some(annotation)) = (&fact.binding, &fact.annotation) {
+                        for value in &mut flow.bindings {
+                            if value.name == *binding
+                                && matches!(&value.value, crate::core::semantic::ValueExpr::Call { callee } if *callee == fact.callee)
+                            {
+                                value.value = crate::core::semantic::ValueExpr::Annotated {
+                                    type_expr: annotation.clone(),
+                                };
+                            }
+                        }
+                    }
+                }
+            };
             if let Some(store) = flows.as_deref_mut() {
-                if let Some(flow) = store.get_mut(&module_node.id) {
-                    flow.vue_slots.append(&mut typed_slots);
-                } else {
-                    store.insert(
-                        module_node.id.clone(),
-                        ValueFlowFacts {
-                            vue_slots: typed_slots,
-                            ..ValueFlowFacts::default()
-                        },
-                    );
+                if !matches!(
+                    store.state(module_node),
+                    Some(crate::core::typed_facts::FlowState::Invalid(_))
+                ) {
+                    let mut flow = store.take(&module_node.id).unwrap_or_default();
+                    enrich(&mut flow);
+                    store.insert(module_node.id.clone(), flow);
+                    module_node.details["value_flow"] = serde_json::Value::Null;
                 }
             } else {
-                let flow = module_node
+                let mut flow = module_node
                     .details
                     .get("value_flow")
                     .and_then(|value| serde_json::from_value::<ValueFlowFacts>(value.clone()).ok())
                     .unwrap_or_default();
-                let mut flow = flow;
-                flow.vue_slots.append(&mut typed_slots);
+                enrich(&mut flow);
                 module_node.details["value_flow"] =
-                    serde_json::to_value(flow).expect("valid Vue slot flow");
+                    serde_json::to_value(flow).expect("valid component flow");
             }
         }
     }
@@ -271,22 +307,36 @@ fn extract_file_impl(
         .filter(|reference| reference.kind == "imports" && reference.module.is_some())
         .filter_map(|reference| reference.alias.clone())
         .collect();
-    let imported_define_component = facts.references.iter().any(|reference| {
-        reference.kind == "imports"
-            && reference.expression == "defineComponent"
-            && reference.alias.as_deref() == Some("defineComponent")
-            && reference.module.as_deref() == Some("vue")
-    });
-    registered_components.retain(|name, (alias, wrapped)| {
-        !duplicate_components.contains(name)
-            && !component_reassignments.contains(alias.as_str())
-            && imported_aliases.contains(alias.as_str())
-            && (!*wrapped || imported_define_component)
-    });
-    let component_aliases: BTreeMap<_, _> = registered_components
-        .into_iter()
-        .map(|(name, (alias, _))| (name, alias))
+    let imported_component_wrappers: HashSet<String> = rules
+        .syntax_rules
+        .iter()
+        .filter_map(|rule| {
+            let manifests::syntax::SyntaxOperation::ComponentOptions { module, export, .. } =
+                &rule.operation
+            else {
+                return None;
+            };
+            facts
+                .references
+                .iter()
+                .any(|reference| {
+                    reference.kind == "imports"
+                        && reference.expression == *export
+                        && reference.alias.as_deref() == Some(export)
+                        && reference.module.as_deref() == Some(module)
+                })
+                .then(|| rule.key())
+        })
         .collect();
+    registered_components.retain(|name, component| {
+        !duplicate_components.contains(name)
+            && !component_reassignments.contains(component.alias.as_str())
+            && imported_aliases.contains(component.alias.as_str())
+            && component
+                .wrapper
+                .as_ref()
+                .is_none_or(|key| imported_component_wrappers.contains(key))
+    });
     typed_iterables.retain(|name, _| {
         !duplicate_typed_iterables.contains(name) && !setup_reassignments.contains(name)
     });
@@ -296,7 +346,7 @@ fn extract_file_impl(
         module,
         template::TemplateBindings {
             setup_positions: &setup_positions,
-            registered_components: &component_aliases,
+            registered_components: &registered_components,
             typed_iterables: &typed_iterables,
         },
         facts,
@@ -329,10 +379,17 @@ fn extract_file_impl(
         }
         let mut typed_prop_fields = BTreeMap::new();
         for (binding, properties) in &typed_props {
-            if duplicate_typed_props.contains(binding)
-                || setup_reassignments.contains(binding)
-                || shadowed_producers.contains("defineProps")
-            {
+            if duplicate_typed_props.contains(binding) || setup_reassignments.contains(binding) {
+                continue;
+            }
+            let mut origins = macro_calls.iter().filter(|fact| {
+                fact.role == crate::core::semantic::ComponentMacroRole::Props
+                    && fact.binding.as_ref() == Some(binding)
+            });
+            let Some(origin) = origins.next().map(|fact| &fact.origin) else {
+                continue;
+            };
+            if origins.next().is_some() {
                 continue;
             }
             for (member_path, position) in properties {
@@ -350,8 +407,10 @@ fn extract_file_impl(
                 });
                 if let Some(field) = matches.next() {
                     if matches.next().is_none() {
-                        typed_prop_fields
-                            .insert((binding.clone(), member_path.clone()), field.id.clone());
+                        typed_prop_fields.insert(
+                            (binding.clone(), member_path.clone()),
+                            (field.id.clone(), origin.clone()),
+                        );
                     }
                 }
             }
@@ -373,10 +432,13 @@ fn extract_file_impl(
                         .is_some_and(|(hint, declaration)| {
                             !setup_reassignments.contains(reference.expression.as_str())
                                 && !duplicate_callables.contains(reference.expression.as_str())
-                                && !shadowed_producers.contains(match hint {
-                                    ReceiverHint::VueSetupMacroCallable => "defineEmits",
+                                && match hint {
+                                    ReceiverHint::ConfiguredMacroCallable { producer, .. } => {
+                                        !shadowed_producers.contains(producer)
+                                            && !setup_reassignments.contains(producer)
+                                    }
                                     _ => return false,
-                                })
+                                }
                                 && (in_template || *declaration < at)
                         })
                     && !setup_callable_shadowed(owner, reference.expression.as_str(), &facts.nodes)
@@ -404,10 +466,11 @@ fn extract_file_impl(
                     if !member_path.is_empty()
                         && !setup_callable_shadowed(owner, binding, &facts.nodes)
                     {
-                        if let Some(field_id) =
+                        if let Some((field_id, origin)) =
                             typed_prop_fields.get(&(binding.to_owned(), member_path.to_owned()))
                         {
-                            reference.receiver_hint = Some(ReceiverHint::VueTypedPropMember {
+                            reference.receiver_hint = Some(ReceiverHint::ConfiguredTypedMember {
+                                origin: origin.clone(),
                                 field_id: field_id.clone(),
                             });
                         }
@@ -417,6 +480,67 @@ fn extract_file_impl(
         }
     }
     Ok(())
+}
+
+fn extract_file_routes(path: &str, module: &str, facts: &mut Facts, rules: &LanguageContext) {
+    for rule in &rules.syntax_rules {
+        let manifests::syntax::SyntaxOperation::FileRoute {
+            directory,
+            extension,
+            index,
+            method,
+        } = &rule.operation
+        else {
+            continue;
+        };
+        let Some(relative) = path
+            .strip_prefix(directory)
+            .and_then(|value| value.strip_suffix(extension))
+        else {
+            continue;
+        };
+        // Each hyphen-delimited part is a static identifier; other syntax has no mapping.
+        let mut segments: Vec<_> = relative.split('/').collect();
+        if segments.iter().any(|segment| {
+            !segment.split('-').all(|part| {
+                let mut chars = part.chars();
+                chars
+                    .next()
+                    .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                    && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+            })
+        }) {
+            continue;
+        }
+        if segments.last().is_some_and(|segment| *segment == index) {
+            segments.pop();
+        }
+        let route_path = format!("/{}", segments.join("/"));
+        let id = format!("route:{path}:1:0:{method}:{route_path}");
+        let origin = crate::core::semantic::ExtractionRuleOrigin {
+            pack: rule.pack.clone(),
+            rule: rule.id.clone(),
+        };
+        if facts.nodes.iter().any(|node| node.id == id) {
+            continue;
+        }
+        let name = format!("{method} {route_path}");
+        facts.nodes.push(Node {
+            id: id.clone(), kind: "route".into(), name: name.clone(),
+            qualname: format!("{module}.{name}"), path: path.into(), line: 1, end_line: 1,
+            is_test: crate::core::models::is_test(path), language: "vue".into(), generated: false,
+            details: serde_json::json!({"method":method,"route_path":route_path,"handler":null,"handlers":[],"route_name":null,"include_module":null,"include_namespace":null,"value_flow":ValueFlowFacts { rule_origins: vec![origin], ..Default::default() }}),
+        });
+        facts.edges.push(crate::core::models::Edge {
+            src: format!("module:{path}"),
+            dst: id,
+            kind: "contains".into(),
+            path: path.into(),
+            line: 1,
+            evidence: "file route projection".into(),
+            confidence: "exact".into(),
+        });
+    }
 }
 
 fn setup_callable_shadowed(owner: Option<&Node>, name: &str, nodes: &[Node]) -> bool {
@@ -524,71 +648,6 @@ fn is_setup_script_tag(tag: &str) -> bool {
     setup && !source
 }
 
-pub(crate) fn compiler_macro(name: &str) -> bool {
-    matches!(
-        name,
-        "defineProps"
-            | "defineEmits"
-            | "defineExpose"
-            | "withDefaults"
-            | "defineOptions"
-            | "defineSlots"
-            | "defineModel"
-    )
-}
-
-pub(crate) fn runtime_builtin(name: &str) -> bool {
-    matches!(
-        name,
-        "ref"
-            | "computed"
-            | "reactive"
-            | "shallowRef"
-            | "shallowReactive"
-            | "toRef"
-            | "toRefs"
-            | "unref"
-            | "isRef"
-            | "watch"
-            | "watchEffect"
-            | "onMounted"
-            | "onUnmounted"
-            | "onUpdated"
-            | "onBeforeMount"
-            | "onBeforeUnmount"
-            | "nextTick"
-            | "inject"
-            | "provide"
-            | "useSlots"
-            | "useAttrs"
-            | "useI18n"
-            | "useFetch"
-            | "useAsyncData"
-            | "useLazyFetch"
-            | "useLazyAsyncData"
-            | "useRoute"
-            | "useRouter"
-            | "navigateTo"
-            | "useState"
-            | "useCookie"
-            | "useHead"
-            | "useSeoMeta"
-            | "useError"
-            | "createError"
-            | "clearError"
-            | "defineNuxtComponent"
-            | "defineNuxtRouteMiddleware"
-            | "definePageMeta"
-            | "abortNavigation"
-            | "setResponseStatus"
-            | "useRuntimeConfig"
-            | "useNuxtApp"
-            | "useRequestEvent"
-            | "useRequestHeaders"
-            | "useResponseEvent"
-    )
-}
-
 pub(crate) fn admits_macro(
     module: &crate::core::models::Node,
     at: crate::core::semantic::SourcePosition,
@@ -658,6 +717,7 @@ pub(crate) fn extract_typed(
     source: &str,
     module: &str,
     typed: &mut crate::core::typed_facts::TypedFacts,
+    rules: &LanguageContext,
 ) -> Result<()> {
     extract_file_impl(
         path,
@@ -665,6 +725,7 @@ pub(crate) fn extract_typed(
         module,
         &mut typed.facts,
         Some(&mut typed.flows),
+        rules,
     )?;
     VUE.finish(&mut typed.facts);
     Ok(())

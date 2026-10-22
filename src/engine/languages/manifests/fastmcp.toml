@@ -1,0 +1,9 @@
+receivers = []
+builtins = []
+filters = []
+routes = []
+
+[[syntax_rules]]
+id = "tool-registration"
+language = "python"
+operation = { kind = "decorated_registration", modules = ["fastmcp", "mcp.server.fastmcp"], constructor = "FastMCP", member = "tool", name_keyword = "name", provider = "FastMCP" }

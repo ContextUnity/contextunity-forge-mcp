@@ -25,7 +25,8 @@ impl<'a> TypeScriptMembers<'a> {
             .filter(|node| {
                 matches!(node.language.as_str(), "typescript" | "javascript" | "vue")
                     && (matches!(node.kind.as_str(), "class" | "interface" | "enum")
-                        || (node.language == "javascript" && node.kind == "function"
+                        || (node.language == "javascript"
+                            && node.kind == "function"
                             && node.details["prototype_constructor"] == true))
             })
             .collect();
@@ -42,7 +43,8 @@ impl<'a> TypeScriptMembers<'a> {
             let mut fields = vue_fields.then(|| own_fields.entry(class.id.as_str()).or_default());
             for method in &facts.nodes {
                 let is_method = matches!(method.kind.as_str(), "method" | "function")
-                    || (matches!(class.kind.as_str(), "enum" | "interface") && method.kind == "field");
+                    || (matches!(class.kind.as_str(), "enum" | "interface")
+                        && method.kind == "field");
                 let is_field = vue_fields && method.kind == "field";
                 if !is_method && !is_field {
                     continue;
@@ -57,10 +59,14 @@ impl<'a> TypeScriptMembers<'a> {
                         if method.details["prototype_valid"] != true {
                             continue;
                         }
-                        let assignment_line = method.details["prototype_assignment_line"].as_u64()
-                            .unwrap_or(method.line as u64) as usize;
-                        let assignment_column = method.details["prototype_assignment_column"].as_u64()
-                            .or_else(|| method.details["column"].as_u64()).unwrap_or(0) as usize;
+                        let assignment_line = method.details["prototype_assignment_line"]
+                            .as_u64()
+                            .unwrap_or(method.line as u64)
+                            as usize;
+                        let assignment_column = method.details["prototype_assignment_column"]
+                            .as_u64()
+                            .or_else(|| method.details["column"].as_u64())
+                            .unwrap_or(0) as usize;
                         let lexical_class = resolver.resolve_symbol(
                             method,
                             &class.name,
@@ -71,7 +77,8 @@ impl<'a> TypeScriptMembers<'a> {
                             SymbolRole::Constructor,
                         );
                         let exact_owner = matches!(lexical_class, Symbol::Type(TypeTarget::Local(node)) if node.id == class.id);
-                        let class_visible = class.kind == "function" || class.line < assignment_line
+                        let class_visible = class.kind == "function"
+                            || class.line < assignment_line
                             || (class.line == assignment_line
                                 && class.details["column"].as_u64().unwrap_or(0)
                                     < assignment_column as u64);
@@ -153,7 +160,14 @@ impl<'a> TypeScriptMembers<'a> {
         for class in classes {
             inherited(class, &own, &parents, &mut members, &mut HashSet::new(), 0);
             if vue_fields {
-                inherited(class, &own_fields, &parents, &mut fields, &mut HashSet::new(), 0);
+                inherited(
+                    class,
+                    &own_fields,
+                    &parents,
+                    &mut fields,
+                    &mut HashSet::new(),
+                    0,
+                );
             }
         }
         Self { members, fields }
@@ -300,15 +314,14 @@ fn target<'a>(exports: &PackageExports<'a>, module: &Node, name: &str) -> Option
         .flatten()
 }
 
-fn nuxt_component_module_paths(name: &str, root: &str) -> Vec<String> {
+fn component_module_paths(name: &str, root: &str, extension: &str) -> Vec<String> {
     if name.is_empty() || !name.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
         return Vec::new();
     }
     let mut boundaries = vec![0];
-    boundaries.extend(
-        name.char_indices()
-            .filter_map(|(index, character)| (index > 0 && character.is_ascii_uppercase()).then_some(index)),
-    );
+    boundaries.extend(name.char_indices().filter_map(|(index, character)| {
+        (index > 0 && character.is_ascii_uppercase()).then_some(index)
+    }));
     boundaries.sort_unstable();
     boundaries.dedup();
     boundaries
@@ -327,25 +340,17 @@ fn nuxt_component_module_paths(name: &str, root: &str) -> Vec<String> {
                 path.push('/');
             }
             path.push_str(&name[boundary..]);
-            path.push_str(".vue");
+            path.push_str(extension);
             path
         })
         .collect()
 }
 
-fn nuxt_component_modules<'a>(
+fn configured_component_modules<'a>(
     context: &ImportContext<'_, 'a, '_>,
     name: &str,
 ) -> Vec<&'a Node> {
-    let Some(manifest) = TYPESCRIPT_LINKER.framework_manifest(
-        context.dependencies,
-        LanguageFamily("javascript"),
-        context.path,
-        "nuxt",
-        "nuxt",
-    ) else {
-        return Vec::new();
-    };
+    let rules = context.dependencies.language_context_for_path(context.path);
     let Some(scope) = context
         .dependencies
         .nearest_manifest_scope_for_path(LanguageFamily("javascript"), context.path)
@@ -353,20 +358,32 @@ fn nuxt_component_modules<'a>(
         return Vec::new();
     };
     let mut modules = Vec::new();
-    for route in &manifest.routes {
-        let crate::engine::languages::manifests::FrameworkManifestValue::String(route) = route
+    for rule in &rules.syntax_rules {
+        let manifests::syntax::SyntaxOperation::ComponentEnvironment {
+            package,
+            directory: root,
+            extension,
+            virtual_module,
+            ..
+        } = &rule.operation
         else {
             continue;
         };
-        let Some(root) = route.strip_suffix("/**/*.vue") else {
+        if context.reference.module.as_deref() != Some(virtual_module)
+            || !context.dependencies.declares_for_path(
+                rule.activation_family(),
+                context.path,
+                package,
+            )
+        {
             continue;
-        };
+        }
         let root = if scope.is_empty() {
             root.to_owned()
         } else {
             format!("{scope}/{root}")
         };
-        for relative in nuxt_component_module_paths(name, &root) {
+        for relative in component_module_paths(name, &root, extension) {
             modules.extend(
                 context
                     .by_module
@@ -392,13 +409,13 @@ impl LanguageLinker for TypeScriptLinker {
         context: &mut ImportContext<'ctx, 'a, 'input>,
     ) -> ImportResolution<'a> {
         let mut result = resolve_default_import(context);
-        if context.reference.module.as_deref() == Some("#components") {
+        {
             let imported_name = context
                 .reference
                 .alias
                 .as_deref()
                 .unwrap_or(context.reference.expression.as_str());
-            let providers = nuxt_component_modules(context, imported_name);
+            let providers = configured_component_modules(context, imported_name);
             if !providers.is_empty() {
                 context.modules.clear();
                 context.candidates.clear();
@@ -411,7 +428,9 @@ impl LanguageLinker for TypeScriptLinker {
             matches!(extension, "ts" | "tsx" | "mts" | "cts" | "vue")
         });
         if !typescript_source {
-            context.candidates.retain(|node| !matches!(node.kind.as_str(), "type" | "interface"));
+            context
+                .candidates
+                .retain(|node| !matches!(node.kind.as_str(), "type" | "interface"));
         }
         if let (Some([module]), Some(name)) = (
             Some(context.modules.as_slice()),
@@ -422,12 +441,12 @@ impl LanguageLinker for TypeScriptLinker {
                 let direct_type_export = typescript_source
                     && exported.is_none()
                     && matches!(context.candidates.as_slice(), [node] if matches!(node.kind.as_str(), "type" | "interface")
-                        && module.details["exports"].as_array().is_some_and(|bindings| bindings.iter().any(|binding| {
-                            binding["type_only"] == true
-                                && binding["name"].as_str() == Some(name.as_str())
-                                && binding["local"].as_str() == Some(node.name.as_str())
-                                && binding["module"].is_null()
-                        })));
+                    && module.details["exports"].as_array().is_some_and(|bindings| bindings.iter().any(|binding| {
+                        binding["type_only"] == true
+                            && binding["name"].as_str() == Some(name.as_str())
+                            && binding["local"].as_str() == Some(node.name.as_str())
+                            && binding["module"].is_null()
+                    })));
                 if (name != "default" || exported.is_some()) && !direct_type_export {
                     context.candidates.clear();
                 }
@@ -659,6 +678,101 @@ fn package_exports<'a, F: AsRef<Facts>>(
         }
     }
     exports
+}
+
+pub(crate) fn required_configuration_facts(
+    facts: &BTreeMap<String, crate::core::typed_facts::TypedFacts>,
+    catalog: &[(&str, &str)],
+    dependencies: &languages::dependency_registry::DependencyRegistry,
+) -> BTreeSet<String> {
+    let mut required = BTreeSet::new();
+    let mut selected = BTreeSet::new();
+    for (path, _) in facts.iter().filter(|(_, file)| javascript(&file.facts)) {
+        let Some(scope) =
+            dependencies.nearest_manifest_scope_for_path(LanguageFamily("javascript"), path)
+        else {
+            continue;
+        };
+        for rule in &dependencies.language_context_for_path(path).syntax_rules {
+            let manifests::syntax::SyntaxOperation::ComponentEnvironment {
+                ref package,
+                ref config_file,
+                ref modules,
+                ..
+            } = rule.operation
+            else {
+                continue;
+            };
+            if !dependencies.declares_for_path(rule.activation_family(), path, package) {
+                continue;
+            }
+            let config_path = if scope.is_empty() {
+                config_file.clone()
+            } else {
+                format!("{scope}/{config_file}")
+            };
+            if catalog
+                .iter()
+                .any(|(candidate, _)| *candidate == config_path)
+            {
+                required.insert(config_path.clone());
+            }
+            if let Some(config) = facts.get(&config_path) {
+                let configurations = config
+                    .facts
+                    .nodes
+                    .iter()
+                    .find(|node| node.kind == "module")
+                    .and_then(|node| config.flows.get(node))
+                    .map(|flow| &flow.component_configurations);
+                for configuration in configurations
+                    .into_iter()
+                    .flatten()
+                    .filter(|fact| fact.origin.pack == rule.pack && fact.origin.rule == rule.id)
+                {
+                    for name in &configuration.modules {
+                        let Some(addition) = modules.get(name).filter(|addition| {
+                            dependencies.declares_for_path(
+                                rule.activation_family(),
+                                path,
+                                &addition.package,
+                            )
+                        }) else {
+                            continue;
+                        };
+                        if !selected.insert((
+                            config_path.clone(),
+                            rule.pack.clone(),
+                            rule.id.clone(),
+                            name.clone(),
+                        )) {
+                            continue;
+                        }
+                        for export in &addition.exports {
+                            let directory = if scope.is_empty() {
+                                export.directory.clone()
+                            } else {
+                                format!("{scope}/{}", export.directory)
+                            };
+                            for (candidate, language) in catalog {
+                                if *language == "typescript"
+                                    && candidate
+                                        .strip_prefix(&directory)
+                                        .and_then(|tail| tail.strip_prefix('/'))
+                                        .is_some_and(|tail| {
+                                            !tail.contains('/') && tail.ends_with(&export.extension)
+                                        })
+                                {
+                                    required.insert((*candidate).to_owned());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    required
 }
 
 fn required_full_facts<F: AsRef<Facts>>(

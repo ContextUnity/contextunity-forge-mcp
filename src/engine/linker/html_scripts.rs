@@ -42,9 +42,11 @@ impl<'a> Registry<'a> {
                 .iter()
                 .filter(|reference| reference.kind == "includes")
             {
-                let Some(target) =
-                    languages::html::local_template_target(path, &reference.expression)
-                else {
+                let Some(target) = languages::html::local_template_target(
+                    path,
+                    &reference.expression,
+                    &dependencies.language_context_for_path(path),
+                ) else {
                     continue;
                 };
                 let Some((target_path, target_facts)) = all.get_key_value(&target) else {

@@ -1,6 +1,14 @@
 use super::*;
+use crate::core::semantic::{ComponentMacroFact, ComponentMacroRole, ExtractionRuleOrigin};
+
+pub(super) struct RegisteredComponent {
+    pub alias: String,
+    pub wrapper: Option<String>,
+    pub origin: crate::core::semantic::ExtractionRuleOrigin,
+}
 
 pub(super) struct SetupFactOutputs<'a> {
+    pub macro_calls: &'a mut Vec<ComponentMacroFact>,
     pub setup_callables: &'a mut BTreeMap<String, (ReceiverHint, Position)>,
     pub duplicate_callables: &'a mut HashSet<String>,
     pub typed_props: &'a mut BTreeMap<String, BTreeMap<String, Position>>,
@@ -12,7 +20,7 @@ pub(super) struct SetupFactOutputs<'a> {
     pub typed_slot_calls: &'a mut usize,
     pub shadowed_producers: &'a mut HashSet<String>,
     pub setup_reassignments: &'a mut HashSet<String>,
-    pub registered_components: &'a mut BTreeMap<String, (String, bool)>,
+    pub registered_components: &'a mut BTreeMap<String, RegisteredComponent>,
     pub duplicate_components: &'a mut HashSet<String>,
     pub component_reassignments: &'a mut HashSet<String>,
 }
@@ -24,6 +32,7 @@ pub(super) fn collect_setup_facts(
     setup_script: bool,
     typescript: bool,
     output: &mut SetupFactOutputs<'_>,
+    rules: &LanguageContext,
 ) {
     let mut slots_stopped = *output.typed_slots_invalid;
     let mut contexts = Vec::new();
@@ -69,6 +78,7 @@ pub(super) fn collect_setup_facts(
                         source,
                         output.registered_components,
                         output.duplicate_components,
+                        rules,
                     );
                 }
                 if setup_script
@@ -96,7 +106,7 @@ pub(super) fn collect_setup_facts(
                         && node.kind() == "variable_declarator"
                         && node
                             .child_by_field_name("value")
-                            .is_some_and(|value| is_define_slots(value, source))
+                            .is_some_and(|value| is_slot_call(value, source, rules))
                     {
                         *output.typed_slots_invalid = true;
                         slots_stopped = true;
@@ -113,12 +123,16 @@ pub(super) fn collect_setup_facts(
                         source,
                         output.typed_props,
                         output.duplicate_typed_props,
+                        rules,
+                        output.macro_calls,
                     );
                     collect_setup_callable_declaration(
                         node,
                         source,
                         output.setup_callables,
                         output.duplicate_callables,
+                        rules,
+                        output.macro_calls,
                     );
                     if typescript {
                         collect_typed_iterable_declaration(
@@ -179,8 +193,11 @@ pub(super) fn collect_setup_facts(
             {
                 if let Some(call) = node
                     .named_child(0)
-                    .filter(|node| is_define_slots(*node, source))
+                    .filter(|node| is_slot_call(*node, source, rules))
                 {
+                    if let Some(fact) = macro_fact(call, source, rules, None) {
+                        output.macro_calls.push(fact);
+                    }
                     *output.typed_slot_calls += 1;
                     if *output.typed_slot_calls > 1
                         || collect_typed_slot_call(call, source, output.typed_slots)
@@ -195,16 +212,52 @@ pub(super) fn collect_setup_facts(
 }
 
 fn insert_macro_name(name: &str, output: &mut HashSet<String>) {
-    if matches!(name, "defineEmits" | "defineProps" | "defineSlots") {
-        output.insert(name.to_owned());
-    }
+    output.insert(name.to_owned());
 }
 
-fn is_define_slots(node: Syntax<'_>, source: &str) -> bool {
+fn is_slot_call(node: Syntax<'_>, source: &str, rules: &LanguageContext) -> bool {
     node.kind() == "call_expression"
         && node.child_by_field_name("function").is_some_and(|callee| {
-            callee.kind() == "identifier" && text(callee, source) == "defineSlots"
+            callee.kind() == "identifier"
+                && rules
+                    .component_macro(text(callee, source))
+                    .is_some_and(|(_, role)| role == ComponentMacroRole::Slots)
         })
+}
+
+fn macro_fact(
+    call: Syntax<'_>,
+    source: &str,
+    rules: &LanguageContext,
+    binding: Option<String>,
+) -> Option<ComponentMacroFact> {
+    let callee = call.child_by_field_name("function")?;
+    if callee.kind() != "identifier" {
+        return None;
+    }
+    let callee = text(callee, source);
+    let (rule, role) = rules.component_macro(callee)?;
+    let annotation = (role == ComponentMacroRole::Props)
+        .then(|| call.child_by_field_name("type_arguments")?.named_child(0))
+        .flatten()
+        .filter(|argument| argument.kind() != "object_type")
+        .map(|argument| typescript::value_flow::named_type(argument, source))
+        .filter(|ty| !matches!(ty, TypeExpr::Unknown));
+    let at = source_position(source, call.start_byte());
+    Some(ComponentMacroFact {
+        origin: ExtractionRuleOrigin {
+            pack: rule.pack.clone(),
+            rule: rule.id.clone(),
+        },
+        role,
+        callee: callee.into(),
+        binding,
+        position: SourcePosition {
+            line: at.line,
+            column: at.column,
+        },
+        annotation,
+    })
 }
 
 fn collect_typed_iterable_declaration(
@@ -263,6 +316,8 @@ fn collect_typed_prop_declaration(
     source: &str,
     output: &mut BTreeMap<String, BTreeMap<String, Position>>,
     duplicates: &mut HashSet<String>,
+    rules: &LanguageContext,
+    macro_calls: &mut Vec<ComponentMacroFact>,
 ) {
     let (Some(name), Some(value)) = (
         declaration.child_by_field_name("name"),
@@ -272,11 +327,16 @@ fn collect_typed_prop_declaration(
     };
     if name.kind() != "identifier"
         || value.kind() != "call_expression"
-        || !value
-            .child_by_field_name("function")
-            .is_some_and(|callee| text(callee, source) == "defineProps")
+        || !value.child_by_field_name("function").is_some_and(|callee| {
+            rules
+                .component_macro(text(callee, source))
+                .is_some_and(|(_, role)| role == ComponentMacroRole::Props)
+        })
     {
         return;
+    }
+    if let Some(fact) = macro_fact(value, source, rules, Some(text(name, source).into())) {
+        macro_calls.push(fact);
     }
     let Some(type_arguments) = value.child_by_field_name("type_arguments") else {
         return;
@@ -303,6 +363,8 @@ fn collect_setup_callable_declaration(
     source: &str,
     output: &mut BTreeMap<String, (ReceiverHint, Position)>,
     duplicates: &mut HashSet<String>,
+    rules: &LanguageContext,
+    macro_calls: &mut Vec<ComponentMacroFact>,
 ) {
     let (Some(name), Some(value)) = (
         declaration.child_by_field_name("name"),
@@ -311,20 +373,27 @@ fn collect_setup_callable_declaration(
         return;
     };
     if value.kind() != "call_expression"
-        || !value
-            .child_by_field_name("function")
-            .is_some_and(|callee| text(callee, source) == "defineEmits")
+        || !value.child_by_field_name("function").is_some_and(|callee| {
+            rules
+                .component_macro(text(callee, source))
+                .is_some_and(|(_, role)| role == ComponentMacroRole::Emits)
+        })
         || name.kind() != "identifier"
     {
         return;
     }
     let binding = text(name, source);
+    let Some(fact) = macro_fact(value, source, rules, Some(binding.into())) else {
+        return;
+    };
+    let hint = ReceiverHint::ConfiguredMacroCallable {
+        origin: fact.origin.clone(),
+        producer: fact.callee.clone(),
+    };
+    macro_calls.push(fact);
     let position = source_position(source, declaration.end_byte());
     if output
-        .insert(
-            binding.to_owned(),
-            (ReceiverHint::VueSetupMacroCallable, position),
-        )
+        .insert(binding.to_owned(), (hint, position))
         .is_some()
     {
         duplicates.insert(binding.to_owned());
@@ -413,8 +482,39 @@ fn collect_typed_slot_call(call: Syntax<'_>, source: &str, output: &mut Vec<VueS
 fn collect_registered_component(
     statement: Syntax<'_>,
     source: &str,
-    output: &mut BTreeMap<String, (String, bool)>,
+    output: &mut BTreeMap<String, RegisteredComponent>,
     duplicates: &mut HashSet<String>,
+    rules: &LanguageContext,
+) {
+    for rule in &rules.syntax_rules {
+        let manifests::syntax::SyntaxOperation::ComponentOptions {
+            export,
+            components_key,
+            ..
+        } = &rule.operation
+        else {
+            continue;
+        };
+        collect_configured_component(
+            statement,
+            source,
+            output,
+            duplicates,
+            rule,
+            export,
+            components_key,
+        );
+    }
+}
+
+fn collect_configured_component(
+    statement: Syntax<'_>,
+    source: &str,
+    output: &mut BTreeMap<String, RegisteredComponent>,
+    duplicates: &mut HashSet<String>,
+    rule: &manifests::syntax::SyntaxRule,
+    export: &str,
+    components_key: &str,
 ) {
     if !text(statement, source)
         .trim_start()
@@ -430,7 +530,7 @@ fn collect_registered_component(
     } else if value.kind() == "call_expression"
         && value
             .child_by_field_name("function")
-            .is_some_and(|callee| text(callee, source) == "defineComponent")
+            .is_some_and(|callee| text(callee, source) == export)
     {
         let Some(arguments) = value.child_by_field_name("arguments") else {
             return;
@@ -453,7 +553,7 @@ fn collect_registered_component(
         node.kind() == "pair"
             && node
                 .child_by_field_name("key")
-                .is_some_and(|key| text(key, source) == "components")
+                .is_some_and(|key| text(key, source) == components_key)
     });
     let Some(property) = properties.next() else {
         return;
@@ -495,7 +595,17 @@ fn collect_registered_component(
             continue;
         }
         if output
-            .insert(name.to_owned(), (text(value, source).to_owned(), wrapped))
+            .insert(
+                name.to_owned(),
+                RegisteredComponent {
+                    alias: text(value, source).to_owned(),
+                    wrapper: wrapped.then(|| rule.key()),
+                    origin: crate::core::semantic::ExtractionRuleOrigin {
+                        pack: rule.pack.clone(),
+                        rule: rule.id.clone(),
+                    },
+                },
+            )
             .is_some()
         {
             duplicates.insert(name.to_owned());

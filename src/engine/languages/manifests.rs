@@ -7,8 +7,12 @@ pub use framework::{
     RuleIdentity,
 };
 
+pub(crate) mod projections;
 pub(crate) mod semantic;
-pub(crate) use semantic::{Activation, SemanticCallee, SemanticOperation, SemanticRule};
+pub(crate) mod syntax;
+pub(crate) use semantic::{
+    Activation, SemanticCallee, SemanticOperation, SemanticRule, SemanticTarget,
+};
 
 use std::{
     collections::HashMap,
@@ -30,9 +34,21 @@ struct RuleIRKey {
 
 #[derive(Debug, Default)]
 struct CompiledRuleIR {
-    route_decorators: HashMap<u16, Vec<RouteDecoratorRule>>,
-    route_calls: HashMap<u16, Vec<RouteCallRule>>,
-    di_calls: HashMap<u16, Vec<DiCallRule>>,
+    route_decorators: HashMap<u16, Vec<CompiledRouteRule<RouteDecoratorRule>>>,
+    route_calls: HashMap<u16, Vec<CompiledRouteRule<RouteCallRule>>>,
+    di_calls: HashMap<u16, Vec<CompiledRouteRule<DiCallRule>>>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CompiledRouteRule<T> {
+    rule: T,
+    pub(crate) origin: Option<crate::core::semantic::ExtractionRuleOrigin>,
+}
+impl<T> std::ops::Deref for CompiledRouteRule<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.rule
+    }
 }
 
 impl CompiledRuleIR {
@@ -42,14 +58,43 @@ impl CompiledRuleIR {
             .into_iter()
             .filter_map(|name| named_kind(grammar, name))
         {
-            compiled
-                .route_calls
-                .insert(kind, context.route_calls.clone());
-            compiled.di_calls.insert(kind, context.di_calls.clone());
+            compiled.route_calls.insert(
+                kind,
+                context
+                    .route_calls
+                    .iter()
+                    .enumerate()
+                    .map(|(index, rule)| CompiledRouteRule {
+                        rule: rule.clone(),
+                        origin: context.route_rule_origins.get(&(false, index)).cloned(),
+                    })
+                    .collect(),
+            );
+            compiled.di_calls.insert(
+                kind,
+                context
+                    .di_calls
+                    .iter()
+                    .enumerate()
+                    .map(|(index, rule)| CompiledRouteRule {
+                        rule: rule.clone(),
+                        origin: context.di_rule_origins.get(&index).cloned(),
+                    })
+                    .collect(),
+            );
             if named_kind(grammar, "decorator").is_some() {
-                compiled
-                    .route_decorators
-                    .insert(kind, context.route_decorators.clone());
+                compiled.route_decorators.insert(
+                    kind,
+                    context
+                        .route_decorators
+                        .iter()
+                        .enumerate()
+                        .map(|(index, rule)| CompiledRouteRule {
+                            rule: rule.clone(),
+                            origin: context.route_rule_origins.get(&(true, index)).cloned(),
+                        })
+                        .collect(),
+                );
             }
         }
         compiled
@@ -115,21 +160,24 @@ impl RuleIRHandle {
         }
     }
 
-    pub(crate) fn route_decorators_for_kind(&self, kind: u16) -> &[RouteDecoratorRule] {
+    pub(crate) fn route_decorators_for_kind(
+        &self,
+        kind: u16,
+    ) -> &[CompiledRouteRule<RouteDecoratorRule>] {
         self.bound
             .as_ref()
             .and_then(|compiled| compiled.route_decorators.get(&kind))
             .map_or(&[], Vec::as_slice)
     }
 
-    pub(crate) fn route_calls_for_kind(&self, kind: u16) -> &[RouteCallRule] {
+    pub(crate) fn route_calls_for_kind(&self, kind: u16) -> &[CompiledRouteRule<RouteCallRule>] {
         self.bound
             .as_ref()
             .and_then(|compiled| compiled.route_calls.get(&kind))
             .map_or(&[], Vec::as_slice)
     }
 
-    pub(crate) fn di_calls_for_kind(&self, kind: u16) -> &[DiCallRule] {
+    pub(crate) fn di_calls_for_kind(&self, kind: u16) -> &[CompiledRouteRule<DiCallRule>] {
         self.bound
             .as_ref()
             .and_then(|compiled| compiled.di_calls.get(&kind))

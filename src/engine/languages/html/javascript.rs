@@ -1,6 +1,6 @@
 use super::*;
-use crate::engine::languages::template::TemplateMasker;
 use crate::core::models::{Diagnostic, Edge};
+use crate::engine::languages::template::TemplateMasker;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn extract_island(
@@ -16,6 +16,7 @@ pub(super) fn extract_island(
     global_scope: &mut Option<usize>,
     facts: &mut Facts,
     mut flows: Option<&mut crate::core::typed_facts::FlowStore>,
+    rules: &LanguageContext,
 ) -> Result<()> {
     let original = &source[start..end];
     let script = TemplateMasker::mask(original, |_| {}, None);
@@ -79,7 +80,7 @@ pub(super) fn extract_island(
         });
     }
     let errors = facts.errors.len();
-    ast::extract_tree_with_flows(
+    ast::extract_tree_with_language_context(
         profile,
         root,
         path,
@@ -88,6 +89,7 @@ pub(super) fn extract_island(
         &owner,
         facts,
         flows.as_ref().map(|_| &mut island_flows),
+        rules,
     );
     if matches!(script, std::borrow::Cow::Owned(_)) {
         facts.errors.truncate(errors);
@@ -203,6 +205,7 @@ pub(super) fn extract_handlers(
     global_scope: &mut Option<usize>,
     facts: &mut Facts,
     mut flows: Option<&mut crate::core::typed_facts::FlowStore>,
+    rules: &LanguageContext,
 ) -> Result<()> {
     let mut cursor = tag.walk();
     for attribute in tag
@@ -212,28 +215,77 @@ pub(super) fn extract_handlers(
         let Some(name) = attribute.named_child(0).map(|node| text(node, source)) else {
             continue;
         };
-        let (is_handler, kind) = if name.len() > 2
+        let named: Vec<_> =
+            rules
+                .syntax_rules
+                .iter()
+                .filter_map(|rule| {
+                    let manifests::syntax::SyntaxOperation::NamedBinding {
+                        domain,
+                        binding:
+                            manifests::projections::NamedBindingForm::AttributeDefinition {
+                                prefix,
+                                scope,
+                            },
+                    } = &rule.operation
+                    else {
+                        return None;
+                    };
+                    name.get(..prefix.len())
+                        .filter(|value| value.eq_ignore_ascii_case(prefix))
+                        .map(|_| (rule, domain, scope, &name[prefix.len()..]))
+                })
+                .collect();
+        let (is_handler, kind, origin) = if name.len() > 2
             && (name.starts_with("on")
                 || name.starts_with("ON")
                 || name.starts_with("On")
                 || name.get(..2).is_some_and(|p| p.eq_ignore_ascii_case("on")))
         {
-            (true, "handler")
-        } else if name.starts_with('@')
-            || name.starts_with("x-on:")
-            || name.starts_with("X-ON:")
-            || (name.len() > 5 && name[..5].eq_ignore_ascii_case("x-on:"))
-        {
-            (true, "alpine_event")
-        } else if name.eq_ignore_ascii_case("x-data") {
-            let val = attribute.named_child(1).map(|v| text(v, source).trim()).unwrap_or("");
-            if val.contains('{') || val.contains("()") || val.contains("=>") || val.contains("function") {
-                (true, "alpine_data")
+            (true, "handler", None)
+        } else if let Some((kind, origin)) = rules.syntax_rules.iter().find_map(|rule| {
+            let manifests::syntax::SyntaxOperation::HtmlScriptAttributes {
+                event_prefixes,
+                object_attribute,
+                event_scope,
+                object_scope,
+            } = &rule.operation
+            else {
+                return None;
+            };
+            if event_prefixes.iter().any(|prefix| {
+                name.get(..prefix.len())
+                    .is_some_and(|value| value.eq_ignore_ascii_case(prefix))
+            }) {
+                Some(event_scope.as_str())
+            } else if name.eq_ignore_ascii_case(object_attribute) {
+                let val = attribute
+                    .named_child(1)
+                    .map(|value| text(value, source).trim())
+                    .unwrap_or("");
+                (val.contains('{')
+                    || val.contains("()")
+                    || val.contains("=>")
+                    || val.contains("function"))
+                .then_some(object_scope.as_str())
             } else {
-                (false, "")
+                None
             }
+            .map(|kind| {
+                (
+                    kind,
+                    crate::core::semantic::ExtractionRuleOrigin {
+                        pack: rule.pack.clone(),
+                        rule: rule.id.clone(),
+                    },
+                )
+            })
+        }) {
+            (true, kind, Some(origin))
+        } else if let Some((_, _, scope, _)) = named.first() {
+            (true, scope.as_str(), None)
         } else {
-            (false, "")
+            (false, "", None)
         };
         if !is_handler {
             continue;
@@ -261,6 +313,7 @@ pub(super) fn extract_handlers(
         }
         let mut position = value.start_position();
         position.column += usize::from(quoted);
+        let errors_before = facts.errors.len();
         extract_island(
             profile,
             parser,
@@ -274,7 +327,85 @@ pub(super) fn extract_handlers(
             global_scope,
             facts,
             flows.as_deref_mut(),
+            rules,
         )?;
+        let named_static = facts.errors.len() == errors_before
+            && !source[start..end].trim().is_empty()
+            && matches!(
+                TemplateMasker::mask(&source[start..end], |_| {}, None),
+                std::borrow::Cow::Borrowed(_)
+            );
+        if origin.is_some() || !named.is_empty() {
+            let owner = format!("html-js:{path}:{start}:{kind}");
+            if let Some(node) = facts.nodes.iter_mut().find(|node| node.id == owner) {
+                let enrich = |flow: &mut crate::core::semantic::ValueFlowFacts| {
+                    if let Some(origin) = &origin {
+                        flow.rule_origins.push(origin.clone());
+                    }
+                    for (rule, domain, _, key) in &named {
+                        use crate::core::semantic::{
+                            ExtractionRuleOrigin, NamedBindingFact, NamedBindingRole,
+                            NamedTargetKind, SourcePosition, StaticString, SymbolOperand,
+                        };
+                        if !named_static
+                            || key.is_empty()
+                            || key.len() > 256
+                            || !key
+                                .chars()
+                                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | ':'))
+                        {
+                            continue;
+                        }
+                        if flow.named_bindings.len() == 128 {
+                            flow.fact_limit_exceeded = true;
+                            break;
+                        }
+                        flow.named_bindings.push(NamedBindingFact {
+                            origin: ExtractionRuleOrigin {
+                                pack: rule.pack.clone(),
+                                rule: rule.id.clone(),
+                            },
+                            position: SourcePosition {
+                                line: attribute.start_position().row + 1,
+                                column: attribute.start_position().column,
+                            },
+                            domain: (*domain).clone(),
+                            key: StaticString::Literal {
+                                value: (*key).into(),
+                            },
+                            role: NamedBindingRole::Definition {
+                                target: SymbolOperand::Node { id: owner.clone() },
+                                target_kind: NamedTargetKind::ListenerScope,
+                            },
+                        });
+                    }
+                };
+                if let Some(flows) = flows.as_deref_mut() {
+                    if let Some(flow) = flows.get_mut(&owner) {
+                        enrich(flow);
+                    } else {
+                        node.details["value_flow"] = Value::Null;
+                        let mut flow = crate::core::semantic::ValueFlowFacts::default();
+                        enrich(&mut flow);
+                        flows.insert(owner.clone(), flow);
+                    }
+                } else {
+                    let mut flow = node
+                        .details
+                        .get("value_flow")
+                        .filter(|value| !value.is_null())
+                        .map(|value| {
+                            serde_json::from_value::<crate::core::semantic::ValueFlowFacts>(
+                                value.clone(),
+                            )
+                            .expect("parser-owned script flow")
+                        })
+                        .unwrap_or_default();
+                    enrich(&mut flow);
+                    node.details["value_flow"] = json!(flow);
+                }
+            }
+        }
     }
     Ok(())
 }

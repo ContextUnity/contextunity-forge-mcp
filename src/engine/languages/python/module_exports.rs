@@ -31,7 +31,8 @@ fn collect_type_checking_aliases(
     {
         let mut names = statement.walk();
         for child in statement.children_by_field_name("name", &mut names) {
-            if field(child, source, "name").unwrap_or_else(|| text(child, source)) == "TYPE_CHECKING"
+            if field(child, source, "name").unwrap_or_else(|| text(child, source))
+                == "TYPE_CHECKING"
             {
                 let alias = field(child, source, "alias").unwrap_or("TYPE_CHECKING");
                 aliases
@@ -44,9 +45,9 @@ fn collect_type_checking_aliases(
     }
 
     let rebinding = if statement.kind() == "expression_statement" {
-        statement.named_child(0).filter(|expression| {
-            matches!(expression.kind(), "assignment" | "augmented_assignment")
-        })
+        statement
+            .named_child(0)
+            .filter(|expression| matches!(expression.kind(), "assignment" | "augmented_assignment"))
     } else {
         Some(statement)
     };
@@ -78,13 +79,10 @@ pub(super) fn prepare(
     root: Syntax<'_>,
     source: &str,
     type_checking_aliases: &mut HashMap<String, Vec<(usize, bool)>>,
-    has_django_shortcuts_import: &mut bool,
 ) {
     let mut cursor = root.walk();
     for statement in root.named_children(&mut cursor) {
         collect_type_checking_aliases(statement, source, type_checking_aliases);
-        *has_django_shortcuts_import |= statement.kind() == "import_from_statement"
-            && field(statement, source, "module_name") == Some("django.shortcuts");
     }
 }
 
@@ -196,7 +194,10 @@ impl<'tree> Collector<'tree> {
                         .push(statement.start_byte());
                 }
             }
-            if matches!(statement.kind(), "import_statement" | "import_from_statement") {
+            if matches!(
+                statement.kind(),
+                "import_statement" | "import_from_statement"
+            ) {
                 let mut names = HashMap::new();
                 imports_valid &= lazy_exports::imported_binding(statement, source, &mut names);
                 for (name, target) in names {
@@ -276,29 +277,33 @@ impl<'tree> Collector<'tree> {
                 }
             })
             .collect();
-        exports.extend(local_aliases.into_iter().filter_map(|(name, target, position)| {
-            let [declared_at] = local_functions.get(&target)?.as_slice() else {
-                return None;
-            };
-            (declared_at < &position
-                && assignments.get(&name) == Some(&1)
-                && !assignments.contains_key(&target)
-                && !rebound.contains(target.as_str())
-                && !local_functions.contains_key(&name)
-                && !imports.contains_key(&name)
-                && !imports.contains_key(&target)
-                && !self.conditional_imports.contains(&name)
-                && !self.conditional_imports.contains(&target)
-                && !self.conditional_writes.contains(&name)
-                && !self.conditional_writes.contains(&target))
-                .then_some(crate::core::semantic::ExportBinding {
-                    name,
-                    local: Some(target),
-                    module: None,
-                    type_only: false,
-                    star: false,
-                })
-        }));
+        exports.extend(
+            local_aliases
+                .into_iter()
+                .filter_map(|(name, target, position)| {
+                    let [declared_at] = local_functions.get(&target)?.as_slice() else {
+                        return None;
+                    };
+                    (declared_at < &position
+                        && assignments.get(&name) == Some(&1)
+                        && !assignments.contains_key(&target)
+                        && !rebound.contains(target.as_str())
+                        && !local_functions.contains_key(&name)
+                        && !imports.contains_key(&name)
+                        && !imports.contains_key(&target)
+                        && !self.conditional_imports.contains(&name)
+                        && !self.conditional_imports.contains(&target)
+                        && !self.conditional_writes.contains(&name)
+                        && !self.conditional_writes.contains(&target))
+                    .then_some(crate::core::semantic::ExportBinding {
+                        name,
+                        local: Some(target),
+                        module: None,
+                        type_only: false,
+                        star: false,
+                    })
+                }),
+        );
         exports
     }
 

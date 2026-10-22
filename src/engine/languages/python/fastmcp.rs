@@ -20,56 +20,72 @@ pub(super) fn decorator_candidates(ctx: &SyntaxContext<'_, '_>, facts: &mut Fact
         return;
     }
     let mut candidates = Vec::new();
-    for decorator in relations::decorators(ctx.node) {
-        let Some(expression) = decorator.named_child(0) else {
+    for rule in super::render_context::syntax_rules() {
+        let super::super::manifests::syntax::SyntaxOperation::DecoratedRegistration {
+            member,
+            name_keyword,
+            ..
+        } = &rule.operation
+        else {
             continue;
         };
-        let (callee, arguments) = if expression.kind() == "call" {
-            (
-                expression.child_by_field_name("function"),
-                expression.child_by_field_name("arguments"),
-            )
-        } else {
-            (Some(expression), None)
-        };
-        let Some(callee) = callee else {
-            continue;
-        };
-        let Some(receiver) = text(callee, ctx.source).strip_suffix(".tool") else {
-            continue;
-        };
-        if receiver.is_empty()
-            || !receiver
-                .chars()
-                .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
-        {
-            continue;
-        }
-        let mut name = None;
-        let mut name_status = "default";
-        if let Some(arguments) = arguments {
-            let mut cursor = arguments.walk();
-            for argument in arguments.named_children(&mut cursor) {
-                if argument.kind() == "keyword_argument" {
-                    if argument
-                        .child_by_field_name("name")
-                        .is_some_and(|node| text(node, ctx.source) == "name")
-                    {
-                        name = argument
-                            .child_by_field_name("value")
-                            .and_then(|node| literal_name(node, ctx.source));
-                        name_status = if name.is_some() {
-                            "explicit"
-                        } else {
-                            "dynamic"
-                        };
+        for decorator in relations::decorators(ctx.node) {
+            let Some(expression) = decorator.named_child(0) else {
+                continue;
+            };
+            let (callee, arguments) = if expression.kind() == "call" {
+                (
+                    expression.child_by_field_name("function"),
+                    expression.child_by_field_name("arguments"),
+                )
+            } else {
+                (Some(expression), None)
+            };
+            let Some(callee) = callee else {
+                continue;
+            };
+            let Some(receiver) = text(callee, ctx.source).strip_suffix(&format!(".{member}"))
+            else {
+                continue;
+            };
+            if receiver.is_empty()
+                || !receiver
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+            {
+                continue;
+            }
+            if !super::lexical_binding_owner(decorator, ctx.source, receiver)
+                .is_some_and(|owner| owner.kind() == "module")
+            {
+                continue;
+            }
+            let mut name = None;
+            let mut name_status = "default";
+            if let Some(arguments) = arguments {
+                let mut cursor = arguments.walk();
+                for argument in arguments.named_children(&mut cursor) {
+                    if argument.kind() == "keyword_argument" {
+                        if argument
+                            .child_by_field_name("name")
+                            .is_some_and(|node| text(node, ctx.source) == name_keyword)
+                        {
+                            name = argument
+                                .child_by_field_name("value")
+                                .and_then(|node| literal_name(node, ctx.source));
+                            name_status = if name.is_some() {
+                                "explicit"
+                            } else {
+                                "dynamic"
+                            };
+                        }
+                    } else {
+                        name_status = "dynamic";
                     }
-                } else {
-                    name_status = "dynamic";
                 }
             }
+            candidates.push(json!({"pack":rule.pack,"rule":rule.id,"receiver":receiver,"line":decorator.start_position().row + ctx.offset + 1,"name":name,"name_status":name_status}));
         }
-        candidates.push(json!({"receiver":receiver,"line":decorator.start_position().row + ctx.offset + 1,"name":name,"name_status":name_status}));
     }
     if !candidates.is_empty() {
         if let Some(function) = facts.nodes.iter_mut().find(|node| node.id == ctx.owner) {
@@ -110,27 +126,6 @@ pub(super) fn module_assignment(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) 
         .find(|node| node.kind == "module")
         .map(|m| m.id.clone())
         .unwrap_or_else(|| ctx.owner.to_owned());
-    let tracked = facts
-        .nodes
-        .iter()
-        .find(|node| node.id == module_id)
-        .and_then(|module| module.details["assignment_events"].as_array())
-        .is_some_and(|events| events.iter().any(|event| event["name"] == name));
-    let imported = facts.references.iter().any(|reference| {
-        reference.kind == "imports"
-            && reference.source == module_id
-            && (reference.alias.as_deref() == callee || reference.alias.as_deref() == Some(name))
-            && matches!(
-                reference.module.as_deref(),
-                Some("fastmcp" | "mcp.server.fastmcp")
-            )
-    });
-    if !tracked
-        && !imported
-        && !callee.is_some_and(|callee| callee == "FastMCP" || callee.ends_with(".FastMCP"))
-    {
-        return;
-    }
     if let Some(module) = facts.nodes.iter_mut().find(|node| node.id == module_id) {
         let events = module.details["assignment_events"].as_array_mut();
         if let Some(events) = events {
@@ -147,8 +142,10 @@ fn imported_constructor(
     module_id: &str,
     callee: &str,
     assignment_line: usize,
+    modules: &[String],
+    constructor: &str,
 ) -> bool {
-    let (alias, direct) = if let Some(alias) = callee.strip_suffix(".FastMCP") {
+    let (alias, direct) = if let Some(alias) = callee.strip_suffix(&format!(".{constructor}")) {
         (alias, false)
     } else if callee
         .chars()
@@ -164,13 +161,14 @@ fn imported_constructor(
             && reference.alias.as_deref() == Some(alias)
             && reference.line < assignment_line
             && if direct {
-                reference.expression == "FastMCP"
-                    && matches!(
-                        reference.module.as_deref(),
-                        Some("fastmcp" | "mcp.server.fastmcp")
-                    )
+                reference.expression == constructor
+                    && reference
+                        .module
+                        .as_ref()
+                        .is_some_and(|module| modules.contains(module))
             } else {
-                reference.expression == "fastmcp" && reference.module.as_deref() == Some("fastmcp")
+                modules.contains(&reference.expression)
+                    && reference.module.as_deref() == Some(reference.expression.as_str())
             }
     });
     let Some(import) = imports.next() else {
@@ -194,7 +192,14 @@ fn imported_constructor(
         })
 }
 
-fn confirmed_instance(facts: &Facts, module: &Node, receiver: &str, decorator_line: usize) -> bool {
+fn confirmed_instance(
+    facts: &Facts,
+    module: &Node,
+    receiver: &str,
+    decorator_line: usize,
+    modules: &[String],
+    constructor: &str,
+) -> bool {
     let Some(events) = module.details["assignment_events"].as_array() else {
         return false;
     };
@@ -216,7 +221,14 @@ fn confirmed_instance(facts: &Facts, module: &Node, receiver: &str, decorator_li
     let (Some(callee), Some(line)) = (latest["callee"].as_str(), latest["line"].as_u64()) else {
         return false;
     };
-    imported_constructor(facts, &module.id, callee, line as usize)
+    imported_constructor(
+        facts,
+        &module.id,
+        callee,
+        line as usize,
+        modules,
+        constructor,
+    )
 }
 
 pub(super) fn registrations(facts: &mut Facts) {
@@ -249,13 +261,29 @@ pub(super) fn registrations(facts: &mut Facts) {
             continue;
         };
         for candidate in candidates {
+            let rules = super::render_context::syntax_rules();
+            let Some(rule) = rules.iter().find(|rule| {
+                candidate["pack"].as_str() == Some(rule.pack.as_str())
+                    && candidate["rule"].as_str() == Some(rule.id.as_str())
+            }) else {
+                continue;
+            };
+            let super::super::manifests::syntax::SyntaxOperation::DecoratedRegistration {
+                modules,
+                constructor,
+                provider,
+                ..
+            } = &rule.operation
+            else {
+                continue;
+            };
             let (Some(receiver), Some(line)) =
                 (candidate["receiver"].as_str(), candidate["line"].as_u64())
             else {
                 continue;
             };
             let line = line as usize;
-            if !confirmed_instance(facts, &module, receiver, line) {
+            if !confirmed_instance(facts, &module, receiver, line, modules, constructor) {
                 continue;
             }
             let name_status = candidate["name_status"].as_str().unwrap_or("dynamic");
@@ -274,7 +302,7 @@ pub(super) fn registrations(facts: &mut Facts) {
                 id: id.clone(), kind: "tool_registration".into(), name: name.clone(),
                 qualname: format!("{}.tool.{name}", module.qualname), path: function.path.clone(),
                 line, end_line: line, is_test: function.is_test, language: "python".into(), generated: false,
-                details: json!({"framework":"FastMCP","receiver":receiver,"advertised_name":advertised_name,"name_status":name_status,"handler":function.id}),
+                details: json!({"framework":provider,"pack":rule.pack,"rule":rule.id,"receiver":receiver,"advertised_name":advertised_name,"name_status":name_status,"handler":function.id,"value_flow":crate::core::semantic::ValueFlowFacts { rule_origins: vec![crate::core::semantic::ExtractionRuleOrigin { pack: rule.pack.clone(), rule: rule.id.clone() }], ..Default::default() }}),
             });
             facts.edges.push(Edge {
                 src: module.id.clone(),
@@ -282,7 +310,7 @@ pub(super) fn registrations(facts: &mut Facts) {
                 kind: "contains".into(),
                 path: function.path.clone(),
                 line,
-                evidence: "FastMCP tool decorator".into(),
+                evidence: "configured registration decorator".into(),
                 confidence: "exact".into(),
             });
             facts.edges.push(Edge {

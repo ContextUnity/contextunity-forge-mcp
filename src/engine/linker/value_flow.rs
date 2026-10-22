@@ -12,6 +12,17 @@ type NamedNodes<'a> = HashMap<(&'a str, &'a str), Vec<&'a Node>>;
 type CollectionElements<'a> =
     HashMap<&'a str, HashMap<String, Vec<(SourcePosition, TypeTarget<'a>)>>>;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+/// Prepared, scoped authority for a finite external call result.
+pub struct ConfiguredCallResult {
+    /// Persisted configuration and rule provenance.
+    pub evidence: String,
+    /// Exact configured callee.
+    pub callee: String,
+    /// Finite callable members.
+    pub members: Vec<String>,
+}
+
 pub(crate) const MAX_CANDIDATE_BRANCH_JOINS: usize = 8;
 
 fn normalize_dotted_expression(expression: &str) -> Cow<'_, str> {
@@ -72,6 +83,19 @@ pub enum TypeTarget<'a> {
     Builtin(String),
     /// Represents the object case.
     Object(Arc<HashMap<String, &'a Node>>),
+    /// A finite external result object, never a local declaration.
+    ResultObject(Arc<ConfiguredCallResult>),
+    /// A callable projected from a configured result, retaining its establishment.
+    ExternalCallable {
+        /// Immutable configuration authority.
+        result: Arc<ConfiguredCallResult>,
+        /// Lexical scope where the projection was established.
+        owner: String,
+        /// Completed lexical establishment position.
+        position: SourcePosition,
+        /// Exact public member.
+        member: String,
+    },
     /// Finite local alternatives from a complete or partially unknown branch join.
     Candidates {
         /// Stable, declaration-identity-deduplicated local type declarations.
@@ -112,6 +136,19 @@ pub enum Symbol<'a> {
 
 /// Defines semantic resolver behavior.
 pub trait SemanticResolver<'a> {
+    /// Resolves a configured callable result through its canonical binding provider.
+    fn resolve_factory_result(
+        &self,
+        _scope: &'a Node,
+        _callee: &str,
+        _at: SourcePosition,
+    ) -> Option<TypeTarget<'a>> {
+        None
+    }
+    /// Resolves a bounded property projection from effective receiver data or platform semantics.
+    fn property_type(&self, _scope: &'a Node, receiver: &str, member: &str) -> Option<String> {
+        super::typed_dom_property(receiver, member).map(str::to_owned)
+    }
     /// Performs value flow.
     fn value_flow(&self, _node: &'a Node) -> Option<&'a ValueFlowFacts> {
         None
@@ -1349,6 +1386,28 @@ impl<'a> ValueFlowIndex<'a> {
         }
     }
 
+    /// Reads only an already reduced, lexically established external callable.
+    pub fn configured_callable(
+        &self,
+        owner: &'a Node,
+        expression: &str,
+        at: SourcePosition,
+    ) -> Option<String> {
+        let TypeTarget::ExternalCallable {
+            result,
+            owner: established,
+            position,
+            member,
+        } = self.lookup(owner, expression, at)?
+        else {
+            return None;
+        };
+        Some(format!(
+            "{}; callable:{}; binding:{}:{}:{}",
+            result.evidence, member, established, position.line, position.column
+        ))
+    }
+
     /// Resolves value.
     pub fn resolve_value(
         &self,
@@ -1662,6 +1721,9 @@ impl<'a> ValueFlowIndex<'a> {
                 }
             }
             ValueExpr::Call { callee } => {
+                if let Some(target) = resolver.resolve_factory_result(owner, callee, at) {
+                    return target;
+                }
                 if owner.language == "python" {
                     let constructor =
                         resolver.resolve_symbol(owner, callee, at, SymbolRole::Constructor);
@@ -1750,8 +1812,8 @@ impl<'a> ValueFlowIndex<'a> {
                 }
                 if let TypeTarget::Builtin(name) = &receiver_type {
                     if matches!(owner.language.as_str(), "javascript" | "typescript") {
-                        if let Some(prop_type) = super::typed_dom_property(name, member) {
-                            return TypeTarget::Builtin(prop_type.to_owned());
+                        if let Some(prop_type) = resolver.property_type(owner, name, member) {
+                            return TypeTarget::Builtin(prop_type);
                         }
                     }
                 }
@@ -1787,6 +1849,16 @@ impl<'a> ValueFlowIndex<'a> {
                 }
                 let source = self.evaluate_tracked(owner, value, at, resolver, definitions, trace);
                 match source {
+                    TypeTarget::ResultObject(result)
+                        if result.members.iter().any(|name| name == member) =>
+                    {
+                        TypeTarget::ExternalCallable {
+                            result,
+                            owner: owner.id.clone(),
+                            position: at,
+                            member: member.clone(),
+                        }
+                    }
                     TypeTarget::Object(ref members) => {
                         members.get(member).map_or(TypeTarget::Unknown, |node| {
                             if matches!(node.kind.as_str(), "function" | "method") {
@@ -1981,9 +2053,6 @@ impl<'a> ValueFlowIndex<'a> {
                 return self.evaluate_js_call(owner, base, at, resolver, trace);
             }
         }
-        if callee == "defineProps" && owner.language == "vue" && owner.kind == "module" {
-            return Some(TypeTarget::Local(owner));
-        }
         if let Some(target) = resolver.resolve_external_factory(owner, callee, at) {
             return Some(target);
         }
@@ -2002,10 +2071,9 @@ impl<'a> ValueFlowIndex<'a> {
                             Some(TypeTarget::Local(class)) => {
                                 self.field_type_tracked(class, field, trace).cloned()
                             }
-                            Some(TypeTarget::Builtin(name)) => {
-                                super::typed_dom_property(name, field)
-                                    .map(|n| TypeTarget::Builtin(n.to_owned()))
-                            }
+                            Some(TypeTarget::Builtin(name)) => resolver
+                                .property_type(owner, name, field)
+                                .map(TypeTarget::Builtin),
                             _ => None,
                         };
                         target = next;
@@ -2399,6 +2467,13 @@ fn field_owner<'a>(
 }
 
 fn merge<'a>(left: &TypeTarget<'a>, right: &TypeTarget<'a>) -> TypeTarget<'a> {
+    if matches!(
+        left,
+        TypeTarget::ResultObject(_) | TypeTarget::ExternalCallable { .. }
+    ) && same_target(left, right)
+    {
+        return left.clone();
+    }
     match (left, right) {
         (TypeTarget::Local(a), TypeTarget::Local(b)) if a.id == b.id => left.clone(),
         (TypeTarget::Callable(a), TypeTarget::Callable(b)) if a.id == b.id => left.clone(),
@@ -2455,6 +2530,21 @@ fn same_fields(
 
 fn same_target(left: &TypeTarget<'_>, right: &TypeTarget<'_>) -> bool {
     match (left, right) {
+        (TypeTarget::ResultObject(a), TypeTarget::ResultObject(b)) => a == b,
+        (
+            TypeTarget::ExternalCallable {
+                result: a,
+                owner: ao,
+                position: ap,
+                member: am,
+            },
+            TypeTarget::ExternalCallable {
+                result: b,
+                owner: bo,
+                position: bp,
+                member: bm,
+            },
+        ) => a == b && ao == bo && ap == bp && am == bm,
         (TypeTarget::Local(a), TypeTarget::Local(b))
         | (TypeTarget::Callable(a), TypeTarget::Callable(b)) => a.id == b.id,
         (
@@ -2618,9 +2708,11 @@ fn valid_value(expr: &ValueExpr, limits: SemanticLimits, depth: usize) -> bool {
         } => text(member) && valid_value(inner, limits, depth + 1),
         ValueExpr::Object { members, .. } => {
             members.len() <= limits.facts_per_scope
-                && members
-                    .iter()
-                    .all(|member| text(&member.name) && member.position.line > 0)
+                && members.iter().all(|member| {
+                    text(&member.name)
+                        && text(member.declaration_name())
+                        && member.position.line > 0
+                })
         }
     }
 }
@@ -2887,6 +2979,8 @@ mod tests {
         let by_module = HashMap::new();
         let exports = HashMap::new();
         let imports = HashMap::new();
+        #[cfg(feature = "lang-rust")]
+        let rust_forwarding = crate::engine::languages::rust::linker::RustForwarding::default();
         let dependencies =
             crate::engine::languages::dependency_registry::DependencyRegistry::default();
         let resolver = super::super::semantic_context::Context::build(
@@ -2896,8 +2990,11 @@ mod tests {
             &by_qual,
             &exports,
             &imports,
+            #[cfg(feature = "lang-rust")]
+            &rust_forwarding,
             &dependencies,
-        );
+        )
+        .with_flows(None, &all, &dependencies);
         let index = ValueFlowIndex::build(&all, &resolver);
         let at = SourcePosition { line: 5, column: 0 };
         let payload_declaration = resolve_type(

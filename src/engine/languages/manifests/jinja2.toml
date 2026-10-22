@@ -52,3 +52,14 @@ filters = [
   "template.filter.sum",
 ]
 routes = []
+
+[[syntax_rules]]
+id = "template-loader"
+language = "python"
+operation = { kind = "template_loader", package = "jinja2", module = "jinja2", environment = "Environment", loader = "FileSystemLoader", loader_keyword = "loader" }
+
+[[syntax_rules]]
+id = "template-symbols"
+display = { builtin = "builtin:jinja_template" }
+language = "html"
+operation = { kind = "template_symbols", package = "jinja2", requires_loader = true }

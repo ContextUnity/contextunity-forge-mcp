@@ -723,7 +723,6 @@ pub(crate) struct Collector<'a, 'tree> {
     return_prefix_valid: bool,
     aliases: Option<AliasWrites>,
     source: &'a str,
-    has_django_shortcuts_import: bool,
     class_scope: bool,
     local_scope: bool,
     receiver: Option<&'a str>,
@@ -984,11 +983,7 @@ impl<'a, 'tree> Collector<'a, 'tree> {
         if collect_facts {
             match node.kind() {
                 "call" => {
-                    if let Some(context) = super::render_context::extract(
-                        node,
-                        self.source,
-                        self.has_django_shortcuts_import,
-                    ) {
+                    if let Some(context) = super::render_context::extract(node, self.source) {
                         self.facts.template_contexts.push(context);
                     }
                 }
@@ -1175,7 +1170,6 @@ impl<'a, 'tree> Collector<'a, 'tree> {
     fn empty(
         node: Node<'tree>,
         source: &'a str,
-        has_django_shortcuts_import: bool,
         collect_aliases: bool,
         facts: ValueFlowFacts,
     ) -> Self {
@@ -1190,7 +1184,6 @@ impl<'a, 'tree> Collector<'a, 'tree> {
             return_prefix_valid: true,
             aliases: collect_aliases.then(AliasWrites::new),
             source,
-            has_django_shortcuts_import,
             class_scope: false,
             local_scope: false,
             receiver: None,
@@ -1202,12 +1195,7 @@ impl<'a, 'tree> Collector<'a, 'tree> {
             facts,
         }
     }
-    pub(crate) fn new(
-        node: Node<'tree>,
-        source: &'a str,
-        has_django_shortcuts_import: bool,
-        collect_aliases: bool,
-    ) -> Self {
+    pub(crate) fn new(node: Node<'tree>, source: &'a str, collect_aliases: bool) -> Self {
         if super::type_alias(node, source) {
             let right = node.child_by_field_name("right").or_else(|| {
                 (node.kind() == "type_alias_statement")
@@ -1235,7 +1223,6 @@ impl<'a, 'tree> Collector<'a, 'tree> {
             return Self::empty(
                 node,
                 source,
-                has_django_shortcuts_import,
                 collect_aliases,
                 ValueFlowFacts {
                     alias_type: Some(alias_type),
@@ -1247,13 +1234,7 @@ impl<'a, 'tree> Collector<'a, 'tree> {
             node.kind(),
             "module" | "class_definition" | "function_definition"
         ) {
-            return Self::empty(
-                node,
-                source,
-                has_django_shortcuts_import,
-                collect_aliases,
-                ValueFlowFacts::default(),
-            );
+            return Self::empty(node, source, collect_aliases, ValueFlowFacts::default());
         }
         let callable = node.kind() == "function_definition";
         let body = if node.kind() == "module" {
@@ -1297,7 +1278,6 @@ impl<'a, 'tree> Collector<'a, 'tree> {
             return_prefix_valid: true,
             aliases: collect_aliases.then(AliasWrites::new),
             source,
-            has_django_shortcuts_import,
             class_scope: node.kind() == "class_definition",
             local_scope: callable,
             receiver,
@@ -1455,12 +1435,8 @@ impl<'a, 'tree> Collector<'a, 'tree> {
     }
 }
 
-pub(super) fn extract(
-    node: Node<'_>,
-    source: &str,
-    has_django_shortcuts_import: bool,
-) -> ValueFlowFacts {
-    let mut collector = Collector::new(node, source, has_django_shortcuts_import, false);
+pub(super) fn extract(node: Node<'_>, source: &str) -> ValueFlowFacts {
+    let mut collector = Collector::new(node, source, false);
     crate::engine::ast::visitor::walk(node, &mut |node, entering| {
         if entering {
             collector.enter(node);
@@ -1479,9 +1455,11 @@ mod tests {
     fn test_persistence_type_only_imports() {
         let source = "from typing import TYPE_CHECKING\n\nclass PersistenceMixin:\n    if TYPE_CHECKING:\n        from contextunity.router.service.payloads import GraphEntry\n";
         let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&tree_sitter_python::language()).unwrap();
+        parser
+            .set_language(&tree_sitter_python::language())
+            .unwrap();
         let tree = parser.parse(source, None).unwrap();
-        let facts = extract(tree.root_node(), source, false);
+        let facts = extract(tree.root_node(), source);
         assert_eq!(facts.type_only_imports.len(), 1);
         assert_eq!(facts.type_only_imports[0].alias, "GraphEntry");
         let ast_facts = crate::engine::ast::extract("persistence.py", "python", source).unwrap();
@@ -1494,4 +1472,3 @@ mod tests {
         assert_eq!(type_only[0]["alias"], "GraphEntry");
     }
 }
-

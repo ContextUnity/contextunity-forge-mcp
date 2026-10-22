@@ -1,7 +1,7 @@
 use crate::engine::languages::toml_manifest::{toml_string, visit_toml_pairs};
 use tree_sitter::Node;
 
-fn package(requirement: &str) -> Option<String> {
+pub(crate) fn package(requirement: &str) -> Option<String> {
     let requirement = requirement.trim();
     let requirement = if requirement.starts_with("-e ") || requirement.starts_with("--editable ") {
         requirement.split("#egg=").nth(1)?

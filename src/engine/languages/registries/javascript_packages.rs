@@ -1,14 +1,12 @@
 use super::super::workspace_path;
 use super::{javascript_namespace, joined_scope, match_mapping, ImportPath};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 #[derive(Default)]
 pub(crate) struct JavascriptPackageRegistry {
     packages: HashMap<String, HashMap<String, Vec<JavascriptPackage>>>,
     workspaces: HashMap<String, Vec<String>>,
     pnpm_workspaces: HashMap<String, Vec<String>>,
-    package_scopes: HashSet<String>,
-    nuxt_package_scopes: HashSet<String>,
 }
 
 struct JavascriptPackage {
@@ -18,20 +16,9 @@ struct JavascriptPackage {
 
 impl JavascriptPackageRegistry {
     pub(crate) fn record_manifest(&mut self, scope: &str, content: &str) {
-        self.package_scopes.insert(scope.to_owned());
         let Ok(manifest) = serde_json::from_str::<serde_json::Value>(content) else {
             return;
         };
-        if ["dependencies", "devDependencies"]
-            .into_iter()
-            .any(|section| {
-                manifest
-                    .get(section)
-                    .is_some_and(|value| value.get("nuxt").is_some())
-            })
-        {
-            self.nuxt_package_scopes.insert(scope.to_owned());
-        }
         let workspaces = manifest.get("workspaces").and_then(|value| {
             value
                 .as_array()
@@ -74,20 +61,6 @@ impl JavascriptPackageRegistry {
     pub(crate) fn apply_pnpm_workspaces(&mut self) {
         self.workspaces
             .extend(std::mem::take(&mut self.pnpm_workspaces));
-    }
-
-    pub(crate) fn nuxt_package_scope_for_path(&self, path: &str) -> Option<&str> {
-        let workspace = workspace_path(path).0;
-        let mut directory = path.rsplit_once('/').map_or("", |(directory, _)| directory);
-        loop {
-            if let Some(scope) = self.package_scopes.get(directory) {
-                return self.nuxt_package_scopes.get(scope).map(String::as_str);
-            }
-            if directory.is_empty() || (!workspace.is_empty() && directory == workspace) {
-                return None;
-            }
-            directory = directory.rsplit_once('/').map_or("", |(parent, _)| parent);
-        }
     }
 
     pub(crate) fn normalize_import(&self, owner: &str, module: &str) -> Option<ImportPath> {

@@ -1,0 +1,40 @@
+receivers = []
+builtins = ["template.tag.block", "template.tag.include", "template.tag.extends", "template.tag.if", "template.tag.elif", "template.tag.else", "template.tag.endif", "template.tag.for", "template.tag.endfor", "template.tag.with", "template.tag.endwith", "template.tag.endblock"]
+filters = ["template.filter.default", "template.filter.length", "template.filter.safe", "template.filter.urlencode"]
+routes = []
+
+[[syntax_rules]]
+id = "template-dialect"
+language = "html"
+operation = { kind = "template_dialect", dialect = { directory = "templates", assignment = "set", function = "macro", import = "import", from = "from", alias = "as", load = "load", include = "include", extends = "extends", scope_open = ["for", "if", "with", "block", "macro", "call", "filter", "autoescape", "trans", "raw"], scope_close = ["endfor", "endif", "endwith", "endblock", "endmacro", "endcall", "endfilter", "endautoescape", "endtrans", "endraw", "endset"] } }
+
+[[syntax_rules]]
+id = "template-symbols"
+display = { builtin = "builtin:shared_template" }
+language = "html"
+operation = { kind = "template_symbols", requires_loader = false }
+
+[[syntax_rules]]
+id = "http-client-python"
+language = "python"
+operation = { kind = "http_client_call", callee = "fetch", receivers = ["axios", "http", "client", "$", "jQuery", "requests"], methods = { get = "GET", post = "POST", put = "PUT", patch = "PATCH", delete = "DELETE", head = "HEAD", options = "OPTIONS", ajax = "ANY" }, default_method = "GET", url_key = "url", method_key = "method", relative_prefixes = ["/", "^", "api/"] }
+
+[[syntax_rules]]
+id = "http-client-javascript"
+language = "javascript"
+operation = { kind = "http_client_call", callee = "fetch", receivers = ["axios", "http", "client", "$", "jQuery", "requests"], methods = { get = "GET", post = "POST", put = "PUT", patch = "PATCH", delete = "DELETE", head = "HEAD", options = "OPTIONS", ajax = "ANY" }, default_method = "GET", url_key = "url", method_key = "method", relative_prefixes = ["/", "^", "api/"] }
+
+[[syntax_rules]]
+id = "route-object-javascript"
+language = "javascript"
+operation = { kind = "route_object", collection = "routes", path_key = "path", handler_key = "component", method = "ANY" }
+
+[[syntax_rules]]
+id = "http-client-typescript"
+language = "typescript"
+operation = { kind = "http_client_call", callee = "fetch", receivers = ["axios", "http", "client", "$", "jQuery", "requests"], methods = { get = "GET", post = "POST", put = "PUT", patch = "PATCH", delete = "DELETE", head = "HEAD", options = "OPTIONS", ajax = "ANY" }, default_method = "GET", url_key = "url", method_key = "method", relative_prefixes = ["/", "^", "api/"] }
+
+[[syntax_rules]]
+id = "route-object-typescript"
+language = "typescript"
+operation = { kind = "route_object", collection = "routes", path_key = "path", handler_key = "component", method = "ANY" }

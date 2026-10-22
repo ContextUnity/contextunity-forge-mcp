@@ -209,9 +209,17 @@ pub(crate) fn extract_typed_with_registry(
             profile.finish(&mut typed.facts);
         }
         #[cfg(feature = "lang-html")]
-        "html" => languages::html::extract_typed(path, source, &module, &mut typed)?,
+        "html" => languages::html::extract_typed_with_context(
+            path,
+            source,
+            &module,
+            &mut typed,
+            &language_context,
+        )?,
         #[cfg(feature = "lang-vue")]
-        "vue" => languages::vue::extract_typed(path, source, &module, &mut typed)?,
+        "vue" => {
+            languages::vue::extract_typed(path, source, &module, &mut typed, &language_context)?
+        }
         _ => {
             profile.extract_file(path, source, &module, &mut typed.facts)?;
             profile.finish(&mut typed.facts);
@@ -221,6 +229,13 @@ pub(crate) fn extract_typed_with_registry(
         }
     }
     languages::semantic::file_providers(&mut typed.facts, &language_context);
+    // Hydrate parser-produced projections for generated non-body declarations once.
+    // Body scopes already own native FlowStore entries and have null projections.
+    for node in &mut typed.facts.nodes {
+        if typed.flows.state(node).is_none() {
+            typed.flows.ingest(node);
+        }
+    }
     Ok(typed)
 }
 
@@ -270,32 +285,6 @@ pub(crate) fn parse_island(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn extract_tree_with_flows(
-    profile: &dyn LanguageProfile,
-    root: Syntax<'_>,
-    path: &str,
-    source: &str,
-    module: &str,
-    owner: &str,
-    facts: &mut Facts,
-    flows: Option<&mut FlowStore>,
-) -> ScopeBindings {
-    let registry = languages::dependency_registry::DependencyRegistry::bundled_framework_rules();
-    let language_context = registry.language_context_for_path(path);
-    extract_tree_with_language_context(
-        profile,
-        root,
-        path,
-        source,
-        module,
-        owner,
-        facts,
-        flows,
-        &language_context,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn extract_tree_with_language_context(
     profile: &dyn LanguageProfile,
     root: Syntax<'_>,
@@ -309,7 +298,7 @@ pub(crate) fn extract_tree_with_language_context(
 ) -> ScopeBindings {
     let rule_ir = language_context.bind_rule_ir(&root.language());
     let route_context = if profile.route_extraction_enabled() {
-        routes::RouteContext::build(root, source)
+        routes::RouteContext::build(root, source, language_context)
     } else {
         routes::RouteContext::default()
     };
@@ -320,7 +309,7 @@ pub(crate) fn extract_tree_with_language_context(
         language_context,
         rule_ir,
         route_context,
-        file: profile.prepare(root, source),
+        file: profile.prepare_with_context(root, source, language_context),
         module,
         offset: 0,
         symbols: HashMap::new(),

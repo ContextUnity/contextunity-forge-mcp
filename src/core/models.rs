@@ -209,6 +209,32 @@ pub struct Edge {
 #[serde(tag = "kind", rename_all = "snake_case")]
 /// Syntax evidence that helps resolve a reference or its receiver.
 pub enum ReceiverHint {
+    /// A typed component field admitted by a source-proven macro rule.
+    ConfiguredTypedMember {
+        /// Actual effective operation identity.
+        origin: crate::core::semantic::ExtractionRuleOrigin,
+        /// Exact indexed field identity.
+        field_id: String,
+    },
+    /// A callable result admitted by an existing component macro role.
+    ConfiguredMacroCallable {
+        /// Actual effective operation identity.
+        origin: crate::core::semantic::ExtractionRuleOrigin,
+        /// Lexical producer whose shadowing invalidates this evidence.
+        producer: String,
+    },
+    /// A reference whose interpretation was admitted by a finite extraction rule.
+    ConfiguredReference {
+        /// Actual effective pack and operation identity.
+        origin: crate::core::semantic::ExtractionRuleOrigin,
+    },
+    /// A named route key admitted by an effective extraction rule.
+    NamedRoute {
+        /// Authoritative originating manifest and rule.
+        origin: crate::core::semantic::ExtractionRuleOrigin,
+        /// Literal route key, independent of display expression spelling.
+        key: String,
+    },
     /// Member access on a string literal receiver.
     StringLiteral {
         /// Accessed member name.
@@ -244,7 +270,7 @@ pub enum ReceiverHint {
     },
     /// Call through a proven same-file `defineEmits` setup binding.
     VueSetupMacroCallable,
-    /// Call through a proven same-file runtime composable setup binding (e.g. useI18n).
+    /// Legacy runtime-callable hint; current runtime admission requires an effective rule.
     VueSetupRuntimeCallable,
     /// TypeScript import binding available only in a type position.
     TypeOnlyImport,

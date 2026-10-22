@@ -1,0 +1,9 @@
+receivers = []
+builtins = []
+filters = []
+routes = []
+
+[[syntax_rules]]
+id = "event-receiver"
+language = "typescript"
+operation = { kind = "receiver_type", receiver = { name = "H3Event", members = ["headers", "context", "node"], properties = { headers = "Headers" }, callback_callees = ["defineEventHandler"], generic = false } }

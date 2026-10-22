@@ -47,6 +47,9 @@ The codebase operates on a 5-layer hierarchy:
 ## 2. Balanced Modularity and Code Deduplication
 
 > [!IMPORTANT]
+> Invariant: Language extractors implement grammar and lexical facts. Framework semantics are validated manifest data consumed by finite typed operations; do not hardcode framework identities, API names, keyword conventions, or directory policy in extractors, validators, caches, or linkers. Follow the [framework boundary](../docs/architecture/modularity.md#framework-data-boundary).
+
+> [!IMPORTANT]
 > Invariant: Modules are split strictly along mixed architectural responsibilities (e.g. process execution vs lifecycle state, cgroup parsing vs directory walking, contract parsing vs Git handoff), never by arbitrary line-count thresholds. Do not enforce line limits on multi-pass pipeline functions that form a single cohesive algorithm.
 
 > [!IMPORTANT]

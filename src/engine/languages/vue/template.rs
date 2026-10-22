@@ -4,7 +4,7 @@
 //! Source offsets are retained rather than recovering identifiers from tokens.
 
 use super::*;
-use crate::core::models::{Diagnostic, Edge, is_test};
+use crate::core::models::{is_test, Diagnostic, Edge};
 use crate::core::semantic::{BindingFact, SourcePosition, TypeExpr, ValueExpr, ValueFlowFacts};
 use crate::engine::languages::template::TemplateMasker;
 
@@ -16,13 +16,15 @@ struct Document<'a> {
     scopes: std::collections::HashMap<String, String>,
     scope_bindings: std::collections::HashMap<String, (String, Vec<String>)>,
     components: std::collections::HashMap<String, String>,
+    component_origins:
+        std::collections::HashMap<String, crate::core::semantic::ExtractionRuleOrigin>,
     typed_iterables: &'a BTreeMap<String, TypeExpr>,
     flows: Option<&'a mut crate::core::typed_facts::FlowStore>,
 }
 
 pub(super) struct TemplateBindings<'a> {
     pub setup_positions: &'a [(Position, Position)],
-    pub registered_components: &'a BTreeMap<String, String>,
+    pub registered_components: &'a BTreeMap<String, setup_facts::RegisteredComponent>,
     pub typed_iterables: &'a BTreeMap<String, TypeExpr>,
 }
 
@@ -71,9 +73,14 @@ pub(super) fn extract(
         components.insert(alias.to_owned(), alias.to_owned());
         components.insert(kebab_case(alias), alias.to_owned());
     }
-    for (name, alias) in setup.registered_components {
+    let mut component_origins = std::collections::HashMap::new();
+    for (name, component) in setup.registered_components {
+        let alias = &component.alias;
+        let origin = &component.origin;
         components.insert(name.clone(), alias.clone());
         components.insert(kebab_case(name), alias.clone());
+        component_origins.insert(name.clone(), origin.clone());
+        component_origins.insert(kebab_case(name), origin.clone());
     }
     let mut document = Document {
         path,
@@ -90,6 +97,7 @@ pub(super) fn extract(
         scopes: std::collections::HashMap::from([(owner.clone(), module.to_owned())]),
         scope_bindings: std::collections::HashMap::new(),
         components,
+        component_origins,
         typed_iterables: setup.typed_iterables,
         flows,
     };
@@ -404,7 +412,13 @@ fn visit_element(
                 alias: None,
                 module: None,
                 dynamic: false,
-                receiver_hint: (!imported_or_registered).then_some(ReceiverHint::VueComponentTag),
+                receiver_hint: document
+                    .component_origins
+                    .get(tag)
+                    .map(|origin| ReceiverHint::ConfiguredReference {
+                        origin: origin.clone(),
+                    })
+                    .or_else(|| (!imported_or_registered).then_some(ReceiverHint::VueComponentTag)),
             });
         }
     }

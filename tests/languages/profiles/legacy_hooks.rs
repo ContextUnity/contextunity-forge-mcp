@@ -41,6 +41,7 @@ impl DefaultHooks {
             receiver_name: Some("receiver_name".into()),
             receiver_type: Some("ReceiverType".into()),
             receiver: Some("receiver".into()),
+            object_ownership: None,
             decorators: vec!["decorate".into()],
             bases: Some("Base".into()),
             is_method: Some(true),

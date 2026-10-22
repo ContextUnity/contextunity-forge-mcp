@@ -178,6 +178,8 @@ impl ImportPath {
 #[derive(Default)]
 /// Per-file extraction state shared by hooks of one language profile.
 pub struct FileContext {
+    /// Effective validated extraction context for this file.
+    pub rules: Arc<LanguageContext>,
     /// Bindings prepared for this exact syntax root; consumed by the shared visitor.
     pub root_bindings: Option<(usize, ast::ScopeBindings)>,
     /// Export bindings discovered during extraction.
@@ -213,8 +215,6 @@ pub struct FileContext {
     pub rebound_function_parameters: Arc<HashMap<usize, HashSet<String>>>,
     /// Module-level `TYPE_CHECKING` alias imports and subsequent rebindings.
     pub type_checking_aliases: HashMap<String, Vec<(usize, bool)>>,
-    /// Whether the module has a direct import from `django.shortcuts`.
-    pub has_django_shortcuts_import: bool,
 }
 
 /// Manifest-backed extraction rules prepared once for one source file.
@@ -227,13 +227,51 @@ pub struct LanguageContext {
     pub route_decorators: Vec<manifests::RouteDecoratorRule>,
     /// Registration call route rules.
     pub route_calls: Vec<manifests::RouteCallRule>,
+    pub(crate) route_rule_origins:
+        HashMap<(bool, usize), crate::core::semantic::ExtractionRuleOrigin>,
     /// Dependency-injection call rules.
     pub di_calls: Vec<manifests::DiCallRule>,
+    pub(crate) di_rule_origins: HashMap<usize, crate::core::semantic::ExtractionRuleOrigin>,
     pub(crate) semantic_rules: Vec<semantic::EffectiveSemanticRule>,
+    pub(crate) syntax_rules: Vec<manifests::syntax::SyntaxRule>,
     pub(crate) rule_ir: manifests::RuleIRHandle,
 }
 
 impl LanguageContext {
+    pub(crate) fn component_macro(
+        &self,
+        name: &str,
+    ) -> Option<(
+        &manifests::syntax::SyntaxRule,
+        crate::core::semantic::ComponentMacroRole,
+    )> {
+        use crate::core::semantic::ComponentMacroRole;
+        let mut matches = self.syntax_rules.iter().filter_map(|rule| {
+            let manifests::syntax::SyntaxOperation::ComponentMacros {
+                props,
+                emits,
+                slots,
+                markers,
+            } = &rule.operation
+            else {
+                return None;
+            };
+            let role = if name == props {
+                ComponentMacroRole::Props
+            } else if name == emits {
+                ComponentMacroRole::Emits
+            } else if name == slots {
+                ComponentMacroRole::Slots
+            } else if markers.iter().any(|marker| marker == name) {
+                ComponentMacroRole::Marker
+            } else {
+                return None;
+            };
+            Some((rule, role))
+        });
+        let first = matches.next()?;
+        matches.next().is_none().then_some(first)
+    }
     pub(crate) fn bind_rule_ir(&self, grammar: &tree_sitter::Language) -> manifests::RuleIRHandle {
         self.rule_ir.bind(grammar, self)
     }
@@ -469,6 +507,8 @@ pub struct SymbolMetadata {
     pub bases: Option<String>,
     /// Optional receiver value.
     pub receiver: Option<String>,
+    /// Optional manifest provenance for rule-caused object ownership.
+    pub object_ownership: Option<crate::core::semantic::ObjectOwnershipFact>,
     /// Optional receiver type value.
     pub receiver_type: Option<String>,
     /// Whether method applies.
@@ -658,6 +698,15 @@ pub trait LanguageProfile: Send + Sync {
     ) -> Option<ImportPath> {
         self.normalize_import(owner, module)
     }
+    /// Classifies declarations using the prepared effective rule context.
+    fn symbol_with_context(
+        &self,
+        node: Syntax<'_>,
+        source: &str,
+        _file: &FileContext,
+    ) -> Option<&'static str> {
+        self.symbol_with_source(node, source)
+    }
     /// Classifies a module as an external dependency when known.
     fn external_import(&self, _module: &str) -> Option<&'static str> {
         None
@@ -689,6 +738,17 @@ pub trait LanguageProfile: Send + Sync {
     /// Initializes per-file extraction state before walking the syntax tree.
     fn prepare(&self, _root: Syntax<'_>, _source: &str) -> FileContext {
         FileContext::default()
+    }
+    /// Initializes grammar-owned state with the effective validated rule context.
+    fn prepare_with_context(
+        &self,
+        root: Syntax<'_>,
+        source: &str,
+        rules: &LanguageContext,
+    ) -> FileContext {
+        let mut file = self.prepare(root, source);
+        file.rules = Arc::new(rules.clone());
+        file
     }
     /// Derives module exports after the shared walk has collected root bindings.
     fn module_exports_with_bindings(
@@ -1049,6 +1109,7 @@ pub(crate) fn parse_file_typed(
         Some(&mut typed.flows),
         language_context,
     );
+    typed.project_named_selectors();
     Ok(())
 }
 /// Performs call.

@@ -1,6 +1,7 @@
 use crate::core::models::{Facts, Node as IndexedNode};
 use crate::engine::ast::{field, text};
 use crate::engine::languages::{LanguageProfile, SyntaxContext};
+use std::collections::HashMap;
 use std::path::{Component, Path};
 use tree_sitter::Node;
 
@@ -23,7 +24,11 @@ fn loader_context(mut node: Node<'_>) -> Option<(Node<'_>, Option<Node<'_>>)> {
     }
     if let Some(function) = function {
         let wrapper = function.parent()?;
-        let wrapper = if wrapper.kind() == "decorated_definition" { wrapper } else { function };
+        let wrapper = if wrapper.kind() == "decorated_definition" {
+            wrapper
+        } else {
+            function
+        };
         if wrapper.parent()?.kind() != "module" {
             return None;
         }
@@ -39,147 +44,238 @@ fn statement(node: Node<'_>) -> Node<'_> {
     }
 }
 
-fn import_binding<'a>(node: Node<'_>, name: Node<'_>, source: &'a str) -> Option<(&'a str, &'a str, &'a str)> {
+fn import_binding<'a>(
+    node: Node<'_>,
+    name: Node<'_>,
+    source: &'a str,
+) -> Option<(&'a str, &'a str, &'a str)> {
     let module = field(node, source, "module_name")?;
     let imported = field(name, source, "name").unwrap_or_else(|| text(name, source));
     let alias = field(name, source, "alias").unwrap_or(imported);
     Some((module, imported, alias))
 }
 
-pub(super) fn type_parameter_binds(scope: Node<'_>, source: &str, name: &str) -> bool {
+pub(super) fn type_parameter_names(scope: Node<'_>, source: &str) -> Vec<String> {
     let Some(parameters) = scope.child_by_field_name("type_parameters") else {
-        return false;
+        return Vec::new();
     };
     let mut cursor = parameters.walk();
-    let bound = parameters.named_children(&mut cursor).any(|mut parameter| {
-        while matches!(parameter.kind(), "type" | "splat_type" | "constrained_type") {
-            let Some(first) = parameter.named_child(0) else {
-                return false;
-            };
-            parameter = first;
-        }
-        parameter.kind() == "identifier" && text(parameter, source) == name
-    });
+    let bound = parameters
+        .named_children(&mut cursor)
+        .filter_map(|mut parameter| {
+            while matches!(parameter.kind(), "type" | "splat_type" | "constrained_type") {
+                let first = parameter.named_child(0)?;
+                parameter = first;
+            }
+            (parameter.kind() == "identifier").then(|| text(parameter, source).to_owned())
+        })
+        .collect();
     bound
 }
 
-pub(super) fn binding_count(root: Node<'_>, source: &str, name: &str) -> usize {
+fn binding_event<'source>(
+    node: Node<'_>,
+    source: &'source str,
+    emit: &mut impl FnMut(Option<&'source str>),
+) -> bool {
     // A match pattern's names are bindings only in capture positions. Class
     // heads, mapping keys, keyword labels and dotted value patterns are reads.
-    fn captures(node: Node<'_>, source: &str, name: &str) -> usize {
+    fn captures<'source>(
+        node: Node<'_>,
+        source: &'source str,
+        emit: &mut impl FnMut(Option<&'source str>),
+    ) {
         match node.kind() {
-            "identifier" => usize::from(text(node, source) == name),
+            "identifier" => emit(Some(text(node, source))),
             "dotted_name" => {
-                usize::from(node.named_child_count() == 1 && text(node, source) == name)
+                if node.named_child_count() == 1 {
+                    emit(Some(text(node, source)));
+                }
             }
             "dict_pattern" => {
                 let mut values = node.walk();
-                let count = node
-                    .children_by_field_name("value", &mut values)
-                    .map(|value| captures(value, source, name))
-                    .sum::<usize>();
+                for value in node.children_by_field_name("value", &mut values) {
+                    captures(value, source, emit);
+                }
                 let mut rest = node.walk();
-                count
-                    + node
-                        .named_children(&mut rest)
-                        .filter(|child| child.kind() == "splat_pattern")
-                        .map(|child| captures(child, source, name))
-                        .sum::<usize>()
+                for child in node
+                    .named_children(&mut rest)
+                    .filter(|child| child.kind() == "splat_pattern")
+                {
+                    captures(child, source, emit);
+                }
             }
             "class_pattern" | "keyword_pattern" => {
                 let mut cursor = node.walk();
-                node.named_children(&mut cursor)
-                    .skip(1)
-                    .map(|child| captures(child, source, name))
-                    .sum()
+                for child in node.named_children(&mut cursor).skip(1) {
+                    captures(child, source, emit);
+                }
             }
             "case_pattern" | "list_pattern" | "tuple_pattern" | "union_pattern" | "as_pattern"
             | "splat_pattern" => {
                 let mut cursor = node.walk();
-                node.named_children(&mut cursor)
-                    .map(|child| captures(child, source, name))
-                    .sum()
+                for child in node.named_children(&mut cursor) {
+                    captures(child, source, emit);
+                }
             }
-            _ => 0,
+            _ => {}
         }
     }
-    fn targets(node: Node<'_>, source: &str, name: &str) -> usize {
+    fn targets<'source>(
+        node: Node<'_>,
+        source: &'source str,
+        emit: &mut impl FnMut(Option<&'source str>),
+    ) {
         match node.kind() {
-            "identifier" => usize::from(text(node, source) == name),
-            "attribute" | "subscript" => 0,
+            "identifier" => emit(Some(text(node, source))),
+            "attribute" | "subscript" => {}
             _ => {
                 let mut cursor = node.walk();
-                node.named_children(&mut cursor)
-                    .map(|child| targets(child, source, name))
-                    .sum()
+                for child in node.named_children(&mut cursor) {
+                    targets(child, source, emit);
+                }
             }
         }
     }
+    match node.kind() {
+        "case_pattern" => {
+            captures(node, source, emit);
+            false
+        }
+        "type_alias_statement" => {
+            if let Some(name) = super::Python.symbol_name(node, source) {
+                emit(Some(name));
+            }
+            false
+        }
+        "assignment" | "annotated_assignment" | "augmented_assignment" | "for_statement" => {
+            if let Some(left) = node.child_by_field_name("left") {
+                targets(left, source, emit);
+            }
+            true
+        }
+        "named_expression" | "as_pattern" => {
+            if let Some(target) = node
+                .child_by_field_name("name")
+                .or_else(|| node.child_by_field_name("alias"))
+            {
+                targets(target, source, emit);
+            }
+            true
+        }
+        "import_from_statement" | "import_statement" => {
+            let mut imports = node.walk();
+            for child in node.children_by_field_name("name", &mut imports) {
+                emit(Some(
+                    field(child, source, "alias")
+                        .or_else(|| field(child, source, "name"))
+                        .unwrap_or_else(|| text(child, source)),
+                ));
+            }
+            let mut wildcard = node.walk();
+            let unknown = node
+                .named_children(&mut wildcard)
+                .any(|child| child.kind() == "wildcard_import");
+            if unknown {
+                emit(None);
+            }
+            false
+        }
+        "function_definition" | "class_definition" => {
+            if let Some(name) = field(node, source, "name") {
+                emit(Some(name));
+            }
+            false
+        }
+        "delete_statement" => {
+            let mut cursor = node.walk();
+            for target in node.named_children(&mut cursor) {
+                targets(target, source, emit);
+            }
+            false
+        }
+        _ => true,
+    }
+}
+
+/// Completed lexical writes; wildcard imports contribute uncertainty for every name.
+#[derive(Debug, Default)]
+pub(crate) struct BindingWrites {
+    names: HashMap<String, usize>,
+    wildcards: usize,
+}
+
+impl BindingWrites {
+    pub(crate) fn count(&self, name: &str) -> usize {
+        self.names.get(name).copied().unwrap_or_default() + self.wildcards
+    }
+}
+
+/// Consumes the shared walk's events without collecting a scope body recursively.
+pub(crate) struct BindingWriteCollector<'source, 'tree> {
+    source: &'source str,
+    body: Node<'tree>,
+    states: Vec<bool>,
+    writes: BindingWrites,
+}
+
+impl<'source, 'tree> BindingWriteCollector<'source, 'tree> {
+    pub(crate) fn new(scope: Node<'tree>, source: &'source str) -> Self {
+        Self {
+            source,
+            body: scope.child_by_field_name("body").unwrap_or(scope),
+            states: Vec::new(),
+            writes: BindingWrites::default(),
+        }
+    }
+
+    pub(crate) fn enter(&mut self, node: Node<'tree>) {
+        let active = node == self.body || self.states.last().copied().unwrap_or(false);
+        let descend = active
+            && binding_event(node, self.source, &mut |name| {
+                if let Some(name) = name {
+                    *self.writes.names.entry(name.to_owned()).or_default() += 1;
+                } else {
+                    self.writes.wildcards += 1;
+                }
+            });
+        self.states.push(descend);
+    }
+
+    pub(crate) fn exit(&mut self) {
+        self.states.pop();
+    }
+
+    pub(crate) fn finish(self) -> BindingWrites {
+        self.writes
+    }
+}
+
+pub(super) fn binding_count(root: Node<'_>, source: &str, name: &str) -> usize {
     fn visit(node: Node<'_>, source: &str, name: &str) -> usize {
-        match node.kind() {
-            "case_pattern" => captures(node, source, name),
-            "type_alias_statement" => {
-                usize::from(super::Python.symbol_name(node, source) == Some(name))
-            }
-            "assignment" | "annotated_assignment" | "augmented_assignment" | "for_statement" => {
-                let own = node
-                    .child_by_field_name("left")
-                    .map_or(0, |left| targets(left, source, name));
-                let mut cursor = node.walk();
-                own + node
-                    .named_children(&mut cursor)
-                    .map(|child| visit(child, source, name))
-                    .sum::<usize>()
-            }
-            "named_expression" | "as_pattern" => {
-                let own = node
-                    .child_by_field_name("name")
-                    .or_else(|| node.child_by_field_name("alias"))
-                    .map_or(0, |target| targets(target, source, name));
-                let mut cursor = node.walk();
-                own + node
-                    .named_children(&mut cursor)
-                    .map(|child| visit(child, source, name))
-                    .sum::<usize>()
-            }
-            "import_from_statement" | "import_statement" => {
-                let mut imports = node.walk();
-                let explicit = node
-                    .children_by_field_name("name", &mut imports)
-                    .filter(|child| {
-                        field(*child, source, "alias")
-                            .or_else(|| field(*child, source, "name"))
-                            .unwrap_or_else(|| text(*child, source))
-                            == name
-                    })
-                    .count();
-                let mut wildcard = node.walk();
-                let unknown = node
-                    .named_children(&mut wildcard)
-                    .any(|child| child.kind() == "wildcard_import");
-                explicit + usize::from(unknown)
-            }
-            "function_definition" | "class_definition" => {
-                (field(node, source, "name") == Some(name)) as usize
-            }
-            "delete_statement" => {
-                let mut cursor = node.walk();
-                node.named_children(&mut cursor)
-                    .map(|target| targets(target, source, name))
-                    .sum()
-            }
-            _ => {
-                let mut cursor = node.walk();
-                node.named_children(&mut cursor)
-                    .map(|child| visit(child, source, name))
-                    .sum()
-            }
+        let mut count = 0;
+        if binding_event(node, source, &mut |bound| {
+            count += usize::from(bound.is_none_or(|bound| bound == name));
+        }) {
+            let mut cursor = node.walk();
+            count += node
+                .named_children(&mut cursor)
+                .map(|child| visit(child, source, name))
+                .sum::<usize>();
         }
+        count
     }
     visit(root, source, name)
 }
 
-pub(super) fn imported(root: Node<'_>, source: &str, alias: &str, module: &str, name: &str, before: usize) -> bool {
+pub(super) fn imported(
+    root: Node<'_>,
+    source: &str,
+    alias: &str,
+    module: &str,
+    name: &str,
+    before: usize,
+) -> bool {
     if binding_count(root, source, alias) != 1 {
         return false;
     }
@@ -189,10 +285,13 @@ pub(super) fn imported(root: Node<'_>, source: &str, alias: &str, module: &str, 
             return false;
         }
         let mut imports = node.walk();
-        let matched = node.children_by_field_name("name", &mut imports).any(|child| {
-            import_binding(node, child, source)
-                .is_some_and(|(origin, symbol, bound)| origin == module && symbol == name && bound == alias)
-        });
+        let matched = node
+            .children_by_field_name("name", &mut imports)
+            .any(|child| {
+                import_binding(node, child, source).is_some_and(|(origin, symbol, bound)| {
+                    origin == module && symbol == name && bound == alias
+                })
+            });
         matched
     });
     found
@@ -200,43 +299,68 @@ pub(super) fn imported(root: Node<'_>, source: &str, alias: &str, module: &str, 
 
 fn single_argument(node: Node<'_>) -> Option<Node<'_>> {
     let arguments = node.child_by_field_name("arguments")?;
-    (arguments.named_child_count() == 1).then(|| arguments.named_child(0)).flatten()
+    (arguments.named_child_count() == 1)
+        .then(|| arguments.named_child(0))
+        .flatten()
 }
 
 fn unshadowed_in_function(function: Option<Node<'_>>, source: &str, name: &str) -> bool {
-    let Some(function) = function else { return true; };
-    let Some(body) = function.child_by_field_name("body") else { return false; };
+    let Some(function) = function else {
+        return true;
+    };
+    let Some(body) = function.child_by_field_name("body") else {
+        return false;
+    };
     if binding_count(body, source, name) != 0 {
         return false;
     }
-    let Some(parameters) = function.child_by_field_name("parameters") else { return false; };
+    let Some(parameters) = function.child_by_field_name("parameters") else {
+        return false;
+    };
     let mut cursor = parameters.walk();
     let shadowed_parameter = parameters.named_children(&mut cursor).any(|parameter| {
         parameter.kind() == "identifier" && text(parameter, source) == name
-            || parameter.named_child(0).is_some_and(|child| child.kind() == "identifier" && text(child, source) == name)
+            || parameter
+                .named_child(0)
+                .is_some_and(|child| child.kind() == "identifier" && text(child, source) == name)
     });
     !shadowed_parameter
 }
 
-fn local_loader<'tree>(function: Node<'tree>, source: &str, name: &str, before: usize) -> Option<Node<'tree>> {
+fn local_loader<'tree>(
+    function: Node<'tree>,
+    source: &str,
+    name: &str,
+    before: usize,
+) -> Option<Node<'tree>> {
     let body = function.child_by_field_name("body")?;
     if binding_count(body, source, name) != 1 {
         return None;
     }
     let mut parameters = function.child_by_field_name("parameters")?.walk();
-    if function.child_by_field_name("parameters")?.named_children(&mut parameters).any(|parameter| {
-        parameter.kind() == "identifier" && text(parameter, source) == name
-            || parameter.named_child(0).is_some_and(|child| child.kind() == "identifier" && text(child, source) == name)
-    }) {
+    if function
+        .child_by_field_name("parameters")?
+        .named_children(&mut parameters)
+        .any(|parameter| {
+            parameter.kind() == "identifier" && text(parameter, source) == name
+                || parameter.named_child(0).is_some_and(|child| {
+                    child.kind() == "identifier" && text(child, source) == name
+                })
+        })
+    {
         return None;
     }
     let mut cursor = body.walk();
-    let assignment = body.named_children(&mut cursor)
+    let assignment = body
+        .named_children(&mut cursor)
         .map(statement)
-        .find(|item| item.kind() == "assignment"
-            && item.end_byte() < before
-            && item.child_by_field_name("left")
-                .is_some_and(|left| left.kind() == "identifier" && text(left, source) == name))
+        .find(|item| {
+            item.kind() == "assignment"
+                && item.end_byte() < before
+                && item
+                    .child_by_field_name("left")
+                    .is_some_and(|left| left.kind() == "identifier" && text(left, source) == name)
+        })
         .and_then(|assignment| assignment.child_by_field_name("right"));
     assignment
 }
@@ -289,33 +413,45 @@ fn static_path(
         "identifier" if text(node, source) != "__file__" => {
             let name = text(node, source);
             if binding_count(root, source, name) != 1
-                || !unshadowed_in_function(local_function, source, name) {
+                || !unshadowed_in_function(local_function, source, name)
+            {
                 return None;
             }
             let mut cursor = root.walk();
-            let path = root.named_children(&mut cursor)
+            let path = root
+                .named_children(&mut cursor)
                 .map(statement)
-                .find(|item| item.kind() == "assignment"
-                    && item.child_by_field_name("left")
-                        .is_some_and(|left| left.kind() == "identifier" && text(left, source) == name))
+                .find(|item| {
+                    item.kind() == "assignment"
+                        && item.child_by_field_name("left").is_some_and(|left| {
+                            left.kind() == "identifier" && text(left, source) == name
+                        })
+                })
                 .and_then(|assignment| assignment.child_by_field_name("right"))
                 .filter(|value| value.end_byte() < node.start_byte())
-                .and_then(|value| static_path(value, root, local_function, source, owner, depth - 1));
+                .and_then(|value| {
+                    static_path(value, root, local_function, source, owner, depth - 1)
+                });
             path
         }
         "identifier" if text(node, source) == "__file__" => {
             (binding_count(root, source, "__file__") == 0
                 && unshadowed_in_function(local_function, source, "__file__"))
-                .then(|| StaticPath::Text(owner.to_owned()))
+            .then(|| StaticPath::Text(owner.to_owned()))
         }
         "attribute" if field(node, source, "attribute") == Some("parent") => {
             let object = node.child_by_field_name("object")?;
-            let path = static_path(object, root, local_function, source, owner, depth - 1)?.path()?;
-            Some(StaticPath::Path(Path::new(&path).parent()?.to_string_lossy().into_owned()))
+            let path =
+                static_path(object, root, local_function, source, owner, depth - 1)?.path()?;
+            Some(StaticPath::Path(
+                Path::new(&path).parent()?.to_string_lossy().into_owned(),
+            ))
         }
         "subscript" => {
             let collection = node.child_by_field_name("value")?;
-            if collection.kind() != "attribute" || field(collection, source, "attribute") != Some("parents") {
+            if collection.kind() != "attribute"
+                || field(collection, source, "attribute") != Some("parents")
+            {
                 return None;
             }
             let index = node.child_by_field_name("subscript")?;
@@ -327,7 +463,8 @@ fn static_path(
                 return None;
             }
             let object = collection.child_by_field_name("object")?;
-            let path = static_path(object, root, local_function, source, owner, depth - 1)?.path()?;
+            let path =
+                static_path(object, root, local_function, source, owner, depth - 1)?.path()?;
             let mut parent = Path::new(&path);
             for _ in 0..hops {
                 parent = parent.parent()?;
@@ -335,37 +472,81 @@ fn static_path(
             Some(StaticPath::Path(parent.to_string_lossy().into_owned()))
         }
         "binary_operator" if field(node, source, "operator") == Some("/") => {
-            let left = static_path(node.child_by_field_name("left")?, root, local_function, source, owner, depth - 1)?.path()?;
+            let left = static_path(
+                node.child_by_field_name("left")?,
+                root,
+                local_function,
+                source,
+                owner,
+                depth - 1,
+            )?
+            .path()?;
             let right = literal(node.child_by_field_name("right")?, source)?;
             let relative = Path::new(right);
             if relative.as_os_str().is_empty()
-                || !relative.components().all(|part| matches!(part, Component::Normal(_)))
+                || !relative
+                    .components()
+                    .all(|part| matches!(part, Component::Normal(_)))
             {
                 return None;
             }
-            Some(StaticPath::Path(Path::new(&left).join(relative).to_string_lossy().replace('\\', "/")))
+            Some(StaticPath::Path(
+                Path::new(&left)
+                    .join(relative)
+                    .to_string_lossy()
+                    .replace('\\', "/"),
+            ))
         }
         "call" => {
             let function = node.child_by_field_name("function")?;
             if function.kind() == "identifier"
-                && imported(root, source, text(function, source), "pathlib", "Path", node.start_byte())
-                && unshadowed_in_function(local_function, source, text(function, source)) {
+                && imported(
+                    root,
+                    source,
+                    text(function, source),
+                    "pathlib",
+                    "Path",
+                    node.start_byte(),
+                )
+                && unshadowed_in_function(local_function, source, text(function, source))
+            {
                 let argument = single_argument(node)?;
                 (argument.kind() == "identifier" && text(argument, source) == "__file__")
-                    .then(|| static_path(argument, root, local_function, source, owner, depth - 1)
-                        .and_then(|value| match value {
-                            StaticPath::Text(path) => Some(StaticPath::Path(path)),
-                            StaticPath::Path(_) => None,
-                        })).flatten()
-            } else if function.kind() == "attribute" && field(function, source, "attribute") == Some("resolve")
-                && node.child_by_field_name("arguments")?.named_child_count() == 0 {
-                static_path(function.child_by_field_name("object")?, root, local_function, source, owner, depth - 1)
-                    .and_then(|value| value.path().map(StaticPath::Path))
-            } else if function.kind() == "identifier" && text(function, source) == "str"
+                    .then(|| {
+                        static_path(argument, root, local_function, source, owner, depth - 1)
+                            .and_then(|value| match value {
+                                StaticPath::Text(path) => Some(StaticPath::Path(path)),
+                                StaticPath::Path(_) => None,
+                            })
+                    })
+                    .flatten()
+            } else if function.kind() == "attribute"
+                && field(function, source, "attribute") == Some("resolve")
+                && node.child_by_field_name("arguments")?.named_child_count() == 0
+            {
+                static_path(
+                    function.child_by_field_name("object")?,
+                    root,
+                    local_function,
+                    source,
+                    owner,
+                    depth - 1,
+                )
+                .and_then(|value| value.path().map(StaticPath::Path))
+            } else if function.kind() == "identifier"
+                && text(function, source) == "str"
                 && binding_count(root, source, "str") == 0
-                && unshadowed_in_function(local_function, source, "str") {
-                static_path(single_argument(node)?, root, local_function, source, owner, depth - 1)
-                    .and_then(|value| value.path().map(StaticPath::Text))
+                && unshadowed_in_function(local_function, source, "str")
+            {
+                static_path(
+                    single_argument(node)?,
+                    root,
+                    local_function,
+                    source,
+                    owner,
+                    depth - 1,
+                )
+                .and_then(|value| value.path().map(StaticPath::Text))
             } else {
                 None
             }
@@ -375,63 +556,139 @@ fn static_path(
 }
 
 pub(super) fn extract(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
-    let Some(function) = ctx.node.child_by_field_name("function") else { return; };
+    for rule in super::render_context::syntax_rules() {
+        extract_configured(ctx, facts, &rule);
+    }
+}
+
+fn extract_configured(
+    ctx: &SyntaxContext<'_, '_>,
+    facts: &mut Facts,
+    syntax_rule: &crate::engine::languages::manifests::syntax::SyntaxRule,
+) {
+    let crate::engine::languages::manifests::syntax::SyntaxOperation::TemplateLoader {
+        module: provider_module,
+        environment,
+        loader: loader_export,
+        loader_keyword,
+        ..
+    } = &syntax_rule.operation
+    else {
+        return;
+    };
+    let (pack, rule) = (&syntax_rule.pack, &syntax_rule.id);
+    let Some(function) = ctx.node.child_by_field_name("function") else {
+        return;
+    };
     if function.kind() != "identifier" {
         return;
     }
-    let Some(arguments) = ctx.node.child_by_field_name("arguments") else { return; };
+    let Some(arguments) = ctx.node.child_by_field_name("arguments") else {
+        return;
+    };
     let mut candidate_cursor = arguments.walk();
-    let has_loader = arguments.named_children(&mut candidate_cursor)
-        .any(|argument| argument.kind() == "keyword_argument"
-            && field(argument, ctx.source, "name") == Some("loader"));
+    let has_loader = arguments
+        .named_children(&mut candidate_cursor)
+        .any(|argument| {
+            argument.kind() == "keyword_argument"
+                && field(argument, ctx.source, "name") == Some(loader_keyword.as_str())
+        });
     if !has_loader {
         return;
     }
-    let Some((root, local_function)) = loader_context(ctx.node) else { return; };
+    let Some((root, local_function)) = loader_context(ctx.node) else {
+        return;
+    };
     if let Some(function_scope) = local_function {
-        let Some(body) = function_scope.child_by_field_name("body") else { return; };
-        let Some(return_statement) = ctx.node.parent() else { return; };
-        if return_statement.kind() != "return_statement" || return_statement.parent() != Some(body) {
+        let Some(body) = function_scope.child_by_field_name("body") else {
+            return;
+        };
+        let Some(return_statement) = ctx.node.parent() else {
+            return;
+        };
+        if return_statement.kind() != "return_statement" || return_statement.parent() != Some(body)
+        {
             return;
         }
     }
-    if !imported(root, ctx.source, text(function, ctx.source), "jinja2", "Environment", ctx.node.start_byte()) {
+    if !imported(
+        root,
+        ctx.source,
+        text(function, ctx.source),
+        provider_module,
+        environment,
+        ctx.node.start_byte(),
+    ) {
         return;
     }
     if !unshadowed_in_function(local_function, ctx.source, text(function, ctx.source)) {
         return;
     }
     let mut cursor = arguments.walk();
-    let mut roots = arguments.named_children(&mut cursor).filter_map(|argument| {
-        if argument.kind() != "keyword_argument" || field(argument, ctx.source, "name") != Some("loader") {
-            return None;
-        }
-        let loader = argument.child_by_field_name("value")?;
-        let loader = if loader.kind() == "identifier" {
-            local_loader(local_function?, ctx.source, text(loader, ctx.source), ctx.node.start_byte())?
-        } else {
-            loader
-        };
-        if loader.kind() != "call" {
-            return None;
-        }
-        let provider = loader.child_by_field_name("function")?;
-        if provider.kind() != "identifier"
-            || !imported(root, ctx.source, text(provider, ctx.source), "jinja2", "FileSystemLoader", loader.start_byte())
-            || !unshadowed_in_function(local_function, ctx.source, text(provider, ctx.source))
-        {
-            return None;
-        }
-        let module = facts.nodes.iter().find(|node| node.kind == "module" && node.language == "python")?;
-        static_path(single_argument(loader)?, root, local_function, ctx.source, &module.path, 16)
+    let mut roots = arguments
+        .named_children(&mut cursor)
+        .filter_map(|argument| {
+            if argument.kind() != "keyword_argument"
+                || field(argument, ctx.source, "name") != Some(loader_keyword)
+            {
+                return None;
+            }
+            let loader = argument.child_by_field_name("value")?;
+            let loader = if loader.kind() == "identifier" {
+                local_loader(
+                    local_function?,
+                    ctx.source,
+                    text(loader, ctx.source),
+                    ctx.node.start_byte(),
+                )?
+            } else {
+                loader
+            };
+            if loader.kind() != "call" {
+                return None;
+            }
+            let provider = loader.child_by_field_name("function")?;
+            if provider.kind() != "identifier"
+                || !imported(
+                    root,
+                    ctx.source,
+                    text(provider, ctx.source),
+                    provider_module,
+                    loader_export,
+                    loader.start_byte(),
+                )
+                || !unshadowed_in_function(local_function, ctx.source, text(provider, ctx.source))
+            {
+                return None;
+            }
+            let module = facts
+                .nodes
+                .iter()
+                .find(|node| node.kind == "module" && node.language == "python")?;
+            static_path(
+                single_argument(loader)?,
+                root,
+                local_function,
+                ctx.source,
+                &module.path,
+                16,
+            )
             .map(StaticPath::into_string)
-    });
-    let Some(path) = roots.next() else { return; };
+        });
+    let Some(path) = roots.next() else {
+        return;
+    };
     if roots.next().is_some() || path.is_empty() || Path::new(&path).is_absolute() {
         return;
     }
     drop(roots);
-    let Some(module) = facts.nodes.iter().find(|node| node.kind == "module" && node.language == "python") else { return; };
+    let Some(module) = facts
+        .nodes
+        .iter()
+        .find(|node| node.kind == "module" && node.language == "python")
+    else {
+        return;
+    };
     facts.nodes.push(IndexedNode {
         id: format!("py:{}:{}:template_loader_root:{}", module.path, ctx.line(), path),
         kind: "template_loader_root".into(),
@@ -443,6 +700,6 @@ pub(super) fn extract(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         is_test: false,
         language: "python".into(),
         generated: false,
-        details: serde_json::json!({"provider":"jinja2","import_modules":["jinja2","pathlib"]}),
+        details: serde_json::json!({"provider":provider_module,"pack":pack,"rule":rule,"import_modules":[provider_module,"pathlib"],"value_flow":crate::core::semantic::ValueFlowFacts { rule_origins: vec![crate::core::semantic::ExtractionRuleOrigin { pack: pack.clone(), rule: rule.clone() }], ..Default::default() }}),
     });
 }

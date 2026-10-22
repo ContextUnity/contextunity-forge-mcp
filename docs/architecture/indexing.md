@@ -77,7 +77,27 @@ Selectors must identify one target. For example, `package/settings.py:load_confi
 
 `DependencyRegistry` loads and validates bundled and workspace-local framework manifests before parallel extraction. It supplies merged typed rules through a per-file `LanguageContext`; AST extraction uses `extract_typed_with_registry` in both the cold writer and delta paths. Profiles receive those rules through `extract_routes_with_context`, together with a `RouteContext` for static router and controller prefixes. Extraction does not reread manifest files for each syntax node.
 
-Class-hierarchy rules feed canonical Python receiver lookup through the inheritance index. Import provenance, method shadowing, and unknown external bases still bound resolution. Route and DI rules produce ordinary syntax facts and references. Django URL facts retain include modules, route names, and namespaces; static include-prefix composition runs before persistence, including after incremental fact hydration. Manifest digest changes invalidate the indexed rule snapshot so an update cannot retain extraction from an old rule set.
+Class-hierarchy rules feed canonical Python receiver lookup through the inheritance index. Import provenance, method shadowing, and unknown external bases still bound resolution. Route and DI rules produce ordinary syntax facts and references. Configured route facts retain include modules, route names, and namespaces; static include-prefix composition runs before persistence, including after incremental fact hydration. Manifest digest changes invalidate the indexed rule snapshot so an update cannot retain extraction from an old rule set.
+
+Closed syntax operations select provider APIs, keyword and attribute names, object factories, template dialects, component configuration, receiver types, and directory conventions from validated data. Profiles receive the effective rules during preparation and embedded-language extraction. Typed render contexts and component configurations retain pack/rule origin; loader and registration facts retain the same identity. Context indexes use project scope and rule provenance. No framework identity selects a private cache or linker branch.
+
+Finite symbol attachments, factory results, named definitions/references and
+endpoint requests use four bounded typed vectors. The existing canonical
+resolution projection includes their complete operands and uncertainty states,
+including facts owned by functions. Named joins prepare one borrowed index by
+effective project, domain and key. Compact internal reference selectors feed
+indexed delta invalidation for old and new provider keys, including missing and
+unknown targets. Selected providers hydrate from compressed local facts through
+the existing typed dispatcher. Each newly hydrated frontier contributes its own
+named selectors until the same convergence completes; linking does not recover
+provider source. HTML embedded definitions publish selectors after their typed
+finalizer. Known endpoint URL/method pairs feed ordinary request references and
+the existing route index; uncertain inputs retain typed unresolved evidence.
+
+`RouteContext` completes lexical binding and Python write summaries in one
+prepass before resolving buffered route candidates. Assignments, prefix
+providers and route receiver queries reuse those summaries. Existing non-route
+compatibility callers retain their recursive collectors.
 
 Effective typed rules compile into `RuleIR` tables keyed by the actual Tree-sitter grammar and current rule inputs. AST hooks select candidates by `kind_id` and retain their existing semantic checks. Full build and ordinary delta expose sorted, typed `framework_rule_diagnostics` from the complete current inventory; manifest-change fallback rebuilds recompute them. These ephemeral reports compare eligible identities, including equal-count losses, without writing parser errors or changing commitment domains.
 
@@ -86,6 +106,8 @@ The [framework manifest reference](../reference/framework-manifests.md) owns fie
 ## Extending a language profile
 
 Language extraction belongs to its profile and the shared AST layer. Add a profile through the language registry and compile-time feature configuration, then add a `LanguageLinker` only when that language needs import, receiver, or incremental-linking behavior beyond the generic implementation. Python package initializers, paired declaration files, re-exports, and external import aliases live in the Python linker. Verify facts against parser fixtures and linker tests. A profile does not change the selector or database contracts. Keep unresolved references visible instead of guessing a target from a name alone.
+
+Rust import resolution follows named bindings from existing `use` references and public export facts. A bounded forwarding index is prepared with the namespace indexes and shared by import resolution and Rust member lookup. Private parent bindings are available only to descendants; public `use` bindings participate in package exports. Ambiguous targets, cycles, and exhausted alias walks stay unresolved. The root Cargo package name, or an explicit `[lib].name`, maps to the indexed conventional `src/lib.rs` only within the same manifest scope; custom library paths and foreign same-name packages do not acquire that mapping. Existing Rust member lookup resolves associated methods after the canonical type is selected.
 
 ## Static value flow
 
@@ -105,7 +127,7 @@ When extending semantic resolution or coverage across existing and new language 
 
 1. **Explicit Unwrapping**: Every language explicitly un-nests its container/wrapped types without implicit or guessed resolutions (`Result`/`Option` in Rust, `Promise` in TS/JS, `Optional`/`Union` in Python). Negative cases (un-unwrapped calls) must remain unresolved to prevent phantom edges.
 2. **Bounded Polymorphic Dispatch**: When resolving calls on abstract interfaces / traits / base classes (`dyn Trait` in Rust, `ABC`/Protocol/subclasses in Python, interfaces in TS), the engine emits an inferred `calls` edge to the declaration and bounded `possible_calls` ($K \le 8$) to concrete implementations in the workspace, retaining uncertainty in `analysis_gaps`. Overflows beyond $K=8$ widen to Unknown/Incomplete and emit zero concrete candidates.
-3. **Parser-Owned Structured Facts for Delta**: Language syntax distinctions (such as module vs named imports, re-exports) belong exclusively in language parsers (`src/engine/languages/`). `src/db/delta.rs` is language-agnostic and reads zero source files from disk (`INV-DELTA-NO-SOURCE-IO`).
+3. **Parser-Owned Structured Facts for Delta**: Language syntax distinctions (such as module vs named imports and re-exports) belong in language parsers (`src/engine/languages/`). The existing build/parser owner reads changed or invalidated inputs. `src/db/delta.rs` relinking and dependency-frontier logic consume stored facts and indexes; they do not open source to recover missing framework semantics (`INV-DELTA-NO-SOURCE-IO`). Manifest/dependency digest changes use the existing full-build boundary.
 
 Assignments take effect after their right-hand expression completes. Unknown writes and ambiguous declarations block stale proofs. Explicit return annotations take precedence over bounded summaries of complete straight-line returns. Inference records dependencies on return, binding, and field summaries and reevaluates expressions when those summaries change, preserving owner order and the bounded iteration count. Alias cycles, unsupported dynamic values, and exhausted inference limits retain uncertainty. Reference linking uses cached receivers; it does not parse JSON or consult disk or SQL for each method call.
 
