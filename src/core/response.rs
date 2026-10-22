@@ -2,7 +2,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// The max output bytes value.
-pub const MAX_OUTPUT_BYTES: usize = 64 * 1024;
+pub const MAX_OUTPUT_BYTES: usize = 96 * 1024;
 /// The max page size value.
 pub const MAX_PAGE_SIZE: usize = 100;
 /// The min output bytes value.
@@ -75,7 +75,7 @@ impl ResponsePolicy {
         );
         anyhow::ensure!(
             (MIN_OUTPUT_BYTES..=MAX_OUTPUT_BYTES).contains(&self.max_output_bytes),
-            "response.max_output_bytes must be 1024..=65536"
+            "response.max_output_bytes must be 1024..=98304"
         );
         anyhow::ensure!(
             self.source_context.leading_lines <= 20,

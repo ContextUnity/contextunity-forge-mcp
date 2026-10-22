@@ -159,13 +159,65 @@ fn render_task_row(output: &mut String, task: &Value, state: &mut RenderState) {
     ];
     for key in ROW_FIELDS {
         if let Some(value) = object.get(*key) {
-            render_field(output, key, value, 0, state);
+            match *key {
+                "status" => render_status_checkbox(output, "Task status", value, 0),
+                "subtasks" => render_subtask_rows(output, value, state),
+                _ => render_field(output, key, value, 0, state),
+            }
         }
     }
     let remaining = fields_without(object, ROW_FIELDS);
     if !remaining.is_empty() {
         output.push_str("- **Additional task fields**\n");
         render_fields(output, &remaining, 1, state);
+    }
+}
+
+fn render_status_checkbox(output: &mut String, label: &str, value: &Value, depth: usize) {
+    let status = scalar_text(value);
+    bullet_prefix(output, depth);
+    output.push('[');
+    output.push_str(if status == "completed" { "x" } else { " " });
+    output.push_str("] **");
+    output.push_str(label);
+    output.push_str("**: ");
+    output.push_str(&inline_code(&status));
+    output.push('\n');
+}
+
+fn render_subtask_rows(output: &mut String, value: &Value, state: &mut RenderState) {
+    let Some(subtasks) = value.as_array() else {
+        render_field(output, "subtasks", value, 0, state);
+        return;
+    };
+    bullet_prefix(output, 0);
+    output.push_str("**Subtasks**\n");
+    for subtask in subtasks {
+        let Some(fields) = subtask.as_object() else {
+            render_field(output, "subtask", subtask, 1, state);
+            continue;
+        };
+        let reference = fields
+            .get("subtask_ref")
+            .map(scalar_text)
+            .unwrap_or_else(|| "subtask".into());
+        let status = fields.get("status").cloned().unwrap_or(Value::Null);
+        bullet_prefix(output, 1);
+        output.push('[');
+        output.push_str(if status.as_str() == Some("completed") {
+            "x"
+        } else {
+            " "
+        });
+        output.push_str("] **Subtask**: ");
+        output.push_str(&inline_code(&reference));
+        if !status.is_null() {
+            output.push_str("; **Status**: ");
+            output.push_str(&inline_code(&scalar_text(&status)));
+        }
+        output.push('\n');
+        let details = fields_without(fields, &["subtask_ref", "status"]);
+        render_fields(output, &details, 2, state);
     }
 }
 

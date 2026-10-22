@@ -3,7 +3,7 @@ pub mod ast;
 pub(crate) mod discovery {
     use crate::{
         core::{
-            format::{DiscoveryKind, file_uri_for_path},
+            format::{file_uri_for_path, DiscoveryKind},
             response::QueryOptions,
         },
         db::reader,
@@ -11,7 +11,7 @@ pub(crate) mod discovery {
     };
     use anyhow::Result;
     use rusqlite::Connection;
-    use serde_json::{Value, json};
+    use serde_json::{json, Value};
     use std::path::Path;
 
     /// Composes indexed, scanner-owned, and canonical task-owned workspace evidence.
@@ -571,13 +571,13 @@ pub mod task;
 use crate::{
     core::format::{self, OperationKind, OutputFormat},
     core::response::{
-        CoverageOptions, Detail, MAX_PAGE_SIZE, QueryOptions, ResponsePolicy, SourceOptions,
+        CoverageOptions, Detail, QueryOptions, ResponsePolicy, SourceOptions, MAX_PAGE_SIZE,
     },
     db::{reader, symbols, traversal, writer},
 };
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use clap::{Parser, Subcommand, ValueEnum};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 #[derive(Parser, Debug)]
@@ -1369,6 +1369,30 @@ impl Cli {
         format::compact(&mut result, operation, explain);
         let formatted = match checkpoint_action.as_deref() {
             Some(action) => format::render_checkpoint(&result, output_format, title, action),
+            None if title == "task_list" => {
+                let policy = crate::engine::scanner::load_adapter(&root, None)
+                    .map(|adapter| adapter.response)
+                    .unwrap_or_default();
+                let bounded = crate::mcp::response::result_for_presented(
+                    Ok(result.clone()),
+                    &policy,
+                    output_format,
+                    operation,
+                    title,
+                    explain,
+                    discovery,
+                );
+                let text = bounded
+                    .content
+                    .first()
+                    .and_then(rmcp::model::ContentBlock::as_text)
+                    .map(|block| block.text.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("task list response has no text content"))?;
+                if bounded.is_error == Some(true) {
+                    bail!("{text}");
+                }
+                text.to_owned()
+            }
             None => {
                 format::render_for_operation(&result, output_format, title, discovery, operation)
             }

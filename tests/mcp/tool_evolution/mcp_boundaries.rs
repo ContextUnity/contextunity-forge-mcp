@@ -154,6 +154,48 @@ fn ergonomic_task_aliases_reach_existing_operations() {
         canonical
     );
     assert_eq!(canonical["tasks"].as_array().unwrap().len(), 1);
+    let first_page = m.ok(
+        "task_list",
+        json!({"milestone_ref":"010","status":"all","limit":1,"offset":0}),
+    );
+    assert_eq!(first_page["pagination"]["total"], 1);
+    assert_eq!(first_page["pagination"]["limit"], 1);
+    assert_eq!(first_page["pagination"]["returned"], 1);
+    assert_eq!(first_page["pagination"]["has_more"], false);
+    assert!(!first_page["pagination"]["generation"]
+        .as_str()
+        .unwrap()
+        .is_empty());
+    assert!(first_page["pagination"]["continuation_hint"]
+        .to_string()
+        .contains("010"));
+    let cli_page = w.query(&[
+        "task",
+        "list",
+        "--milestone",
+        "010",
+        "--status",
+        "all",
+        "--limit",
+        "1",
+        "--offset",
+        "0",
+    ]);
+    assert_eq!(cli_page["pagination"], first_page["pagination"]);
+    assert_eq!(cli_page["tasks"], first_page["tasks"]);
+    let final_page = m.ok(
+        "task_list",
+        json!({
+            "milestone_ref":"010",
+            "status":"all",
+            "limit":1,
+            "offset":1,
+            "generation":first_page["pagination"]["generation"]
+        }),
+    );
+    assert!(final_page["tasks"].as_array().unwrap().is_empty());
+    assert!(final_page["pagination"].get("next_offset").is_none());
+    assert_eq!(final_page["pagination"]["has_more"], false);
     let positional = run_cli(
         &w,
         &[

@@ -98,26 +98,21 @@ pub(crate) fn result_for_presented(
                 return CallToolResult::success(vec![ContentBlock::text(rendered)]);
             }
 
-            let output_too_large = || {
-                bounded_error(
-                    "Output exceeds the response byte limit. Use detail='compact', a smaller limit, or a narrower selector/SQL projection. A single oversized item must be read from its local file; no items were skipped and no continuation was consumed.",
-                    budget,
-                )
-            };
             // Preserve candidate tokens until tail trimming has decided which pages
             // remain active; compact only after the retained set is known.
             let mut trimmed_value = value;
-            let original = format::render_for_operation(
-                &trimmed_value,
-                output_format,
-                title,
-                discovery,
-                operation,
-            );
-            let mut excess = success_text_bytes(&original)
-                .saturating_sub(budget)
-                .saturating_add(256);
-            let trimmed = if title == "get_code_snippet" {
+            let output_too_large = |value: &Value| {
+                oversized_response_error(
+                    value,
+                    output_format,
+                    operation,
+                    title,
+                    explain,
+                    discovery,
+                    budget,
+                )
+            };
+            let mut trimmed = if title == "get_code_snippet" {
                 trim_snippet_source_to_budget(
                     &mut trimmed_value,
                     output_format,
@@ -128,8 +123,34 @@ pub(crate) fn result_for_presented(
                     budget,
                 )
             } else {
-                trim_page_tails(&mut trimmed_value, &mut excess)
+                false
             };
+            if title != "get_code_snippet" {
+                loop {
+                    let mut compact_candidate = trimmed_value.clone();
+                    format::compact(&mut compact_candidate, operation, explain);
+                    let candidate = format::render_for_operation(
+                        &compact_candidate,
+                        output_format,
+                        title,
+                        discovery,
+                        operation,
+                    );
+                    let allow_tasks = title == "task_list"
+                        || (operation == OperationKind::Navigation
+                            && trimmed_value.get("tasks").is_some());
+                    if success_text_bytes(&candidate) <= budget
+                        || !trim_page_tails(
+                            &mut trimmed_value,
+                            allow_tasks,
+                            matches!(operation, OperationKind::Navigation | OperationKind::Sql),
+                        )
+                    {
+                        break;
+                    }
+                    trimmed = true;
+                }
+            }
             if !trimmed {
                 if title == "get_code_snippet" && trimmed_value.get("source_preview").is_some() {
                     return bounded_error(
@@ -137,7 +158,7 @@ pub(crate) fn result_for_presented(
                         budget,
                     );
                 }
-                return output_too_large();
+                return output_too_large(&trimmed_value);
             }
             format::compact(&mut trimmed_value, operation, explain);
             let rendered = format::render_for_operation(
@@ -148,7 +169,7 @@ pub(crate) fn result_for_presented(
                 operation,
             );
             if success_text_bytes(&rendered) > budget {
-                return output_too_large();
+                return output_too_large(&trimmed_value);
             }
             CallToolResult::success(vec![ContentBlock::text(rendered)])
         }
@@ -327,14 +348,9 @@ fn trim_snippet_source_to_budget(
     } else if body_offset == total_body_lines {
         for kept_leading in (0..=leading_lines).rev() {
             let leading_text = leading_parts[leading_lines - kept_leading..].concat();
-            let Some(candidate) = snippet_source_candidate(
-                value,
-                &source_page,
-                kept_leading,
-                0,
-                &leading_text,
-                "",
-            ) else {
+            let Some(candidate) =
+                snippet_source_candidate(value, &source_page, kept_leading, 0, &leading_text, "")
+            else {
                 return false;
             };
             if fits(&candidate) {
@@ -384,8 +400,7 @@ fn snippet_source_candidate(
     };
     let dropped_leading = page.original_leading.checked_sub(leading_lines)?;
     let omitted_leading = page.omitted_leading.checked_add(dropped_leading)?;
-    let start_line_value =
-        (!leading.is_empty() || !body.is_empty()).then_some(start_line);
+    let start_line_value = (!leading.is_empty() || !body.is_empty()).then_some(start_line);
     let mut candidate = original.clone();
     candidate["source"] = json!(format!("{leading}{body}"));
     {
@@ -401,10 +416,7 @@ fn snippet_source_candidate(
         );
         preview.insert("has_more".into(), json!(more));
         preview.insert("truncated_line".into(), json!(false));
-        preview.insert(
-            "next_source_offset".into(),
-            json!(more.then_some(next)),
-        );
+        preview.insert("next_source_offset".into(), json!(more.then_some(next)));
         preview.insert("continuation_hint".into(), json!(hint));
     }
     if let (Some(path), Some(start), Some(end)) = (
@@ -541,19 +553,11 @@ pub fn serialized_bytes(result: &CallToolResult) -> usize {
 #[derive(Default)]
 struct JsonByteCounter {
     bytes: usize,
-    escaped_bytes: usize,
 }
 
 impl io::Write for JsonByteCounter {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         self.bytes = self.bytes.saturating_add(bytes.len());
-        for byte in bytes {
-            self.escaped_bytes = self.escaped_bytes.saturating_add(match byte {
-                b'"' | b'\\' | b'\n' | b'\r' | b'\t' | 8 | 12 => 1,
-                0..=31 => 5,
-                _ => 0,
-            });
-        }
         Ok(bytes.len())
     }
 
@@ -562,17 +566,45 @@ impl io::Write for JsonByteCounter {
     }
 }
 
-fn escaped_json_bytes(value: &Value) -> usize {
-    let mut counter = JsonByteCounter::default();
-    if serde_json::to_writer(&mut counter, value).is_err() {
-        return usize::MAX;
-    }
-    counter.bytes.saturating_add(counter.escaped_bytes)
-}
-
 fn success_text_bytes(text: &str) -> usize {
     let result = CallToolResult::success(vec![ContentBlock::text(text)]);
     serialized_bytes(&result)
+}
+
+fn oversized_response_error(
+    value: &Value,
+    output_format: OutputFormat,
+    operation: OperationKind,
+    title: &str,
+    explain: Option<bool>,
+    discovery: Option<DiscoveryKind>,
+    budget: usize,
+) -> CallToolResult {
+    let is_task_list = title == "task_list"
+        || (operation == OperationKind::Navigation && value.get("tasks").is_some());
+    let message = if is_task_list {
+        if value
+            .get("tasks")
+            .and_then(Value::as_array)
+            .is_some_and(|tasks| tasks.len() == 1)
+        {
+            let mut metadata = value.clone();
+            metadata["tasks"] = json!([]);
+            format::compact(&mut metadata, operation, explain);
+            let rendered =
+                format::render_for_operation(&metadata, output_format, title, discovery, operation);
+            if success_text_bytes(&rendered) <= budget {
+                "One complete task record exceeds the configured byte limit. Request compact task details, a smaller page, or a narrower filter; no partial task or continuation was returned."
+            } else {
+                "Required task-list pagination metadata exceeds the configured byte limit. Narrow the workspace or filters; no partial task or continuation was returned."
+            }
+        } else {
+            "Task-list pagination metadata exceeds the configured byte limit. Narrow the workspace or filters; no partial task or continuation was returned."
+        }
+    } else {
+        "Output exceeds the response byte limit because a complete item cannot fit. Use detail='compact', a smaller page, a narrower filter, or read the oversized record from its source; no partial item was returned and no continuation was consumed."
+    };
+    bounded_error(message, budget)
 }
 
 /// Performs enforce.
@@ -619,45 +651,142 @@ pub fn bounded_error(message: &str, budget: usize) -> CallToolResult {
     }
 }
 
-fn trim_page_tails(value: &mut Value, excess: &mut usize) -> bool {
+fn trim_page_tails(
+    value: &mut Value,
+    allow_tasks: bool,
+    allow_items: bool,
+) -> bool {
     let Some(object) = value.as_object_mut() else {
         return false;
     };
-    let mut trimmed = false;
-    if object.contains_key("total")
-        && (object.contains_key("next_offset")
-            || object.contains_key("offset")
-            || object.contains_key("has_more"))
-    {
-        if let Some(items) = object.get_mut("items").and_then(Value::as_array_mut) {
-            while items.len() > 1 && *excess > 0 {
-                let removed = items.pop().expect("page tail exists");
-                *excess = excess.saturating_sub(escaped_json_bytes(&removed).saturating_add(1));
-                trimmed = true;
-            }
-            if trimmed {
-                let returned = items.len();
-                let offset = object.get("offset").and_then(Value::as_u64).unwrap_or(0);
-                let next = offset.saturating_add(returned as u64);
-                object.insert("has_more".into(), json!(true));
-                object.insert("next_offset".into(), json!(next));
-                object.insert("byte_limited".into(), json!(true));
-                object.insert("continuation_hint".into(), json!(format!("Repeat the same tool and filters with offset={next} and this page's generation; items after this offset were omitted to respect max_output_bytes.")));
+    if allow_tasks {
+        if let Some(pagination) = object.get("pagination").and_then(Value::as_object).cloned() {
+            let page_is_continuable = pagination.get("total").and_then(Value::as_u64).is_some()
+                && pagination.get("offset").and_then(Value::as_u64).is_some()
+                && pagination
+                    .get("generation")
+                    .and_then(Value::as_str)
+                    .is_some_and(|generation| !generation.is_empty());
+            if page_is_continuable {
+                if let Some(tasks) = object.get_mut("tasks").and_then(Value::as_array_mut) {
+                    if tasks.len() > 1 {
+                        tasks.pop();
+                        let returned = tasks.len() as u64;
+                        let offset = pagination
+                            .get("offset")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0);
+                        let total = pagination
+                            .get("total")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(returned);
+                        let next = offset.saturating_add(returned);
+                        if let Some(page) =
+                            object.get_mut("pagination").and_then(Value::as_object_mut)
+                        {
+                            page.insert("returned".into(), json!(returned));
+                            let omitted = page
+                                .get("byte_omitted")
+                                .and_then(Value::as_u64)
+                                .unwrap_or(0);
+                            page.insert("byte_omitted".into(), json!(omitted.saturating_add(1)));
+                            page.insert("has_more".into(), json!(next < total));
+                            let filters = page.get("filters").cloned().unwrap_or(Value::Null);
+                            let generation = page
+                                .get("generation")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .to_owned();
+                            if next < total {
+                                page.insert("next_offset".into(), json!(next));
+                                let hint = page
+                                    .get("continuation_hint")
+                                    .and_then(Value::as_object)
+                                    .cloned();
+                                if let Some(mut hint) = hint {
+                                    hint.insert("offset".into(), json!(next));
+                                    hint.insert("generation".into(), json!(generation));
+                                    page.insert("continuation_hint".into(), Value::Object(hint));
+                                } else {
+                                    page.insert("continuation_hint".into(), json!(format!("Repeat task_list with the same filters ({filters}) and generation={generation}, offset={next}.")));
+                                }
+                            } else {
+                                page.remove("next_offset");
+                                page.insert("continuation_hint".into(), json!(format!(
+                            "No next page. Repeat task_list with the same filters ({filters}) at offset=0 to refresh; generation={generation}."
+                        )));
+                            }
+                        }
+                        return true;
+                    }
+                }
             }
         }
     }
-    if *excess == 0 {
-        return trimmed;
+    if allow_tasks && object.contains_key("tasks") {
+        return false;
+    }
+    let total = object.get("total").and_then(Value::as_u64);
+    let offset = object.get("offset").and_then(Value::as_u64);
+    let generation = object
+        .get("generation")
+        .and_then(Value::as_str)
+        .filter(|generation| !generation.is_empty())
+        .map(str::to_owned);
+    let has_more = object.get("has_more").and_then(Value::as_bool) == Some(true);
+    let has_usable_cursor = object.get("next_offset").and_then(Value::as_u64).is_some();
+    if allow_items
+        && offset.is_some()
+        && generation.is_some()
+        && (total.is_some() || (has_more && has_usable_cursor))
+    {
+        if let Some(items) = object.get_mut("items").and_then(Value::as_array_mut) {
+            if items.len() > 1 {
+                items.pop();
+                let returned = items.len();
+                let offset = offset.unwrap_or_default();
+                let returned = returned as u64;
+                let next = offset.saturating_add(returned);
+                let has_more = total.map_or(has_more, |total| next < total);
+                let omitted = object
+                    .get("byte_omitted")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                object.insert("returned".into(), json!(returned));
+                object.insert("byte_omitted".into(), json!(omitted.saturating_add(1)));
+                object.insert("has_more".into(), json!(has_more));
+                if has_more {
+                    object.insert("next_offset".into(), json!(next));
+                    object.insert("byte_limited".into(), json!(true));
+                    let generation = generation.unwrap_or_default();
+                    let filters = object
+                        .get("filters")
+                        .or_else(|| object.get("request_scope"))
+                        .or_else(|| {
+                            object
+                                .get("continuation_hint")
+                                .filter(|hint| hint.is_object())
+                        })
+                        .cloned()
+                        .unwrap_or(json!("the original request filters"));
+                    object.insert("continuation_hint".into(), json!(format!("Repeat the same tool and filters ({filters}) with generation={generation} and offset={next}; whole items after this offset were omitted to respect max_output_bytes.")));
+                } else {
+                    object.remove("next_offset");
+                    object.remove("continuation_hint");
+                }
+                return true;
+            }
+            return false;
+        }
     }
     // Preserve scalar node metadata, source continuation and freshness evidence.
     // Collection boundaries are produced by the database; arbitrary arrays are not pages.
     for child in object.values_mut() {
-        trimmed |= trim_page_tails(child, excess);
-        if *excess == 0 {
-            break;
+        if trim_page_tails(child, allow_tasks, allow_items) {
+            return true;
         }
     }
-    trimmed
+    false
 }
 
 /// Performs stdio.
@@ -765,7 +894,7 @@ fn protocol_limit_error(prefix: &[u8]) -> Vec<u8> {
             matches!(id, Value::String(_) | Value::Number(_)) && id.to_string().len() <= 128
         })
         .unwrap_or(Value::Null);
-    let mut bytes = json!({"jsonrpc":"2.0","id":id,"error":{"code":-32603,"message":"Response exceeds 65536 bytes. Narrow the request arguments or output. Request ids longer than 128 bytes are omitted from this error."}}).to_string().into_bytes();
+    let mut bytes = json!({"jsonrpc":"2.0","id":id,"error":{"code":-32603,"message":format!("Response exceeds {MAX_OUTPUT_BYTES} bytes. Narrow the request arguments or output. Request ids longer than 128 bytes are omitted from this error.")}}).to_string().into_bytes();
     bytes.push(b'\n');
     bytes
 }

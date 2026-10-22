@@ -89,11 +89,114 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
             .len(),
         1
     );
-    let all = client.payload("task_list", json!({"repository":"all"}));
+    let all = client.payload(
+        "task_list",
+        json!({"repository":"all","milestone_status":"all"}),
+    );
     assert_eq!(all["tasks"].as_array().unwrap().len(), 2);
     assert_eq!(
         all["workspaces"]["traverse/traverse"]["workspace_root"],
         linked.0.to_str().unwrap()
+    );
+    let first_workspace_page = client.payload(
+        "task_list",
+        json!({"repository":"all","milestone_status":"all","limit":1,"offset":0}),
+    );
+    assert_eq!(first_workspace_page["pagination"]["total"], 2);
+    assert_eq!(first_workspace_page["pagination"]["returned"], 1);
+    assert_eq!(first_workspace_page["pagination"]["next_offset"], 1);
+    assert_eq!(first_workspace_page["pagination"]["has_more"], true);
+    assert_eq!(
+        first_workspace_page["workspaces"]["traverse/traverse"]["workspace_root"],
+        linked.0.to_str().unwrap()
+    );
+    let all_generation = first_workspace_page["pagination"]["generation"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let second_workspace_page = client.payload(
+        "task_list",
+        json!({
+            "repository":"all",
+            "milestone_status":"all",
+            "limit":1,
+            "offset":1,
+            "generation":all_generation
+        }),
+    );
+    let mut paged_ids = vec![
+        first_workspace_page["tasks"][0]["task_id"]
+            .as_str()
+            .unwrap()
+            .to_owned(),
+        second_workspace_page["tasks"][0]["task_id"]
+            .as_str()
+            .unwrap()
+            .to_owned(),
+    ];
+    let mut all_ids = all["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|task| task["task_id"].as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    paged_ids.sort();
+    all_ids.sort();
+    assert_eq!(paged_ids, all_ids);
+    let root_mixed_token = client.call(
+        "task_list",
+        json!({
+            "repository":"traverse",
+            "limit":1,
+            "offset":1,
+            "generation":all_generation
+        }),
+    );
+    assert!(
+        root_mixed_token.1["error"].is_object() || root_mixed_token.1["result"]["isError"] == true
+    );
+    let worktree_mixed_token = client.call(
+        "task_list",
+        json!({
+            "worktree":linked.0,
+            "repository":"all",
+            "milestone_status":"all",
+            "limit":1,
+            "offset":1,
+            "generation":all_generation
+        }),
+    );
+    assert!(
+        worktree_mixed_token.1["error"].is_object()
+            || worktree_mixed_token.1["result"]["isError"] == true
+    );
+    let cli_first_workspace_page = json_cli()
+        .args([
+            "--root",
+            main.0.to_str().unwrap(),
+            "task",
+            "list",
+            "--repository",
+            "all",
+            "--milestone-status",
+            "all",
+            "--limit",
+            "1",
+            "--offset",
+            "0",
+        ])
+        .output()
+        .unwrap();
+    assert!(cli_first_workspace_page.status.success());
+    let cli_first_workspace_page: Value =
+        serde_json::from_slice(&cli_first_workspace_page.stdout).unwrap();
+    assert_eq!(
+        cli_first_workspace_page["pagination"],
+        first_workspace_page["pagination"]
+    );
+    assert_eq!(
+        cli_first_workspace_page["tasks"],
+        first_workspace_page["tasks"]
     );
     let selected = client.payload("task_list", json!({"repository":"traverse"}));
     assert_eq!(selected["workspace_root"], linked.0.to_str().unwrap());
@@ -120,6 +223,8 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
             "task",
             "list",
             "--repository",
+            "all",
+            "--milestone-status",
             "all",
         ])
         .output()
@@ -158,10 +263,7 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
     let expected_scope_uris = [
         format!("file://{}/src", linked.0.display()),
         format!("file://{}/src/lib.rs", linked.0.display()),
-        format!(
-            "file://{}/src/space%20%23%20%CE%BB.rs",
-            linked.0.display()
-        ),
+        format!("file://{}/src/space%20%23%20%CE%BB.rs", linked.0.display()),
     ];
     let mut missing_scope_links = Vec::new();
     for uri in &expected_scope_uris {
@@ -598,8 +700,7 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
             let persisted_context =
                 client.payload("task_manage", json!({"action":"context","task_id":id}));
             assert_eq!(
-                persisted_context["workflow_guidance"]["rejection"]["findings"],
-                untrusted_findings,
+                persisted_context["workflow_guidance"]["rejection"]["findings"], untrusted_findings,
                 "{persisted_context}"
             );
             assert!(persisted_context.get("_presentation_scope_uris").is_none());
@@ -620,8 +721,14 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
                 ("src/lib.rs", "http://attacker.invalid/source"),
                 ("src/lib.rs", "javascript:alert(1)"),
             ] {
-                assert!(findings_markdown.contains(label), "missing literal finding {label}");
-                assert!(findings_markdown.contains(uri), "missing literal finding URI {uri}");
+                assert!(
+                    findings_markdown.contains(label),
+                    "missing literal finding {label}"
+                );
+                assert!(
+                    findings_markdown.contains(uri),
+                    "missing literal finding URI {uri}"
+                );
                 assert!(
                     !findings_markdown.contains(&format!("[{label}]({uri})")),
                     "untrusted finding became a clickable link: {label} -> {uri}\n{findings_markdown}"
@@ -661,7 +768,10 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
                 json!({"task_id":id,"stage":"review","worker_id":"reviewer","worktree":linked.0}),
             );
             let candidate = candidate_commit.as_deref().unwrap();
-            assert_eq!(claim["context_bundle"]["candidate_snapshot"]["commit"], candidate);
+            assert_eq!(
+                claim["context_bundle"]["candidate_snapshot"]["commit"],
+                candidate
+            );
             evidence["claim_revision"] = claim["claim_revision"].clone();
             evidence["commit"] = json!(&candidate[..7]);
         }
@@ -714,8 +824,12 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
     );
     for gate in restored["gates"].as_array().unwrap() {
         let gate_commit = gate["commit"].as_str().unwrap();
-        assert!(candidate_commits.iter().any(|candidate| candidate == gate_commit)
-            || gate_commit == delivery_commit);
+        assert!(
+            candidate_commits
+                .iter()
+                .any(|candidate| candidate == gate_commit)
+                || gate_commit == delivery_commit
+        );
         let evidence: Value = serde_json::from_str(gate["evidence"].as_str().unwrap()).unwrap();
         assert_eq!(evidence["commit"], gate["commit"]);
     }
@@ -754,11 +868,17 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
         bounded_bytes <= 4096,
         "configured 4-KiB task response was {bounded_bytes} bytes: {bounded_response}"
     );
-    assert_eq!(bounded_response["result"]["isError"], true, "{bounded_response}");
-    assert!(bounded_response["result"]["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("Output exceeds the response byte limit"), "{bounded_response}");
+    assert_eq!(
+        bounded_response["result"]["isError"], true,
+        "{bounded_response}"
+    );
+    assert!(
+        bounded_response["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Output exceeds the response byte limit"),
+        "{bounded_response}"
+    );
     assert!(
         missing_scope_links.is_empty(),
         "scope presentation contract failures: {missing_scope_links:#?}\nMCP:\n{inspect_markdown}\nCLI:\n{cli_markdown}"
@@ -1097,8 +1217,9 @@ fn mcp_task_claim_guidance_includes_rules_without_schema_bloat() {
     let (_, catalog) = client.request("tools/list", json!({}));
     let catalog_text = serde_json::to_string(&catalog).unwrap();
     assert!(
-        serde_json::to_vec(&catalog).unwrap().len() <= 65_536,
-        "MCP tool catalog exceeded the 64 KiB response budget"
+        serde_json::to_vec(&catalog).unwrap().len()
+            <= contextunity_forge_mcp::core::response::MAX_OUTPUT_BYTES,
+        "MCP tool catalog exceeded the maximum response budget"
     );
     assert!(!catalog_text.contains(PROTECTED_RULE));
     for rule_prefix in ["ISOLATION:", "IMMUTABILITY:", "INDEPENDENCE:"] {
@@ -1398,10 +1519,8 @@ fn task_blackboard_mcp_and_cli_share_sqlite_messages() {
     );
     let cli_list_markdown = std::str::from_utf8(&cli_list_markdown.stdout).unwrap();
     assert_eq!(mcp_list_markdown.trim_end(), cli_list_markdown.trim_end());
-    assert!(
-        mcp_list_markdown
-            .contains("[auto-resolved task 'first' to parent milestone 'm-blackboard']")
-    );
+    assert!(mcp_list_markdown
+        .contains("[auto-resolved task 'first' to parent milestone 'm-blackboard']"));
     assert_eq!(
         mcp_list_markdown
             .matches("[auto-resolved task 'first' to parent milestone 'm-blackboard']")
@@ -1615,10 +1734,8 @@ fn task_blackboard_mcp_and_cli_share_sqlite_messages() {
         mcp_fallback_markdown.trim_end(),
         cli_fallback_markdown.trim_end()
     );
-    assert!(
-        mcp_fallback_markdown
-            .contains("[auto-resolved task 'first' to parent milestone 'm-blackboard']")
-    );
+    assert!(mcp_fallback_markdown
+        .contains("[auto-resolved task 'first' to parent milestone 'm-blackboard']"));
     assert_eq!(
         mcp_fallback_markdown
             .matches("[auto-resolved task 'first' to parent milestone 'm-blackboard']")
@@ -2711,10 +2828,12 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
 
 #[test]
 fn task_list_status_filter_is_typed_and_cli_flags_are_available() {
+    use contextunity_forge_mcp::{core::tasks::Milestone, db::tasks_store::TasksStore};
+
     let workspace = Workspace::new();
     workspace.write(
         "forge-mcp.yaml",
-        "roots: []\ndocs: []\ntasks_db: tasks.sqlite\n",
+        "roots: [src]\ndocs: []\ntasks_db: tasks.sqlite\n",
     );
     fs::create_dir_all(workspace.0.join("src")).unwrap();
     fs::create_dir_all(workspace.0.join("docs/milestones")).unwrap();
@@ -2722,7 +2841,7 @@ fn task_list_status_filter_is_typed_and_cli_flags_are_available() {
     workspace.write("src/lib.rs", "pub fn task_list_fixture() {}\n");
     workspace.write(
         "docs/milestones/010-active.md",
-        "---\nid: m-task-list\ntitle: Task list\ndoc_type: contract\nstatus: active\n---\n# Tasks\n```yaml\ntask_ref: visible\ntarget: Visible task\nproof_policy: direct-proof\nscope: [src/]\nsubtasks:\n  - subtask_ref: explain\n    title: Detailed subtask\n    status: completed\n    evidence: Verified through the listing seam\n```\n",
+        "---\nid: m-task-list\ntitle: Task list\ndoc_type: contract\nstatus: active\n---\n# Tasks\n```yaml\ntask_ref: visible\ntarget: Visible task\nproof_policy: direct-proof\nscope: [src/]\nsubtasks:\n  - subtask_ref: explain\n    title: Detailed subtask\n    status: completed\n    evidence: Verified through the listing seam\n  - subtask_ref: ready-case\n    title: Ready subtask\n    status: ready\n  - subtask_ref: progress-case\n    title: In progress subtask\n    status: in_progress\n  - subtask_ref: blocked-case\n    title: Blocked subtask\n    status: blocked\n  - subtask_ref: cancelled-case\n    title: Cancelled subtask\n    status: cancelled\n```\n",
     );
     workspace.write(
         "docs/milestones/011-planned.md",
@@ -2756,6 +2875,21 @@ fn task_list_status_filter_is_typed_and_cli_flags_are_available() {
         .iter()
         .find(|tool| tool["name"] == "task_list")
         .unwrap();
+    let (_, raw_page) = client.call("task_list", json!({"limit":1,"offset":0,"format":"json"}));
+    assert!(
+        raw_page["result"].is_object() && raw_page["result"]["isError"] != true,
+        "task_list rejected raw pagination parameters: {}",
+        raw_page
+    );
+    let raw_page: Value =
+        serde_json::from_str(raw_page["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(raw_page["pagination"]["total"], 1);
+    assert_eq!(raw_page["pagination"]["limit"], 1);
+    assert_eq!(raw_page["pagination"]["returned"], 1);
+    assert!(!raw_page["pagination"]["generation"]
+        .as_str()
+        .unwrap()
+        .is_empty());
     let status_schema =
         serde_json::to_string(&task_list["inputSchema"]["properties"]["milestone_status"]).unwrap();
     for status in ["active", "planned", "completed", "all"] {
@@ -2774,6 +2908,15 @@ fn task_list_status_filter_is_typed_and_cli_flags_are_available() {
         "all",
     ] {
         assert!(task_status_schema.contains(status));
+    }
+    for parameter in ["limit", "offset", "generation"] {
+        assert!(
+            task_list["inputSchema"]["properties"]
+                .get(parameter)
+                .is_some(),
+            "task_list schema omitted {parameter}: {}",
+            task_list["inputSchema"]
+        );
     }
     assert!(task_list["inputSchema"]["properties"]
         .get("include_archived")
@@ -2872,6 +3015,7 @@ fn task_list_status_filter_is_typed_and_cli_flags_are_available() {
     let compact_subtask = &compact["tasks"][0]["subtasks"][0];
     assert_eq!(compact_subtask["subtask_ref"], "explain");
     assert_eq!(compact_subtask["status"], "completed");
+    assert_eq!(compact["tasks"][0]["subtasks"].as_array().unwrap().len(), 5);
     assert!(compact_subtask.get("title").is_none());
     assert!(compact_subtask.get("evidence").is_none());
 
@@ -2889,6 +3033,118 @@ fn task_list_status_filter_is_typed_and_cli_flags_are_available() {
     assert!(full_markdown.contains("Detailed subtask"));
     assert!(full_markdown.contains("Verified through the listing seam"));
     assert!(full_markdown.contains("completed"));
+    assert_eq!(full_markdown.matches("- [x]").count(), 1, "{full_markdown}");
+    assert_eq!(full_markdown.matches("- [ ]").count(), 5, "{full_markdown}");
+    for (subtask_ref, status) in [
+        ("explain", "completed"),
+        ("ready-case", "ready"),
+        ("progress-case", "in_progress"),
+        ("blocked-case", "blocked"),
+        ("cancelled-case", "cancelled"),
+    ] {
+        let subtask = full["tasks"][0]["subtasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|subtask| subtask["subtask_ref"] == subtask_ref)
+            .unwrap();
+        assert_eq!(subtask["status"], status);
+        assert!(full_markdown.contains(subtask_ref));
+    }
+
+    let task_statuses = [
+        ("ready", "ready"),
+        ("in-progress", "in_progress"),
+        ("blocked", "blocked"),
+        ("parked", "parked"),
+        ("completed", "completed"),
+        ("cancelled", "cancelled"),
+    ];
+    let mut status_manifest = String::from(
+        "---\nid: m-task-statuses\ntitle: Task Statuses\ndoc_type: contract\nstatus: active\n---\n# Tasks\n",
+    );
+    for (task_ref, _) in task_statuses {
+        let scope = format!("src/status-{task_ref}.rs");
+        workspace.write(&scope, "pub fn task_status_fixture() {}\n");
+        status_manifest.push_str(&format!(
+            "```yaml\ntask_ref: status-{task_ref}\ntarget: {task_ref} task\nproof_policy: direct-proof\nscope: [{scope}]\n```\n"
+        ));
+    }
+    let status_path = "docs/milestones/012-statuses.md";
+    workspace.write(status_path, &status_manifest);
+    let status_milestone = Milestone::parse(&status_manifest, "forge-mcp").unwrap();
+    let mut task_store = TasksStore::open(&workspace.0.join("tasks.sqlite")).unwrap();
+    task_store
+        .sync(&status_milestone, status_path, &workspace.0)
+        .unwrap();
+    for (task_ref, status) in task_statuses {
+        let task_id = format!("forge-mcp/m-task-statuses:status-{task_ref}");
+        task_store
+            .connection
+            .execute(
+                "UPDATE tasks SET descriptor=json_set(descriptor, '$.status', ?1) WHERE task_id=?2",
+                rusqlite::params![status, task_id],
+            )
+            .unwrap();
+    }
+    drop(task_store);
+
+    let all_task_states = client.payload(
+        "task_list",
+        json!({"milestone_ref":"012-statuses","status":"all"}),
+    );
+    let listed_states = all_task_states["tasks"].as_array().unwrap();
+    assert_eq!(listed_states.len(), task_statuses.len());
+    for (_, status) in task_statuses {
+        assert!(listed_states.iter().any(|task| task["status"] == status));
+    }
+    for (_, status) in task_statuses {
+        let filtered = client.payload(
+            "task_list",
+            json!({"milestone_ref":"012-statuses","status":status}),
+        );
+        assert_eq!(filtered["tasks"].as_array().unwrap().len(), 1, "{status}");
+        assert_eq!(filtered["tasks"][0]["status"], status);
+    }
+    let all_status_filter = client.payload(
+        "task_list",
+        json!({"milestone_ref":"012-statuses","status":"all"}),
+    );
+    assert_eq!(all_status_filter["tasks"].as_array().unwrap().len(), 6);
+    let cancelled_task = listed_states
+        .iter()
+        .find(|task| task["status"] == "cancelled")
+        .unwrap();
+    assert_ne!(cancelled_task["status"], "completed");
+
+    let (_, task_status_markdown_response) = client.call(
+        "task_list",
+        json!({"milestone_ref":"012-statuses","status":"all"}),
+    );
+    let task_status_markdown = task_status_markdown_response["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap();
+    assert_eq!(task_status_markdown.matches("- [x]").count(), 1);
+    assert_eq!(task_status_markdown.matches("- [ ]").count(), 5);
+    for (task_ref, status) in task_statuses {
+        let task_id = format!("forge-mcp/m-task-statuses:status-{task_ref}");
+        let heading = format!("### `{task_id}`");
+        let section = task_status_markdown
+            .split_once(&heading)
+            .unwrap_or_else(|| panic!("missing task heading {heading}: {task_status_markdown}"))
+            .1
+            .split("\n### ")
+            .next()
+            .unwrap();
+        let checkbox = if status == "completed" {
+            "- [x]"
+        } else {
+            "- [ ]"
+        };
+        assert!(section.contains(checkbox), "{status}: {section}");
+        assert!(section.contains(status), "{status}: {section}");
+    }
+
     let subtask_details = client.payload(
         "task_manage",
         json!({"action":"subtask_list","task_id":task_id}),
@@ -2911,6 +3167,8 @@ fn task_list_status_filter_is_typed_and_cli_flags_are_available() {
             workspace.0.to_str().unwrap(),
             "task",
             "list",
+            "--milestone",
+            "010-active",
             "--milestone-status",
             "active",
             "--full",
@@ -2933,6 +3191,8 @@ fn task_list_status_filter_is_typed_and_cli_flags_are_available() {
             workspace.0.to_str().unwrap(),
             "task",
             "list",
+            "--milestone",
+            "010-active",
             "--milestone-status",
             "active",
             "--full",
@@ -2963,6 +3223,513 @@ fn task_list_status_filter_is_typed_and_cli_flags_are_available() {
             .unwrap();
         assert!(!conflict.status.success());
     }
+
+    let large_target = format!("{} \"quoted\" \\slash", "λ".repeat(36_000));
+    let mut large_manifest = String::from(
+        "---\nid: m-large\ntitle: Large Task Pages\ndoc_type: contract\nstatus: active\n---\n# Tasks\n",
+    );
+    for index in 0..4 {
+        let scope = format!("src/large-{index}.rs");
+        workspace.write(&scope, "pub fn large_task_fixture() {}\n");
+        large_manifest.push_str(&format!(
+            "```yaml\ntask_ref: large-{index}\ntarget: {large_target}\nproof_policy: direct-proof\nscope: [{scope}]\nsubtasks:\n  - subtask_ref: done\n    title: Completed nested row\n    status: completed\n  - subtask_ref: ready-case\n    title: Ready nested row\n    status: ready\n  - subtask_ref: progress-case\n    title: In progress nested row\n    status: in_progress\n  - subtask_ref: blocked-case\n    title: Blocked nested row\n    status: blocked\n  - subtask_ref: cancelled-case\n    title: Cancelled nested row\n    status: cancelled\n```\n"
+        ));
+    }
+    let large_path = "docs/milestones/013-large.md";
+    workspace.write(large_path, &large_manifest);
+    let mut fixture_store = TasksStore::open(&workspace.0.join("tasks.sqlite")).unwrap();
+    fixture_store
+        .sync(
+            &Milestone::parse(&large_manifest, "forge-mcp").unwrap(),
+            large_path,
+            &workspace.0,
+        )
+        .unwrap();
+
+    let (large_frame_bytes, large_response) = client.call(
+        "task_list",
+        json!({
+            "milestone_ref":"013-large",
+            "status":"all",
+            "detail":"full",
+            "limit":3,
+            "offset":0,
+            "format":"json"
+        }),
+    );
+    assert!(
+        large_frame_bytes <= 98_304,
+        "frame was {large_frame_bytes} bytes"
+    );
+    assert_ne!(
+        large_response["result"]["isError"], true,
+        "{large_response}"
+    );
+    let large_page: Value = serde_json::from_str(
+        large_response["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(large_page["pagination"]["total"], 4);
+    assert_eq!(large_page["pagination"]["limit"], 3);
+    assert_eq!(large_page["pagination"]["offset"], 0);
+    assert_eq!(large_page["pagination"]["returned"], 1);
+    assert_eq!(large_page["pagination"]["byte_omitted"], 2);
+    assert_eq!(large_page["pagination"]["next_offset"], 1);
+    assert_eq!(large_page["pagination"]["has_more"], true);
+    let large_generation = large_page["pagination"]["generation"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(!large_generation.is_empty());
+    assert_eq!(large_page["tasks"].as_array().unwrap().len(), 1);
+    assert_eq!(large_page["tasks"][0]["target"], large_target);
+    assert_eq!(
+        large_page["tasks"][0]["subtasks"].as_array().unwrap().len(),
+        5
+    );
+    assert_eq!(large_page["tasks"][0]["subtasks"][0]["status"], "completed");
+    let continuation_hint = large_page["pagination"]["continuation_hint"].to_string();
+    for filter in ["013-large", "all", "full", &large_generation] {
+        assert!(continuation_hint.contains(filter), "{continuation_hint}");
+    }
+    assert!(continuation_hint.contains("workspace"));
+
+    let (large_markdown_bytes, large_markdown_response) = client.call(
+        "task_list",
+        json!({
+            "milestone_ref":"013-large",
+            "status":"all",
+            "detail":"full",
+            "limit":1,
+            "offset":0,
+            "format":"markdown"
+        }),
+    );
+    assert!(large_markdown_bytes > 64 * 1024);
+    assert!(large_markdown_bytes <= 98_304);
+    assert_ne!(large_markdown_response["result"]["isError"], true);
+    let large_markdown = large_markdown_response["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap();
+    assert!(large_markdown.contains(&"λ".repeat(36_000)));
+    for (subtask_ref, status, marker) in [
+        ("done", "completed", "- [x]"),
+        ("ready-case", "ready", "- [ ]"),
+        ("progress-case", "in_progress", "- [ ]"),
+        ("blocked-case", "blocked", "- [ ]"),
+        ("cancelled-case", "cancelled", "- [ ]"),
+    ] {
+        let line = large_markdown
+            .lines()
+            .find(|line| line.contains(&format!("**Subtask**: `{subtask_ref}`")))
+            .unwrap_or_else(|| panic!("missing rendered subtask {subtask_ref}: {large_markdown}"));
+        assert!(line.contains(marker), "{subtask_ref}: {line}");
+        assert!(line.contains(status), "{subtask_ref}: {line}");
+    }
+
+    let cli_large = json_cli()
+        .args([
+            "--root",
+            workspace.0.to_str().unwrap(),
+            "task",
+            "list",
+            "--milestone",
+            "013-large",
+            "--status",
+            "all",
+            "--detail",
+            "full",
+            "--limit",
+            "3",
+            "--offset",
+            "0",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        cli_large.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli_large.stderr)
+    );
+    let cli_large: Value = serde_json::from_slice(&cli_large.stdout).unwrap();
+    assert_eq!(cli_large["tasks"], large_page["tasks"]);
+    assert_eq!(cli_large["pagination"], large_page["pagination"]);
+
+    let default_page = client.payload(
+        "task_list",
+        json!({"milestone_ref":"013-large","status":"all"}),
+    );
+    assert_eq!(default_page["pagination"]["limit"], 30);
+    for limit in [1, 30, 100] {
+        let page = client.payload(
+            "task_list",
+            json!({
+                "milestone_ref":"013-large",
+                "status":"all",
+                "limit":limit,
+                "offset":0
+            }),
+        );
+        assert_eq!(page["pagination"]["limit"], limit);
+        assert!(page["pagination"]["returned"].as_u64().unwrap() <= limit);
+        let limit_arg = limit.to_string();
+        let cli_page = json_cli()
+            .args([
+                "--root",
+                workspace.0.to_str().unwrap(),
+                "task",
+                "list",
+                "--milestone",
+                "013-large",
+                "--status",
+                "all",
+                "--detail",
+                "compact",
+                "--limit",
+                limit_arg.as_str(),
+                "--offset",
+                "0",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            cli_page.status.success(),
+            "{}",
+            String::from_utf8_lossy(&cli_page.stderr)
+        );
+        let cli_page: Value = serde_json::from_slice(&cli_page.stdout).unwrap();
+        assert_eq!(cli_page["pagination"], page["pagination"]);
+        assert_eq!(cli_page["tasks"], page["tasks"]);
+    }
+    for limit in ["0", "101"] {
+        let cli_invalid = json_cli()
+            .args([
+                "--root",
+                workspace.0.to_str().unwrap(),
+                "task",
+                "list",
+                "--milestone",
+                "013-large",
+                "--limit",
+                limit,
+                "--offset",
+                "0",
+            ])
+            .output()
+            .unwrap();
+        assert!(!cli_invalid.status.success(), "limit={limit}");
+    }
+
+    let first_continuation = client.payload(
+        "task_list",
+        json!({
+            "milestone_ref":"013-large",
+            "status":"all",
+            "detail":"full",
+            "limit":3,
+            "offset":1,
+            "generation":large_generation
+        }),
+    );
+    assert_eq!(first_continuation["pagination"]["offset"], 1);
+    assert_eq!(first_continuation["pagination"]["returned"], 1);
+    assert_eq!(first_continuation["pagination"]["next_offset"], 2);
+    assert_eq!(first_continuation["pagination"]["has_more"], true);
+    let next_generation = first_continuation["pagination"]["generation"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(next_generation, large_generation);
+
+    let final_continuation = client.payload(
+        "task_list",
+        json!({
+            "milestone_ref":"013-large",
+            "status":"all",
+            "detail":"full",
+            "limit":3,
+            "offset":3,
+            "generation":large_generation
+        }),
+    );
+    assert_eq!(final_continuation["pagination"]["returned"], 1);
+    assert!(final_continuation["pagination"]
+        .get("next_offset")
+        .is_none());
+    assert_eq!(final_continuation["pagination"]["has_more"], false);
+
+    let empty_page = client.payload(
+        "task_list",
+        json!({
+            "milestone_ref":"013-large",
+            "status":"cancelled",
+            "limit":30,
+            "offset":0
+        }),
+    );
+    assert!(empty_page["tasks"].as_array().unwrap().is_empty());
+    assert_eq!(empty_page["pagination"]["total"], 0);
+    assert!(empty_page["pagination"].get("next_offset").is_none());
+    assert_eq!(empty_page["pagination"]["has_more"], false);
+
+    let missing_generation = client.call(
+        "task_list",
+        json!({"milestone_ref":"013-large","status":"all","limit":1,"offset":1}),
+    );
+    assert!(
+        missing_generation.1["error"].is_object()
+            || missing_generation.1["result"]["isError"] == true
+    );
+    for limit in [0, 101] {
+        let invalid = client.call(
+            "task_list",
+            json!({
+                "milestone_ref":"013-large",
+                "status":"all",
+                "limit":limit,
+                "offset":0
+            }),
+        );
+        assert!(invalid.1["error"].is_object() || invalid.1["result"]["isError"] == true);
+    }
+    let negative_offset = client.call(
+        "task_list",
+        json!({"milestone_ref":"013-large","status":"all","limit":1,"offset":-1}),
+    );
+    assert!(
+        negative_offset.1["error"].is_object() || negative_offset.1["result"]["isError"] == true
+    );
+    let overflow_offset = client.call(
+        "task_list",
+        json!({
+            "milestone_ref":"013-large",
+            "status":"all",
+            "limit":1,
+            "offset":u64::MAX,
+            "generation":large_generation
+        }),
+    );
+    assert!(
+        overflow_offset.1["error"].is_object() || overflow_offset.1["result"]["isError"] == true
+    );
+    let overflow_arg = u64::MAX.to_string();
+    let cli_overflow = json_cli()
+        .args([
+            "--root",
+            workspace.0.to_str().unwrap(),
+            "task",
+            "list",
+            "--milestone",
+            "013-large",
+            "--status",
+            "all",
+            "--limit",
+            "1",
+            "--offset",
+            overflow_arg.as_str(),
+            "--generation",
+            large_generation.as_str(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!cli_overflow.status.success());
+    let changed_filter = client.call(
+        "task_list",
+        json!({
+            "milestone_ref":"012-statuses",
+            "status":"all",
+            "detail":"full",
+            "limit":3,
+            "offset":1,
+            "generation":large_generation
+        }),
+    );
+    assert!(changed_filter.1["error"].is_object() || changed_filter.1["result"]["isError"] == true);
+    for changed_filters in [
+        json!({
+            "milestone_ref":"013-large",
+            "status":"ready",
+            "detail":"full",
+            "limit":3,
+            "offset":1,
+            "generation":large_generation
+        }),
+        json!({
+            "milestone_ref":"013-large",
+            "status":"all",
+            "detail":"compact",
+            "limit":3,
+            "offset":1,
+            "generation":large_generation
+        }),
+        json!({
+            "milestone_ref":"013-large",
+            "status":"all",
+            "detail":"full",
+            "limit":3,
+            "offset":1,
+            "generation":"not-a-task-view-token"
+        }),
+    ] {
+        let changed = client.call("task_list", changed_filters);
+        assert!(changed.1["error"].is_object() || changed.1["result"]["isError"] == true);
+    }
+
+    let oversize_target = format!("oversized {}", "界".repeat(40_000));
+    let oversized_manifest = format!(
+        "---\nid: m-oversized\ntitle: Oversized Task\ndoc_type: contract\nstatus: active\n---\n# Tasks\n```yaml\ntask_ref: one-record\ntarget: {oversize_target}\nproof_policy: direct-proof\nscope: [src/oversized.rs]\n```\n"
+    );
+    workspace.write("src/oversized.rs", "pub fn oversized_fixture() {}\n");
+    let oversized_path = "docs/milestones/014-oversized.md";
+    workspace.write(oversized_path, &oversized_manifest);
+    fixture_store
+        .sync(
+            &Milestone::parse(&oversized_manifest, "forge-mcp").unwrap(),
+            oversized_path,
+            &workspace.0,
+        )
+        .unwrap();
+    let (oversized_frame_bytes, oversized_response) = client.call(
+        "task_list",
+        json!({
+            "milestone_ref":"014-oversized",
+            "status":"all",
+            "limit":1,
+            "offset":0,
+            "format":"json"
+        }),
+    );
+    assert!(oversized_frame_bytes <= 98_304);
+    assert_eq!(oversized_response["result"]["isError"], true);
+    let oversized_message = oversized_response["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap();
+    assert!(
+        oversized_message.to_ascii_lowercase().contains("compact")
+            || oversized_message.to_ascii_lowercase().contains("narrow")
+    );
+    assert!(
+        oversized_message.to_ascii_lowercase().contains("task")
+            || oversized_message.to_ascii_lowercase().contains("record")
+    );
+
+    let index_before = client.payload(
+        "code_map_search",
+        json!({"pattern":"task_list_fixture","path":"src/lib.rs"}),
+    );
+    assert!(index_before["nodes"]["total"].as_u64().unwrap_or_default() > 0);
+    workspace.write("src/lib.rs", "pub fn task_list_fixture_reindexed() {}\n");
+    workspace.build_to(workspace.0.join(".forge/index.sqlite"));
+    crate::common::mcp_client::invalidate_mcp_connection_cache(
+        &workspace.0.join(".forge/index.sqlite"),
+    )
+    .unwrap();
+    let index_after = client.payload(
+        "code_map_search",
+        json!({"pattern":"task_list_fixture_reindexed","path":"src/lib.rs"}),
+    );
+    assert!(index_after["nodes"]["total"].as_u64().unwrap_or_default() > 0);
+    let index_only_continuation = client.payload(
+        "task_list",
+        json!({
+            "milestone_ref":"013-large",
+            "status":"all",
+            "detail":"full",
+            "limit":3,
+            "offset":1,
+            "generation":large_generation
+        }),
+    );
+    assert_eq!(index_only_continuation["pagination"]["offset"], 1);
+    assert_eq!(
+        index_only_continuation["pagination"]["generation"],
+        large_generation
+    );
+
+    let extended_manifest = format!(
+        "{large_manifest}```yaml\ntask_ref: large-extra\ntarget: Extra task after the first page\nproof_policy: direct-proof\nscope: [src/large-extra.rs]\n```\n"
+    );
+    workspace.write("src/large-extra.rs", "pub fn extra_large_fixture() {}\n");
+    let extended_path = "docs/milestones/013-large.md";
+    workspace.write(extended_path, &extended_manifest);
+    fixture_store
+        .sync(
+            &Milestone::parse(&extended_manifest, "forge-mcp").unwrap(),
+            extended_path,
+            &workspace.0,
+        )
+        .unwrap();
+    let stale_task_token = client.call(
+        "task_list",
+        json!({
+            "milestone_ref":"013-large",
+            "status":"all",
+            "detail":"full",
+            "limit":3,
+            "offset":1,
+            "generation":large_generation
+        }),
+    );
+    assert!(
+        stale_task_token.1["error"].is_object() || stale_task_token.1["result"]["isError"] == true
+    );
+
+    let current_page = client.payload(
+        "task_list",
+        json!({
+            "milestone_ref":"013-large",
+            "status":"all",
+            "detail":"full",
+            "limit":3,
+            "offset":0
+        }),
+    );
+    let current_generation = current_page["pagination"]["generation"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    fixture_store
+        .subtask_update("forge-mcp/m-large:large-0", "ready-case", "blocked", None)
+        .unwrap();
+    let stale_subtask_token = client.call(
+        "task_list",
+        json!({
+            "milestone_ref":"013-large",
+            "status":"all",
+            "detail":"full",
+            "limit":3,
+            "offset":1,
+            "generation":current_generation
+        }),
+    );
+    assert!(
+        stale_subtask_token.1["error"].is_object()
+            || stale_subtask_token.1["result"]["isError"] == true
+    );
+    let consistent_view = client.payload(
+        "task_list",
+        json!({
+            "milestone_ref":"013-large",
+            "status":"all",
+            "detail":"full",
+            "limit":1,
+            "offset":0
+        }),
+    );
+    let first_task = &consistent_view["tasks"][0];
+    assert_eq!(first_task["task_id"], "forge-mcp/m-large:large-0");
+    assert_eq!(first_task["status"], "ready");
+    assert_eq!(
+        first_task["subtasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|subtask| subtask["subtask_ref"] == "ready-case")
+            .unwrap()["status"],
+        "blocked"
+    );
 }
 
 #[test]

@@ -41,9 +41,11 @@ and indexed-page markup in `docs/AGENTS.md`.
 
 ## Query and response bounds
 
-Each SQLite query has a 2-second budget; unbounded queries fail fast. Responses cap at 64 KiB. Pages
-default to 30 items and allow at most 100. Continue when `next_offset > 0` by passing that offset and the
-prior generation token. MCP tools and CLI commands default to Markdown; pass `format: "json"` to an MCP
+Each SQLite query has a 2-second budget; unbounded queries fail fast. Responses cap at 96 KiB unless a
+lower configured limit applies. Pages default to 30 items and allow at most 100. Continue when a page
+provides `next_offset` by passing it and the prior generation token. Task-list generations bind the
+selected workspace, filters, and task/subtask state; they are independent of code-index generations.
+MCP tools and CLI commands default to Markdown; pass `format: "json"` to an MCP
 tool or global `--format json` to the CLI when a caller needs the JSON payload. Invalid format values
 fail before an operation runs. Prefer compact detail on broad queries; use full detail for a narrow entity.
 On budget errors, narrow the selector/path or reduce depth.

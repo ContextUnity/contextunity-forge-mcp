@@ -67,7 +67,10 @@ Apply byte-bound trimming before deciding which tokens are inactive. If trimming
 turns a complete page into a continuing page, emit its token and next offset.
 Never skip a removed tail item. Preserve existing single-oversized-item errors,
 source bounds, timeout recovery, and wire-size enforcement. Markdown escaping
-and JSON-RPC escaping count toward the existing response budget.
+and JSON-RPC escaping count toward the 96 KiB maximum response budget; a configured
+lower response limit remains authoritative. If a task-list tail is removed, update
+`returned`, `byte_omitted`, `has_more`, and the actual `next_offset`, retaining the
+generation and effective filter hint. Omit `next_offset` on the final page.
 
 Durable gate/content/candidate hashes and receipts are evidence, not display
 metadata. Task and checkpoint content retains all data admitted by its operation.
@@ -77,9 +80,20 @@ metadata. Task and checkpoint content retains all data admitted by its operation
 `task_list`, `task_claim`, `task_submit`, and `task_manage` use dedicated Markdown
 layouts. Task rows retain the returned task identity, target, actual status and
 profile stage, owner, agent type, revision, declared `depends_on` references, and
-the requested subtask detail. A cancelled task remains labelled `cancelled`; it
-is not rendered as completed. Listing filters and stored status transitions stay
-in the task engine.
+the requested subtask detail. Task and subtask status rows use Markdown checkboxes;
+only `completed` is checked, while `cancelled` and every other status remain
+unchecked and keep their actual status label. A cancelled task is never rendered
+as completed. Listing filters and stored status transitions stay in the task engine.
+
+`task_list` defaults to the unique active milestone in the selected workspace;
+no active milestone returns an empty page, and multiple active milestones require
+an explicit milestone selector or milestone status. Pages accept `limit` (1–100,
+default 30), `offset`, and `generation`; nonzero offsets require the prior task-view
+generation. The token binds workspace, milestone, filters, and complete task and
+subtask state, independently of the code index. Task or subtask changes and filter
+changes reject stale continuations; index-only changes do not. Results include
+`total`, actual `returned`, optional `next_offset`, `has_more`, `generation`, and
+`byte_omitted`. Trimming retains complete tasks with every nested subtask.
 
 `task_list` accepts safe logical milestone aliases such as `UX-001`,
 `docs/milestones/UX-001`, and `milestones/UX-001.md`, including one leading

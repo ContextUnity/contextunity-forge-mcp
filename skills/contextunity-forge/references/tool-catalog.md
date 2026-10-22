@@ -4,7 +4,7 @@ Use the active server registry and schemas as the final authority. This catalog 
 
 ## Task lifecycle
 
-- `task_list(worktree?, repository?, milestone_ref?, milestone_status?, status?, stage?, detail?)` lists tasks; defaults to ready tasks in active milestones. `milestone` aliases `milestone_ref`; `parked` selects work waiting for a scope owner, and `cancelled` selects retained cancelled tasks.
+- `task_list(worktree?, repository?, milestone_ref?, milestone_status?, status?, stage?, detail?, limit?, offset?, generation?)` lists tasks; defaults to ready tasks in the unique active milestone in the selected workspace. No active milestone returns an empty page; multiple active milestones require an explicit selector/status. `limit` is 1–100 (default 30); a nonzero `offset` requires the previous task-view `generation`. That token binds workspace, filters, and task/subtask state, independently of the code index. Byte trimming keeps whole tasks and subtasks and reports actual pagination. `milestone` aliases `milestone_ref`; `parked` selects work waiting for a scope owner, and `cancelled` selects retained cancelled tasks.
 - `task_claim(task_id, stage, worker_id, worktree, bundle?)` claims the current gate and returns its guidance/context. `task_submit(task_id, stage, action, evidence, findings?, worktree?)` submits claim-bound proof or review findings; its optional MCP routing selector does not change evidence identity.
 - `task show TASK_ID` aliases `task inspect TASK_ID`. Inspect and submit accept `--task TASK_ID`; sync accepts `--file PATH`. Use `task list --detail compact|full`; `--full` is supported but cannot be combined with `--detail`.
 - CLI-only milestone operations are `milestone init`, `list`, `show`, `handoff-context`, and `handoff`.

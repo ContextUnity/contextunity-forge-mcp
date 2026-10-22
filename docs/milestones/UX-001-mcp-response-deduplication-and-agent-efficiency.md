@@ -886,39 +886,99 @@ receipt:
 
 ```yaml
 task_ref: response-budget-96kib-and-graceful-task-list-truncation
-target: "Increase the MCP response budget to 96 KiB and implement graceful boundary truncation with scoped task listing and subtask checkboxes"
+target: Increase the MCP response budget to 96 KiB and implement graceful boundary truncation with scoped task listing and subtask checkboxes
 proof_policy: seam-test-first
-contract_revision: 3
+contract_revision: 5
 depends_on:
-  - normalize-and-resolve-milestone-references
-  - safe-source-snippet-continuation
+- normalize-and-resolve-milestone-references
+- safe-source-snippet-continuation
 scope:
-  - src/core/response.rs
-  - src/mcp/response.rs
-  - src/mcp/tools.rs
-  - src/db/tasks_store/mod.rs
-  - src/engine/tasks/mod.rs
-  - src/engine/tasks/workspaces.rs
-  - src/core/format/lifecycle.rs
-  - src/cli/mod.rs
-  - src/cli/task.rs
-  - tests/mcp/context.rs
-  - tests/mcp/tool_evolution/mcp_boundaries.rs
-  - tests/acdd/tasks.rs
-  - tests/acdd/mcp.rs
-  - docs/adr/0011-bounded-mcp-response-budgets.md
-  - docs/reference/mcp-tools.md
-  - docs/reference/configuration.md
-  - docs/reference/cli.md
-  - docs/reference/tasks.md
-  - docs/reference/mcp-markdown-contracts.md
-  - skills/contextunity-forge/SKILL.md
-  - skills/contextunity-forge/references/tool-catalog.md
+- src/core/response.rs
+- src/mcp/response.rs
+- src/mcp/server.rs
+- src/mcp/tools.rs
+- src/mcp/tools/inputs.rs
+- src/db/symbols.rs
+- src/db/tasks_store/mod.rs
+- src/engine/tasks/mod.rs
+- src/engine/tasks/workspaces.rs
+- src/core/format/lifecycle.rs
+- src/cli/mod.rs
+- src/cli/task.rs
+- tests/mcp/context.rs
+- tests/mcp/tool_evolution/mcp_boundaries.rs
+- tests/acdd/tasks.rs
+- tests/acdd/mcp.rs
+- tests/acdd/milestones.rs
+- tests/query_context/diagnostics_and_source.rs
+- docs/adr/0011-bounded-mcp-response-budgets.md
+- docs/reference/mcp-tools.md
+- docs/reference/configuration.md
+- docs/reference/cli.md
+- docs/reference/tasks.md
+- docs/reference/mcp-markdown-contracts.md
+- docs/runbooks/limits-and-freshness.md
+- skills/contextunity-forge/SKILL.md
+- skills/contextunity-forge/references/tool-catalog.md
 invariants:
-  - "RESPONSE-BUDGET-96KIB-CEILING: The serialized response budget ceiling is increased to 96 KiB (98,304 bytes). Payloads that fit must not be rejected or arbitrarily truncated."
-  - "GRACEFUL-BOUNDARY-TRUNCATION: Overflowing responses trim collection items (such as 'tasks' in task_list and 'items' in search) cleanly at item boundaries rather than failing with hard 'Output exceeds the response byte limit' errors. A truthful pagination and continuation hint with active filters is attached."
-  - "TASK-LIST-WORKTREE-CONFINEMENT: task_list uses the existing selected CLI/server root and namespace, defaults to ready tasks in its unique active milestone, and excludes archived records from active defaults. Task-view pagination is snapshot-bound independently of the code-index generation; cancelled subtasks never appear completed."
-status: planned
+- 'RESPONSE-BUDGET-96KIB-CEILING: The serialized response budget ceiling is increased to 96 KiB (98,304 bytes). Payloads that fit must not be rejected or arbitrarily truncated.'
+- 'GRACEFUL-BOUNDARY-TRUNCATION: Overflowing responses trim collection items (such as ''tasks'' in task_list and ''items'' in search) cleanly at item boundaries rather than failing with hard ''Output exceeds the response byte limit'' errors. A truthful pagination and continuation hint with active filters is attached.'
+- 'TASK-LIST-WORKTREE-CONFINEMENT: task_list uses the existing selected CLI/server root and namespace, defaults to ready tasks in its unique active milestone, and excludes archived records from active defaults. Task-view pagination is snapshot-bound independently of the code-index generation; cancelled subtasks never appear completed.'
+status: completed
+receipt:
+  contract_revision: 5
+  passed_at: 2026-10-22T16:32:14.322984484+00:00
+  evidence:
+    command_proof:
+      command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --lib && cargo test --test acdd && cargo test --test mcp && cargo test --test query_context
+      exit_code: 0
+      tests_failed: 0
+      tests_passed: 345
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: All27 admitted snapshot paths match candidate05abc722, baseline0d61c00. Scoped diffSHA4297479651840b28334775f4230ef940ccc29a046fb399477d8999c4d02a5e57. Production, tests, skills and ADR96 co-evolved within scope. No reviewer edits.
+        claims:
+          applicable: true
+          evidence: 96KiB actual serialized framing/lowercaps and whole-record paging independently verified. Task cursor advances actual emitted count; snapshots bind task/subtask/filter/root not codeindex. Empty/final/oversize and CLI parity pass. Explicit-source generation/wholelines follows superseding user13:27. Independent strictClippy/lib96/acdd116/mcp90/query_context43 passed345total; full matrix and root mutation evidence documented#1014.
+        concurrency:
+          applicable: true
+          evidence: Live TasksStore.list read transaction returns descriptors already containing atomically persisted subtasks; rendering no longer re-reads per-task table state. Existing writer transactions preserved. Changedtask/subtask and index-only continuation cases pass. No new cache/session state machine.
+        project_isolation:
+          applicable: true
+          evidence: Shared taskDB distinct from selected request root and namespace. Universal20tools routing, adapter lowercaps and root/filter-bound task token preserved. Linkedroot and repositoryall CLI/MCP fixtures pass. Checkpoint/arbitrary JSON arrays remain opaque; source digest and path confinement unchanged.
+        administration:
+          applicable: true
+          evidence: Approved compatible manager used for current claim. No schema migration/profile/global edits, manualcommit, repack, merge or push. Current user explicitly superseded old cache feature, historical receipts remain untouched. Fresh owned skillfixture env used for every independent check; no ~/.agents writes.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-SINGLE-DOCUMENT-PROJECTION: Symbol inspection exposes one documentation page per cited section, with doc_id, path, section title, document type, citation line, and a resolved file:/// URI. Explain keeps its own documents page and does not grow a second inspect projection.'
+    - 'INV-COMPACT-DOC-HINT-ONCE: A compact get_doc response emits each omitted-detail hint once. Referenced-symbol rows keep the citing section and citation line. Full detail still returns candidate evidence.'
+    - 'INV-NARROWEST-NAVIGATION: Agent guidance selects the narrowest useful tool, reuses sufficient previews, and passes worktree when the server root is not the checkout being edited.'
+    - 'INV-RESPONSE-CONTRACT-PRESERVATION: Deduplication preserves pagination, generation validation, detail-level behavior, response budgets, exact evidence, and CLI/MCP parity.'
+    - 'INV-READ-ONLY-SQL-FIDELITY: Opaque user SQL keeps literals, comments, trailing semicolons of one statement, requested columns, and SQLite text. Structural graph rows keep parsed details and stripped internal ids. Writes and multiple statements stay rejected.'
+    - 'INV-TASK-PRESENTATION-DEDUPLICATION: Inspect Markdown uses the task-record heading and renders equal scope, target, proof policy, and task invariants once. A fixture with those repeated fields is smaller in Markdown than in JSON. The contract digest hash is omitted from task responses. Revisions, receipts, gates, attempts, and findings stay visible.'
+    - 'INV-EXPLICIT-DIAGNOSTIC-SCOPE: An unindexed analyze or lint target fails with PATH_NOT_INDEXED. An indexed scope with zero diagnostics stays success. The diagnostics and cycles mode errors stay specific. Unsupported overview aspects fail with the allowed set.'
+    - 'INV-CLICKABLE-COORDINATE-COMPLETENESS: Presentation attachment resolves a workspace path before file_uri_for_path. A resolvable coordinate is a file:/// link. Markdown omits the (link unavailable) fallback.'
+    - 'RESPONSE-BUDGET-96KIB-CEILING: The serialized response budget ceiling is increased to 96 KiB (98,304 bytes). Payloads that fit must not be rejected or arbitrarily truncated.'
+    - 'GRACEFUL-BOUNDARY-TRUNCATION: Overflowing responses trim collection items (such as ''tasks'' in task_list and ''items'' in search) cleanly at item boundaries rather than failing with hard ''Output exceeds the response byte limit'' errors. A truthful pagination and continuation hint with active filters is attached.'
+    - 'TASK-LIST-WORKTREE-CONFINEMENT: task_list uses the existing selected CLI/server root and namespace, defaults to ready tasks in its unique active milestone, and excludes archived records from active defaults. Task-view pagination is snapshot-bound independently of the code-index generation; cancelled subtasks never appear completed.'
+    architectural_notes:
+    - 'decisions: Explicit USER owner approval 2026-10-21T20:09:38Z: update ADR to resolve64KiB conflict. Architectural-cap portion of blocker#936 RESOLVED: ADR0011 decision now96KiB98304 with authoritative smaller configuredlimits and serializedUTF8metadata/framing. No protected milestone metadata changed; preservation invariant applies bounded safety, notoldnumber. Taskrev2 admitsADR+actualcli/task.rs+ACDDmcpseam+tasks/Markdownrefs/toolcatalog; source-snippettaskrev5 now usescurrentenforcedcap and leaves96implementationto this task. Explicitdependency safe-source-continuation added and duplicate generation-hint behavior replaced by preservationclause. Runtime still64untilthis taskBuild; docsreference-runtimeclaims intentionally updatedwithcode later. Independent boundedADR/scopeclosure requested sameauditor ses_ea039fd03ffer7Izn9DiQ7vPop. Other audit findings exacttasklistdefault/status/selection semantics and task-storecontinuation/trimming/boundaryproof remain Contract-author planning obligations, notpermissiontoweaken-generationorchange-deferredserverworktreeresolver. No need further userapproval foralreadyapproved96 ceiling; do not leave stale#936 capwarning blocking it.'
+    - 'decisions: All original planning-audit findings closed by same independent auditor ses_ea039fd03ffer7Izn9DiQ7vPop: capauthority+missingscopesPASSinrev2, default/status/root+taskpaginationconsistency/proofPASSinrev3. Priorblocker#936 superseded, not an unresolveduserdecision. ADR0011 ownerapproved96KiB; currentruntime64untilBuild. Canonicalowner scopeincludesTasksStoremod snapshot, all7statusesreadydefault+cancelleduncheckedstatuslabel, existingselectedCLI/serverrootonly (nodeferredworktreeinference),0/1/multipleactivemilestone explicitbehavior, tasks+subtaskslogicalview tokennotcodeindexgeneration, validbounds/nextoffset actualemitted/UTF8wholeitemtrimming and oversize-singleitemboundederror. Requiredtestmatrix namedandmutations. No durablecache/schema and no profile/protectedmetadatachanges. This is VERIFIED PLANNING only; taskstillawaits normal Contract runtimeproof and predecessordelivery. Rawplanningreviewhistory preserved; noimplementationdonehere.'
+    - 'decisions: {"accepted":"Rev5 candidate05abc722: 98304-byte default/max with configuredlowercaps, honest task-view paging and intact subtasks. Independent all5contours clean;345tests plus strictClippy pass. Details#1014.","explicit_user_decision":"USER13:27 supersedes former source-cache feature. No64FIFO/hash/ambiguity/inference/finalized-receipt state; every nonzero source offset requires explicit generation. Complete-line source paging or bounded actionable error replaces character-prefix output. This deliberate authority change is not a regression requiring old cache restoration; historical accepted receipt payloads stay historical.","administration":"Admitted ADR0011 now records96KiB and task-view generations independent of codeindex. Shared external schema6 needs auxiliary compatible manager; no UX schema migration performed.","next_owner":"Coordinator root owns post-delivery history repack into owning task6/7 while preserving11acceptedreceipts/onecommitpertask, followed by independent final doc/integration scans and full gates before any handoff. Reviewer performs only this task Deliver auto_commit. No pending task-level findings or deferred functional work; no merge/push/landing authority."}'
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Acceptance
@@ -930,14 +990,14 @@ status: planned
    - Archive exclusion: Exclude archived and handed-off milestones and their tasks from active defaults unless `--all` or `--milestone-status all` is explicitly requested.
    - Pagination: Support `limit` from 1 through 100 (default 30), nonnegative checked `offset` (default 0), and an optional task-view `generation` in tool arguments and CLI options. Capture the filtered task records and rendered subtask state under one task-store read snapshot. Bind the token to that logical state, canonical workspace/milestone identity, and normalized filters, independently of any code-index generation. A continuation with `offset > 0` requires the previous task-page token; a changed logical task view or different filters rejects it with a restart hint. Index-only changes do not invalidate an unchanged task view. This requires no new durable token cache or task-store schema.
    - Filtering: Preserve the omitted-status default `ready` and every existing status value: `ready`, `in_progress`, `blocked`, `parked`, `completed`, `cancelled`, and `all`, with full CLI/MCP parity. An explicit all-task-status filter does not implicitly include archived milestones; all-milestone selection remains separately explicit.
-   - Formatting: Render tasks and subtasks with Markdown checkboxes, using `- [x]` only for completed records and `- [ ]` for all other statuses. Keep the explicit status label, including `parked` and `cancelled`; cancellation does not grant completion credit.
-4. Preserve the actionable missing-generation and restart behavior delivered by `safe-source-snippet-continuation`. This response-budget task does not introduce a second continuation owner or relax generation validation.
+   - Formatting: Render tasks and subtasks with Markdown checkboxes, using `- [x]` only for completed records and `- [ ]` for all other statuses. Keep explicit labels and the existing status domains: tasks include `parked`; subtasks retain `ready`, `in_progress`, `blocked`, `completed`, and `cancelled`. Do not introduce `parked` subtasks. Cancellation does not grant completion credit.
+4. Apply the owner's superseding simplification decision: every nonzero source offset requires an explicit generation, with a clear restart hint. Do not restore session caches, token inference, source receipts, or character-prefix source trimming. Source pages contain complete lines only; an individually oversized line returns an actionable budget error. The expanded source/test scope captures the coordinator's predecessor simplifications for integration verification; after delivery those changes are repacked into their owning task commits, not attributed to new task-list behavior.
 5. Seam tests in `tests/mcp/context.rs`, `tests/mcp/tool_evolution/mcp_boundaries.rs`, and `tests/acdd/tasks.rs` verify:
    - Serialized responses below, at, and above the 96 KiB ceiling and a configured smaller ceiling, counting escaped UTF-8 content and framing.
    - Whole-record trimming of both `tasks` and `items`, including a non-ASCII task and nested subtasks at the boundary. Assert exact filtered totals, returned and omitted counts, advancing next offset, generation, and repeated continuation filters; exercise a final page, an empty match, and one individually over-budget record without panic, invalid JSON/Markdown, or a continuation loop.
    - Default and explicit task-list pagination, limit values 0, 1, 30, 100, and 101, checked offset overflow, all existing statuses, no/one/multiple active milestones in the selected root, explicit archived/all selection, and linked-workspace confinement.
    - Valid and stale task-view continuation tokens, changed task and subtask state, changed filters, index-only changes, and a consistent task/subtask read snapshot. Mutations using a code-index token, ignoring subtask changes, or advancing by requested rather than emitted count must fail the applicable production seam.
-   - Checkbox/status rendering for completed, ready, in-progress, blocked, parked, and cancelled subtasks, with no cancellation-as-completion regression.
+   - Checkbox/status rendering across all seven existing task statuses and the five existing subtask statuses, with no cancellation-as-completion regression or new persisted subtask status.
 6. Documentation and skills update:
    - Co-evolve `docs/reference/mcp-tools.md`, `docs/reference/cli.md`, `docs/reference/configuration.md`, and `skills/contextunity-forge/SKILL.md` to reflect the 96 KiB response ceiling, `task_list` filters and pagination parameters, and boundary truncation behavior.
 

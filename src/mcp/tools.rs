@@ -153,6 +153,9 @@ fn rejected_selector_fields(
             "status",
             "stage",
             "detail",
+            "limit",
+            "offset",
+            "generation",
             "worktree",
         ],
         "task_claim" => &["task_id", "stage", "worker_id", "worktree", "bundle"],
@@ -287,7 +290,7 @@ impl Server {
 #[tool_router]
 impl Server {
     #[tool(
-        description = "List tasks. The default is ready, unclaimed tasks with satisfied dependencies in the primary workspace. status accepts ready, in_progress, blocked, parked, completed, or all. milestone_status defaults to active and accepts active, planned, completed, or all; a targeted milestone_ref defaults to all statuses. Subtask listings are compact by default; set detail=full to include titles and verification evidence."
+        description = "List tasks in the selected workspace. Defaults to ready tasks in the unique active milestone; multiple active milestones require milestone_ref or an explicit milestone_status. limit is 1..=100 (default 30), offset is nonnegative, and nonzero offset requires the task-view generation from the previous page. Byte trimming preserves complete task records and nested subtasks and reports actual pagination. status accepts ready, in_progress, blocked, parked, completed, cancelled, or all. milestone_status accepts active, planned, completed, or all. Subtask listings are compact by default; set detail=full to include titles and verification evidence."
     )]
     fn task_list(&self, Parameters(p): Parameters<TaskListInput>) -> CallToolResult {
         let format = p.format.unwrap_or_default();
@@ -384,7 +387,7 @@ impl Server {
         )
     }
     #[tool(
-        description = "Compact symbol record: signature, docstring, container, call counts, and at most five direct call previews per direction. include_coverage adds paged resolution evidence. Source stays off unless show_source is true."
+        description = "Compact symbol record: signature, docstring, container, call counts, and at most five direct call previews per direction. include_coverage adds paged resolution evidence. Source stays off unless show_source is true. Source continuation requires the previous page's generation."
     )]
     fn code_map_inspect(&self, Parameters(p): Parameters<Inspect>) -> CallToolResult {
         let format = p.page.output_format();
@@ -431,11 +434,11 @@ impl Server {
         )
     }
     #[tool(
-        description = "Byte-bounded source for one selector. Returns the complete selected symbol when it fits the serialized response limit; otherwise continue with source_offset and generation. Defaults to 5 leading lines; an explicit max_body_lines limit is honored. The on-disk file must match the indexed digest."
+        description = "Byte-bounded source for one selector. Returns the complete selected symbol when it fits the serialized response limit; otherwise continue with source_offset and the previous page's generation. Defaults to 5 leading lines; an explicit max_body_lines limit is honored. The on-disk file must match the indexed digest."
     )]
     fn get_code_snippet(&self, Parameters(p): Parameters<Snippet>) -> CallToolResult {
         let format = p.page.output_format();
-        self.responding(
+        self.responding_with_presentation(
             format,
             OperationKind::Navigation,
             "get_code_snippet",
@@ -469,6 +472,8 @@ impl Server {
                     Ok(value)
                 })
             },
+            None,
+            None,
         )
     }
     #[tool(
@@ -589,11 +594,11 @@ impl Server {
         )
     }
     #[tool(
-        description = "Symbol summary plus paged incoming and outgoing edges of every kind. The embedded call summary shows counts and at most five direct call previews per direction. direction defaults to both."
+        description = "Symbol summary plus paged incoming and outgoing edges of every kind. The embedded call summary shows counts and at most five direct call previews per direction. direction defaults to both. Source continuation requires the previous page's generation."
     )]
     fn code_map_explain(&self, Parameters(p): Parameters<Explain>) -> CallToolResult {
         let format = p.page.output_format();
-        self.responding_with_symbol(
+        self.responding_with_presentation(
             format,
             OperationKind::Navigation,
             "code_map_explain",
@@ -604,7 +609,7 @@ impl Server {
                     include_coverage: p.include_coverage,
                 };
                 self.read_with_adapter(adapter, |c| {
-                    symbols::explain_with_path_options(
+                    let result = symbols::explain_with_path_options(
                         c,
                         &self.root,
                         &p.selector,
@@ -616,10 +621,12 @@ impl Server {
                             coverage,
                             page: &page,
                         },
-                    )
+                    )?;
+                    Ok(result)
                 })
             },
             Some(true),
+            None,
         )
     }
     #[tool(
@@ -931,7 +938,7 @@ fn looks_like_sql(value: &str) -> bool {
 #[tool_handler(
     name = "contextunity-forge-mcp",
     version = "0.3.0",
-    instructions = "Workspace code graph and task coordination, 20 tools. Responses cap at 64 KiB. SQLite budget is 2 seconds. Start with code_map_overview and check coverage before an absence claim. Continue a page with offset and generation. Prefer detail=compact. Selector rules and gate proofs: forge_guide topic=query or acdd."
+    instructions = "Workspace code graph and task coordination, 20 tools. Responses have a 96 KiB maximum; lower configured byte limits remain authoritative. SQLite budget is 2 seconds. Start with code_map_overview and check coverage before an absence claim. Continue a page with offset and generation. Prefer detail=compact. Selector rules and gate proofs: forge_guide topic=query or acdd."
 )]
 impl ServerHandler for Server {
     async fn call_tool(

@@ -81,9 +81,11 @@ and `task_project`. All operations through the primary server use the primary
 `tasks_db`; a linked repository's independent store is not used by this server.
 Synchronize linked specifications explicitly before querying their queue.
 
-`task_list` omits linked tasks by default. Set `repository: "all"` to combine
-enabled namespaces, or a configured workspace name to select one. Status still
-defaults to `ready`. Each list entry is a compact card with `task_id`, `target`,
+`task_list` uses the workspace selected by the CLI root or current MCP request;
+it omits linked tasks unless `repository: "all"` or a configured workspace name
+selects them. Status defaults to `ready` in the unique active milestone. With no
+active milestone it returns an empty page; with multiple active milestones it
+requires `milestone_ref` or an explicit `milestone_status`. Each list entry is a compact card with `task_id`, `target`,
 `status`, `stage`, `owner`, `agent_type`, and `rev` (the contract revision).
 The single-workspace response puts `workspace_root`, `agents_guidance`, and
 `workspace` beside `tasks`. With `repository: "all"`, `workspaces` maps each
@@ -126,6 +128,19 @@ Every task contract declares an explicit file perimeter (`scope`) bounding allow
 
 ## Five flat MCP tools
 
+`task_list` accepts `limit` (1–100, default 30), `offset` (default 0), and
+`generation`; nonzero offsets require the previous page's token. Pagination
+returns `total`, `limit`, `offset`, actual `returned`, optional `next_offset`,
+`has_more`, the task-view `generation`, and `byte_omitted`. The generation binds
+the selected canonical workspace and namespace, milestone, filters, and complete
+task/subtask state. It does not use the code-index generation. Changed task or
+subtask state and changed filters reject a continuation with a restart hint;
+index-only changes do not invalidate it. Byte trimming preserves intact task
+records and every nested subtask, advances by the actual returned count, and
+keeps the next offset absent at the final page. Continuation hints retain the
+effective workspace and filters. A single record or required page metadata that
+cannot fit returns a bounded actionable error without splitting a record.
+
 `task_list` accepts `milestone` as an alias for `milestone_ref`, with the same
 milestone resolution and status defaults. It resolves safe logical spellings such
 as `UX-001`, `UX-001.md`, `docs/milestones/UX-001`, and
@@ -152,7 +167,7 @@ and the two detail flags are mutually exclusive within one invocation. See the
 
 | Tool | Arguments and behavior |
 | --- | --- |
-| `task_list` | Optional `repository`, `milestone_ref`, `milestone_status`, `status`, `stage`, and `detail`. Task status defaults to `ready`; values are `ready`, `in_progress`, `blocked`, `parked`, `completed`, `cancelled`, and `all`. `parked` selects tasks waiting for a scope owner with retained worker/worktree affinity; `all` includes them and retained cancelled tasks. Milestone status defaults to `active`; values are `active`, `planned`, `completed`, and `all`. A targeted `milestone_ref` defaults milestone status to `all`. `stage` matches a gate ID declared by the active profile; null matches every gate. Subtask detail defaults to compact references and statuses; `full` includes titles and verification evidence. Each task summary includes its declared `depends_on` references. |
+| `task_list` | Optional `repository`, `milestone_ref`, `milestone_status`, `status`, `stage`, `detail`, `limit`, `offset`, and `generation`. Task status defaults to `ready`; values are `ready`, `in_progress`, `blocked`, `parked`, `completed`, `cancelled`, and `all`. `parked` selects tasks waiting for a scope owner with retained worker/worktree affinity; `all` includes them and retained cancelled tasks. Milestone status defaults to `active`; values are `active`, `planned`, `completed`, and `all`. A targeted `milestone_ref` defaults milestone status to `all`. With no explicit milestone under the active default, one unique active milestone is selected, zero yields an empty list, and multiple candidates fail with an ambiguity hint. `limit` accepts 1–100 (default 30); nonzero `offset` requires the task-view generation. `stage` matches a gate ID declared by the active profile; null matches every gate. Subtask detail defaults to compact references and statuses; `full` includes titles and verification evidence. Each task summary includes its declared `depends_on` references. |
 | `task_claim` | Required `task_id`, `stage`, `worker_id`, and `worktree`; optional `bundle` (boolean, defaults to true). Claims the current gate atomically, returning context tailored to the active gate (see below). Set `bundle: false` for minimal details. Collisions return typed `TASK_ALREADY_CLAIMED`. |
 | `task_submit` | Required `task_id`, `stage`, JSON object `evidence`, and `action` (`pass` or `reject`); optional JSON `findings`. Reject requires findings. |
 | `task_manage` | Required `action`; optional `workspace`, `task_id`, `milestone_ref`, `task_ref`, `paths`, `force` (default false), `subtask_ref`, `title`, `subtask_status`, and `evidence`. `next` additionally requires `worker_id` and a `worktree` path in CLI/engine action input. MCP accepts `worktree` as a routing selector for every action and requires it for `next`. See the action table below. |
@@ -770,12 +785,12 @@ Per [ADR 0016](../adr/0016-lean-stage-tailored-task-context-bundles.md), the bun
 
 ### Response Bounding and Anti-Bloat Invariants
 
-To guarantee responses remain well below the 64 KiB ceiling of [ADR 0011](../adr/0011-bounded-mcp-response-budgets.md):
+To guarantee responses remain well below the 96 KiB ceiling of [ADR 0011](../adr/0011-bounded-mcp-response-budgets.md):
 - **Raw table pruning**: Raw SQLite dumps (`gates` test logs, `attempts`, `findings`, raw `spec`, and root `receipt`) are pruned from context responses, while `depends_on` is preserved in `contract` and at envelope root, and completion `receipt` is preserved inside `context_bundle` for completed tasks. Detailed historical archives remain accessible on demand via `task_manage(action: "inspect")` or CLI `task inspect <id>`.
 - **Minimal claim mode (`bundle: false`)**: Delivers lean task metadata (`task_id`, `stage`, `status`, `allowed_write_scope`, `subtasks`, `depends_on`, `workflow_guidance`) strictly pruned of heavy `gates`, `attempts`, `findings`, `receipt`, and raw `spec` archives, ensuring minimal claim mode never exhausts response budgets.
 - **Zero root duplication**: Substructures are scoped to `context_bundle` without duplicating `adrs`, `scope_symbols`, or `covering_tests` at root.
 - **Bounded blackboard**: Aggregates the 15 most recent chronological messages; payloads exceeding 500 Unicode characters are safely truncated along character boundaries (use `task_blackboard(action: "inspect", message_id: <id>)` for full text).
-- **Size budget**: Claim (including `bundle: false`), next, and context responses are bounded to 24 KiB of serialized JSON, leaving room for MCP text escaping and protocol metadata under the 64 KiB ceiling. Oversized responses omit whole fields, prioritizing claim identity and revisions. `byte_limited`, `omitted_fields` (up to 16 JSON pointers), `omitted_field_count`, and `retrieval_hint` identify incomplete context. Read the milestone file for full authority and CLI `task inspect <task-id>` for stored details before relying on omitted information. Stored contracts and evidence are unchanged.
+- **Size budget**: Claim (including `bundle: false`), next, and context responses are bounded to 24 KiB of serialized JSON, leaving room for MCP text escaping and protocol metadata under the 96 KiB ceiling. Oversized responses omit whole fields, prioritizing claim identity and revisions. `byte_limited`, `omitted_fields` (up to 16 JSON pointers), `omitted_field_count`, and `retrieval_hint` identify incomplete context. Read the milestone file for full authority and CLI `task inspect <task-id>` for stored details before relying on omitted information. Stored contracts and evidence are unchanged.
 - **Sync summaries**: Create and sync return compact task records with identity (including `spec.task_ref`), milestone reference, status, stage, revisions, and wave index. `total` counts all synchronized tasks, while `returned` counts the bounded prefix in `tasks`. `byte_limited: true` means additional summaries were omitted; all selected tasks were synchronized. Use `task_list` or CLI `task list` to retrieve task summaries.
 - **Initialized SQLite stores**: Opening a supported schema applies connection-local settings without schema writes or write transactions, allowing task readers to open while another connection holds the writer lock. New dedicated stores still initialize schema version 5 in WAL mode; unsupported versions remain rejected.
 

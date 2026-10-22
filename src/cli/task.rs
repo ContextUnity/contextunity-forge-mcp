@@ -169,6 +169,15 @@ pub enum TaskCommand {
         #[arg(long, value_enum)]
         /// Subtask detail level: compact (default) or full.
         detail: Option<TaskListDetail>,
+        #[arg(long)]
+        /// Maximum tasks returned, from 1 through 100 (default 30).
+        limit: Option<usize>,
+        #[arg(long, default_value_t = 0)]
+        /// Number of matching tasks skipped before this page.
+        offset: usize,
+        #[arg(long)]
+        /// Task-view generation returned by the previous page.
+        generation: Option<String>,
     },
     /// Represents the inspect case.
     #[command(visible_alias = "show")]
@@ -382,6 +391,9 @@ pub fn run(root: &Path, command: TaskCommand) -> Result<Value> {
             all,
             full,
             detail,
+            limit,
+            offset,
+            generation,
         } => {
             let milestone_status = milestone_status.or({
                 if planned {
@@ -403,6 +415,9 @@ pub fn run(root: &Path, command: TaskCommand) -> Result<Value> {
                     status,
                     stage,
                     detail: detail.or(full.then_some(TaskListDetail::Full)),
+                    limit,
+                    offset,
+                    generation,
                 },
             );
         }

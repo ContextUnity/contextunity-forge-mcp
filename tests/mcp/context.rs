@@ -282,10 +282,7 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
         }
         let discovery_tool = matches!(
             tool,
-            "code_map_overview"
-                | "code_map_inspect"
-                | "code_map_search"
-                | "ast_grep_search"
+            "code_map_overview" | "code_map_inspect" | "code_map_search" | "ast_grep_search"
         ) || (tool == "code_map_query" && arguments["operation"] == "inspect");
         if tool == "code_map_overview" {
             assert_eq!(
@@ -1375,10 +1372,12 @@ fn adapter_policy_applies_without_changing_fact_identity_and_rejects_invalid_bou
     );
     assert!(bytes <= 1024, "parameter error frame was {bytes} bytes");
     assert_eq!(response["result"]["isError"], true);
+    workspace.write("forge-mcp.yaml", "response:\n  max_output_bytes: 98304\n");
+    assert!(scanner::load_adapter(workspace.root(), None).is_ok());
     for settings in [
         "page_size: 0",
         "page_size: 101",
-        "max_output_bytes: 65537",
+        "max_output_bytes: 98305",
         "max_output_bytes: 1023",
         "source_context: {leading_lines: 21}",
         "source_context: {max_body_lines: 501}",
@@ -1529,9 +1528,7 @@ fn stdio_source_previews_respect_boundaries_and_continue_crlf_utf8() {
     let full_body = (0..850)
         .map(|i| format!("    escaped_{i:04} = \"{}\"\r\n", r#"é\""#.repeat(4)))
         .collect::<String>();
-    let full_source = format!(
-        "def full_symbol():\r\n{full_body}    return escaped_0000\r\n"
-    );
+    let full_source = format!("def full_symbol():\r\n{full_body}    return escaped_0000\r\n");
     workspace.write("full.py", &full_source);
     let mut client = Client::new(&workspace);
     let default = client.payload("code_map_inspect", json!({"selector":"selected"}));
@@ -1553,7 +1550,10 @@ fn stdio_source_previews_respect_boundaries_and_continue_crlf_utf8() {
         json!({"selector":"full.py:full_symbol","show_source":true}),
     );
     assert_eq!(inspection["source_preview"]["body_lines"], 24);
-    assert_eq!(inspection["source_preview"]["total_body_lines"], full_source.lines().count());
+    assert_eq!(
+        inspection["source_preview"]["total_body_lines"],
+        full_source.lines().count()
+    );
     assert_eq!(inspection["source_preview"]["has_more"], true);
 
     let cli = run_cli_json(
@@ -1562,7 +1562,10 @@ fn stdio_source_previews_respect_boundaries_and_continue_crlf_utf8() {
     );
     assertions::assert_command_succeeded(&cli);
     let cli: Value = serde_json::from_slice(&cli.stdout).unwrap();
-    assert!(cli["source"].as_str().unwrap().starts_with("def full_symbol():"));
+    assert!(cli["source"]
+        .as_str()
+        .unwrap()
+        .starts_with("def full_symbol():"));
     assert!(cli["source_preview"]["body_lines"].as_u64().unwrap() > 0);
 
     for (label, max_body_lines) in [
@@ -1578,8 +1581,14 @@ fn stdio_source_previews_respect_boundaries_and_continue_crlf_utf8() {
             arguments["max_body_lines"] = json!(lines);
         }
         let (full_bytes, full_response) = client.call("get_code_snippet", arguments);
-        assert_ne!(full_response["result"]["isError"], true, "{label}: {full_response}");
-        assert!(full_bytes <= MAX_OUTPUT_BYTES, "{label} frame was {full_bytes} bytes");
+        assert_ne!(
+            full_response["result"]["isError"], true,
+            "{label}: {full_response}"
+        );
+        assert!(
+            full_bytes <= MAX_OUTPUT_BYTES,
+            "{label} frame was {full_bytes} bytes"
+        );
         let full = assertions::mcp_payload(&full_response);
         assert!(
             full["source"].as_str() == Some(full_source.as_str()),
@@ -1588,12 +1597,18 @@ fn stdio_source_previews_respect_boundaries_and_continue_crlf_utf8() {
             full_source.len(),
             full["source_preview"]
         );
-        assert_eq!(full["source_preview"]["body_lines"], full_source.lines().count());
+        assert_eq!(
+            full["source_preview"]["body_lines"],
+            full_source.lines().count()
+        );
         assert_eq!(full["source_preview"]["has_more"], false);
         assert_eq!(full["source_preview"]["next_source_offset"], Value::Null);
         assert_eq!(full["source_preview"]["truncated_line"], false);
         if label == "explicit-full" {
-            assert!(full_bytes > MAX_OUTPUT_BYTES * 3 / 4, "frame was only {full_bytes} bytes");
+            assert!(
+                full_bytes > 65_536 * 3 / 4,
+                "frame was only {full_bytes} bytes"
+            );
         }
     }
 
@@ -1613,9 +1628,160 @@ fn stdio_source_previews_respect_boundaries_and_continue_crlf_utf8() {
     assert!(!text.contains("previous"));
     assert!(!text.contains("following"));
     assert_eq!(first["source_preview"]["body_lines"], 35);
+    let (_, wrong_cursor) = client.call(
+        "get_code_snippet",
+        json!({
+            "selector":"selected","max_body_lines":35,"source_offset":36,"format":"json"
+        }),
+    );
+    assert_eq!(wrong_cursor["result"]["isError"], true);
+    assert!(wrong_cursor["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("generation"));
     let second = client.payload("get_code_snippet", json!({"selector":"selected","max_body_lines":35,"source_offset":first["source_preview"]["next_source_offset"],"generation":first["generation"]}));
     assert_eq!(second["source_preview"]["body_offset"], 35);
     assert!(!second["source"].as_str().unwrap().contains("def selected"));
+    assert_eq!(second["generation"], first["generation"]);
+    let third = client.payload("get_code_snippet", json!({"selector":"selected","max_body_lines":35,"source_offset":second["source_preview"]["next_source_offset"],"generation":second["generation"]}));
+    assert_eq!(third["source_preview"]["body_offset"], 70);
+    let (_, markdown_first) = client.call(
+        "get_code_snippet",
+        json!({
+            "selector":"selected","max_body_lines":5,"leading_lines":0
+        }),
+    );
+    assert_ne!(
+        markdown_first["result"]["isError"], true,
+        "{markdown_first}"
+    );
+    let (_, markdown_next) = client.call("get_code_snippet", json!({
+        "selector":"selected","max_body_lines":5,"leading_lines":0,"source_offset":5,"generation":first["generation"]
+    }));
+    assert_ne!(
+        markdown_next["result"]["isError"], true,
+        "Markdown continuation with explicit generation failed: {markdown_next}"
+    );
+    assert!(markdown_next["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("**next_source_offset**: `10`"));
+
+    for (tool, args) in [
+        (
+            "code_map_inspect",
+            json!({"selector":"selected","show_source":true,"max_body_lines":12,"format":"json"}),
+        ),
+        (
+            "code_map_explain",
+            json!({"selector":"selected","show_source":true,"max_body_lines":12,"format":"json"}),
+        ),
+    ] {
+        let initial = client.payload(tool, args.clone());
+        assert_eq!(
+            initial["source_preview"]["next_source_offset"], 12,
+            "{tool}"
+        );
+        let mut continuation = args;
+        continuation["source_offset"] = json!(12);
+        let (_, missing) = client.call(tool, continuation.clone());
+        assert_eq!(missing["result"]["isError"], true, "{tool}: {missing}");
+        continuation["generation"] = initial["generation"].clone();
+        let next = client.payload(tool, continuation);
+        assert_eq!(next["source_preview"]["body_offset"], 12, "{tool}");
+        assert_eq!(next["generation"], initial["generation"], "{tool}");
+    }
+
+    let mut restarted = Client::new(&workspace);
+    let (_, restarted_response) = restarted.call(
+        "get_code_snippet",
+        json!({
+            "selector":"selected","max_body_lines":35,"source_offset":35,"format":"json"
+        }),
+    );
+    assert_eq!(restarted_response["result"]["isError"], true);
+    assert!(restarted_response["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("previous page's generation"));
+    let (_, foreign_symbol) = client.call(
+        "get_code_snippet",
+        json!({
+            "selector":"selected_116","max_body_lines":35,"source_offset":35,"format":"json"
+        }),
+    );
+    assert_eq!(foreign_symbol["result"]["isError"], true);
+    let (_, unrelated_page) = client.call(
+        "get_code_snippet",
+        json!({
+            "selector":"selected","max_body_lines":35,"offset":1,"source_offset":35,"format":"json"
+        }),
+    );
+    assert_eq!(
+        unrelated_page["result"]["isError"], true,
+        "source token cannot satisfy collection pagination: {unrelated_page}"
+    );
+    assert!(unrelated_page["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("continuation"));
+    let (_, disabled_page) = client.call("code_map_inspect", json!({"selector":"full.py:full_symbol","show_source":false,"max_body_lines":12,"format":"json"}));
+    assert_ne!(disabled_page["result"]["isError"], true, "{disabled_page}");
+    let (_, disabled_continuation) = client.call("code_map_inspect", json!({
+        "selector":"full.py:full_symbol","show_source":true,"max_body_lines":12,"source_offset":12,"format":"json"
+    }));
+    assert_eq!(disabled_continuation["result"]["isError"], true);
+    let first_generation = first["generation"].as_str().unwrap().to_owned();
+    let changed_source = source.replace("value_0 = 'Привіт'", "value_0 = 'Змінено'");
+    workspace.write("service.py", &changed_source);
+    workspace.delta(&["service.py"]);
+    invalidate_mcp_connection_cache(&workspace.db()).unwrap();
+    let second_generation = client.payload(
+        "get_code_snippet",
+        json!({
+            "selector":"selected","max_body_lines":35,"format":"json"
+        }),
+    );
+    assert_ne!(second_generation["generation"], first["generation"]);
+    let (_, ambiguous) = client.call(
+        "get_code_snippet",
+        json!({
+            "selector":"selected","max_body_lines":35,"source_offset":35,"format":"json"
+        }),
+    );
+    assert_eq!(ambiguous["result"]["isError"], true);
+    assert!(ambiguous["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("generation"));
+    let (_, stale_explicit) = client.call("get_code_snippet", json!({
+        "selector":"selected","max_body_lines":35,"source_offset":35,"generation":first_generation,"format":"json"
+    }));
+    assert_eq!(
+        stale_explicit["result"]["isError"], true,
+        "explicit stale token remains authoritative: {stale_explicit}"
+    );
+    let current = client.payload("get_code_snippet", json!({
+        "selector":"selected","max_body_lines":35,"source_offset":35,"generation":second_generation["generation"],"format":"json"
+    }));
+    assert_eq!(current["source_preview"]["body_offset"], 35);
+
+    let selector = "full.py:full_symbol";
+    let max_body_lines = full_source.lines().count();
+    let (_, complete_page) = client.call(
+        "get_code_snippet",
+        json!({
+            "selector":selector,"max_body_lines":max_body_lines,"format":"json"
+        }),
+    );
+    assert_ne!(complete_page["result"]["isError"], true, "{complete_page}");
+    let (_, missing_token) = client.call(
+        "get_code_snippet",
+        json!({
+            "selector":selector,"max_body_lines":max_body_lines,"source_offset":1,"format":"json"
+        }),
+    );
+    assert_eq!(missing_token["result"]["isError"], true);
     workspace.write(
         "huge.py",
         &format!("def enormous(): return '{}'\n", "Привіт".repeat(50_000)),
@@ -1627,6 +1793,13 @@ fn stdio_source_previews_respect_boundaries_and_continue_crlf_utf8() {
         .as_str()
         .unwrap()
         .contains("huge.py"));
+    let (_, enormous_missing_token) = client.call(
+        "get_code_snippet",
+        json!({
+            "selector":"enormous","source_offset":1,"format":"json"
+        }),
+    );
+    assert_eq!(enormous_missing_token["result"]["isError"], true);
 
     let bounded_workspace = Workspace::new();
     bounded_workspace.write(
@@ -1654,7 +1827,10 @@ fn stdio_source_previews_respect_boundaries_and_continue_crlf_utf8() {
             arguments["generation"] = generation.clone();
         }
         let (frame_bytes, response) = bounded_client.call("get_code_snippet", arguments);
-        assert!(frame_bytes <= 4096, "configured response was {frame_bytes} bytes");
+        assert!(
+            frame_bytes <= 4096,
+            "configured response was {frame_bytes} bytes"
+        );
         assert_ne!(response["result"]["isError"], true, "{response}");
         let page = assertions::mcp_payload(&response);
         let preview = &page["source_preview"];
@@ -1690,8 +1866,7 @@ fn stdio_source_previews_respect_boundaries_and_continue_crlf_utf8() {
         "Markdown response was {markdown_bytes} bytes"
     );
     assert_ne!(
-        markdown_response["result"]["isError"],
-        true,
+        markdown_response["result"]["isError"], true,
         "{markdown_response}"
     );
     let markdown_text = markdown_response["result"]["content"][0]["text"]
@@ -1740,7 +1915,7 @@ fn repair_ast_byte_pruning_keeps_earlier_horizon_continuation_usable() {
     workspace.write("forge-mcp.yaml", "response:\n  max_output_bytes: 4096\n");
     workspace.write(
         "service.py",
-        &(0..10_001)
+        &(0..1_001)
             .map(|i| format!("print({i})\n"))
             .collect::<String>(),
     );
@@ -1749,7 +1924,7 @@ fn repair_ast_byte_pruning_keeps_earlier_horizon_continuation_usable() {
         "ast_grep_search",
         json!({"pattern":"print($VALUE)","language":"python","limit":100}),
     );
-    let mut offset = 9900;
+    let mut offset = 900;
     let mut lines = Vec::new();
     loop {
         let payload = client.payload("ast_grep_search", json!({"pattern":"print($VALUE)","language":"python","offset":offset,"limit":100,"generation":first["matches"]["generation"]}));
@@ -1758,16 +1933,16 @@ fn repair_ast_byte_pruning_keeps_earlier_horizon_continuation_usable() {
         assert!(!items.is_empty());
         lines.extend(items.iter().map(|item| item["line"].as_u64().unwrap()));
         if page["next_offset"].is_null() {
-            assert_eq!(page["computation_truncated"], true);
-            assert_eq!(lines.last(), Some(&10_000));
+            assert_eq!(page["has_more"], false);
+            assert_eq!(lines.last(), Some(&1_001));
             break;
         }
         let next = page["next_offset"].as_u64().unwrap();
         assert_eq!(next, offset + items.len() as u64);
-        assert!(next > offset && next < 10_000);
+        assert!(next > offset && next < 1_001);
         offset = next;
     }
-    assert_eq!(lines, (9901..=10_000).collect::<Vec<_>>());
+    assert_eq!(lines, (901..=1_001).collect::<Vec<_>>());
 }
 #[cfg(feature = "lang-python")]
 #[test]
@@ -1836,7 +2011,7 @@ fn repair_variadic_matcher_budget_is_checked_inside_backtracking() {
 fn repair_checkpoint_page_shapes_are_opaque_and_persistence_is_unchanged() {
     let workspace = Workspace::new();
     let mut client = Client::new(&workspace);
-    let page = json!({"total":2,"offset":0,"limit":2,"generation":"saved-snapshot","next_offset":null,"has_more":false,"items":[{"text":"x".repeat(40_000)},{"text":"y".repeat(40_000)}]});
+    let page = json!({"total":2,"offset":0,"limit":2,"generation":"saved-snapshot","next_offset":null,"has_more":false,"items":[{"text":"x".repeat(60_000)},{"text":"y".repeat(60_000)}]});
     for (name, value) in [
         ("page", page.clone()),
         ("nested", json!({"snapshot":{"matches":page}})),
@@ -2148,20 +2323,27 @@ fn repair_checkpoint_page_shapes_are_opaque_and_persistence_is_unchanged() {
 #[tokio::test]
 async fn transport_accepts_exact_bound_and_replaces_oversized_frames() {
     use tokio::io::AsyncWriteExt;
+
+    let frame_for = |size: usize| {
+        let prefix = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"text\":\"";
+        let suffix = "\"}}\n";
+        format!(
+            "{prefix}{}{suffix}",
+            "x".repeat(size - prefix.len() - suffix.len())
+        )
+    };
     for size in [MAX_OUTPUT_BYTES - 1, MAX_OUTPUT_BYTES] {
         let mut writer = response::BoundedWriter::new(tokio::io::sink());
-        let mut frame = vec![b'x'; size - 1];
-        frame.push(b'\n');
-        writer.write_all(&frame).await.unwrap();
+        let frame = frame_for(size);
+        assert_eq!(frame.len(), size);
+        serde_json::from_str::<Value>(frame.trim_end()).unwrap();
+        writer.write_all(frame.as_bytes()).await.unwrap();
         writer.flush().await.unwrap();
     }
     let mut output = Vec::new();
     let mut writer = response::BoundedWriter::new(&mut output);
-    writer
-        .write_all(&vec![b'x'; MAX_OUTPUT_BYTES])
-        .await
-        .unwrap();
-    writer.write_all(b"\n").await.unwrap();
+    let oversized = frame_for(MAX_OUTPUT_BYTES + 1);
+    writer.write_all(oversized.as_bytes()).await.unwrap();
     writer.flush().await.unwrap();
     assert!(output.len() < MAX_OUTPUT_BYTES);
     let error: Value = serde_json::from_slice(&output).unwrap();
@@ -2172,7 +2354,7 @@ fn serialization_counts_second_escaping_and_bounds_a_single_item() {
     let policy = ResponsePolicy::default();
     let result = response::result_with_format(
         Ok(
-            json!({"nodes":{"total":2,"offset":0,"limit":30,"items":[{"id":"first","text":"\"\\\n".repeat(4000)},{"id":"second","text":"\"\\\n".repeat(4000)}],"has_more":false,"next_offset":null,"generation":"snapshot"}}),
+            json!({"nodes":{"total":2,"offset":0,"limit":30,"items":[{"id":"first","text":"\"\\\n".repeat(6000)},{"id":"second","text":"\"\\\n".repeat(6000)}],"has_more":false,"next_offset":null,"generation":"snapshot"}}),
         ),
         &policy,
         OutputFormat::Json,
@@ -2183,7 +2365,17 @@ fn serialization_counts_second_escaping_and_bounds_a_single_item() {
     let payload: Value =
         serde_json::from_str(wire["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(payload["nodes"]["items"].as_array().unwrap().len(), 1);
+    assert_eq!(payload["nodes"]["total"], 2);
+    assert_eq!(payload["nodes"]["limit"], 30);
+    assert_eq!(payload["nodes"]["offset"], 0);
+    assert_eq!(payload["nodes"]["generation"], "snapshot");
+    assert_eq!(payload["nodes"]["has_more"], true);
+    assert_eq!(payload["nodes"]["byte_limited"], true);
     assert_eq!(payload["nodes"]["next_offset"], 1);
+    let item_hint = payload["nodes"]["continuation_hint"].as_str().unwrap();
+    assert!(item_hint.contains("same tool and filters"));
+    assert!(item_hint.contains("offset=1"));
+    assert!(item_hint.contains("generation"));
     let result = response::result_with_format(
         Ok(json!({"scalar":"\"\\Привіт".repeat(30_000)})),
         &policy,
@@ -2191,6 +2383,186 @@ fn serialization_counts_second_escaping_and_bounds_a_single_item() {
     );
     assert_eq!(result.is_error, Some(true));
     assert!(response::serialized_bytes(&result) <= MAX_OUTPUT_BYTES - 256);
+
+    let fitting_text = "λ".repeat(36_000);
+    assert!(fitting_text.len() > 64 * 1024);
+    assert!(fitting_text.len() < 96 * 1024);
+    let fitting = response::result_with_format(
+        Ok(json!({
+            "tasks": [{"task_id":"fit-96kib","target":fitting_text.clone()}],
+            "pagination": {
+                "total": 1,
+                "limit": 1,
+                "offset": 0,
+                "returned": 1,
+                "next_offset": null,
+                "has_more": false,
+                "generation": "task-view-fit",
+                "byte_omitted": 0
+            }
+        })),
+        &policy,
+        OutputFormat::Json,
+    );
+    assert_ne!(fitting.is_error, Some(true), "{fitting:?}");
+    assert_eq!(MAX_OUTPUT_BYTES, 98_304);
+    assert_eq!(policy.max_output_bytes, 98_304);
+    assert!(response::serialized_bytes(&fitting) <= MAX_OUTPUT_BYTES - 256);
+    let fitting_wire = serde_json::to_value(fitting).unwrap();
+    let fitting_payload: Value =
+        serde_json::from_str(fitting_wire["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(fitting_payload["tasks"][0]["target"], fitting_text);
+
+    let lower_policy = ResponsePolicy {
+        max_output_bytes: 4_096,
+        ..ResponsePolicy::default()
+    };
+    let lower_limit = response::result_with_format(
+        Ok(json!({"items":[{"id":"configured-limit","text":"x".repeat(5_000)}]})),
+        &lower_policy,
+        OutputFormat::Json,
+    );
+    assert_eq!(lower_limit.is_error, Some(true));
+    assert!(response::serialized_bytes(&lower_limit) <= 4_096 - 256);
+
+    let task_statuses = ["completed", "ready", "in_progress", "blocked", "cancelled"];
+    let task_records = (0..3)
+        .map(|index| {
+            json!({
+                "task_id": format!("forge-mcp/m-large:task-{index}"),
+                "target": format!("λ{} \"\\", "λ".repeat(32_000)),
+                "subtasks": task_statuses.iter().map(|status| json!({
+                    "subtask_ref": status,
+                    "status": status
+                })).collect::<Vec<_>>()
+            })
+        })
+        .collect::<Vec<_>>();
+    let trimmed_tasks = response::result_with_format(
+        Ok(json!({
+            "tasks": task_records,
+            "pagination": {
+                "total": 7,
+                "limit": 3,
+                "offset": 2,
+                "returned": 3,
+                "next_offset": 5,
+                "has_more": true,
+                "generation": "task-view-snapshot",
+                "byte_omitted": 0,
+                "continuation_hint": {
+                    "workspace": "main",
+                    "milestone_ref": "010-active",
+                    "status": "all",
+                    "detail": "full",
+                    "generation": "task-view-snapshot"
+                }
+            }
+        })),
+        &policy,
+        OutputFormat::Json,
+    );
+    assert_ne!(trimmed_tasks.is_error, Some(true), "{trimmed_tasks:?}");
+    assert!(response::serialized_bytes(&trimmed_tasks) <= MAX_OUTPUT_BYTES - 256);
+    let task_wire = serde_json::to_value(trimmed_tasks).unwrap();
+    let task_page: Value =
+        serde_json::from_str(task_wire["content"][0]["text"].as_str().unwrap()).unwrap();
+    let emitted = task_page["tasks"].as_array().unwrap();
+    assert_eq!(emitted.len(), 1);
+    assert_eq!(emitted[0]["subtasks"].as_array().unwrap().len(), 5);
+    assert_eq!(emitted[0]["subtasks"][0]["status"], "completed");
+    assert_eq!(task_page["pagination"]["total"], 7);
+    assert_eq!(task_page["pagination"]["limit"], 3);
+    assert_eq!(task_page["pagination"]["offset"], 2);
+    assert_eq!(task_page["pagination"]["returned"], 1);
+    assert_eq!(task_page["pagination"]["byte_omitted"], 2);
+    assert_eq!(task_page["pagination"]["next_offset"], 3);
+    assert_eq!(task_page["pagination"]["has_more"], true);
+    assert_eq!(task_page["pagination"]["generation"], "task-view-snapshot");
+    let hint = task_page["pagination"]["continuation_hint"].to_string();
+    for filter in ["main", "010-active", "all", "full", "task-view-snapshot"] {
+        assert!(
+            hint.contains(filter),
+            "continuation hint omitted {filter}: {hint}"
+        );
+    }
+
+    let final_page = response::result_with_format(
+        Ok(json!({
+            "tasks": [{"task_id":"last","target":"last intact record","subtasks":[]}],
+            "pagination": {
+                "total": 4,
+                "limit": 3,
+                "offset": 3,
+                "returned": 1,
+                "has_more": false,
+                "generation": "task-view-final",
+                "byte_omitted": 0
+            }
+        })),
+        &policy,
+        OutputFormat::Json,
+    );
+    assert_ne!(final_page.is_error, Some(true), "{final_page:?}");
+    let final_wire = serde_json::to_value(final_page).unwrap();
+    let final_payload: Value =
+        serde_json::from_str(final_wire["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert!(final_payload["pagination"].get("next_offset").is_none());
+    assert_eq!(final_payload["pagination"]["has_more"], false);
+
+    let empty_page = response::result_with_format(
+        Ok(json!({
+            "tasks": [],
+            "pagination": {
+                "total": 0,
+                "limit": 30,
+                "offset": 0,
+                "returned": 0,
+                "has_more": false,
+                "generation": "task-view-empty",
+                "byte_omitted": 0
+            }
+        })),
+        &policy,
+        OutputFormat::Json,
+    );
+    assert_ne!(empty_page.is_error, Some(true), "{empty_page:?}");
+    let empty_wire = serde_json::to_value(empty_page).unwrap();
+    let empty_payload: Value =
+        serde_json::from_str(empty_wire["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert!(empty_payload["tasks"].as_array().unwrap().is_empty());
+    assert!(empty_payload["pagination"].get("next_offset").is_none());
+
+    let oversized_task = response::result_with_format(
+        Ok(json!({
+            "tasks": [{"task_id":"too-large","target":"界".repeat(40_000),"subtasks":[]}],
+            "pagination": {
+                "total": 1,
+                "limit": 1,
+                "offset": 0,
+                "returned": 1,
+                "next_offset": null,
+                "has_more": false,
+                "generation": "task-view-oversized",
+                "byte_omitted": 0
+            }
+        })),
+        &policy,
+        OutputFormat::Json,
+    );
+    assert_eq!(oversized_task.is_error, Some(true));
+    assert!(response::serialized_bytes(&oversized_task) <= MAX_OUTPUT_BYTES - 256);
+    let oversized_wire = serde_json::to_value(oversized_task).unwrap();
+    let oversized_message = oversized_wire["content"][0]["text"].as_str().unwrap();
+    assert!(
+        oversized_message.to_ascii_lowercase().contains("compact")
+            || oversized_message.to_ascii_lowercase().contains("narrow")
+    );
+    assert!(
+        oversized_message.to_ascii_lowercase().contains("task")
+            || oversized_message.to_ascii_lowercase().contains("record")
+    );
+    assert!(!oversized_message.contains("Output exceeds the response byte limit"));
 }
 #[test]
 fn stdio_symbol_search_matches_methods_and_functions_interchangeably() {
@@ -2732,7 +3104,7 @@ fn stdio_server_keeps_its_linked_worktree_and_resolves_registered_sibling_names(
     let conn = rusqlite::Connection::open(primary.path(".forge/tasks.sqlite")).unwrap();
     conn.execute_batch("CREATE TABLE task_claims(worktree TEXT, ended INTEGER);")
         .unwrap();
-    for path in [&linked, &sibling] {
+    for path in [&linked, &sibling, &mirror] {
         conn.execute(
             "INSERT INTO task_claims VALUES(?1, 0)",
             [path.to_str().unwrap()],
@@ -2860,7 +3232,10 @@ fn stdio_server_keeps_its_linked_worktree_and_resolves_registered_sibling_names(
         json!({"selector":"shared_source","max_body_lines":1,"leading_lines":0,"source_offset":1,"worktree":"mirror","format":"json"}),
     );
     assert_eq!(mirror_continuation["result"]["isError"], true);
-    assert!(mirror_continuation["result"]["content"][0]["text"].as_str().unwrap().contains("generation"));
+    assert!(mirror_continuation["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("generation"));
     let (_, sibling_continuation) = client.call(
         "get_code_snippet",
         json!({"selector":"shared_source","max_body_lines":1,"leading_lines":0,"source_offset":1,"worktree":"external","format":"json"}),
@@ -2937,10 +3312,14 @@ fn stdio_server_keeps_its_linked_worktree_and_resolves_registered_sibling_names(
             .as_str()
             .expect("Markdown tool call should return text");
         if !markdown.contains(&expected_uri) {
-            uri_failures.push(format!("{label} did not link to {expected_uri}: {markdown}"));
+            uri_failures.push(format!(
+                "{label} did not link to {expected_uri}: {markdown}"
+            ));
         }
         if markdown.contains("(link unavailable)") {
-            uri_failures.push(format!("{label} retained a link-unavailable marker: {markdown}"));
+            uri_failures.push(format!(
+                "{label} retained a link-unavailable marker: {markdown}"
+            ));
         }
     }
 
@@ -2953,10 +3332,14 @@ fn stdio_server_keeps_its_linked_worktree_and_resolves_registered_sibling_names(
         assert_eq!(referenced_symbol["path"], "src/lib.rs");
         assert_eq!(referenced_symbol["line"], 1);
         assert_eq!(referenced_symbol["citation_line"], 3);
-        assert!(referenced_symbol["doc_id"].as_str().is_some_and(|id| !id.is_empty()));
+        assert!(referenced_symbol["doc_id"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty()));
         assert!(referenced_symbol.get("uri").is_none());
     } else {
-        uri_failures.push(format!("get_doc did not retain the referenced symbol row: {doc_json}"));
+        uri_failures.push(format!(
+            "get_doc did not retain the referenced symbol row: {doc_json}"
+        ));
     }
     let doc_line = doc_json["sections"]["items"][0]["line"]
         .as_u64()
@@ -2978,8 +3361,13 @@ fn stdio_server_keeps_its_linked_worktree_and_resolves_registered_sibling_names(
         format!("file://{}/src/lib.rs#L1", linked.display()),
     ] {
         if !doc_markdown.contains(&expected_uri) {
-            uri_failures.push(format!("get_doc did not link to {expected_uri}: {doc_markdown}"));
+            uri_failures.push(format!(
+                "get_doc did not link to {expected_uri}: {doc_markdown}"
+            ));
         }
     }
-    assert!(uri_failures.is_empty(), "coordinate URI failures: {uri_failures:#?}");
+    assert!(
+        uri_failures.is_empty(),
+        "coordinate URI failures: {uri_failures:#?}"
+    );
 }

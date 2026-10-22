@@ -3051,7 +3051,7 @@ fn linked_task_workspaces_share_storage_and_confine_local_scope() {
         .all(|task| { task["task_id"].as_str().unwrap().starts_with("tooling/") }));
     assert_eq!(list(json!({}))["tasks"].as_array().unwrap().len(), 1);
     assert_eq!(
-        list(json!({"repository":"all"}))["tasks"]
+        list(json!({"repository":"all","milestone_status":"all"}))["tasks"]
             .as_array()
             .unwrap()
             .len(),
@@ -3065,7 +3065,7 @@ fn linked_task_workspaces_share_storage_and_confine_local_scope() {
         1
     );
     assert_eq!(
-        list(json!({"repository":"all","status":"all"}))["tasks"]
+        list(json!({"repository":"all","status":"all","milestone_status":"all"}))["tasks"]
             .as_array()
             .unwrap()
             .len(),
@@ -3369,6 +3369,7 @@ fn tasks_coordinate_claims_dependencies_reset_scope_and_claim_diagnostic() {
             status: None,
             stage: None,
             detail: None,
+            ..Default::default()
         },
     )
     .unwrap();
@@ -4340,6 +4341,7 @@ fn task_manage_sync_and_list_resolve_milestone_reference_by_id_prefix_stem_and_p
             status: Some(tasks::Status::All),
             stage: None,
             detail: None,
+            ..Default::default()
         },
     )
     .unwrap();
@@ -4366,6 +4368,7 @@ fn task_manage_sync_and_list_resolve_milestone_reference_by_id_prefix_stem_and_p
             status: Some(tasks::Status::All),
             stage: None,
             detail: None,
+            ..Default::default()
         },
     )
     .unwrap();
@@ -4529,25 +4532,24 @@ fn task_manage_sync_and_list_resolve_milestone_reference_by_id_prefix_stem_and_p
         task_slug_sync.to_string().contains("not found"),
         "sync must not reinterpret a task slug as a milestone: {task_slug_sync}"
     );
-    assert!(
-        tasks::claim(
-            &root.0,
-            tasks::Claim {
-                task_id: alias_task_ref.into(),
-                stage: "contract".into(),
-                worker_id: "slug-is-not-a-task-id".into(),
-                worktree: root.0.to_string_lossy().into_owned(),
-                ..Default::default()
-            }
-        )
-        .is_err()
-    );
-    let before_slug_delete =
-        contextunity_forge_mcp::db::tasks_store::TasksStore::open(&root.0.join(".forge/tasks.sqlite"))
-            .unwrap()
-            .connection
-            .query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get::<_, i64>(0))
-            .unwrap();
+    assert!(tasks::claim(
+        &root.0,
+        tasks::Claim {
+            task_id: alias_task_ref.into(),
+            stage: "contract".into(),
+            worker_id: "slug-is-not-a-task-id".into(),
+            worktree: root.0.to_string_lossy().into_owned(),
+            ..Default::default()
+        }
+    )
+    .is_err());
+    let before_slug_delete = contextunity_forge_mcp::db::tasks_store::TasksStore::open(
+        &root.0.join(".forge/tasks.sqlite"),
+    )
+    .unwrap()
+    .connection
+    .query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get::<_, i64>(0))
+    .unwrap();
     assert!(
         tasks::manage(
             &root.0,
@@ -4707,13 +4709,11 @@ fn task_manage_sync_and_list_resolve_milestone_reference_by_id_prefix_stem_and_p
     )
     .unwrap();
     assert_eq!(unique_slug["tasks"].as_array().unwrap().len(), 2);
-    assert!(
-        unique_slug["tasks"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|task| task["task_id"] == primary_shared_id)
-    );
+    assert!(unique_slug["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|task| task["task_id"] == primary_shared_id));
     assert_eq!(unique_slug["resolution"]["kind"], "task_parent");
     assert_eq!(unique_slug["resolution"]["task_id"], primary_shared_id);
     let linked_full_id = engine_tasks::list(
@@ -4727,13 +4727,11 @@ fn task_manage_sync_and_list_resolve_milestone_reference_by_id_prefix_stem_and_p
     )
     .unwrap();
     assert_eq!(linked_full_id["tasks"].as_array().unwrap().len(), 2);
-    assert!(
-        linked_full_id["tasks"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|task| task["task_id"] == linked_shared_id)
-    );
+    assert!(linked_full_id["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|task| task["task_id"] == linked_shared_id));
     assert_eq!(linked_full_id["resolution"]["input"], linked_shared_id);
     primary.write(
         "docs/milestones/011-primary-second.md",
@@ -4871,6 +4869,8 @@ fn task_manage_sync_and_list_resolve_milestone_reference_by_id_prefix_stem_and_p
 
 #[test]
 fn task_list_filters_milestone_status_and_controls_subtask_details() {
+    use contextunity_forge_mcp::engine::tasks;
+
     let root = ScopedWorkspace::new("forge_task_list_archive_and_evidence");
     root.write(
         "forge-mcp.yaml",
@@ -4921,6 +4921,43 @@ fn task_list_filters_milestone_status_and_controls_subtask_details() {
     let tasks_arr = active_only["tasks"].as_array().unwrap();
     assert_eq!(tasks_arr.len(), 1);
     assert_eq!(tasks_arr[0]["task_id"], "forge-mcp/m-active:active-task");
+
+    let default_ready = tasks::list(&root.0, tasks::List::default()).unwrap();
+    assert_eq!(default_ready["tasks"].as_array().unwrap().len(), 1);
+    assert_eq!(default_ready["tasks"][0]["status"], "ready");
+
+    let cli_page = std::process::Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+        .args([
+            "--format",
+            "json",
+            "--root",
+            root.0.to_str().unwrap(),
+            "task",
+            "list",
+            "--status",
+            "all",
+            "--limit",
+            "1",
+            "--offset",
+            "0",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        cli_page.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli_page.stderr)
+    );
+    let cli_page: serde_json::Value = serde_json::from_slice(&cli_page.stdout).unwrap();
+    assert_eq!(cli_page["pagination"]["total"], 1);
+    assert_eq!(cli_page["pagination"]["limit"], 1);
+    assert_eq!(cli_page["pagination"]["offset"], 0);
+    assert_eq!(cli_page["pagination"]["returned"], 1);
+    assert_eq!(cli_page["pagination"]["has_more"], false);
+    assert!(!cli_page["pagination"]["generation"]
+        .as_str()
+        .unwrap()
+        .is_empty());
 
     // Compact listings retain the subtask reference and status, omitting details.
     let subtasks = tasks_arr[0]["subtasks"].as_array().unwrap();
@@ -5022,6 +5059,36 @@ fn task_list_filters_milestone_status_and_controls_subtask_details() {
         direct_cancelled["tasks"][0]["task_id"],
         "forge-mcp/m-cancelled:cancelled-task"
     );
+
+    root.write(
+        "docs/milestones/010-active.md",
+        &active_spec.replace("status: active", "status: completed"),
+    );
+    let no_active = tasks::list(&root.0, tasks::List::default()).unwrap();
+    assert!(no_active["tasks"].as_array().unwrap().is_empty());
+
+    root.write("docs/milestones/010-active.md", active_spec);
+    let second_active_spec = "---\nid: m-second-active\ntitle: Second Active Milestone\ndoc_type: contract\nstatus: active\n---\n# Tasks\n```yaml\ntask_ref: second-active-task\ntarget: Second active task target\nproof_policy: seam-test-first\nscope: [src/]\n```\n";
+    let second_active_path = "docs/milestones/011-second-active.md";
+    root.write(second_active_path, second_active_spec);
+    store
+        .sync(
+            &Milestone::parse(second_active_spec, "forge-mcp").unwrap(),
+            second_active_path,
+            &root.0,
+        )
+        .unwrap();
+    let ambiguity = tasks::list(
+        &root.0,
+        tasks::List {
+            status: Some(tasks::Status::All),
+            ..Default::default()
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(ambiguity.contains("010-active"), "{ambiguity}");
+    assert!(ambiguity.contains("011-second-active"), "{ambiguity}");
 }
 
 #[test]

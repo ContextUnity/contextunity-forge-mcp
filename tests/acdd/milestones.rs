@@ -5014,6 +5014,7 @@ fn subproject_milestones_prefers_declared_projects_preventing_duplicate_phantom_
             status: Some(contextunity_forge_mcp::engine::tasks::Status::All),
             stage: None,
             detail: None,
+            ..Default::default()
         },
     )
     .unwrap();

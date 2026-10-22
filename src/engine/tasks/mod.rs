@@ -9,6 +9,7 @@ use anyhow::{bail, Context, Result};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use sha2::Digest;
 use std::path::Path;
 mod workspaces;
 use workspaces::Registry;
@@ -136,6 +137,13 @@ pub struct List {
     pub stage: Option<String>,
     /// Subtask detail level: compact by default or full to include titles and evidence.
     pub detail: Option<TaskListDetail>,
+    /// Maximum tasks returned, from 1 through 100 (default 30).
+    pub limit: Option<usize>,
+    /// Number of matching tasks skipped before this page.
+    #[serde(default)]
+    pub offset: usize,
+    /// Task-view generation from the previous page; required for nonzero offsets.
+    pub generation: Option<String>,
 }
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[serde(deny_unknown_fields)]
@@ -484,13 +492,80 @@ pub fn list(root: &Path, mut p: List) -> Result<Value> {
     };
     let effective_milestone_filter = p.milestone_status.unwrap_or(default_milestone_filter);
     let detail = p.detail.unwrap_or_default();
-    let mut tasks = Vec::new();
+    let limit = p.limit.unwrap_or(30);
+    let offset = p.offset;
+    anyhow::ensure!((1..=100).contains(&limit), "limit must be 1..=100");
+    anyhow::ensure!(
+        offset
+            .checked_add(limit)
+            .is_some_and(|end| end <= i64::MAX as usize),
+        "offset is too large"
+    );
+    anyhow::ensure!(
+        offset == 0 || p.generation.is_some(),
+        "task list continuation requires generation from the previous page; restart at offset=0 if no token is available"
+    );
     let all_workspaces = p.repository.as_deref() == Some("all") && p.milestone_ref.is_none();
     let mut workspaces = serde_json::Map::new();
     let mut selected = match resolved_workspace {
         Some(workspace) => vec![workspace],
         None => registry.selected(p.repository.as_deref())?,
     };
+    let mut active_candidates = Vec::new();
+    if p.milestone_ref.is_none() && effective_milestone_filter == MilestoneStatusFilter::Active {
+        for workspace in &selected {
+            for manifest in workspace.manifests()? {
+                if resolve_manifest_status(&workspace.root, &manifest)? != "active" {
+                    continue;
+                }
+                let path = confined_path(&workspace.root, &manifest)?;
+                let text = std::fs::read_to_string(path)?;
+                let parsed = registry.parse_milestone_manifest(workspace, &manifest, &text)?;
+                if parsed.project == workspace.project {
+                    active_candidates.push((workspace.name.as_str(), manifest));
+                }
+            }
+        }
+        if active_candidates.is_empty() {
+            for workspace in &selected {
+                let mut store = workspace.open(&registry.database)?;
+                store.cleanup(crate::db::tasks_store::now())?;
+                for task in store.list(None, "all", None)? {
+                    if resolve_manifest_status(&workspace.root, &task.milestone_ref)? != "active" {
+                        continue;
+                    }
+                    let path = confined_path(&workspace.root, &task.milestone_ref)?;
+                    let text = std::fs::read_to_string(path)?;
+                    let parsed =
+                        registry.parse_milestone_manifest(workspace, &task.milestone_ref, &text)?;
+                    if parsed.project == workspace.project
+                        && !active_candidates.iter().any(|(name, manifest)| {
+                            *name == workspace.name && manifest == &task.milestone_ref
+                        })
+                    {
+                        active_candidates.push((workspace.name.as_str(), task.milestone_ref));
+                    }
+                }
+            }
+        }
+        if active_candidates.len() > 1 {
+            let candidates = active_candidates
+                .iter()
+                .map(|(workspace, path)| format!("{workspace}:{path}"))
+                .collect::<Vec<_>>();
+            bail!(
+                "TASK_LIST_AMBIGUOUS_ACTIVE_MILESTONE: multiple active milestones match: {}. Do: pass milestone_ref or an explicit milestone_status.",
+                candidates.join(", ")
+            );
+        }
+        if let Some((_, manifest)) = active_candidates.first() {
+            p.milestone_ref = Some(manifest.clone());
+        }
+    }
+    let no_active_milestone =
+        p.milestone_ref.is_none() && effective_milestone_filter == MilestoneStatusFilter::Active;
+    let mut all_tasks = Vec::new();
+    let mut task_state = Vec::new();
     for workspace in &selected {
         let mut store = workspace.open(&registry.database)?;
         store.cleanup(crate::db::tasks_store::now())?;
@@ -529,7 +604,7 @@ pub fn list(root: &Path, mut p: List) -> Result<Value> {
             {
                 task.status = "blocked".into();
             }
-            if status == "all" || task.status == status {
+            if !no_active_milestone && (status == "all" || task.status == status) {
                 let stage = if task.status == "completed" {
                     "completed"
                 } else {
@@ -564,7 +639,8 @@ pub fn list(root: &Path, mut p: List) -> Result<Value> {
                         TaskListDetail::Full => serde_json::to_value(&task.spec.subtasks)?,
                     };
                 }
-                tasks.push(item);
+                task_state.push(serde_json::to_value(&task)?);
+                all_tasks.push(item);
             }
         }
         if all_workspaces {
@@ -574,13 +650,76 @@ pub fn list(root: &Path, mut p: List) -> Result<Value> {
             );
         }
     }
+    let workspace_scope = selected
+        .iter()
+        .map(|workspace| {
+            json!({
+                "name": workspace.name,
+                "repository": workspace.repository,
+                "project": workspace.project,
+                "root": workspace.root,
+            })
+        })
+        .collect::<Vec<_>>();
+    let filter_state = json!({
+        "workspace": &workspace_scope,
+        "repository": p.repository.as_deref().unwrap_or("primary"),
+        "milestone_ref": &p.milestone_ref,
+        "milestone_status": match effective_milestone_filter {
+            MilestoneStatusFilter::Active => "active",
+            MilestoneStatusFilter::Planned => "planned",
+            MilestoneStatusFilter::Completed => "completed",
+            MilestoneStatusFilter::All => "all",
+        },
+        "status": status,
+        "stage": &p.stage,
+        "limit": limit,
+        "detail": match detail {
+            TaskListDetail::Compact => "compact",
+            TaskListDetail::Full => "full",
+        },
+    });
+    let snapshot = json!({"filters":&filter_state,"tasks":&task_state});
+    let generation = hex::encode(sha2::Sha256::digest(serde_json::to_vec(&snapshot)?));
+    if p.generation
+        .as_deref()
+        .is_some_and(|previous| previous != generation)
+    {
+        bail!("TASK_LIST_STALE_GENERATION: task or subtask state, workspace, milestone, or filters changed. Do: restart task_list at offset=0 and use the current generation.");
+    }
+    let total = all_tasks.len();
+    let start = offset.min(total);
+    let end = start.saturating_add(limit).min(total);
+    let tasks = all_tasks[start..end].to_vec();
+    let next_offset = (end < total).then_some(end);
+    let filters = filter_state;
+    let mut pagination = json!({
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "returned": tasks.len(),
+        "has_more": next_offset.is_some(),
+        "generation": generation,
+        "byte_omitted": 0,
+        "filters": &filters,
+    });
+    if let Some(next) = next_offset {
+        pagination["next_offset"] = json!(next);
+        pagination["continuation_hint"] = json!(format!(
+            "Repeat task_list with the same filters ({filters}) and generation={generation}, offset={next}."
+        ));
+    } else {
+        pagination["continuation_hint"] = json!(format!(
+            "No next page. Repeat task_list with the same filters ({filters}) at offset=0 to refresh; generation={generation}."
+        ));
+    }
     let mut response = if all_workspaces {
-        json!({"tasks":tasks,"workspaces":workspaces})
+        json!({"tasks":tasks,"workspaces":workspaces,"pagination":pagination})
     } else {
         selected
             .pop()
             .context("task workspace missing")?
-            .envelope(json!({"tasks":tasks}))?
+            .envelope(json!({"tasks":tasks,"pagination":pagination}))?
     };
     if let Some(resolution) = task_parent_resolution {
         response

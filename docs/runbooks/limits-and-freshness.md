@@ -13,7 +13,7 @@ Forge bounds file admission, graph traversal, queries, and tool responses. A rej
 | --- | --- | --- |
 | Scan inventory | 100,000 files; 5 MiB per file; 500 MiB total | Reduce configured roots or ignore generated files. |
 | MCP page size | Default 30; range 1–100 | Use `offset` or the returned continuation. |
-| MCP response bytes | Configurable 1,024–65,536; default 65,536 | Request fewer rows or less detail. |
+| MCP response bytes | Configurable 1,024–98,304; default 98,304 | Request fewer rows or less detail; complete collection records are trimmed from the page tail with accurate continuation metadata. |
 | Graph depth | At most 16 | Start at depth 1 and expand only where needed. |
 | Deep graph frontier | More than 1,000 immediate links blocks depth above 1 | Narrow the selector or retry with depth 1. |
 | Removal scope | More than 10,000 nodes is rejected | Analyze a smaller file, package, or symbol. |
@@ -41,7 +41,7 @@ If a source file has changed since it was indexed, `get_code_snippet` rejects st
 
 `code_map_analyze` accepts one read-only `SELECT` or `WITH` statement and rejects write and administrative SQL. It runs against a read-only connection. Set `include_cycles=true` only when cycle findings are needed; cycle analysis has separate graph limits. A structural result is evidence from indexed source, not a guarantee about runtime behavior.
 
-Source bodies are omitted from inspect and explain MCP responses by default. Opt in through the configured preview settings or request `get_code_snippet`. Inspect and explain previews default to 5 leading lines and the configured body limit (200 by default, constrained to 1–500); these preview defaults are unchanged. `get_code_snippet` defaults to the full selected symbol and returns it whenever the complete serialized response fits the configured 1,024–65,536 byte limit. Otherwise it pages at complete-line boundaries with accurate offsets; every continuation requires the previous page's explicit generation. A single oversized line returns a budget error and a local-file recovery hint, never partial code. An explicit `max_body_lines` value is normalized to at least one and honored. All source reads verify the indexed digest. See [MCP tools](../reference/mcp-tools.md) for the request fields.
+Source bodies are omitted from inspect and explain MCP responses by default. Opt in through the configured preview settings or request `get_code_snippet`. Inspect and explain previews default to 5 leading lines and the configured body limit (200 by default, constrained to 1–500); these preview defaults are unchanged. `get_code_snippet` defaults to the full selected symbol and returns it whenever the complete serialized response fits the configured 1,024–98,304 byte limit. Otherwise it pages at complete-line boundaries with accurate offsets; every continuation requires the previous page's explicit generation. A single oversized line returns a budget error and a local-file recovery hint, never partial code. An explicit `max_body_lines` value is normalized to at least one and honored. All source reads verify the indexed digest. Task-list continuations instead bind the selected task workspace, filters, and full task/subtask state; they are independent of code-index generations. See [MCP tools](../reference/mcp-tools.md) for the request fields.
 
 MCP checkpoints remain local to the selected worktree. Git-linked worktrees do not share checkpoint files merely because their task database is shared.
 

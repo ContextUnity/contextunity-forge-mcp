@@ -144,14 +144,14 @@ for synchronization, namespace selection, and scope confinement.
 response:
   detail: compact
   page_size: 30
-  max_output_bytes: 65536
+  max_output_bytes: 98304
   source_context:
     enabled_by_default: false
     leading_lines: 5
     max_body_lines: 35
 ```
 
-`page_size` accepts 1–100; `max_output_bytes` accepts 1,024–65,536. `code_map_inspect` and `code_map_explain` source previews default to 5 leading lines and 200 body lines. They accept 0–20 leading lines and 1–500 body lines; configured `source_context` values use those same bounds. This repository overrides the preview body limit to 35 in `forge-mcp.yaml`. `get_code_snippet` uses the configured leading-line default but returns the complete selected symbol when its serialized response fits `max_output_bytes`; an explicit `max_body_lines` is normalized to at least one and limits the returned body. Oversized snippets page at complete-line boundaries; a single line that cannot fit returns a budget error and a local-file recovery hint. `detail` is `compact` or `full`. These settings control presentation and do not change extracted facts or require an index rebuild. Unknown response fields and out-of-range values are rejected.
+`page_size` accepts 1–100; `max_output_bytes` accepts 1,024–98,304 and defaults to 98,304. Smaller configured byte limits remain authoritative; this repository's `forge-mcp.yaml` explicitly selects 65,536 bytes. The budget counts serialized UTF-8 content, response metadata, and JSON or Markdown escaping/framing. Overflowing paged collections retain whole records and update their pagination cursor to the number actually returned; a single record or required metadata that cannot fit returns an actionable bounded error. `code_map_inspect` and `code_map_explain` source previews default to 5 leading lines and 200 body lines. They accept 0–20 leading lines and 1–500 body lines; configured `source_context` values use those same bounds. This repository overrides the preview body limit to 35 in `forge-mcp.yaml`. `get_code_snippet` uses the configured leading-line default but returns the complete selected symbol when its serialized response fits `max_output_bytes`; an explicit `max_body_lines` is normalized to at least one and limits the returned body. Oversized snippets page at complete-line boundaries; a single line that cannot fit returns a budget error and a local-file recovery hint. `detail` is `compact` or `full`. These settings control presentation and do not change extracted facts or require an index rebuild. Unknown response fields and out-of-range values are rejected.
 
 The root `forge-mcp.yaml` and the file selected with CLI `--adapter` are configuration rather than indexed sources. Nested files with that name and linked-workspace adapters remain ordinary YAML sources when admitted by their configured roots. A linked workspace's own adapter does not control the parent index.
 

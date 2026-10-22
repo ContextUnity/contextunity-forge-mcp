@@ -13,7 +13,7 @@ A client receives three texts for this server. Keep each fact in one layer.
 
 | Layer | Source | Write |
 | --- | --- | --- |
-| Server instructions | `instructions` on the MCP server handler | Cross-tool budget and the first call: 64 KiB, 2 second SQLite budget, start at `code_map_overview`, continue a page with `offset` and `generation`, prefer `detail=compact`. |
+| Server instructions | `instructions` on the MCP server handler | Cross-tool budget and the first call: 96 KiB maximum (lower configured limits apply), 2 second SQLite budget, start at `code_map_overview`, continue a page with `offset` and `generation`, prefer `detail=compact`. |
 | Tool description | `description` on each tool | What that call returns, plus one limit the schema cannot express. |
 | Input schema | Description on each input field | Accepted values, defaults, and pairings such as nonzero `offset` with `generation`. |
 
@@ -76,7 +76,7 @@ evidence. See the [task lifecycle Markdown contract](mcp-markdown-contracts.md#t
 | `get_doc` | Retrieve a Markdown document by `path_or_id` and optionally a heading `section`; full responses include source locations, citation links, uniquely verified referenced symbols, and a paged `referenced_symbol_candidates` collection for ambiguous eligible claims. Unscoped claims match symbols in the source document's workspace; an explicit normalized file link can cross workspaces. Compact responses omit candidate details and return a hint to request `detail="full"`. |
 | `session_checkpoint` | `list` checkpoint names and serialized byte sizes; `save`, `get`, or `delete` a named local JSON checkpoint. |
 | `forge_guide` | Return the built-in usage guide. |
-| `task_list` | List ready tasks in the primary repository by default; select repository/all, task `status`, `milestone_ref`, `milestone_status`, or stage explicitly. Task status accepts `ready`, `in_progress`, `blocked`, `parked`, `completed`, `cancelled`, or `all`; `parked` selects work waiting for a scope owner with retained worker/worktree affinity. Cancelled tasks retain history and leave dependencies unsatisfied; `all` includes them. Milestone status defaults to `active`, except a targeted milestone reference defaults to all statuses. Subtasks are compact by default; request `detail: "full"` for titles and evidence. |
+| `task_list` | List ready tasks in the selected workspace and unique active milestone by default; zero active milestones returns an empty page and multiple active milestones require an explicit milestone selector/status. Accepts `limit` (1–100, default 30), `offset` (default 0), and `generation` (required for nonzero offsets), plus repository, task status, milestone, stage, and detail filters. Pagination reports total matches, actual returned count, byte-omitted records, and a continuation hint; its generation binds the workspace, filters, and task/subtask state, not the code index. Status accepts `ready`, `in_progress`, `blocked`, `parked`, `completed`, `cancelled`, or `all`. A targeted milestone defaults to all milestone statuses; explicit `milestone_status: "all"` retains archived tasks. Subtasks are compact by default; request `detail: "full"` for titles and evidence. |
 | `task_claim` | Atomically claim the current task gate for a worker and worktree. |
 | `task_submit` | Submit a revision-bound JSON `evidence` object. Passing the active profile's terminal delivery gate (default ID: `deliver`) writes the validated task receipt and context rollup. |
 | `task_manage` | Create/sync specifications, inspect/context, delete, extend scope, manage subtasks, reset/reopen, or atomically dispatch with `action: "next"`, `worker_id`, and `worktree`. Next returns the claimed gate with its context bundle, prioritizing independent delivery/review, the worker's unblocked parked work, then ordinary ready work by wave and task ID. See the [action schema](tasks.md#five-flat-mcp-tools). |
@@ -177,7 +177,8 @@ implicit 500-line cap.
 All three tools clamp `leading_lines` above 20 to 20. Negative values and
 overflowing source offsets remain invalid.
 
-The current response-byte ceiling is 65,536 bytes. Every continuation with
+The maximum response-byte ceiling is 98,304 bytes; configured lower limits remain
+authoritative. Every continuation with
 `source_offset > 0` requires the `generation` returned by the previous page,
 including calls in the same MCP session. Missing tokens return an actionable
 error: provide that generation or restart at `source_offset=0`. Ordinary
@@ -191,7 +192,7 @@ only complete lines. A single line that cannot fit returns a clear budget error
 and a local-file recovery hint, never a partial line or a non-advancing cursor.
 Source reads still verify the on-disk digest and reject stale generations.
 
-Paged tools accept `limit` (default 30, range 1–100) and `offset`. Continue an ordinary page with its `next_offset` and `generation`; ordinary pages omit the repeated continuation text. A completed zero-result page contains `total` and `items` without pagination fields. Computation and byte limits retain their truncation status and recovery hint, including when no items were returned. The response byte budget is configurable from 1,024 to 65,536 bytes.
+Code-map paged tools accept `limit` (default 30, range 1–100) and `offset`. Continue an ordinary page with its `next_offset` and `generation`; ordinary pages omit the repeated continuation text. A completed zero-result code-map page contains `total` and `items` without pagination fields. Computation and byte limits retain their truncation status and recovery hint, including when no items were returned. The response byte budget is configurable from 1,024 to 98,304 bytes; actual UTF-8 serialization, metadata, and JSON/Markdown escaping count toward it. Task-list pagination is separate: it always reports `total`, `limit`, `offset`, actual `returned`, `has_more`, and its task-view `generation`, with `next_offset` only when another page remains. When response trimming removes task or collection tails, it preserves whole records and advances to the actual returned offset. Task-view generations bind the selected workspace, task filters, and complete task/subtask state, not the code-index snapshot.
 
 Code source previews from `code_map_search` appear automatically when the total hit count is at most three. For larger results, set `include_preview:true`; each response attaches previews to at most three hits, with at most 20 lines and 12 KiB combined preview text. Every search hit includes an indexed signature and an `inspect_selector` object; pass that object as the arguments to `code_map_inspect` to request the source preview directly. Search previews and snippets check that on-disk source still matches the indexed digest. `get_code_snippet` supports `leading_lines` from 0 to 20 and an explicit `max_body_lines` limit normalized to at least one; when omitted, it reads the complete selected symbol if the serialized response fits. If source changed, refresh the index before relying on the result.
 

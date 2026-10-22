@@ -90,16 +90,22 @@ human-friendly exact-name, numeric-prefix, suffix, and substring selectors do
 not apply to CLI commands. CLI query commands choose a workspace with `--root`.
 
 ```sh
-contextunity-forge-mcp task list [--repository NAME|all] [--milestone REF] [--status STATUS] [--stage STAGE] [--milestone-status active|planned|completed|all] [--planned|--completed|--all] [--full]
+contextunity-forge-mcp task list [--repository NAME|all] [--milestone REF] [--status STATUS] [--stage STAGE] [--milestone-status active|planned|completed|all] [--planned|--completed|--all] [--detail compact|full] [--limit 1..100] [--offset N --generation TOKEN]
 ```
 
-Task list defaults to tasks from active milestones and compact subtask
-references/statuses. Use `--milestone-status planned|completed|all` or the
+Task list defaults to ready tasks from the unique active milestone in the selected
+workspace. No active milestone returns an empty page; multiple active milestones
+require `--milestone REF` or an explicit `--milestone-status`. Compact subtask
+references/statuses are the default. Use `--milestone-status planned|completed|all` or the
 mutually exclusive `--planned`, `--completed`, and `--all` shorthands to select
 other milestone sets. A targeted `--milestone REF` defaults to all milestone
 statuses. Use `--full` to include subtask titles and verification evidence.
 `--detail compact|full` selects the same subtask detail explicitly; use either
-`--full` or `--detail` in one invocation.
+`--full` or `--detail` in one invocation. `--limit` accepts 1–100 and defaults
+to 30. `--offset` defaults to 0; every nonzero offset requires the previous
+page's `--generation`. Pagination binds the workspace, filters, and task/subtask
+state and is independent of code-index changes. Responses retain whole task rows;
+byte trimming reports the actual `returned`, `byte_omitted`, and `next_offset`.
 Task `--status` accepts `ready` (default), `in_progress`, `blocked`, `parked`,
 `completed`, `cancelled`, or `all`. Use `--status parked` to list tasks retaining their worker
 and worktree while waiting for a scope owner; `--status all` includes them.
