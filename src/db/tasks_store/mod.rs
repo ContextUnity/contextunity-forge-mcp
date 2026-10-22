@@ -210,7 +210,19 @@ pub struct TasksStore {
     /// Active workflow gate profile.
     pub profile: std::sync::Arc<crate::core::tasks::profile::GateProfile>,
     workspace_root: Option<PathBuf>,
+    handoff_pruning: bool,
 }
+
+#[derive(Debug)]
+pub(crate) struct MilestoneArchived(String);
+
+impl std::fmt::Display for MilestoneArchived {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "STORE_SYNC_FAILED: milestone '{}' is archived", self.0)
+    }
+}
+
+impl std::error::Error for MilestoneArchived {}
 
 #[derive(Debug)]
 /// Represents task already claimed data.
@@ -446,7 +458,19 @@ impl TasksStore {
                 [],
                 |r| r.get(0),
             )?;
-            if version != "5" {
+            if version == "5" {
+                connection.execute_batch(
+                    "BEGIN IMMEDIATE;
+                    CREATE TABLE IF NOT EXISTS milestone_tombstones (
+                        milestone_id TEXT PRIMARY KEY,
+                        archived_at INTEGER NOT NULL,
+                        all_tasks_terminal INTEGER NOT NULL,
+                        completed_task_ids TEXT NOT NULL
+                    );
+                    UPDATE task_store_metadata SET value='6' WHERE key='schema_version';
+                    COMMIT;",
+                )?;
+            } else if version != "6" {
                 bail!("unsupported tasks schema; use recovery tooling");
             }
         } else {
@@ -482,7 +506,8 @@ impl TasksStore {
             CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value INTEGER NOT NULL);
             INSERT OR IGNORE INTO meta VALUES('generation',0);
             CREATE TABLE IF NOT EXISTS task_store_metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
-            INSERT OR IGNORE INTO task_store_metadata VALUES('schema_version','5');
+            INSERT OR IGNORE INTO task_store_metadata VALUES('schema_version','6');
+            CREATE TABLE IF NOT EXISTS milestone_tombstones(milestone_id TEXT PRIMARY KEY,archived_at INTEGER NOT NULL,all_tasks_terminal INTEGER NOT NULL,completed_task_ids TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS task_revisions(task_id TEXT PRIMARY KEY,revision INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS tasks(task_id TEXT PRIMARY KEY,milestone_ref TEXT NOT NULL,descriptor TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS task_claims(task_id TEXT NOT NULL REFERENCES tasks ON DELETE CASCADE,revision INTEGER NOT NULL,worker_id TEXT NOT NULL,worktree TEXT NOT NULL,claimed_at INTEGER NOT NULL,ended INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(task_id,revision));
@@ -508,7 +533,7 @@ impl TasksStore {
             [],
             |r| r.get(0),
         )?;
-        if version != "5" {
+        if version != "6" {
             bail!("unsupported tasks schema; use recovery tooling");
         }
         Ok(Self {
@@ -522,6 +547,7 @@ impl TasksStore {
             id_prefix: format!("{project}/"),
             profile: crate::core::tasks::profile::compiled(),
             workspace_root: None,
+            handoff_pruning: true,
         })
     }
     pub(crate) fn set_profile(
@@ -802,9 +828,15 @@ impl TasksStore {
         }) {
             bail!("MILESTONE_STATUS_INVALID: expected active, planned, completed, or cancelled");
         }
+        let milestone_identity = self.milestone_identity(&milestone.id);
         let tx = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        // This read must follow writer admission: a competing handoff may have
+        // committed after the engine's optimistic tombstone check.
+        if milestone_tombstoned(&tx, &milestone_identity)? {
+            return Err(MilestoneArchived(milestone_identity).into());
+        }
         if let Some(stored_task_id) =
             stored_task_id_for_milestone(&tx, reference, &milestone.repository, &milestone.project)?
         {
@@ -1330,6 +1362,13 @@ impl TasksStore {
         expected_tasks: &[Task],
         receipts: &std::collections::BTreeMap<String, Receipt>,
     ) -> Result<()> {
+        let old_scope = self.milestone_scope_ref(old_ref)?;
+        let new_scope = self.milestone_scope_ref(new_ref)?;
+        let milestone_id = milestone_prefix
+            .strip_prefix(&self.id_prefix)
+            .and_then(|prefix| prefix.strip_suffix(':'))
+            .context("invalid milestone prefix")?;
+        let milestone_identity = self.milestone_identity(milestone_id);
         let tx = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -1363,7 +1402,9 @@ impl TasksStore {
                 }
                 task.milestone_ref = new_ref.into();
                 found_ids.push(task.task_id.clone());
-                save(&tx, &task)?;
+                if !self.handoff_pruning {
+                    save(&tx, &task)?;
+                }
                 continue;
             }
             let receipt = receipts
@@ -1389,7 +1430,9 @@ impl TasksStore {
             task.milestone_ref = new_ref.into();
             found_ids.push(task.task_id.clone());
             completed_ids.push(task.task_id.clone());
-            save(&tx, &task)?;
+            if !self.handoff_pruning {
+                save(&tx, &task)?;
+            }
         }
         found_ids.sort();
         let mut expected = expected_tasks
@@ -1403,10 +1446,61 @@ impl TasksStore {
         if found_ids != expected || receipt_ids != completed_ids {
             bail!("milestone task or receipt set changed during handoff");
         }
+        if self.handoff_pruning {
+            for dependency in completed_ids
+                .iter()
+                .cloned()
+                .chain(std::iter::once(format!("{milestone_prefix}__milestone__")))
+            {
+                tx.execute(
+                    "UPDATE task_dependencies SET satisfied=1 WHERE dependency_id=?1",
+                    [&dependency],
+                )?;
+            }
+            tx.execute(
+                "DELETE FROM task_revisions WHERE task_id IN (SELECT task_id FROM tasks WHERE milestone_ref IN (?1,?2) AND substr(task_id,1,length(?3))=?3)",
+                params![old_ref, new_ref, milestone_prefix],
+            )?;
+            tx.execute(
+                "DELETE FROM task_blackboard WHERE task_id IS NULL AND milestone_ref IN (?3,?4)",
+                params![old_ref, new_ref, old_scope, new_scope],
+            )?;
+            tx.execute(
+                "DELETE FROM tasks WHERE milestone_ref IN (?1,?2) AND substr(task_id,1,length(?3))=?3",
+                params![old_ref, new_ref, milestone_prefix],
+            )?;
+            tx.execute(
+                "INSERT INTO milestone_tombstones(milestone_id,archived_at,all_tasks_terminal,completed_task_ids) VALUES(?1,?2,1,?3)",
+                params![milestone_identity, now(), serde_json::to_string(&completed_ids)?],
+            )?;
+        }
         tx.commit()?;
         Ok(())
     }
+
+    /// Select whether handoff prunes terminal SQLite state (enabled by default).
+    pub fn set_handoff_pruning(&mut self, enabled: bool) {
+        self.handoff_pruning = enabled;
+    }
+
+    fn milestone_identity(&self, milestone_id: &str) -> String {
+        format!("{}{milestone_id}", self.namespace)
+    }
+
+    /// Whether a milestone in this store's namespace has been archived and pruned.
+    pub fn milestone_tombstoned(&self, milestone_id: &str) -> Result<bool> {
+        milestone_tombstoned(&self.connection, &self.milestone_identity(milestone_id))
+    }
 }
+
+fn milestone_tombstoned(connection: &Connection, milestone_identity: &str) -> Result<bool> {
+    Ok(connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM milestone_tombstones WHERE milestone_id=?1)",
+        [milestone_identity],
+        |row| row.get(0),
+    )?)
+}
+
 pub(crate) fn load(conn: &Connection, id: &str) -> Result<Option<Task>> {
     let value: Option<String> = conn
         .query_row("SELECT descriptor FROM tasks WHERE task_id=?1", [id], |r| {

@@ -364,23 +364,15 @@ fn handoff_preserves_proofs_across_reviewed_history_rewrites() {
             output["handoff"]["integration_evidence"],
             serde_json::to_value(&evidence).unwrap()
         );
-        for (index, spec) in milestone.tasks.iter().enumerate() {
-            let id = milestone.task_id(spec);
-            let after = store.inspect_details(&id).unwrap();
-            assert_eq!(
-                before[index]["gates"], after["gates"],
-                "{scenario}: accepted gates changed"
-            );
-            assert_eq!(
-                before[index]["attempts"], after["attempts"],
-                "{scenario}: accepted claims changed"
-            );
+        let archived_text = std::fs::read_to_string(root.0.join(archived)).unwrap();
+        let archived_milestone = Milestone::parse(&archived_text, "forge-mcp").unwrap();
+        assert!(store.list(None, "all", None).unwrap().is_empty());
+        for (index, spec) in archived_milestone.tasks.iter().enumerate() {
             let accepted: contextunity_forge_mcp::core::tasks::Receipt =
                 serde_json::from_value(before[index]["receipt"].clone()).unwrap();
-            let final_task = store.inspect(&id).unwrap();
-            assert!(accepted.matches_proofs(final_task.receipt.as_ref().unwrap()));
+            assert!(accepted.matches_proofs(spec.receipt.as_ref().unwrap()));
             if !recording {
-                assert!(final_task.receipt.unwrap().commit.is_none());
+                assert!(spec.receipt.as_ref().unwrap().commit.is_none());
             }
         }
         assert!(!root.0.join(active).exists());
@@ -662,18 +654,11 @@ fn handoff_validates_reviewed_shared_scope_and_repacked_landings_atomically() {
             assert!(!root.0.join(active_ref).exists(), "{scenario:?}");
             let archived = std::fs::read_to_string(root.0.join(archive_ref)).unwrap();
             let parsed = Milestone::parse(&archived, "forge-mcp").unwrap();
-            for (index, (task_id, landed)) in
-                [(&first_id, &first_landed), (&second_id, &second_landed)]
-                    .into_iter()
-                    .enumerate()
+            assert!(reopened.list(None, "all", None).unwrap().is_empty());
+            for (index, (_, landed)) in [(&first_id, &first_landed), (&second_id, &second_landed)]
+                .into_iter()
+                .enumerate()
             {
-                let task = reopened.inspect(task_id).unwrap();
-                assert_eq!(task.milestone_ref, archive_ref, "{scenario:?}");
-                assert_eq!(
-                    task.receipt.unwrap().commit.as_deref(),
-                    record_commits.then_some(landed.as_str()),
-                    "{scenario:?}: SQLite must record each task's own landed commit"
-                );
                 assert_eq!(
                     parsed.tasks[index]
                         .receipt
@@ -1222,6 +1207,48 @@ fn milestone_handoff_requires_completed_tasks_and_archives_typed_receipt() {
     root.write("src/lib.rs", "pub fn finish() {}\n");
     root.write("src/extra.rs", "pub fn admitted_extension() {}\n");
     complete_task_through_engine(&root, &store, &task.task_id);
+    let foreign_id = "other/m-close:waiting";
+    let mut foreign_task = store.inspect(&task.task_id).unwrap();
+    foreign_task.task_id = foreign_id.into();
+    store
+        .connection
+        .execute(
+            "INSERT INTO tasks VALUES(?1,?2,?3)",
+            rusqlite::params![
+                foreign_id,
+                "docs/milestones/010-close.md",
+                serde_json::to_string(&foreign_task).unwrap()
+            ],
+        )
+        .unwrap();
+    for id in [&task.task_id, &foreign_id.to_owned()] {
+        store
+            .connection
+            .execute("INSERT OR IGNORE INTO task_revisions VALUES(?1,1)", [id])
+            .unwrap();
+    }
+    for dependency in [&task.task_id, &"forge-mcp/m-close:__milestone__".to_owned()] {
+        store
+            .connection
+            .execute(
+                "INSERT INTO task_dependencies VALUES(?1,?2,0)",
+                rusqlite::params![foreign_id, dependency],
+            )
+            .unwrap();
+    }
+    let old_scope = store
+        .milestone_scope_ref("docs/milestones/010-close.md")
+        .unwrap();
+    let new_scope = store
+        .milestone_scope_ref("docs/milestones/archive/010-close.md")
+        .unwrap();
+    for scope in [
+        old_scope.as_str(),
+        new_scope.as_str(),
+        "other/other/docs/milestones/010-close.md",
+    ] {
+        store.connection.execute("INSERT INTO task_blackboard(milestone_ref,author,topic,payload,created_at) VALUES(?1,'fixture','notes','retained until handoff',0)", [scope]).unwrap();
+    }
     drop(store);
     let handoff_commit = git_head(&root.0);
     let completed_args = [
@@ -1240,10 +1267,109 @@ fn milestone_handoff_requires_completed_tasks_and_archives_typed_receipt() {
     );
     assert!(!root.0.join("docs/milestones/010-close.md").exists());
     let reopened = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
+    assert!(reopened.list(None, "all", None).unwrap().is_empty());
+    for table in [
+        "tasks",
+        "task_claims",
+        "task_gates",
+        "task_findings",
+        "task_scope_paths",
+        "task_dependencies",
+        "task_submissions",
+        "task_subtasks",
+        "task_revisions",
+    ] {
+        let count: i64 = reopened
+            .connection
+            .query_row(
+                &format!("SELECT COUNT(*) FROM {table} WHERE task_id=?1"),
+                [&task.task_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0, "{table}");
+    }
+    let foreign_tasks: i64 = reopened
+        .connection
+        .query_row(
+            "SELECT COUNT(*) FROM tasks WHERE task_id=?1",
+            [foreign_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(foreign_tasks, 1);
+    let foreign_revisions: i64 = reopened
+        .connection
+        .query_row(
+            "SELECT COUNT(*) FROM task_revisions WHERE task_id=?1",
+            [foreign_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(foreign_revisions, 1);
+    let satisfied: i64 = reopened
+        .connection
+        .query_row(
+            "SELECT COUNT(*) FROM task_dependencies WHERE task_id=?1 AND satisfied=1",
+            [foreign_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(satisfied, 2);
+    let scopes: Vec<String> = reopened
+        .connection
+        .prepare("SELECT milestone_ref FROM task_blackboard WHERE task_id IS NULL")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(scopes, ["other/other/docs/milestones/010-close.md"]);
+    let (terminal, completed): (i64, String) = reopened.connection.query_row(
+        "SELECT all_tasks_terminal, completed_task_ids FROM milestone_tombstones WHERE milestone_id='forge-mcp/forge-mcp/m-close'", [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    ).unwrap();
+    assert_eq!(terminal, 1);
     assert_eq!(
-        reopened.list(None, "all", None).unwrap()[0].milestone_ref,
-        "docs/milestones/archive/010-close.md"
+        serde_json::from_str::<Vec<String>>(&completed).unwrap(),
+        std::slice::from_ref(&task.task_id)
     );
+    let tombstones: i64 = reopened
+        .connection
+        .query_row("SELECT COUNT(*) FROM milestone_tombstones", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(tombstones, 1);
+    // A stale manifest from an unmerged worktree must not resurrect archived tasks.
+    root.write("docs/milestones/010-close.md", source);
+    let synced = tasks::manage(
+        &root.0,
+        tasks::Manage {
+            action: tasks::ManageAction::Sync,
+            workspace: Some("forge-mcp".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(synced["total"], 0);
+    for reference in [
+        "docs/milestones/010-close.md",
+        "docs/milestones/archive/010-close.md",
+    ] {
+        let error = tasks::manage(
+            &root.0,
+            tasks::Manage {
+                action: tasks::ManageAction::Sync,
+                milestone_ref: Some(reference.into()),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("STORE_SYNC_FAILED"));
+    }
+    assert!(reopened.list(None, "all", None).unwrap().is_empty());
+    std::fs::remove_file(root.0.join("docs/milestones/010-close.md")).unwrap();
     let archived =
         std::fs::read_to_string(root.0.join("docs/milestones/archive/010-close.md")).unwrap();
     let header = archived
@@ -1279,7 +1405,7 @@ fn milestone_handoff_requires_completed_tasks_and_archives_typed_receipt() {
     let fallback = ScopedWorkspace::new("forge_handoff_claim_fallback");
     fallback.write(
         "forge-mcp.yaml",
-        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\nhandoff_pruning: false\n",
     );
     fallback.write("src/lib.rs", "pub fn fallback() {}\n");
     let source = "---\nid: m-fallback\ntitle: Fallback work\ndoc_type: contract\nstatus: active\n---\n# Fallback work\n### task: finish\n```yaml\ntask_ref: finish\ntarget: Finish fallback\nproof_policy: seam-test-first\nscope: [src/]\n```\n";
@@ -1317,6 +1443,14 @@ fn milestone_handoff_requires_completed_tasks_and_archives_typed_receipt() {
         "{}",
         String::from_utf8_lossy(&result.stderr)
     );
+    let retained = TasksStore::open(&fallback.0.join(".forge/tasks.sqlite")).unwrap();
+    let retained_task = retained.inspect(&id).unwrap();
+    assert_eq!(retained_task.status, "completed");
+    assert_eq!(
+        retained_task.milestone_ref,
+        "docs/milestones/archive/020-fallback.md"
+    );
+    assert!(!retained.milestone_tombstoned("m-fallback").unwrap());
     let text = std::fs::read_to_string(fallback.0.join("docs/milestones/archive/020-fallback.md"))
         .unwrap();
     let header = text
@@ -1502,7 +1636,7 @@ fn milestone_handoff_requires_completed_tasks_and_archives_typed_receipt() {
                 );
             }
             "rollback" => {
-                store.connection.execute_batch("CREATE TRIGGER reject_cancelled_relocation BEFORE UPDATE ON tasks WHEN NEW.task_id LIKE '%:transferred' AND NEW.milestone_ref LIKE '%/archive/%' BEGIN SELECT RAISE(ABORT, 'fixture relocation failure'); END;").unwrap();
+                store.connection.execute_batch("CREATE TRIGGER reject_cancelled_pruning BEFORE DELETE ON tasks WHEN OLD.task_id LIKE '%:transferred' BEGIN SELECT RAISE(ABORT, 'fixture pruning failure'); END;").unwrap();
             }
             _ => {}
         }
@@ -1563,14 +1697,16 @@ fn milestone_handoff_requires_completed_tasks_and_archives_typed_receipt() {
                 .unwrap();
             assert_eq!(retained.status.as_deref(), Some("cancelled"));
             assert!(retained.receipt.is_none());
-            let mut expected_history = cancelled_history;
-            expected_history["milestone_ref"] = json!(archive);
             assert_eq!(
-                store.inspect_details(&transferred_id).unwrap(),
-                expected_history
+                serde_json::to_value(&retained.subtasks).unwrap(),
+                cancelled_history["subtasks"]
             );
-            let accepted = store.inspect(&finish_id).unwrap();
-            assert_eq!(accepted.milestone_ref, archive);
+            assert!(store.list(None, "all", None).unwrap().is_empty());
+            let accepted = archived
+                .tasks
+                .iter()
+                .find(|spec| spec.task_ref == "finish")
+                .unwrap();
             assert!(completed_receipt.matches_proofs(accepted.receipt.as_ref().unwrap()));
             let dependencies: i64 = store.connection.query_row("SELECT count(*) FROM task_dependencies WHERE dependency_id=?1 AND satisfied<>0", [&transferred_id], |row| row.get(0)).unwrap();
             assert_eq!(dependencies, 0);
@@ -1581,6 +1717,10 @@ fn milestone_handoff_requires_completed_tasks_and_archives_typed_receipt() {
                 "{scenario}"
             );
             assert!(!root.0.join(archive).exists(), "{scenario}");
+            assert!(
+                !store.milestone_tombstoned("m-terminal").unwrap(),
+                "{scenario}"
+            );
             for (id, details) in before_tasks {
                 assert_eq!(
                     store.inspect_details(&id).unwrap(),
@@ -1718,14 +1858,7 @@ fn manual_delivery_handoff_rewrites_markdown_receipt_to_landed_commit() {
         "handoff must persist the landed Git commit into Markdown before archival"
     );
     let reopened = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
-    assert_eq!(
-        reopened
-            .inspect(&task_id)
-            .unwrap()
-            .receipt
-            .and_then(|receipt| receipt.commit),
-        Some(landed_commit)
-    );
+    assert!(reopened.list(None, "all", None).unwrap().is_empty());
 }
 
 #[test]
@@ -3232,13 +3365,8 @@ fn milestone_resolution_prefers_active_path_components_and_propagates_list_error
             ..Default::default()
         },
     )
-    .unwrap();
-    let by_archive_tasks = by_archive_path["tasks"].as_array().unwrap();
-    assert_eq!(by_archive_tasks.len(), 1);
-    assert_eq!(
-        by_archive_tasks[0]["milestone_ref"],
-        "docs/milestones/archive/051-archive-fix.md"
-    );
+    .unwrap_err();
+    assert!(format!("{by_archive_path:#}").contains("STORE_SYNC_FAILED"));
 
     let unscoped_sync = tasks::manage(
         &root.0,
@@ -3468,7 +3596,7 @@ fn milestone_lifecycle_sync_validates_status_and_preserves_cancellation_and_subt
             "archived-subtask",
         ),
     );
-    sync(archived_default_path).unwrap();
+    assert!(format!("{:#}", sync(archived_default_path).unwrap_err()).contains("STORE_SYNC_FAILED"));
     let archived_default_view =
         contextunity_forge_mcp::engine::milestones::show(&root.0, "m-archived-default", true)
             .unwrap();
@@ -3479,7 +3607,7 @@ fn milestone_lifecycle_sync_validates_status_and_preserves_cancellation_and_subt
         (
             "m-completed",
             "completed",
-            "docs/milestones/archive/030-completed.md",
+            "docs/milestones/030-completed.md",
         ),
     ] {
         root.write(
@@ -4505,19 +4633,14 @@ scope:
         "archived receipt must preserve the repacked task commit from markdown"
     );
 
-    // And verify SQLite was updated with the repacked commit too
+    // The archive is durable; active SQLite history is pruned.
     let store2 = TasksStore::open_project(
         &root.0.join(".forge/tasks.sqlite"),
         "forge-mcp",
         "forge-mcp",
     )
     .unwrap();
-    let inspected = store2.inspect(&task.task_id).unwrap();
-    assert_eq!(
-        inspected.receipt.unwrap().commit.as_deref(),
-        Some(repacked_sha.as_str()),
-        "SQLite receipt must be updated by handoff with the landed commit"
-    );
+    assert!(store2.list(None, "all", None).unwrap().is_empty());
 }
 
 #[test]
@@ -4633,20 +4756,16 @@ scope:
         "archived receipt must be commitless in Markdown when record_task_commits is false"
     );
 
-    // 5. Verify SQLite also omits optional navigation when tracking is disabled
+    // 5. The commitless archive remains durable after SQLite pruning.
     let store2 = TasksStore::open_project(
         &root.0.join(".forge/tasks.sqlite"),
         "forge-mcp",
         "forge-mcp",
     )
     .unwrap();
-    let inspected = store2.inspect(&task.task_id).unwrap();
-    assert!(
-        inspected.receipt.unwrap().commit.is_none(),
-        "SQLite receipt must omit navigation when tracking is disabled"
-    );
+    assert!(store2.list(None, "all", None).unwrap().is_empty());
 
-    // 6. Verify sync on the archived commitless document succeeds without error
+    // 6. Explicit archive sync fails closed even for a valid commitless receipt.
     let sync_res = contextunity_forge_mcp::engine::tasks::manage(
         &root.0,
         serde_json::from_value(json!({
@@ -4655,24 +4774,16 @@ scope:
         }))
         .unwrap(),
     );
-    assert!(
-        sync_res.is_ok(),
-        "task sync must accept matching commitless receipts from markdown without error: {:?}",
-        sync_res.err()
-    );
+    assert!(format!("{:#}", sync_res.unwrap_err()).contains("STORE_SYNC_FAILED"));
 
-    // 7. Verify sync preserves the commitless SQLite receipt
+    // 7. Rejected archive sync does not resurrect SQLite history.
     let store3 = TasksStore::open_project(
         &root.0.join(".forge/tasks.sqlite"),
         "forge-mcp",
         "forge-mcp",
     )
     .unwrap();
-    let inspected3 = store3.inspect(&task.task_id).unwrap();
-    assert!(
-        inspected3.receipt.unwrap().commit.is_none(),
-        "SQLite receipt must remain commitless after archived Markdown sync"
-    );
+    assert!(store3.list(None, "all", None).unwrap().is_empty());
     drop(store3);
 
     // 8. Verify migrate verify succeeds with 0 conflicts on the commitless archive
@@ -4834,9 +4945,12 @@ scope:
         "forge-mcp",
     )
     .unwrap();
-    let inspected = store2.inspect(&task.task_id).unwrap();
+    assert!(store2.list(None, "all", None).unwrap().is_empty());
+    let archive =
+        std::fs::read_to_string(root.0.join("docs/milestones/archive/010-squash.md")).unwrap();
+    let archived = Milestone::parse(&archive, "forge-mcp").unwrap();
     assert_eq!(
-        inspected.receipt.as_ref().and_then(|r| r.commit.as_deref()),
+        archived.tasks[0].receipt.as_ref().and_then(|r| r.commit.as_deref()),
         Some(squashed_sha.as_str()),
         "handoff must record the squashed commit that introduced the scoped changes, not the tip commit on top"
     );
@@ -4904,6 +5018,18 @@ fn bulk_sync_rejects_invalid_numbered_manifests_in_custom_directories() {
             let valid = invoke(None);
             assert!(valid.status.success(), "{valid:?}");
             let valid: Value = serde_json::from_slice(&valid.stdout).unwrap();
+            if directory == "contracts/archive" {
+                assert_eq!(valid["total"], 0);
+                root.write(&path, &format!("{header}{body}"));
+                let skipped = invoke(None);
+                assert!(skipped.status.success(), "{skipped:?}");
+                let skipped: Value = serde_json::from_slice(&skipped.stdout).unwrap();
+                assert_eq!(skipped["total"], 0);
+                let explicit = invoke(Some(&path));
+                assert!(!explicit.status.success());
+                assert!(String::from_utf8_lossy(&explicit.stderr).contains(&path));
+                continue;
+            }
             assert_eq!(valid["total"], 1);
             let workspaces = list_workspaces(&root.0).unwrap();
             assert_eq!(workspaces, vec!["fixture"]);
@@ -5187,7 +5313,16 @@ fn subproject_milestones_handles_readme_owners_and_non_trivial_aliases() {
             .is_file());
         let shown = milestone_engine::show(&root.0, milestone_id, false).unwrap();
         assert_eq!(shown["status"], "completed");
-        assert_eq!(shown["completion"], "1/1");
+        let archived = std::fs::read_to_string(
+            root.0
+                .join(format!("extensions/base/docs/milestones/archive/{file}")),
+        )
+        .unwrap();
+        let archived = Milestone::parse(&archived, "base").unwrap();
+        assert!(archived
+            .tasks
+            .iter()
+            .all(|task| task.status.as_deref() == Some("completed")));
         commit_handoff_fixture_inputs(&root, &["extensions/base/docs/milestones"]);
     }
     let initialized = milestone_cli(

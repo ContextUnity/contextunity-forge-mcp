@@ -71,7 +71,13 @@ linked_workspaces:
 Omitted `tasks`, `tasks.enabled: false`, or workspace `enabled: false` excludes
 the entry. The two paths default to the values shown and remain confined to the
 linked repository. Missing or empty milestone directories synchronize zero tasks;
-directory synchronization scans numbered Markdown files, including archives.
+directory discovery scans numbered Markdown files, including archives. Batch
+synchronization silently skips archive paths and tombstoned milestones; explicit
+synchronization of either fails with `STORE_SYNC_FAILED` to prevent resurrection.
+Store sync and create recheck the tombstone after acquiring the SQLite writer
+lock, so a handoff that commits while synchronization waits remains authoritative.
+Tombstone keys include the canonical repository, project, and milestone ID;
+identical milestone IDs in other projects remain independent.
 Unavailable linked roots are skipped. Duplicate names, roots, or task namespaces
 are rejected before mutation.
 
@@ -650,11 +656,16 @@ gate evidence.
 
 Handoff archives the supplied integration record and verification result in
 frontmatter, records the selected final implementation commit (default `HEAD`),
-sets `status: completed`, and updates SQLite task references to `archive/` with
-the existing rollback checks. Completed and cancelled task history relocates in
-one transaction that rechecks the original milestone location and complete task
-state. Only completed tasks receive updated navigation receipts; cancelled tasks
-retain their status, attempts, gates, subtasks, dependencies and evidence.
+sets `status: completed`, and by default prunes completed and cancelled tasks
+and their claims, gates, findings, scopes, submissions, subtasks, revisions, and
+blackboard messages from SQLite. The transaction rechecks the original milestone
+location and complete task state, satisfies existing incoming dependencies on
+completed tasks and the terminal milestone, and records a tombstone with completed
+task IDs. The archive preserves task receipts and terminal subtask evidence;
+cancelled tasks receive no completion receipt. Set the project-wide
+`handoff_pruning: false` in `forge-mcp.yaml` to retain task history with references
+relocated to `archive/`, without creating a pruning tombstone. See
+[configuration](configuration.md#declarative-acdd-profile-and-role-configuration).
 Duration starts at `started_at` or the earliest
 claim timestamp. Commit the archive afterward, staging its addition and the
 working manifest's removal; this later commit SHA is not part of its own receipt.
@@ -792,7 +803,7 @@ To guarantee responses remain well below the 96 KiB ceiling of [ADR 0011](../adr
 - **Bounded blackboard**: Aggregates the 15 most recent chronological messages; payloads exceeding 500 Unicode characters are safely truncated along character boundaries (use `task_blackboard(action: "inspect", message_id: <id>)` for full text).
 - **Size budget**: Claim (including `bundle: false`), next, and context responses are bounded to 24 KiB of serialized JSON, leaving room for MCP text escaping and protocol metadata under the 96 KiB ceiling. Oversized responses omit whole fields, prioritizing claim identity and revisions. `byte_limited`, `omitted_fields` (up to 16 JSON pointers), `omitted_field_count`, and `retrieval_hint` identify incomplete context. Read the milestone file for full authority and CLI `task inspect <task-id>` for stored details before relying on omitted information. Stored contracts and evidence are unchanged.
 - **Sync summaries**: Create and sync return compact task records with identity (including `spec.task_ref`), milestone reference, status, stage, revisions, and wave index. `total` counts all synchronized tasks, while `returned` counts the bounded prefix in `tasks`. `byte_limited: true` means additional summaries were omitted; all selected tasks were synchronized. Use `task_list` or CLI `task list` to retrieve task summaries.
-- **Initialized SQLite stores**: Opening a supported schema applies connection-local settings without schema writes or write transactions, allowing task readers to open while another connection holds the writer lock. New dedicated stores still initialize schema version 5 in WAL mode; unsupported versions remain rejected.
+- **Initialized SQLite stores**: Version 6 opens apply connection-local settings without DDL or write transactions, allowing task readers to open while another connection holds the writer lock. Version 5 migrates once inside `BEGIN IMMEDIATE`, creating `milestone_tombstones` and updating the version marker. New dedicated stores initialize version 6 in WAL mode; unsupported versions remain rejected.
 
 ### Context Bundle Example
 

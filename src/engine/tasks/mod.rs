@@ -300,11 +300,17 @@ pub struct TaskSettings {
     #[serde(default = "default_record_task_commits")]
     /// Whether to record task commits in milestone Markdown documents.
     pub record_task_commits: bool,
+    #[serde(default = "default_handoff_pruning")]
+    /// Prune terminal milestone state from SQLite on handoff across all workflows.
+    pub handoff_pruning: bool,
     #[serde(default)]
     /// Commit tracking mode override.
     pub commit_tracking: Option<CommitTrackingSetting>,
 }
 fn default_record_task_commits() -> bool {
+    true
+}
+fn default_handoff_pruning() -> bool {
     true
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

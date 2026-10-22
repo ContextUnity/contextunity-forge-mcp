@@ -2848,7 +2848,7 @@ fn task_list_status_filter_is_typed_and_cli_flags_are_available() {
         "---\nid: m-planned-list\ntitle: Planned task list\ndoc_type: contract\n---\n# Tasks\n```yaml\ntask_ref: planned\ntarget: Planned task\nproof_policy: direct-proof\nscope: [src/]\n```\n",
     );
     workspace.write(
-        "docs/milestones/archive/009-completed.md",
+        "docs/milestones/009-completed.md",
         "---\nid: m-completed-list\ntitle: Completed task list\ndoc_type: contract\nstatus: completed\n---\n# Tasks\n```yaml\ntask_ref: completed\ntarget: Completed task\nproof_policy: direct-proof\nscope: [src/]\n```\n",
     );
     let mut client = Client::new(&workspace);

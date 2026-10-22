@@ -90,10 +90,20 @@ On budget errors, narrow the selector/path or reduce depth.
 ## ACDD authority and scope
 
 ACDD connects Git milestone contracts (`docs/milestones/*.md`) to `.forge/tasks.sqlite`; rebuilding the code index does not
-reset task state. The [task reference](https://github.com/ContextUnity/contextunity-forge-mcp/blob/main/docs/reference/tasks.md) owns operation/evidence schemas. The active profile and claim's
+reset task state. In-flight task state and candidate trees are retained in `refs/forge/state/<milestone>/<task_slug>`.
+If `.forge/tasks.sqlite` is lost or deleted, run `contextunity-forge-mcp milestone db-recover` to reconstruct active tasks, claims, and proofs directly from active manifests and Git state refs.
+The [task reference](https://github.com/ContextUnity/contextunity-forge-mcp/blob/main/docs/reference/tasks.md) owns operation/evidence schemas. The active profile and claim's
 `workflow_guidance` own gates/order, proof policy, roles/models, review contours, and profile-specific
-behavior. Do not infer a fixed workflow from this skill. Use [references/acdd_profile.yaml.example](references/acdd_profile.yaml.example) only as a configuration
-example.
+behavior. Do not infer a fixed workflow from this skill. Use the
+[current runnable profile example](references/acdd_profile.current.yaml.example)
+for the supported parser. The separate [v2 profile proposal](references/acdd_profile.yaml.example)
+records future design and is not runnable on the current engine.
+
+Milestone handoff prunes terminal SQLite state by default across all workflows.
+The archive manifest retains the durable record; directory task sync skips
+archived paths and tombstoned milestones, while explicit sync fails closed.
+Set project-level `handoff_pruning: false` in `forge-mcp.yaml` to retain relocated
+SQLite history. Keep this global setting outside workflow profiles.
 
 The repository `AGENTS.md` names this skill, local verification commands, and Git permissions; it
 must not duplicate this procedure. Install the skill at `~/.agents/skills/contextunity-forge/SKILL.md` or `.agents/skills/contextunity-forge/SKILL.md`. Claim/inspect

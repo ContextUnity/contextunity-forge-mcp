@@ -157,6 +157,13 @@ The root `forge-mcp.yaml` and the file selected with CLI `--adapter` are configu
 
 ## Declarative ACDD profile and role configuration
 
+`handoff_pruning` is a project setting in `forge-mcp.yaml`, enabled by default
+for every workflow. Handoff removes terminal milestone tasks and their SQLite
+claims, gate evidence, revisions, subtasks, and blackboard messages, retaining a
+small tombstone and the durable archive manifest. Set `handoff_pruning: false`
+to retain SQLite task history with its milestone reference relocated to the
+archive. This setting belongs at the adapter root, outside `acdd_profile`.
+
 The ACDD workflow engine supports declarative customization of gates, review contours, and agent roles via YAML profiles.
 
 ### Loading precedence
@@ -178,7 +185,7 @@ Each gate declares a stable `id` and a closed `proof` behavior. The built-in pro
 
 `commands` is a registry keyed by command ID. Each entry can be a shell command string or an object with `command` and optional `description`. A command-proof gate accepts only a registered command ID or its registered command text. `policies` holds nested YAML settings; overrides merge recursively. Named review contour sets live under `contours`. Role entries merge by role, and a contour override replaces the named contour set. Defining `gates` replaces the whole ordered gate sequence, so include all required gates and the terminal delivery gate. References such as `reject_to`, `independent_from`, `receipt_review`, and `review_sources` must name valid preceding gates; delivery review sources must be review-proof gates.
 
-Schema nodes support `object`, `array`, `string`, `integer`, `number`, `boolean`, and `null`. Objects can declare `properties`, `required`, `additionalProperties`, and `enum`; arrays require an `items` schema. The compiler rejects invalid fields, undefined required properties, invalid child schemas, unresolved gate references, and profiles without exactly one terminal delivery gate. See the [complete profile example](../../skills/contextunity-forge/references/acdd_profile.yaml.example) for an executable multi-gate workflow using a recursive schema proof.
+Schema nodes support `object`, `array`, `string`, `integer`, `number`, `boolean`, and `null`. Objects can declare `properties`, `required`, `additionalProperties`, and `enum`; arrays require an `items` schema. The compiler rejects invalid fields, undefined required properties, invalid child schemas, unresolved gate references, and profiles without exactly one terminal delivery gate. See the [current runnable profile example](../../skills/contextunity-forge/references/acdd_profile.current.yaml.example) for an executable multi-gate workflow using a recursive schema proof. The separate [v2 profile proposal](../../skills/contextunity-forge/references/acdd_profile.yaml.example) describes future design and is not accepted by the current parser.
 
 ### Profile pinning, SQLite metadata, and tampering protection
 

@@ -3,6 +3,83 @@ use super::support::*;
 #[test]
 fn task_mutations_bound_payloads_and_initialized_readers_avoid_writer_locks() {
     use contextunity_forge_mcp::{core::response::ResponsePolicy, mcp::response};
+    use std::io::{BufRead, Write};
+
+    // A separate process reaches BEGIN IMMEDIATE after a successful stale read.
+    // Its SQLite busy callback is the rendezvous; no timing assumptions are needed.
+    if let Ok(root) = std::env::var("AC002_BLOCKED_SYNC_ROOT") {
+        let root = std::path::PathBuf::from(root);
+        let mut store = TasksStore::open(&root.join(".forge/tasks.sqlite")).unwrap();
+        let milestone = Milestone::parse(SPEC, "forge-mcp").unwrap();
+        assert!(!store.milestone_tombstoned(&milestone.id).unwrap());
+        store
+            .connection
+            .busy_handler(Some(|attempt| {
+                if attempt == 0 {
+                    println!("AC002_WRITER_WAITING");
+                    std::io::stdout().flush().unwrap();
+                }
+                std::thread::yield_now();
+                true
+            }))
+            .unwrap();
+        let result = if std::env::var("AC002_BLOCKED_SYNC_MODE").unwrap() == "create" {
+            store.create(&milestone, "docs/010-test.md", &root, "first")
+        } else {
+            store.sync(&milestone, "docs/010-test.md", &root)
+        };
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("STORE_SYNC_FAILED"));
+        assert!(store.list(None, "all", None).unwrap().is_empty());
+        return;
+    }
+
+    let mut race_failures = Vec::new();
+    for mode in ["sync", "create"] {
+        let (root, mut store, _) = fixture();
+        let tx = store
+            .connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .unwrap();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "acdd::tasks::task_mutations_bound_payloads_and_initialized_readers_avoid_writer_locks", "--nocapture"])
+            .env("AC002_BLOCKED_SYNC_ROOT", &root.0)
+            .env("AC002_BLOCKED_SYNC_MODE", mode)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn().unwrap();
+        let mut output = std::io::BufReader::new(child.stdout.take().unwrap());
+        let mut line = String::new();
+        loop {
+            assert_ne!(
+                output.read_line(&mut line).unwrap(),
+                0,
+                "child never reached writer lock: {line}"
+            );
+            if line.contains("AC002_WRITER_WAITING") {
+                break;
+            }
+            line.clear();
+        }
+        // These are the committed SQLite effects of a competing handoff. The
+        // full public handoff, cascade, sentinel and rollback seam is in milestones.
+        tx.execute_batch(
+            "DELETE FROM task_revisions; DELETE FROM tasks;
+            INSERT INTO milestone_tombstones VALUES('forge-mcp/forge-mcp/m-test',1,1,'[]');",
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        let result = child.wait_with_output().unwrap();
+        if !result.status.success() || !store.list(None, "all", None).unwrap().is_empty() {
+            race_failures.push(format!(
+                "{mode}: {}",
+                String::from_utf8_lossy(&result.stderr)
+            ));
+        }
+    }
+    assert!(race_failures.is_empty(), "{}", race_failures.join("\n"));
 
     for action in [
         "sync",
@@ -3723,23 +3800,127 @@ fn milestone_id_guard_ignores_foreign_project_at_the_same_manifest_path() {
     };
     let foreign = Milestone::parse(&specification("aaa", "m-test"), "forge-mcp").unwrap();
     foreign_store
-        .sync(&foreign, "docs/010-shared.md", &root.0)
+        .sync(&foreign, "docs/milestones/010-shared.md", &root.0)
         .unwrap();
     let current = Milestone::parse(&specification("zzz", "m-test"), "forge-mcp").unwrap();
     current_store
-        .sync(&current, "docs/010-shared.md", &root.0)
+        .sync(&current, "docs/milestones/010-shared.md", &root.0)
         .unwrap();
 
     let renamed = Milestone::parse(&specification("zzz", "m-renamed"), "forge-mcp").unwrap();
     let error = current_store
-        .sync(&renamed, "docs/010-shared.md", &root.0)
+        .sync(&renamed, "docs/milestones/010-shared.md", &root.0)
         .unwrap_err()
         .to_string();
     assert_eq!(
         error,
-        "AUTHORITY_GAP: milestone 'docs/010-shared.md'. milestone id changed from 'm-test' to 'm-renamed'. Do: revert milestone id in docs/010-shared.md. Task ids are zzz/m-renamed:first; sync would admit them as new tasks."
+        "AUTHORITY_GAP: milestone 'docs/milestones/010-shared.md'. milestone id changed from 'm-test' to 'm-renamed'. Do: revert milestone id in docs/milestones/010-shared.md. Task ids are zzz/m-renamed:first; sync would admit them as new tasks."
     );
     assert!(current_store.inspect("zzz/m-renamed:first").is_err());
+    current_store
+        .connection
+        .execute_batch(
+            "INSERT INTO task_dependencies(task_id,dependency_id,satisfied) VALUES
+         ('zzz/m-test:first','aaa/m-test:first',0),
+         ('zzz/m-test:first','aaa/m-test:__milestone__',0);",
+        )
+        .unwrap();
+
+    // Both projects legitimately use this ID and manifest path. A sync that
+    // commits first must still be removed by the subsequent public handoff.
+    for (store, mut milestone, project) in [
+        (&mut foreign_store, foreign, "aaa"),
+        (&mut current_store, current, "zzz"),
+    ] {
+        assert!(!store.milestone_tombstoned("m-test").unwrap(), "{project}");
+        if project == "zzz" {
+            root.write("src/lib.rs", "pub fn shared() {}\n");
+            root.write(
+                "docs/milestones/010-shared.md",
+                &specification("zzz", "m-test"),
+            );
+            root.write("forge-mcp.yaml", "roots: [src]\ndocs: [docs]\ntask_repository: forge-mcp\ntask_project: zzz\ntasks_db: .forge/tasks.sqlite\n");
+            store.connection.execute_batch("CREATE TRIGGER reject_live_sync BEFORE INSERT ON tasks
+                WHEN NEW.task_id='zzz/m-test:first' BEGIN SELECT RAISE(ABORT,'non-archive admission failure'); END;").unwrap();
+            let error = tasks::manage(
+                &root.0,
+                tasks::Manage {
+                    action: tasks::ManageAction::Sync,
+                    workspace: Some("zzz".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+            assert!(
+                format!("{error:#}").contains("non-archive admission failure"),
+                "{error:#}"
+            );
+            store
+                .connection
+                .execute_batch("DROP TRIGGER reject_live_sync")
+                .unwrap();
+            for explicit in [false, true] {
+                let result = tasks::manage(
+                    &root.0,
+                    tasks::Manage {
+                        action: tasks::ManageAction::Sync,
+                        workspace: Some("zzz".into()),
+                        milestone_ref: explicit.then(|| "docs/milestones/010-shared.md".into()),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                assert_eq!(result["total"], 1);
+            }
+            store
+                .create(
+                    &milestone,
+                    "docs/milestones/010-shared.md",
+                    &root.0,
+                    "first",
+                )
+                .unwrap();
+        }
+        milestone.tasks[0].status = Some("cancelled".into());
+        let terminal = store
+            .sync(&milestone, "docs/milestones/010-shared.md", &root.0)
+            .unwrap();
+        store
+            .handoff_milestone(
+                &format!("{project}/m-test:"),
+                "docs/milestones/010-shared.md",
+                "docs/archive/010-shared.md",
+                &terminal,
+                &Default::default(),
+            )
+            .unwrap();
+        assert!(store.milestone_tombstoned("m-test").unwrap());
+        assert!(store.list(None, "all", None).unwrap().is_empty());
+        if project == "aaa" {
+            let dependencies: Vec<(String, bool)> = store.connection
+                .prepare("SELECT dependency_id,satisfied FROM task_dependencies WHERE task_id='zzz/m-test:first' ORDER BY dependency_id")
+                .unwrap().query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap().collect::<rusqlite::Result<_>>().unwrap();
+            assert_eq!(
+                dependencies,
+                vec![
+                    ("aaa/m-test:__milestone__".into(), true),
+                    ("aaa/m-test:first".into(), false),
+                ]
+            );
+        }
+    }
+    let tombstones: Vec<(String, String)> = foreign_store.connection
+        .prepare("SELECT milestone_id,completed_task_ids FROM milestone_tombstones ORDER BY milestone_id")
+        .unwrap().query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap().collect::<rusqlite::Result<_>>().unwrap();
+    assert_eq!(
+        tombstones,
+        vec![
+            ("forge-mcp/aaa/m-test".into(), "[]".into()),
+            ("forge-mcp/zzz/m-test".into(), "[]".into()),
+        ]
+    );
 }
 
 #[test]
@@ -4021,8 +4202,8 @@ fn dedicated_store_rejects_index_and_unknown_schema_without_ddl() {
     assert_eq!(objects, [("view".into(), "old_projection".into())]);
 
     let current = root.0.join("current.sqlite");
-    drop(TasksStore::open(&current).expect("empty DB should initialize as schema v5"));
-    let reopened = TasksStore::open(&current).expect("schema v5 should remain supported");
+    drop(TasksStore::open(&current).expect("empty DB should initialize as schema v6"));
+    let reopened = TasksStore::open(&current).expect("schema v6 should remain supported");
     let version: String = reopened
         .connection
         .query_row(
@@ -4031,7 +4212,33 @@ fn dedicated_store_rejects_index_and_unknown_schema_without_ddl() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(version, "5");
+    assert_eq!(version, "6");
+    // Exercise migration from an actual v5 layout, preserving existing data.
+    reopened.connection.execute_batch("DROP TABLE milestone_tombstones; UPDATE task_store_metadata SET value='5' WHERE key='schema_version';").unwrap();
+    drop(reopened);
+    let migrated = TasksStore::open(&current).unwrap();
+    let version: String = migrated
+        .connection
+        .query_row(
+            "SELECT value FROM task_store_metadata WHERE key='schema_version'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(version, "6");
+    let count: i64 = migrated
+        .connection
+        .query_row("SELECT COUNT(*) FROM milestone_tombstones", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(count, 0);
+    migrated
+        .connection
+        .execute_batch("BEGIN IMMEDIATE")
+        .unwrap();
+    drop(TasksStore::open(&current).expect("v6 open must not acquire the writer lock"));
+    migrated.connection.execute_batch("ROLLBACK").unwrap();
 }
 #[test]
 fn infer_project_from_path_supports_arbitrary_monorepo_structures_universally() {
@@ -4444,7 +4651,7 @@ fn task_manage_sync_and_list_resolve_milestone_reference_by_id_prefix_stem_and_p
     let archived_path = "docs/milestones/archive/041-archived-milestone-with-a-long-name.md";
     let archived_content = "---\nid: m-archived-milestone\ntitle: Archived milestone\ndoc_type: contract\nstatus: completed\n---\n```yaml\ntask_ref: archived-task\ntarget: Resolve archived manifest path\nproof_policy: direct-proof\nscope: [src/]\n```\n";
     root.write(archived_path, archived_content);
-    tasks::manage(
+    let archived_sync = tasks::manage(
         &root.0,
         tasks::Manage {
             action: tasks::ManageAction::Sync,
@@ -4452,7 +4659,17 @@ fn task_manage_sync_and_list_resolve_milestone_reference_by_id_prefix_stem_and_p
             ..Default::default()
         },
     )
-    .unwrap();
+    .unwrap_err();
+    assert!(format!("{archived_sync:#}").contains("STORE_SYNC_FAILED"));
+    // Retained history from an opt-out or an older store still supports list selectors.
+    tasks::store(&root.0)
+        .unwrap()
+        .sync(
+            &Milestone::parse(archived_content, "test").unwrap(),
+            archived_path,
+            &root.0,
+        )
+        .unwrap();
 
     let list_for = |reference: &str, repository: Option<&str>| {
         engine_tasks::list(
@@ -6037,28 +6254,11 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
         "second task keeps its reachable accepted delivery pointer across merge"
     );
     assert_ne!(delivery_commit, merge_commit);
-    assert_eq!(
-        tasks::store(&root.0)
-            .unwrap()
-            .inspect(task_id)
-            .unwrap()
-            .receipt
-            .unwrap()
-            .commit
-            .as_deref(),
-        Some(delivery_commit.as_str())
-    );
-    assert_eq!(
-        tasks::store(&root.0)
-            .unwrap()
-            .inspect(&task_id_2)
-            .unwrap()
-            .receipt
-            .unwrap()
-            .commit
-            .as_deref(),
-        Some(second_delivery_commit.as_str())
-    );
+    assert!(tasks::store(&root.0)
+        .unwrap()
+        .list(None, "all", None)
+        .unwrap()
+        .is_empty());
 
     // Verify snapshot refs were pruned after milestone handoff!
     let refs_after = std::process::Command::new("git")
@@ -6638,7 +6838,7 @@ fn task_blackboard_gate_targeting_and_schema_hint() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(schema_version, "5");
+    assert_eq!(schema_version, "6");
     let gate_column_exists: bool = store
         .connection
         .query_row(
@@ -7097,9 +7297,10 @@ fn declarative_profile_compiles_defaults_and_respects_role_overrides() {
     .is_err());
 
     // The documented reference profile example loads and validates cleanly
-    let example_profile_text =
-        std::fs::read_to_string("skills/contextunity-forge/references/acdd_profile.yaml.example")
-            .expect("example profile file must exist");
+    let example_profile_text = std::fs::read_to_string(
+        "skills/contextunity-forge/references/acdd_profile.current.yaml.example",
+    )
+    .expect("example profile file must exist");
     let parsed_example = parse_profile(&example_profile_text)
         .expect("example profile must parse and validate without error");
     assert!(!parsed_example.roles.is_empty());

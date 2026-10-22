@@ -494,7 +494,7 @@ pub fn init(root: &Path, options: Init) -> Result<Value> {
     )
 }
 
-fn is_archived_path(path: &Path) -> bool {
+pub(crate) fn is_archived_path(path: &Path) -> bool {
     path.components()
         .any(|component| component.as_os_str() == "archive")
 }

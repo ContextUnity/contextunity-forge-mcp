@@ -638,6 +638,7 @@ pub fn handoff(
     crate::core::git::retain_proof_commit(root, &target)?;
     let prefix = format!("{}/{}:", item.project, item.id);
     let settings = tasks::TaskSettings::load(root)?;
+    store.set_handoff_pruning(settings.handoff_pruning);
     let record_task_commits = settings.records_task_commits();
     let mut original_receipts = BTreeMap::new();
     let mut landed_receipts = BTreeMap::new();
@@ -751,6 +752,10 @@ pub fn handoff(
         return Err(error);
     }
     if let Err(error) = fs::remove_file(&item.path) {
+        // Pruning is irreversible here; preserve the archive when unlink fails.
+        if settings.handoff_pruning {
+            return Err(error.into());
+        }
         let mut archived_tasks = relevant.clone();
         for task in &mut archived_tasks {
             task.milestone_ref = archive_ref.clone();
@@ -918,13 +923,8 @@ fn handoff_accepts_completed_reviewed_shared_scope() {
     let reopened = TasksStore::open(&root.join(".forge/tasks.sqlite")).unwrap();
     let archived_doc = fs::read_to_string(root.join(archived)).unwrap();
     let parsed = crate::core::tasks::Milestone::parse(&archived_doc, "forge-mcp").unwrap();
-    for (index, (id, landed)) in landings.iter().enumerate() {
-        let task = reopened.inspect(id).unwrap();
-        assert_eq!(task.milestone_ref, archived);
-        assert_eq!(
-            task.receipt.unwrap().commit.as_deref(),
-            Some(landed.as_str())
-        );
+    assert!(reopened.list(None, "all", None).unwrap().is_empty());
+    for (index, (_, landed)) in landings.iter().enumerate() {
         assert_eq!(
             parsed.tasks[index]
                 .receipt

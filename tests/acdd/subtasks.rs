@@ -743,9 +743,11 @@ fn subtask_update_preserves_evidence_when_none_provided_and_contract_bump_resets
 fn completed_tasks_sync_and_inspect_without_panic() {
     let root = ScopedWorkspace::new("forge_completed_task_sync");
     root.write("src/lib.rs", "pub fn legacy() {}\n");
+    // This seam inspects retained SQLite status after archived-receipt resync.
+    // Default pruning is covered by the milestone handoff seam.
     root.write(
         "forge-mcp.yaml",
-        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\nhandoff_pruning: false\n",
     );
     let spec = "---\nid: m-completed\ntitle: Completed Test\ndoc_type: contract\ninvariants: [isolated]\n---\n# Tasks\n```yaml\ntask_ref: t1\ntarget: Deliver t1\nproof_policy: direct-proof\nscope: [src/]\n```\n";
     root.write("docs/milestones/010-completed.md", spec);
@@ -808,7 +810,14 @@ fn completed_tasks_sync_and_inspect_without_panic() {
     let archive_path = handoff["path"].as_str().unwrap();
     let updated_doc = std::fs::read_to_string(root.0.join(archive_path)).unwrap();
     let milestone_with_receipt = Milestone::parse(&updated_doc, "forge-mcp").unwrap();
+    assert!(completed
+        .receipt
+        .as_ref()
+        .unwrap()
+        .matches_proofs(milestone_with_receipt.tasks[0].receipt.as_ref().unwrap()));
     let mut reopened = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
+    assert_eq!(reopened.inspect(t1_id).unwrap().milestone_ref, archive_path);
+    assert!(!reopened.milestone_tombstoned("m-completed").unwrap());
     reopened
         .sync(&milestone_with_receipt, archive_path, &root.0)
         .unwrap();

@@ -1,0 +1,112 @@
+# Example complete workflow profile override.
+# Gate IDs persist as task stages. Defining `gates` replaces the complete gate
+# sequence, so include a terminal delivery gate and all preceding references.
+
+roles:
+  contract_author:
+    mode: subagent
+    reuse_on_reject: true
+    models: ['sol-6.1:high']
+    guidance: "Define a production-seam contract and submit its red proof. For greenfield files, create compiling production stubs and module/import declarations in admitted scope, then refresh the index. Changing proof policy does not bypass seam reachability."
+  builder:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt6-luna:xhigh'
+    guidance: "Implement the accepted contract and run the registered command."
+  independent_reviewer:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'sol-6.1:high'
+    guidance: "Review the candidate independently against every configured contour."
+  schema_author:
+    guidance: "Submit structured evidence that matches the gate's recursive schema."
+
+commands:
+  rust-check-and-test:
+    command: "cargo clippy --all-targets --all-features -- -D warnings && cargo test"
+    description: "Run strict Rust checks followed by the repository's test suite."
+  test:
+    command: "cargo test"
+    description: "Compatibility command for legacy task evidence; workflow guidance selects rust-check-and-test."
+
+policies:
+  proof:
+    command:
+      require_zero_exit: true
+      max_log_bytes: 65536
+  review:
+    independent_worker: true
+    require_all_contours: true
+  delivery:
+    atomic_receipt: true
+
+gates:
+  - id: contract
+    role: contract_author
+    proof: contract
+    sha_snapshot: true
+    tools: ["task_claim", "code_map_inspect"]
+    steps:
+      - "Write or identify one production-seam test for the task contract."
+      - "Post the draft to task_blackboard with topic=draft and gate=implement."
+      - "Submit contract_proof with seam_test_ref and red_exit_code."
+
+  - id: implement
+    role: builder
+    proof: command
+    sha_snapshot: true
+    tools: ["ast_grep_search", "code_map_inspect", "task_submit"]
+    steps:
+      - "Implement the accepted contract within the admitted scope."
+      - "Run the registered Rust check-and-test command, optionally scoped with --test <target>, and submit command_proof."
+
+  - id: review
+    role: independent_reviewer
+    proof: review
+    independent_from: implement
+    reject_to: implement
+    contours: standard
+    tools: ["code_map_impact", "code_map_tests"]
+    steps:
+      - "Inspect the candidate snapshot and verify the configured review contours."
+      - "Submit review_proof with a decision and evidence for each contour."
+
+  - id: metadata
+    role: schema_author
+    proof:
+      scheme:
+        type: object
+        properties:
+          summary:
+            type: string
+          changed_files:
+            type: array
+            items:
+              type: string
+        required: [summary, changed_files]
+        additionalProperties: false
+    reject_to: implement
+    tools: ["task_claim", "task_submit"]
+    steps:
+      - "Submit scheme_proof with summary and changed_files."
+
+  - id: deliver
+    role: independent_reviewer
+    proof: delivery
+    auto_commit: true
+    independent_from: implement
+    receipt_review: review
+    review_sources: [review]
+    reject_to: implement
+    contours: standard
+    tools: ["task_submit", "milestone show"]
+    steps:
+      - "Continue in the same independent reviewer session used for review; do not launch preflight subagents."
+      - "Verify the candidate and accepted review proof."
+      - "Submit delivery_proof; Forge writes the receipt and commits the candidate tree with hooks enabled."
+
+completed:
+  tools: ["task_manage"]
+  steps: ["Read the durable task receipt."]

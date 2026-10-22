@@ -526,6 +526,12 @@ fn manage_inner(root: &Path, p: &mut Manage) -> Result<Value> {
             let mut total = 0usize;
             let mut returned_bytes = 0usize;
             for reference in references {
+                if crate::engine::milestones::is_archived_path(Path::new(&reference)) {
+                    if milestone.is_none() {
+                        continue;
+                    }
+                    bail!("STORE_SYNC_FAILED: milestone '{reference}' is archived");
+                }
                 let full_path = confined_path(&workspace.root, &reference)?;
                 let text = std::fs::read_to_string(full_path)?;
                 let parsed = registry
@@ -536,6 +542,12 @@ fn manage_inner(root: &Path, p: &mut Manage) -> Result<Value> {
                         continue;
                     }
                     bail!("TASK_PROJECT_MISMATCH");
+                }
+                if store.milestone_tombstoned(&parsed.id)? {
+                    if milestone.is_none() {
+                        continue;
+                    }
+                    bail!("STORE_SYNC_FAILED: milestone '{}' is archived", parsed.id);
                 }
                 if parsed.status.as_deref() == Some("cancelled") {
                     store.prune_cancelled(&reference)?;
@@ -560,10 +572,21 @@ fn manage_inner(root: &Path, p: &mut Manage) -> Result<Value> {
                 {
                     registry.check_scope(workspace, &spec.scope, None)?;
                 }
-                let tasks = if let Some(task_ref) = task_ref {
-                    store.create(&parsed, &reference, &workspace.root, task_ref)?
+                let admission = if let Some(task_ref) = task_ref {
+                    store.create(&parsed, &reference, &workspace.root, task_ref)
                 } else {
-                    store.sync(&parsed, &reference, &workspace.root)?
+                    store.sync(&parsed, &reference, &workspace.root)
+                };
+                let tasks = match admission {
+                    Err(error)
+                        if milestone.is_none()
+                            && error
+                                .downcast_ref::<crate::db::tasks_store::MilestoneArchived>()
+                                .is_some() =>
+                    {
+                        continue;
+                    }
+                    result => result?,
                 };
                 for task in tasks {
                     total += 1;
