@@ -28,7 +28,7 @@ and indexed-page markup in `docs/AGENTS.md`.
 - Selectors resolve in this order: `"."` or an absolute/server-root-relative explicit path; exact directory name; literal prefix or pure-digit milestone prefix after leading-zero normalization; literal suffix; literal substring. Candidate paths are canonicalized and deduplicated. The first nonempty tier must be unique; ambiguity returns `WORKTREE_AMBIGUOUS`, and a missing or empty selector returns `WORKTREE_NOT_FOUND`.
 - Selected worktrees use their own adapter/configuration, index, milestone manifests, and checkpoints. Git-linked worktrees share the task database through task-store resolution; standalone repositories remain independent unless explicitly configured to share one. Selecting the server root retains a custom MCP `--db` path. MCP requests do not carry client cwd.
 - Keep normal adapter, task-store, and index safety validation in place; selecting a worktree does not bypass configuration or reserved-database checks.
-- These human-friendly selectors apply to MCP requests, not CLI commands. CLI queries select a workspace with `--root`; CLI task claim/next use an existing `--worktree` directory path.
+- Use the active schemas and implementation as the authority; this repository's server resolves all 20 tools before typed dispatch. CLI queries select a workspace with `--root`; CLI task claim/next use an existing `--worktree` directory path, not MCP name aliases.
 - Milestone `init`, `list`, `show`, `handoff-context`, and `handoff` are CLI-only. `task next` and
   MCP `task_manage(action="next", ...)` atomically claim the next eligible task and return claim
   context or `status: "idle"`; parked tasks resume in their retained worktree.
@@ -65,11 +65,21 @@ On budget errors, narrow the selector/path or reduce depth.
   coverage, and a lexical suggestion has no `call_path`. Markdown graph results show the ordered
   test-to-target breadcrumb with verified links and producer-supplied roles; lexical suggestions are
   explicitly unverified.
-- Use `get_code_snippet` to read a complete selected symbol when its serialized response fits the
-  configured byte limit; otherwise follow its source-line continuation. Inspect and explain retain
-  their configured preview defaults (5 leading and 200 body lines by default); snippet requests
-  default to the complete symbol and honor an explicit `max_body_lines` limit normalized to one
-  or more lines.
+- Reuse sufficient search previews. Use `code_map_inspect` for one declaration summary and
+  `code_map_explain` when relationship edges are needed; fetch a snippet only when preview text is
+  insufficient. Use `get_doc` for the selected document section; full detail is the default and
+  includes its content. Use `code_map_tests` for exact-call coverage paths, not `possible_calls` or
+  lexical suggestions, and treat `code_map_prove_removal` as indexed evidence rather than
+  runtime-safety proof. `code_map_analyze(lint=true)` reads stored syntax diagnostics;
+  `include_cycles=true` opts into cycle analysis.
+- Use `get_code_snippet` for the complete selected symbol when it fits the serialized response byte
+  limit; otherwise follow its source-line continuation. Inspect and explain retain configured
+  preview defaults (5 leading and 200 body lines by default); snippet requests default to the
+  complete symbol and honor an explicit smaller `max_body_lines` limit normalized to one or more lines.
+- Pass the previous page's `generation` whenever `source_offset > 0`, including within the same
+  MCP session. Missing or stale tokens fail with a restart hint; no token is inferred. Source
+  pages contain complete lines only. If one line exceeds the byte budget, read the local file
+  instead of requesting a partial line. Collection pagination also requires its generation.
 - Use `ctx_read` for exact source ranges before editing. The MCP response byte limit includes
   serialized metadata and the selected Markdown or JSON rendering.
 - Claim the active ACDD gate before task work, implement its accepted contract, and submit through

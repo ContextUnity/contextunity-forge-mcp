@@ -19,6 +19,25 @@ A client receives three texts for this server. Keep each fact in one layer.
 
 Selector grammar, SQL shape, proof objects, and examples stay in this page and in `forge_guide`. Verify a changed sentence against the handler in `src/mcp/tools.rs` and the query implementation it calls. Connection and the first-call check stay in [MCP setup](mcp-setup.md).
 
+## Efficient navigation
+
+Start with `code_map_overview` to confirm the selected workspace and indexed
+coverage. Reuse a sufficient search preview instead of fetching the same source
+again. Use `code_map_inspect` for one declaration summary and `code_map_explain`
+when relationship edges are needed. Use `get_code_snippet` when source is absent
+from previews or a complete-symbol read is needed. Use `get_doc` for the selected
+document section; full detail is the default and includes content. Use
+`code_map_tests` for verified exact-call paths, and treat
+`code_map_prove_removal` as indexed static evidence, not runtime-safety proof.
+`code_map_analyze(lint=true)` reads stored syntax diagnostics;
+`include_cycles=true` opts into cycle analysis.
+
+Inspect the connected server's tool schemas before selecting a checkout. On a
+universal-routing server, pass `worktree` to any tool when the server root is not
+the intended checkout, including task operations. Follow the availability and
+affinity rules under [worktree selection](#worktree-selection). The client's
+current directory does not select an MCP request root.
+
 ## Output format
 
 Every tool schema accepts an optional `format` value: `markdown` or `json`.
@@ -111,7 +130,7 @@ do not carry the client's current working directory. Set the server's
 
 Use a symbol identifier returned by search whenever possible. A file path selects a module or file. Selectors accept an exact ID, `path:name` or `path::name`, `path:known_kind:name` when the middle token is a registered node kind, and `path:line` or `path#Lline` for the narrowest symbol covering that line. Relative paths may use `./`, `file:`, or `file://` prefixes. A bare name can be ambiguous when a module and symbol share that name; specify the path. Markdown belongs in `get_doc` and `search_docs`.
 
-`code_map_query` supports `overview`, `inspect`, `explain`, `impact`, `slice`, `unwired`, and `sql`. Its `impact` operation keeps the depth 2 default; the dedicated `code_map_impact` tool defaults to depth 1. Aliases: `doctor` for overview, and `search`, `discover`, or `find` for symbol search. `unwired` lists functions and methods with no indexed static caller and is not a dead-code proof. Compact `inspect` and `explain` operations return the same symbol summary as their dedicated tools; `inspect` also uses the dedicated inspect Markdown layout and linked citation presentation. Explain retains its own `documents` page. Set `include_coverage=true` to add resolution coverage. For `operation="sql"` and SQL-targeted `code_map_analyze`, put exactly one read-only `SELECT` or `WITH` statement in `selector` or `target`. Leading whitespace and SQL comments are allowed, as are semicolons inside quoted values or comments and one trailing statement terminator; additional statements and writes are rejected. SQL rows preserve the selected columns and SQLite values as opaque data, while structural graph rows retain their parsed projections. Secure SQL validation, query budget, and paged `QueryOptions` apply. Pass `limit`, `offset`, and `generation` as tool arguments. Impact direction defaults to `inbound`; `outbound` traverses dependencies used by the selected symbol. See [CLI reference](cli.md) for equivalent command forms.
+`code_map_query` supports `overview`, `inspect`, `explain`, `impact`, `slice`, `unwired`, and `sql`. Its `impact` operation keeps the depth 2 default; the dedicated `code_map_impact` tool defaults to depth 1. Aliases: `doctor` for overview, and `search`, `discover`, or `find` for symbol search. `unwired` lists functions and methods with no indexed static caller and is not a dead-code proof. Compact `inspect` and `explain` operations return the same symbol summary as their dedicated tools; `inspect` also uses the dedicated inspect Markdown layout and linked citation presentation. Explain retains its own `documents` page. Set `include_coverage=true` to add resolution coverage. For `operation="sql"` and SQL-targeted `code_map_analyze`, put exactly one read-only `SELECT` or `WITH` statement in `selector` or `target`. Leading whitespace and SQL comments are allowed, as are semicolons inside quoted values or comments and one trailing statement terminator; additional statements and writes are rejected. SQL rows preserve requested columns and SQLite values/text verbatim, including JSON-looking text; structural graph rows retain parsed JSON projections and omit internal ids. Secure SQL validation, query budget, and paged `QueryOptions` apply. Pass `limit`, `offset`, and `generation` as tool arguments. Impact direction defaults to `inbound`; `outbound` traverses dependencies used by the selected symbol. See [CLI reference](cli.md) for equivalent command forms.
 
 Depth is limited to 16. A deep traversal whose first frontier exceeds 1,000 links is rejected; retry with depth 1 or a narrower selector. Removal analysis rejects scopes above 10,000 nodes. Graph results describe indexed, statically resolved relationships.
 
@@ -158,12 +177,19 @@ implicit 500-line cap.
 All three tools clamp `leading_lines` above 20 to 20. Negative values and
 overflowing source offsets remain invalid.
 
-The snippet response includes the serialized metadata and Markdown or JSON
-rendering in its configured byte limit. If the complete symbol does not fit, the
-tool returns a bounded page with a truthful `next_source_offset`, `has_more`, and
-the active generation. A single line that cannot fit returns a UTF-8-safe prefix
-and a local-file hint without a resumable line cursor. Source reads still verify
-the on-disk digest against the index.
+The current response-byte ceiling is 65,536 bytes. Every continuation with
+`source_offset > 0` requires the `generation` returned by the previous page,
+including calls in the same MCP session. Missing tokens return an actionable
+error: provide that generation or restart at `source_offset=0`. Ordinary
+collection pagination also requires its explicit generation.
+
+`code_map_inspect`, `code_map_explain`, and `get_code_snippet` include serialized
+metadata and Markdown or JSON rendering in the configured byte limit. If the
+complete symbol does not fit, they return a bounded page with a truthful
+`next_source_offset`, `has_more`, and the active generation. Source pages contain
+only complete lines. A single line that cannot fit returns a clear budget error
+and a local-file recovery hint, never a partial line or a non-advancing cursor.
+Source reads still verify the on-disk digest and reject stale generations.
 
 Paged tools accept `limit` (default 30, range 1–100) and `offset`. Continue an ordinary page with its `next_offset` and `generation`; ordinary pages omit the repeated continuation text. A completed zero-result page contains `total` and `items` without pagination fields. Computation and byte limits retain their truncation status and recovery hint, including when no items were returned. The response byte budget is configurable from 1,024 to 65,536 bytes.
 
@@ -226,6 +252,6 @@ Ambiguous winners appear in the full response's paged `referenced_symbol_candida
 
 Compact responses omit candidate data and return a hint to request full detail; the CLI `docs get` command requests full detail. A source link with a line range can retain its documented file claim after the declaration is removed, so `code_map_impact` can still report the affected document without treating a suggested replacement as verified.
 
-`code_map_inspect` returns paged `documented_in` sections for verified symbol references. `code_map_impact` returns paged `affected_docs` for a selected path or symbol. Exact Markdown `code_map_analyze` responses may include paged `doc_diagnostics`: `broken_doc_link` for a link that does not resolve, `dead_doc_symbol` for a claim with no matching declaration (with an optional `suggested_symbol`), and `stale_doc_sections` when an in-bounds source range is disjoint from the unique current symbol range. Suggestions are remediation hints, not graph edges; ambiguous, unsafe, malformed, or out-of-bounds claims do not prove stale documentation.
+`code_map_inspect` returns paged `documented_in` sections for verified symbol references. Its Markdown presents each cited section once with document identity, citation line, and a resolved file URI; it does not repeat the separate JSON `documents` page. `code_map_explain` retains its own `documents` page. `code_map_impact` returns paged `affected_docs` for a selected path or symbol. Exact Markdown `code_map_analyze` responses may include paged `doc_diagnostics`: `broken_doc_link` for a link that does not resolve, `dead_doc_symbol` for a claim with no matching declaration (with an optional `suggested_symbol`), and `stale_doc_sections` when an in-bounds source range is disjoint from the unique current symbol range. Suggestions are remediation hints, not graph edges; ambiguous, unsafe, malformed, or out-of-bounds claims do not prove stale documentation.
 
 Lines that declare `INV-*` rules are indexed as invariant nodes and linked to uniquely referenced symbols by `governs` and `governed_by` edges. Inspect, impact, and task context can surface verified governing rules with a single-line rule and source path/line. Navigation includes at most five direct rules and five IDs governing one-hop callers or callees; omitted counts and source references keep the response bounded. This graph context does not replace or truncate task contract invariants, profile guidance, decisions, commands, or proof receipts.

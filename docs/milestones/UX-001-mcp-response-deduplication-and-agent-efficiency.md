@@ -799,26 +799,80 @@ receipt:
 
 ```yaml
 task_ref: document-efficient-agent-navigation
-target: "Document the narrowed navigation, opaque SQL, diagnostic errors, and explicit worktree selection"
+target: Document the narrowed navigation, opaque SQL, diagnostic errors, and explicit worktree selection
 proof_policy: direct-proof
-contract_revision: 5
+contract_revision: 6
 depends_on:
-  - preserve-read-only-sql-results
-  - resolve-diagnostic-scope-ambiguity
-  - single-document-projection-for-inspection
-  - emit-compact-document-hint-once
-  - deduplicate-task-inspection-presentation
-  - universal-clickable-coordinates-and-heading-compaction
-  - normalize-and-resolve-milestone-references
-  - byte-bounded-single-symbol-snippets
-  - safe-source-snippet-continuation
+- preserve-read-only-sql-results
+- resolve-diagnostic-scope-ambiguity
+- single-document-projection-for-inspection
+- emit-compact-document-hint-once
+- deduplicate-task-inspection-presentation
+- universal-clickable-coordinates-and-heading-compaction
+- normalize-and-resolve-milestone-references
+- byte-bounded-single-symbol-snippets
+- safe-source-snippet-continuation
 scope:
-  - docs/reference/mcp-tools.md
-  - docs/reference/tasks.md
-  - docs/reference/mcp-markdown-contracts.md
-  - skills/contextunity-forge/SKILL.md
-  - skills/contextunity-forge/references/tool-catalog.md
-status: planned
+- docs/reference/mcp-tools.md
+- docs/reference/tasks.md
+- docs/reference/mcp-markdown-contracts.md
+- skills/contextunity-forge/SKILL.md
+- skills/contextunity-forge/references/tool-catalog.md
+- src/db/reader.rs
+- tests/query_context/symbol_context.rs
+invariants:
+- 'DOC-NAV-READONLY-PROOF: The admitted reader and existing symbol-context test are unchanged proof anchors for the documented get_doc/inspection capability. This task edits only its documentation and skill files; source and test blobs must match the candidate baseline.'
+status: completed
+receipt:
+  contract_revision: 6
+  passed_at: 2026-10-22T04:11:27.531479841+00:00
+  evidence:
+    command_proof:
+      command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --test query_context
+      exit_code: 0
+      tests_passed: 43
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: Four documentation/skill consumers corrected within admitted scope. reader.rs and symbol_context.rs proof anchors identical to baseline. Frozen candidate scope hash9f646da0eb18afe81a8d11226c1e92d73df6c90e14214f3150beca8b2e2a897b matches; no reviewer edits; unrelated ADR/manifest preserved.
+        claims:
+          applicable: true
+          evidence: 'NAV-R1/R2 confirmed-fixed: all20 universal routing before typed dispatch and canonical-root omission are main-compatible guarantees explicitly gated on connected schema/runtime. Legacy UX is not claimed fixed. Narrow navigation, source limits/cache64FIFO, SQL/diagnostic/URI/history/paging claims retained. Independent Clippy/query_context43/MCP91/ACDD116 pass; portable links and reader seam included.'
+        concurrency:
+          applicable: true
+          evidence: Documentation-only candidate leaves runtime/storage/task locking unchanged. Full task lifecycle ACDD116 passes. No indexing timing or other host measurement started.
+        project_isolation:
+          applicable: true
+          evidence: Checked main dispatcher/server/inputs and legacy UX differences. Guidance separates task affinity and shared tasks_db from request-local workspace, CLI root/cwd from MCP client cwd, and requires compatible server before relying on routing. Integration gap recorded on task board1008.
+        administration:
+          applicable: true
+          evidence: User-authorized docs-only correction. No main merge, schema/profile/global update, 96KiB implementation, benchmark, handoff, or manual commit. All checks used fresh copied skill fixture via env hook. Main test receipts attributed to builder only; independent reviewer results recorded separately.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-SINGLE-DOCUMENT-PROJECTION: Symbol inspection exposes one documentation page per cited section, with doc_id, path, section title, document type, citation line, and a resolved file:/// URI. Explain keeps its own documents page and does not grow a second inspect projection.'
+    - 'INV-COMPACT-DOC-HINT-ONCE: A compact get_doc response emits each omitted-detail hint once. Referenced-symbol rows keep the citing section and citation line. Full detail still returns candidate evidence.'
+    - 'INV-NARROWEST-NAVIGATION: Agent guidance selects the narrowest useful tool, reuses sufficient previews, and passes worktree when the server root is not the checkout being edited.'
+    - 'INV-RESPONSE-CONTRACT-PRESERVATION: Deduplication preserves pagination, generation validation, detail-level behavior, response budgets, exact evidence, and CLI/MCP parity.'
+    - 'INV-READ-ONLY-SQL-FIDELITY: Opaque user SQL keeps literals, comments, trailing semicolons of one statement, requested columns, and SQLite text. Structural graph rows keep parsed details and stripped internal ids. Writes and multiple statements stay rejected.'
+    - 'INV-TASK-PRESENTATION-DEDUPLICATION: Inspect Markdown uses the task-record heading and renders equal scope, target, proof policy, and task invariants once. A fixture with those repeated fields is smaller in Markdown than in JSON. The contract digest hash is omitted from task responses. Revisions, receipts, gates, attempts, and findings stay visible.'
+    - 'INV-EXPLICIT-DIAGNOSTIC-SCOPE: An unindexed analyze or lint target fails with PATH_NOT_INDEXED. An indexed scope with zero diagnostics stays success. The diagnostics and cycles mode errors stay specific. Unsupported overview aspects fail with the allowed set.'
+    - 'INV-CLICKABLE-COORDINATE-COMPLETENESS: Presentation attachment resolves a workspace path before file_uri_for_path. A resolvable coordinate is a file:/// link. Markdown omits the (link unavailable) fallback.'
+    - 'DOC-NAV-READONLY-PROOF: The admitted reader and existing symbol-context test are unchanged proof anchors for the documented get_doc/inspection capability. This task edits only its documentation and skill files; source and test blobs must match the candidate baseline.'
+    architectural_notes:
+    - 'decisions: {"decision":"NAV-R1 and NAV-R2 confirmed-fixed in documentation only","candidate":"4e1f7d74316bafa259ece3c4dbe1c840de9eb36b","base":"faf8e0f57ff4f1a941e24f8a68acc1d2e38e0a36","scope_sha256":"9f646da0eb18afe81a8d11226c1e92d73df6c90e14214f3150beca8b2e2a897b","authority":"USER docs-only correction taking approved main fa79618/f0e1684 into account. Same independent reviewer claim14 rev6.","closure":"All four corrected consumers remove blanket Task MCP exclusion. Universal-routing contract covers all20 tools, root resolution before typed dispatch, canonical server-root default/no claim redirect; claim/next preserve required affinity, others optional. Guidance explicitly requires connected schema AND compatible runtime; it does not make legacy UX universal. Existing taskDB sharing is distinct from request-root selection; CLI paths/environment/cwd are distinct from MCP client cwd.","independent_source":"Main tools.rs941-983/server.rs472-496/inputs.rs409-431 and claim/next normalization300-338 were directly checked. UX task bypass and legacy claim fallback remain unchanged. Source reader.rs and test symbol_context.rs match baseline; reviewed scoped files match frozen candidate; diff-check and scope hash pass.","independent_checks":"Fresh fixture /tmp/kilo/ux001-navigation-closure-skill-20261022T0408Z via env hook for every check. Exact strict Clippy followed by full query_context43/43, mcp91/91, acdd116/116 passed. MCP suite includes global-copy parity and portable install-layout links; reader tests include direct bounded summary/doc projections. No ~/.agents writes. Main all20/task-routing runtime receipts are builder-only #1007, not claimed as reviewer runs.","preserved":"Narrowest-tool navigation, SQL text/columns, diagnostics, URI safety, task history/dedup, complete-symbol byte bounds, 64-entry session FIFO, pagination and explicit generation semantics remain accurate. Current cap64KiB, no96KiB/tasklist feature implemented.","integration_gap":"Approved main universal routing is NOT integrated into UX faf8e0f. Later code integration belongs to coordinator planning and needs separate authorization; it is not a defect requiring a merge in this documentation task. Do not infer universal routing from affinity fields. Benchmark/indexing measurements are separate and were not started by reviewer."}'
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Acceptance
