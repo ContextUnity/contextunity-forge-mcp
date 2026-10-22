@@ -54,6 +54,38 @@ routes = [
   "template.tag.translate=i18n",
 ]
 
+[[syntax_rules]]
+id = "render-context"
+language = "python"
+operation = { kind = "render_context", package = "django", module = "django.shortcuts", export = "render", target_argument = 1, context_argument = 2, argument_count = 3 }
+
+[[syntax_rules]]
+id = "template-symbols"
+display = { builtin = "builtin:django_template", library = "builtin:django_template_library" }
+language = "html"
+operation = { kind = "template_symbols", package = "django", requires_loader = false }
+
+[[syntax_rules]]
+id = "template-library"
+language = "python"
+activation = [{ kind = "package", name = "django" }]
+operation = { kind = "template_library", directory = "templatetags", module = "django.template", constructor = "Library", members = { filter = "filter", simple_tag = "tag", inclusion_tag = "tag" }, name_keyword = "name" }
+
+[[syntax_rules]]
+id = "named-route-call"
+language = "python"
+operation = { kind = "named_route_call", expression_prefix = "django.route_name.", module = "django.urls", export = "reverse", argument = 0 }
+
+[[syntax_rules]]
+id = "named-route-tag"
+language = "html"
+operation = { kind = "template_named_route", expression_prefix = "django.route_name.", tag = "url" }
+
+[[syntax_rules]]
+id = "router-registration"
+language = "python"
+operation = { kind = "receiver_registration", module = "rest_framework.routers", constructors = ["DefaultRouter", "SimpleRouter"], member = "register", path_argument = 0, handler_argument = 1, name_keyword = "basename" }
+
 [[class_hierarchy_receivers]]
 bases = ["django.core.management.base.BaseCommand"]
 provider = "django.core.management.base.BaseCommand"
@@ -74,11 +106,88 @@ bases = ["django.db.models.Model", "django.db.models.base.Model"]
 provider = "django.db.models.Model"
 members = ["objects.all", "objects.filter", "objects.exclude", "objects.get", "objects.create", "objects.get_or_create", "objects.update_or_create", "objects.bulk_create", "objects.bulk_update", "objects.count", "objects.exists", "objects.first", "objects.last", "objects.order_by", "objects.values", "objects.values_list", "objects.select_related", "objects.prefetch_related", "objects.aggregate", "objects.annotate", "objects.none", "objects.update", "objects.delete", "objects.using"]
 
+[[class_hierarchy_receivers]]
+bases = ["django.db.models.QuerySet", "django.db.models.query.QuerySet"]
+provider = "django.db.models.QuerySet"
+members = ["all", "filter", "exclude", "get", "create", "get_or_create", "update_or_create", "bulk_create", "bulk_update", "count", "exists", "first", "last", "order_by", "values", "values_list", "select_related", "prefetch_related", "aggregate", "annotate", "none", "update", "delete", "using", "distinct", "reverse", "latest", "earliest", "iterator", "select_for_update"]
+
+[[class_hierarchy_receivers]]
+bases = ["django.db.models.Manager", "django.db.models.manager.Manager"]
+provider = "django.db.models.Manager"
+members = ["all", "filter", "exclude", "get", "create", "get_or_create", "update_or_create", "bulk_create", "bulk_update", "count", "exists", "first", "last", "order_by", "values", "values_list", "select_related", "prefetch_related", "aggregate", "annotate", "none", "update", "delete", "using", "db_manager", "get_queryset", "latest", "earliest"]
+
+[[class_hierarchy_receivers]]
+bases = ["django.db.models.BaseManager", "django.db.models.manager.BaseManager"]
+provider = "django.db.models.BaseManager"
+members = ["all", "db_manager", "get_queryset", "contribute_to_class"]
+
+[[class_hierarchy_receivers]]
+bases = ["django.db.models.fields.related_descriptors.ReverseManyToOneDescriptor", "django.db.models.fields.related_descriptors.ManyToManyDescriptor"]
+provider = "django.db.models.RelatedManager"
+members = ["all", "filter", "exclude", "get", "create", "get_or_create", "update_or_create", "count", "exists", "first", "last", "order_by", "values", "values_list", "select_related", "prefetch_related", "add", "remove", "clear", "set"]
+
+[[class_hierarchy_receivers]]
+bases = ["django.db.models.ForeignKey", "django.db.models.fields.related.ForeignKey"]
+provider = "django.db.models.ForeignKey"
+members = ["related_model", "remote_field", "target_field", "many_to_one", "get_internal_type", "db_type", "formfield", "contribute_to_class", "deconstruct"]
+
+[[class_hierarchy_receivers]]
+bases = ["django.db.models.OneToOneField", "django.db.models.fields.related.OneToOneField"]
+provider = "django.db.models.OneToOneField"
+members = ["related_model", "remote_field", "target_field", "one_to_one", "get_internal_type", "db_type", "formfield", "contribute_to_class", "deconstruct"]
+
+[[class_hierarchy_receivers]]
+bases = ["django.db.models.ManyToManyField", "django.db.models.fields.related.ManyToManyField"]
+provider = "django.db.models.ManyToManyField"
+members = ["related_model", "remote_field", "many_to_many", "get_internal_type", "db_type", "formfield", "contribute_to_class", "deconstruct"]
+
+[[class_hierarchy_receivers]]
+bases = ["django.db.models.ForeignObjectRel", "django.db.models.fields.reverse_related.ForeignObjectRel", "django.db.models.ManyToOneRel", "django.db.models.OneToOneRel", "django.db.models.ManyToManyRel"]
+provider = "django.db.models.ForeignObjectRel"
+members = ["field", "model", "related_model", "remote_field", "get_accessor_name", "get_path_info", "get_joining_columns", "get_extra_restriction"]
+
+[[class_hierarchy_receivers]]
+bases = ["rest_framework.serializers.Serializer", "rest_framework.serializers.BaseSerializer"]
+provider = "rest_framework.serializers.Serializer"
+members = ["data", "is_valid", "validated_data", "errors", "save", "create", "update", "to_representation", "to_internal_value", "run_validation", "initial_data"]
+
+[[class_hierarchy_receivers]]
+bases = ["rest_framework.serializers.ModelSerializer"]
+provider = "rest_framework.serializers.ModelSerializer"
+members = ["data", "is_valid", "validated_data", "errors", "save", "create", "update", "to_representation", "to_internal_value", "run_validation", "initial_data"]
+
+[[class_hierarchy_receivers]]
+bases = ["rest_framework.views.APIView"]
+provider = "rest_framework.views.APIView"
+members = ["dispatch", "initialize_request", "initial", "finalize_response", "handle_exception", "get_permissions", "check_permissions", "check_throttles", "get_authenticators", "get_parsers", "get_content_negotiator"]
+
+[[class_hierarchy_receivers]]
+bases = ["rest_framework.generics.GenericAPIView"]
+provider = "rest_framework.generics.GenericAPIView"
+members = ["get_queryset", "get_object", "filter_queryset", "get_serializer", "get_serializer_class", "get_serializer_context", "paginate_queryset", "get_paginated_response"]
+
+[[class_hierarchy_receivers]]
+bases = ["rest_framework.viewsets.ViewSet", "rest_framework.viewsets.ViewSetMixin"]
+provider = "rest_framework.viewsets.ViewSet"
+members = ["as_view", "get_extra_actions", "initialize_request", "reverse_action"]
+
+[[class_hierarchy_receivers]]
+bases = ["rest_framework.viewsets.GenericViewSet"]
+provider = "rest_framework.viewsets.GenericViewSet"
+members = ["get_queryset", "get_object", "filter_queryset", "get_serializer", "get_serializer_class", "get_serializer_context", "paginate_queryset", "get_paginated_response"]
+
+[[class_hierarchy_receivers]]
+bases = ["rest_framework.viewsets.ModelViewSet", "rest_framework.viewsets.ReadOnlyModelViewSet"]
+provider = "rest_framework.viewsets.ModelViewSet"
+members = ["get_queryset", "get_object", "filter_queryset", "get_serializer", "get_serializer_class", "get_serializer_context", "paginate_queryset", "get_paginated_response", "list", "retrieve", "create", "update", "partial_update", "destroy", "perform_create", "perform_update", "perform_destroy"]
+
 [[route_calls]]
 callee = "path"
 method = "ANY"
 path_argument = 0
 handler_argument = 1
+name_keyword = "name"
+include = { callee = ".include", argument = 0, namespace_keyword = "namespace" }
 allow_relative_path = true
 
 [[route_calls]]
@@ -86,6 +195,8 @@ callee = "re_path"
 method = "ANY"
 path_argument = 0
 handler_argument = 1
+name_keyword = "name"
+include = { callee = ".include", argument = 0, namespace_keyword = "namespace" }
 allow_relative_path = true
 
 [[route_calls]]
@@ -93,6 +204,8 @@ callee = "urls.path"
 method = "ANY"
 path_argument = 0
 handler_argument = 1
+name_keyword = "name"
+include = { callee = ".include", argument = 0, namespace_keyword = "namespace" }
 allow_relative_path = true
 
 [[route_calls]]
@@ -100,6 +213,8 @@ callee = "django.urls.path"
 method = "ANY"
 path_argument = 0
 handler_argument = 1
+name_keyword = "name"
+include = { callee = ".include", argument = 0, namespace_keyword = "namespace" }
 allow_relative_path = true
 
 [[route_calls]]
@@ -107,6 +222,8 @@ callee = "urls.re_path"
 method = "ANY"
 path_argument = 0
 handler_argument = 1
+name_keyword = "name"
+include = { callee = ".include", argument = 0, namespace_keyword = "namespace" }
 allow_relative_path = true
 
 [[route_calls]]
@@ -114,6 +231,17 @@ callee = "django.urls.re_path"
 method = "ANY"
 path_argument = 0
 handler_argument = 1
+name_keyword = "name"
+include = { callee = ".include", argument = 0, namespace_keyword = "namespace" }
+allow_relative_path = true
+
+[[route_calls]]
+callee = ".register"
+method = "ANY"
+registration_guard = "router-registration"
+path_argument = 0
+handler_argument = 1
+name_keyword = "name"
 allow_relative_path = true
 
 [[semantic_rules]]
@@ -122,3 +250,27 @@ namespace = "templates"
 scope = "project"
 activation = [{ kind = "package", name = "django" }]
 operation = { kind = "call_to_file", language = "python", callee = { kind = "imported", module = "django.shortcuts", export = "render" }, argument = 1, target = { kind = "project_path_suffix", prefix = "templates/", language = "html" }, relation = "renders_template" }
+
+[[semantic_rules]]
+id = "cbv-template-name"
+namespace = "templates"
+scope = "project"
+activation = [{ kind = "package", name = "django" }]
+operation = { kind = "class_attribute_to_file", language = "python", attribute = "template_name", target = { kind = "project_path_suffix", prefix = "templates/", language = "html" }, relation = "renders_template" }
+
+[[semantic_rules]]
+id = "cbv-model"
+namespace = "django.models"
+scope = "project"
+activation = [{ kind = "package", name = "django" }]
+operation = { kind = "class_attribute_to_symbol", language = "python", attribute = "model", target = { kind = "python_symbol", language = "python" }, relation = "uses_model" }
+
+[[class_hierarchy_receivers]]
+bases = ["django.forms.Form"]
+provider = "django.forms.Form"
+members = ["is_valid"]
+
+[[class_hierarchy_receivers]]
+bases = ["django.forms.ModelForm"]
+provider = "django.forms.ModelForm"
+members = ["is_valid", "save"]
