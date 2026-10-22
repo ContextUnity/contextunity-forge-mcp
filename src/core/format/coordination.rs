@@ -125,6 +125,11 @@ pub(super) fn render_docs(value: &Value, title: &str) -> String {
         ("referenced_symbols", "Verified referenced symbols", true),
     ] {
         if let Some(page) = value.get(field) {
+            if page.get("total").and_then(Value::as_u64) == Some(0)
+                && page.get("omitted") != Some(&Value::Bool(true))
+            {
+                continue;
+            }
             render_entity_page(&mut output, heading, page, line_is_coordinate);
         }
     }
@@ -239,7 +244,6 @@ fn render_section_page(output: &mut String, heading: &str, page: &Value, excerpt
 fn render_entity_page(output: &mut String, heading: &str, page: &Value, line_is_coordinate: bool) {
     render_page_metadata(output, heading, page);
     let Some(items) = page.get("items").and_then(Value::as_array) else {
-        render_fields(output, page, 0, &[]);
         return;
     };
     for (index, item) in items.iter().enumerate() {
@@ -259,7 +263,6 @@ fn render_entity_page(output: &mut String, heading: &str, page: &Value, line_is_
 fn render_candidate_page(output: &mut String, page: &Value) {
     render_page_metadata(output, "Candidate page", page);
     let Some(items) = page.get("items").and_then(Value::as_array) else {
-        render_fields(output, page, 0, &[]);
         return;
     };
     for (index, candidate) in items.iter().enumerate() {

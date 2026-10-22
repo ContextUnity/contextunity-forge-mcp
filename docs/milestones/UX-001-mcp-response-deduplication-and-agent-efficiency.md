@@ -641,18 +641,66 @@ receipt:
 
 ```yaml
 task_ref: emit-compact-document-hint-once
-target: "Print each compact omission hint once, drop empty relation headings, and keep citation identity on referenced symbols"
+target: Print each compact omission hint once, drop empty relation headings, and keep citation identity on referenced symbols
 proof_policy: seam-test-first
 contract_revision: 5
 depends_on:
-  - single-document-projection-for-inspection
+- single-document-projection-for-inspection
 scope:
-  - src/core/format/coordination.rs
-  - src/db/reader.rs
-  - tests/query_context/symbol_context.rs
-  - tests/mcp/freshness/stdio_and_response.rs
-  - docs/reference/mcp-markdown-contracts.md
-status: planned
+- src/core/format/coordination.rs
+- src/db/reader.rs
+- tests/query_context/symbol_context.rs
+- tests/mcp/freshness/stdio_and_response.rs
+- docs/reference/mcp-markdown-contracts.md
+status: completed
+receipt:
+  contract_revision: 5
+  passed_at: 2026-10-22T00:28:55.762898676+00:00
+  evidence:
+    command_proof:
+      command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --test mcp && cargo test --test query_context
+      exit_code: 0
+      tests_passed: 134
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: 'PASS: eeb6e35 snapshot and current postimages bind exactly the five admitted paths; recomputed scoped diff SHA-256 e85d4c201042cbb399999e737e454771387dfea7954bf7a3824c60c3844cb618. The parent-owned active milestone manifest spec edits remain untouched.'
+        claims:
+          applicable: true
+          evidence: 'PASS: F1 is confirmed fixed. Reader keeps generic declaration coordinate line unchanged and separately returns citation_line plus citing section doc_id; the shared CLI/MCP URI adapter is unchanged. Focused query seam 1/1 and real MCP stdio seam 1/1 prove baseline line=1, matching #L1 Markdown anchors for four citations at lines 7/10/13/16, full/compact output and limit-1 pagination; full candidate evidence and details=''{}'' fallback remain. Builder closure ledger #977 records pre-fix runtime failure and restored mutations killing coordinate swap, missing doc_id, collapsed citation lines, duplicate hint, and zero-total headings.'
+        concurrency:
+          applicable: true
+          evidence: 'PASS: change is a read-only query projection; paging, generation validation and snapshot/lock behavior are unchanged. Strict Clippy and full affected targets pass.'
+        project_isolation:
+          applicable: true
+          evidence: 'PASS: rows remain constrained to selected section hashes; existing workspace-resolved adapter and URI path behavior are unchanged. The production stdio test exercises the actual workspace URI.'
+        administration:
+          applicable: true
+          evidence: 'PASS: no schema, migration, profile, configuration, credentials or privileged delivery behavior changed. Reviewer is kilo-ux001-compact-reviewer, distinct from builder kilo-ux001-compact-builder. Delivery remains Forge-managed.'
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-SINGLE-DOCUMENT-PROJECTION: Symbol inspection exposes one documentation page per cited section, with doc_id, path, section title, document type, citation line, and a resolved file:/// URI. Explain keeps its own documents page and does not grow a second inspect projection.'
+    - 'INV-COMPACT-DOC-HINT-ONCE: A compact get_doc response emits each omitted-detail hint once. Referenced-symbol rows keep the citing section and citation line. Full detail still returns candidate evidence.'
+    - 'INV-NARROWEST-NAVIGATION: Agent guidance selects the narrowest useful tool, reuses sufficient previews, and passes worktree when the server root is not the checkout being edited.'
+    - 'INV-RESPONSE-CONTRACT-PRESERVATION: Deduplication preserves pagination, generation validation, detail-level behavior, response budgets, exact evidence, and CLI/MCP parity.'
+    - 'INV-READ-ONLY-SQL-FIDELITY: Opaque user SQL keeps literals, comments, trailing semicolons of one statement, requested columns, and SQLite text. Structural graph rows keep parsed details and stripped internal ids. Writes and multiple statements stay rejected.'
+    - 'INV-TASK-PRESENTATION-DEDUPLICATION: Inspect Markdown uses the task-record heading and renders equal scope, target, proof policy, and task invariants once. A fixture with those repeated fields is smaller in Markdown than in JSON. The contract digest hash is omitted from task responses. Revisions, receipts, gates, attempts, and findings stay visible.'
+    - 'INV-EXPLICIT-DIAGNOSTIC-SCOPE: An unindexed analyze or lint target fails with PATH_NOT_INDEXED. An indexed scope with zero diagnostics stays success. The diagnostics and cycles mode errors stay specific. Unsupported overview aspects fail with the allowed set.'
+    - 'INV-CLICKABLE-COORDINATE-COMPLETENESS: Presentation attachment resolves a workspace path before file_uri_for_path. A resolvable coordinate is a file:/// link. Markdown omits the (link unavailable) fallback.'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Acceptance

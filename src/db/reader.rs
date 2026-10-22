@@ -1592,7 +1592,7 @@ pub fn get_doc_paged(
     )?;
     let referenced_symbols = paging::query(
         conn,
-        "SELECT n.id,n.name,n.kind,n.path_id,(SELECT path FROM path_dictionary p WHERE p.path_id=n.path_id) AS path,n.line FROM edges e JOIN nodes n ON n.node_hash=e.dst_hash WHERE e.kind='documents' AND e.src_hash IN(SELECT CAST(value AS INTEGER) FROM json_each(?1)) ORDER BY path,n.line,n.id",
+        "SELECT source.id AS doc_id,symbol.id,symbol.name,symbol.kind,symbol.path_id,(SELECT path FROM path_dictionary p WHERE p.path_id=symbol.path_id) AS path,symbol.line,e.line AS citation_line FROM edges e JOIN nodes source ON source.node_hash=e.src_hash JOIN doc_sections d ON d.doc_id=source.id JOIN nodes symbol ON symbol.node_hash=e.dst_hash WHERE e.kind='documents' AND e.src_hash IN(SELECT CAST(value AS INTEGER) FROM json_each(?1)) ORDER BY d.path,d.doc_id,e.line,symbol.path_id,symbol.line,symbol.id",
         &[&encoded_hashes],
         options,
     )?;

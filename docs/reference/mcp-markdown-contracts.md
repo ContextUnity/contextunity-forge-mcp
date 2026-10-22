@@ -364,7 +364,13 @@ only when the selected workspace adapter resolves its path; linked-workspace lin
 use that workspace's resolved URI. Keep verified citations and referenced symbols
 separate from unverified ambiguous candidates. Render actual invariant metadata
 without treating it as a `governs` edge; candidate ambiguity remains navigation,
-not verification or governance.
+not verification or governance. Compact output shows the documentary-candidate
+omission hint once, while full detail retains candidate evidence. Each verified
+referenced-symbol row retains its citing section as `doc_id` and citation edge
+coordinate as `citation_line`; `line` identifies the target declaration and
+drives its resolved URI anchor. Preserve both coordinates and their independent
+pagination in JSON and Markdown. Omit empty
+relation headings unless the page is an intentional compact omission stub.
 
 Checkpoint actions are `list|get|save|delete`. List returns names and stored
 byte sizes; save/delete return action and name. The store does not supply save

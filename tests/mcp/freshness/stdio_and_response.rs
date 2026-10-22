@@ -276,6 +276,20 @@ fn mcp_document_retrieval_and_explain_output_controls() {
         .unwrap();
     assert!(outline_markdown.contains("Document sections"));
     assert!(!outline_markdown.contains("Source Markdown"));
+    assert_eq!(
+        outline_markdown
+            .matches("Request detail=full for documentary reference candidates")
+            .count(),
+        1,
+        "compact output prints the candidate omission hint once: {outline_markdown}"
+    );
+    assert_eq!(
+        outline_markdown
+            .matches("## Ambiguous symbol candidates (navigation only; unverified)")
+            .count(),
+        1,
+        "compact output uses one candidate heading: {outline_markdown}"
+    );
     ws.write(
         "README.md",
         "# Contract\n\nThe `target` function preserves the documented contract.\nFreshly refreshed documentation evidence.\n",
@@ -321,12 +335,20 @@ fn mcp_document_retrieval_and_explain_output_controls() {
     }
 
     drop(client);
-    ws.write("forge-mcp.yaml", "roots: [src]\ndocs: [docs/allowed]\n");
+    ws.write(
+        "forge-mcp.yaml",
+        "roots: [src]\ndocs: [docs/allowed, docs/reference]\n",
+    );
     ws.write(
         "src/main.rs",
         "pub fn target() {}\npub fn caller() { target(); }\npub fn grandcaller() { caller(); }\n/// Full detail documentation from node.details.\npub fn documented() {\n    helper();\n    helper();\n}\npub fn helper() {}\n",
     );
     ws.write("src/other.rs", "pub fn documented() {}\n");
+    ws.write("src/overview.py", "def code_map_overview(): pass\n");
+    ws.write(
+        "src/candidates.py",
+        "def shared(): return 'first'\ndef shared(): return 'second'\n",
+    );
     ws.write("src/ambiguous.rs", "pub struct A;\nimpl A { pub fn shared() {} }\npub struct B;\nimpl B { pub fn shared() {} }\n");
     ws.write(
         "AGENTS.md",
@@ -360,8 +382,190 @@ fn mcp_document_retrieval_and_explain_output_controls() {
         "docs/allowed/inspect.md",
         "---\ntitle: Inspect context\ndoc_type: guide\n---\n# Inspect context\nUnique full inspect document content.\n[`documented`](../../src/main.rs#L5)\n",
     );
+    ws.write(
+        "docs/reference/mcp-tools.md",
+        "---\ntitle: MCP tools\ndoc_type: reference\n---\n# MCP tools\n## Overview one\n[`code_map_overview`](../../src/overview.py#L1)\n\n## Overview two\n[`code_map_overview`](../../src/overview.py#L1)\n\n## Overview three\n[`code_map_overview`](../../src/overview.py#L1)\n\n## Overview four\n[`code_map_overview`](../../src/overview.py#L1)\n\n## Ambiguous candidates\n[`shared`](../../src/candidates.py#L1)\n",
+    );
     ws.build();
     let mut client = StdioClient::new(&ws);
+
+    let overview = client.payload(
+        "get_doc",
+        json!({"path_or_id":"docs/reference/mcp-tools.md","limit":100}),
+    );
+    let reference_rows = overview["referenced_symbols"]["items"]
+        .as_array()
+        .expect("verified code reference rows");
+    assert_eq!(reference_rows.len(), 4);
+    assert!(reference_rows
+        .iter()
+        .all(|reference| reference["name"] == "code_map_overview"));
+    for relation in ["cites_doc", "cited_by_doc"] {
+        assert_eq!(overview[relation]["total"], 0);
+        assert!(overview[relation].get("omitted").is_none());
+    }
+    let cited_section_ids = reference_rows
+        .iter()
+        .map(|reference| reference["doc_id"].as_str().expect("citing section id"))
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(cited_section_ids.len(), 4, "citation section identity");
+    assert_eq!(overview["referenced_symbol_candidates"]["total"], 2);
+    assert!(overview["referenced_symbol_candidates"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(
+            |candidate| candidate["source"]["path"] == "docs/reference/mcp-tools.md"
+                && candidate["source"]["name"] == "shared"
+                && candidate["source"]["line"] == 19
+                && candidate["target"]["path"] == "src/candidates.py"
+        ));
+
+    let (_, overview_markdown_response) = client.call(
+        "get_doc",
+        json!({
+            "path_or_id":"docs/reference/mcp-tools.md",
+            "limit":100,
+            "format":"markdown"
+        }),
+    );
+    let overview_markdown = overview_markdown_response["result"]["content"][0]["text"]
+        .as_str()
+        .expect("full document Markdown");
+    let target_declaration_uri =
+        format!("file://{}#L1)", ws.root().join("src/overview.py").display());
+    assert_eq!(
+        overview_markdown.matches(&target_declaration_uri).count(),
+        4,
+        "each symbol link anchors to its declaration, not the citing line: {overview_markdown}"
+    );
+    let target_declaration_location = format!("[src/overview.py]({target_declaration_uri} line 1");
+    assert_eq!(
+        overview_markdown
+            .matches(&target_declaration_location)
+            .count(),
+        4,
+        "the displayed declaration line agrees with each link: {overview_markdown}"
+    );
+    let citation_lines = reference_rows
+        .iter()
+        .map(|reference| reference["citation_line"].as_u64().expect("citation line"))
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(citation_lines, [7, 10, 13, 16].into_iter().collect());
+    assert!(reference_rows
+        .iter()
+        .all(|reference| reference["line"] == 1));
+    for citation_line in [7, 10, 13, 16] {
+        assert!(overview_markdown.contains(&format!("**citation_line**: `{citation_line}`")));
+    }
+    assert!(
+        !overview_markdown.contains("## Verified document citations"),
+        "zero-total citations page has no heading: {overview_markdown}"
+    );
+    assert!(
+        !overview_markdown.contains("## Verified incoming document citations"),
+        "zero-total incoming citations page has no heading: {overview_markdown}"
+    );
+    assert!(overview_markdown.contains("## Verified referenced symbols"));
+    let (_, compact_overview_response) = client.call(
+        "get_doc",
+        json!({
+            "path_or_id":"docs/reference/mcp-tools.md",
+            "detail":"compact",
+            "limit":100,
+            "format":"markdown"
+        }),
+    );
+    let compact_overview_markdown = compact_overview_response["result"]["content"][0]["text"]
+        .as_str()
+        .expect("compact document Markdown");
+    assert_eq!(
+        compact_overview_markdown
+            .matches("Request detail=full for documentary reference candidates")
+            .count(),
+        1,
+        "compact document prints the candidate omission hint once: {compact_overview_markdown}"
+    );
+    assert_eq!(
+        compact_overview_markdown
+            .matches("## Ambiguous symbol candidates (navigation only; unverified)")
+            .count(),
+        1,
+        "compact omission stub keeps one candidate heading: {compact_overview_markdown}"
+    );
+    assert_eq!(
+        compact_overview_markdown
+            .matches(&target_declaration_uri)
+            .count(),
+        4,
+        "compact symbol links also anchor to declarations: {compact_overview_markdown}"
+    );
+    for citation_line in [7, 10, 13, 16] {
+        assert!(
+            compact_overview_markdown.contains(&format!("**citation_line**: `{citation_line}`"))
+        );
+    }
+
+    for detail in ["full", "compact"] {
+        let mut offset = 0_u64;
+        let mut generation = Value::Null;
+        let mut paged_citations = Vec::new();
+        loop {
+            let mut arguments = json!({
+                "path_or_id":"docs/reference/mcp-tools.md",
+                "detail":detail,
+                "limit":1,
+                "offset":offset
+            });
+            if !generation.is_null() {
+                arguments["generation"] = generation.clone();
+            }
+            let page = client.payload("get_doc", arguments.clone());
+            let reference = &page["referenced_symbols"]["items"][0];
+            assert_eq!(reference["line"], 1);
+            let citation_line = reference["citation_line"].as_u64().unwrap();
+            paged_citations.push((
+                reference["doc_id"].as_str().unwrap().to_owned(),
+                citation_line,
+            ));
+
+            arguments["format"] = json!("markdown");
+            let (_, markdown_response) = client.call("get_doc", arguments);
+            let markdown = markdown_response["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap();
+            assert_eq!(markdown.matches(&target_declaration_uri).count(), 1);
+            assert!(markdown.contains(&format!(
+                "[src/overview.py]({target_declaration_uri} line 1"
+            )));
+            assert!(markdown.contains(&format!("**citation_line**: `{citation_line}`")));
+
+            let reference_page = &page["referenced_symbols"];
+            if !reference_page["has_more"].as_bool().unwrap() {
+                break;
+            }
+            offset = reference_page["next_offset"].as_u64().unwrap();
+            generation = reference_page["generation"].clone();
+        }
+        assert_eq!(
+            paged_citations
+                .iter()
+                .map(|(_, line)| line)
+                .copied()
+                .collect::<std::collections::BTreeSet<_>>(),
+            [7, 10, 13, 16].into_iter().collect()
+        );
+        assert_eq!(paged_citations.len(), 4);
+        assert_eq!(
+            paged_citations
+                .iter()
+                .map(|(doc_id, _)| doc_id)
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            4,
+            "all paged {detail} citations retain distinct citing sections"
+        );
+    }
 
     let guide = client.payload("get_doc", json!({"path_or_id":"docs/guide.md","limit":100}));
     assert_eq!(guide["sections"]["items"][0]["line"], 5);
@@ -1268,9 +1472,17 @@ fn mcp_document_retrieval_and_explain_output_controls() {
     assert!(
         candidate_markdown.contains("Ambiguous symbol candidates (navigation only; unverified)")
     );
-    assert!(candidate_markdown.contains("Verified document citations"));
-    assert!(candidate_markdown.contains("Verified incoming document citations"));
-    assert!(candidate_markdown.contains("Verified referenced symbols"));
+    for (field, heading) in [
+        ("cites_doc", "Verified document citations"),
+        ("cited_by_doc", "Verified incoming document citations"),
+        ("referenced_symbols", "Verified referenced symbols"),
+    ] {
+        assert_eq!(
+            candidate_markdown.contains(heading),
+            first_candidate[field]["total"].as_u64().unwrap_or_default() > 0,
+            "relation heading follows its page total ({field}): {candidate_markdown}"
+        );
+    }
     assert!(candidate_markdown.contains("Claim source"));
     assert!(candidate_markdown.contains("Possible target"));
     assert!(candidate_markdown.contains(candidate_generation));

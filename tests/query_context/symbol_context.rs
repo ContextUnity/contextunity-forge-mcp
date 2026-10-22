@@ -64,8 +64,165 @@ fn compact_symbol_summary_and_coverage_are_bounded_and_opt_in() {
         "docs/guide.md",
         "---\ntitle: Inspect References\ndoc_type: guide\n---\n# Inspect References\n## Target overview\nDistinct full-detail inspect content.\n[`target`](../graph.py#L1)\n## Target consumers\n[`target`](../graph.py#L1)\n",
     );
+    workspace.write("overview.py", "def code_map_overview(): pass\n");
+    workspace.write(
+        "ambiguous.py",
+        "def shared(): return 'first'\ndef shared(): return 'second'\n",
+    );
+    workspace.write(
+        "docs/reference/mcp-tools.md",
+        "---\ntitle: MCP tools\ndoc_type: reference\n---\n# MCP tools\n## Overview one\n[`code_map_overview`](../../overview.py#L1)\n\n## Overview two\n[`code_map_overview`](../../overview.py#L1)\n\n## Overview three\n[`code_map_overview`](../../overview.py#L1)\n\n## Overview four\n[`code_map_overview`](../../overview.py#L1)\n\n## Ambiguous candidates\n[`shared`](../../ambiguous.py#L1)\n",
+    );
     let conn = workspace.build();
     let source = SourceOptions::resolve(&ResponsePolicy::default(), None, None, None, 0).unwrap();
+
+    let mut full_doc_options = options(20);
+    full_doc_options.detail = Detail::Full;
+    let document = reader::get_doc_paged(
+        &conn,
+        "docs/reference/mcp-tools.md",
+        None,
+        &full_doc_options,
+    )
+    .unwrap();
+    let references = document["referenced_symbols"]["items"]
+        .as_array()
+        .expect("verified code references");
+    assert_eq!(references.len(), 4);
+    assert!(references
+        .iter()
+        .all(|reference| reference["name"] == "code_map_overview"));
+    assert!(references.iter().all(|reference| reference["line"] == 1));
+    let candidates = document["referenced_symbol_candidates"]["items"]
+        .as_array()
+        .expect("full-detail candidate rows");
+    assert_eq!(candidates.len(), 2);
+    assert!(candidates.iter().all(|candidate| {
+        candidate["source"]["path"] == "docs/reference/mcp-tools.md"
+            && candidate["source"]["name"] == "shared"
+            && candidate["source"]["line"].as_u64().is_some()
+            && candidate["target"]["path"] == "ambiguous.py"
+    }));
+
+    let ambiguous_doc_id = document["sections"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|section| section["section_title"] == "Ambiguous candidates")
+        .expect("ambiguous source section")["doc_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let fallback_conn = Connection::open(workspace.db()).unwrap();
+    fallback_conn
+        .execute(
+            "UPDATE nodes SET details='{}' WHERE id=?1",
+            [&ambiguous_doc_id],
+        )
+        .unwrap();
+    let fallback_document = reader::get_doc_paged(
+        &fallback_conn,
+        "docs/reference/mcp-tools.md",
+        None,
+        &full_doc_options,
+    )
+    .unwrap();
+    assert_eq!(
+        fallback_document["referenced_symbol_candidates"]["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2,
+        "legacy symbol references remain structurally parsed when detail claims are absent"
+    );
+    let citation_identities = references
+        .iter()
+        .map(|reference| {
+            (
+                reference["doc_id"]
+                    .as_str()
+                    .expect("citing section id")
+                    .to_owned(),
+                reference["citation_line"].as_u64().expect("citation line"),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        citation_identities
+            .iter()
+            .map(|(doc_id, _)| doc_id)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        4,
+        "each citation keeps its source section"
+    );
+    assert_eq!(
+        citation_identities
+            .iter()
+            .map(|(_, citation_line)| citation_line)
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        4,
+        "each citation keeps its source line independently of target coordinates"
+    );
+    assert_eq!(
+        citation_identities
+            .iter()
+            .map(|(_, citation_line)| *citation_line)
+            .collect::<std::collections::BTreeSet<_>>(),
+        [7, 10, 13, 16].into_iter().collect()
+    );
+    let mut compact_doc_options = options(20);
+    compact_doc_options.detail = Detail::Compact;
+    let compact_document = reader::get_doc_paged(
+        &conn,
+        "docs/reference/mcp-tools.md",
+        None,
+        &compact_doc_options,
+    )
+    .unwrap();
+    let compact_references = compact_document["referenced_symbols"]["items"]
+        .as_array()
+        .unwrap();
+    assert!(compact_references
+        .iter()
+        .all(|reference| reference["line"] == 1));
+    assert!(compact_references.iter().all(|reference| {
+        reference["citation_line"].as_u64().is_some() && reference["doc_id"].as_str().is_some()
+    }));
+    assert_eq!(
+        compact_document["referenced_symbol_candidates"]["omitted"],
+        true
+    );
+    let mut citation_page_options = options(1);
+    let mut paged_citations = Vec::new();
+    loop {
+        let page = reader::get_doc_paged(
+            &conn,
+            "docs/reference/mcp-tools.md",
+            None,
+            &citation_page_options,
+        )
+        .unwrap();
+        paged_citations.extend(
+            page["referenced_symbols"]["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|reference| {
+                    assert_eq!(reference["line"], 1);
+                    (
+                        reference["doc_id"].as_str().unwrap().to_owned(),
+                        reference["citation_line"].as_u64().unwrap(),
+                    )
+                }),
+        );
+        if !continue_page(&mut citation_page_options, &page["referenced_symbols"]) {
+            break;
+        }
+    }
+    assert_eq!(paged_citations, citation_identities);
 
     let inspected = symbols::inspect_with_options(
         &conn,
