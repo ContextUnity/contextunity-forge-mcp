@@ -39,6 +39,10 @@ and indexed-page markup in `docs/AGENTS.md`.
   profile ID. CLI `ast grep` requires `--lang`. On Unix, `contextunity-forge-mcp reload` sends
   `SIGHUP` and replaces running servers without breaking client connections.
 
+Read [framework manifests](https://github.com/ContextUnity/contextunity-forge-mcp/blob/main/docs/reference/framework-manifests.md) before
+changing configured extraction operations. Keep API names in rule data and
+preserve canonical typed facts, exact-target proof and cached delta hydration.
+
 ## Query and response bounds
 
 Each SQLite query has a 2-second budget; unbounded queries fail fast. Responses cap at 96 KiB unless a

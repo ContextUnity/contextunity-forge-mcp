@@ -64,9 +64,44 @@ Languages and extensions decompose into three explicit tiers:
 
 The shared body traversal replaces recursive declaration-body binding, value-flow and final-return collectors. Occurrence-local conservative import and template-loader proofs may revisit lexical syntax. TypeScript's returned-object proof may inspect its enclosing function to establish same-object receiver metadata. These queries do not produce body summaries or replace scope-exit analysis. TypeScript module-alias preparation and DOM processing remain separate. This boundary does not claim that every parser operation visits every node only once. Tree-sitter query experiments remain opt-in research outside default indexing.
 
+## Framework data boundary
+
+> [!IMPORTANT]
+> Invariant: Framework semantics belong to validated manifest data. Production extractors, validators, RuleIR compilation, caches, and linkers implement language grammar, lexical proof, and finite typed operations. They never select framework behavior through framework, package, namespace, constructor, decorator, keyword, attribute, or directory spellings.
+
+Keep framework API identities, receiver families, keyword and attribute names,
+directory conventions, activation conditions, and graph-relation mappings in
+manifests. The generated bundle inventory binds filename-derived pack identities
+to included data files; it does not implement pack behavior. Keep Vue syntax in its language profile and
+place application-framework conventions in manifest rules.
+
+Validate operation shapes, identifiers, target types, normal paths, and supported
+language combinations. Read the particular attribute, path prefix, and callable
+from the rule. Implement a missing generic operation in its admitted prerequisite
+task with its own extraction, linking, persistence, and proof boundary. A pack
+task changes data, domain tests, and affected documentation; extending its file
+scope does not admit an engine extension.
+
+Prove manifest causality through the real scanner, extractor, linker, and
+persisted graph. Removing or replacing a rule removes its framework facts and
+relations while ordinary language calls and imports remain. Renaming configured
+API, attribute, keyword, and directory spellings together with the fixture
+preserves equivalent results without production changes. Prove missing,
+ambiguous, shadowed, and dynamic cases without guessed exact edges. Verify the
+same facts and commitments after cold and incremental indexing, including rule
+and activation changes. A source-spelling scan supplements these proofs.
+
+Ordinary grammar read candidates remain available to the common resolver.
+Framework member admission additionally proves association with an effective
+configured factory result; it does not suppress unresolved ordinary reads.
+Write-only assignment targets are not read candidates. Language-owned import,
+enum, class and same-object resolution is preserved in embedded Vue grammar.
+
 ## Language resolution ownership
 
 `semantic_context::LanguageMemberLookup` gives the shared resolver borrowed, read-only access to prebuilt Python, Rust, and TypeScript member indexes. Each language index retains its own lookup rules; the shared resolution input does not carry one field per language, and reference linking does not rebuild indexes or perform per-reference database reads.
+
+Rust namespace indexing also prepares one bounded forwarding index from existing `use` references and public export facts. Import resolution, package exports, and Rust member lookup share that index. Private parent bindings remain descendant-only, while public named bindings follow the existing export contract; conflicting candidates, cycles, and exhausted alias walks do not produce guessed exact targets. Root crate imports use the root manifest's normalized package or explicit library name only when the conventional `src/lib.rs` is indexed in that same manifest scope.
 
 `framework_relations::compose` joins route, HTTP request, HTMX, and HTML template facts after ordinary reference resolution. It consumes the indexed facts, owner set, flow state, dependency registry, language profiles, semantic context, and route nodes, then returns graph edges and coverage. The linker merges those results and applies its existing deterministic graph ordering.
 

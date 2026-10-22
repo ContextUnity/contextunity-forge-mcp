@@ -1,0 +1,38 @@
+# Copy to .forge/frameworks/starlette.toml.
+# This is a partial extension of the bundled pack, using its exact rule identities.
+# Default merging retains other bundled rules; matching identities are replaced.
+# Keep replace omitted; replace=true would discard unlisted bundled rules.
+# To disable the effective pack, add enabled=false to this complete valid manifest.
+# Literal Route methods and actual handler positions; a handlerless Mount has no handles edge.
+# Verified response inheritance supplies external members, not invented local declarations.
+
+receivers = []
+builtins = []
+filters = []
+routes = []
+
+[[class_hierarchy_receivers]]
+bases = ["starlette.responses.JSONResponse"]
+provider = "starlette.responses.JSONResponse"
+members = ["render", "body", "headers", "media_type", "status_code"]
+
+[[route_calls]]
+callee = "Route"
+method = "ANY"
+methods_keyword = "methods"
+path_argument = 0
+handler_argument = 1
+allow_relative_path = true
+
+[[route_calls]]
+callee = "Mount"
+method = "MOUNT"
+path_argument = 0
+allow_relative_path = true
+
+[[route_calls]]
+callee = "WebSocketRoute"
+method = "WEBSOCKET"
+path_argument = 0
+handler_argument = 1
+allow_relative_path = true

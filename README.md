@@ -113,7 +113,7 @@ With no adapter, Forge scans the selected workspace root, respects `.gitignore`,
 | `forge-mcp.yaml` | Roots, docs, milestones, linked workspaces, response limits | Yes |
 | `docs/milestones/*.md` | Milestone contracts and task specifications | Yes |
 | `.forge/acdd/profile.yaml` | Gate order, roles, proof, and review contours for this repo | Yes, when you pin a profile |
-| `.forge/frameworks/*.toml` | Project rules for a framework the linker already understands | Yes, when you add one |
+| `.forge/frameworks/*.{toml,yaml,yml}` | Project rules using existing typed framework operations | Yes, when you add one |
 | `.forge/code-map.sqlite` | Symbols, AST facts, documentation sections, edges | No |
 | `.forge/tasks.sqlite` | Queue, claims, proofs, receipts | No |
 | `.forge/checkpoints.json` | Named session bookmarks | No |
@@ -188,7 +188,7 @@ The graph matches the binary you installed. After changing features, rebuild the
 
 These are different jobs.
 
-A **framework** adds receivers, template tags, filters, or routes for a language Forge already parses. Put a TOML or YAML manifest at `.forge/frameworks/<id>.toml`. Bundled manifests cover Alpine.js, Django, Jinja2, and Nuxt; a project file with the same id replaces the bundled table for that workspace. Authoring rules, the four required arrays, and the boundary between a manifest and a new parser are in [framework manifests](docs/reference/framework-manifests.md).
+A **framework** adds rules for a language Forge already parses. Put a TOML or YAML manifest under `.forge/frameworks/`; its filename stem is the pack ID. A same-ID project file merges with the bundle by default, with local rules taking precedence. Use `replace = true` for full replacement or `enabled = false` in a complete valid manifest to disable that effective pack. Bundled files are inventoried automatically at build time. Supported operations, the four required arrays, and pack examples are in [framework manifests](docs/reference/framework-manifests.md).
 
 A **language** needs a compiled profile. Implement `LanguageProfile` for discovery and extraction, and `LanguageLinker` when import or receiver resolution is language-specific. Register a `lang-*` Cargo feature and rebuild. The traits, the directory layout, and where framework data plugs into a linker are in [engine modularity](docs/architecture/modularity.md). The same [framework manifests](docs/reference/framework-manifests.md) page has the section on extending language support, including what a project manifest can supply only when a linker already asks for it.
 

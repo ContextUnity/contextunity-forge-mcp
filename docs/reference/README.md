@@ -15,6 +15,8 @@ doc_type: guide
 - [MCP setup](mcp-setup.md): client installation and workspace selection.
 - [Languages](languages.md): compiled profiles and extraction coverage.
 - [Framework manifests](framework-manifests.md): bundled rules, project manifest files, validation, and language-extension boundaries.
+- [HTMX and Alpine](framework-manifests-htmx-alpine.md), [Nuxt, Vue and Pinia](framework-manifests-nuxt-vue-pinia.md), and [GridViewSpec](framework-manifests-gridviewspec.md): supported static pack behavior and boundaries.
+- [Workspace framework verification](../runbooks/framework-packs.md): extend, disable and inspect effective rules.
 
 Verify interface changes against the owning Rust implementation before updating
 these contracts.

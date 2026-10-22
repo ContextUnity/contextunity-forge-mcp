@@ -1,0 +1,34 @@
+# Copy to .forge/frameworks/fastapi.toml.
+# This is a partial extension of the bundled pack, using its exact rule identities.
+# Default merging retains other bundled rules; matching identities are replaced.
+# Keep replace omitted; replace=true would discard unlisted bundled rules.
+# To disable the effective pack, add enabled=false to this complete valid manifest.
+# GET prefix policy, imported Depends, and a unique response_model target.
+# Imported receiver/source proof is required; missing/dynamic/duplicate targets gain no exact edge.
+# An absent optional response_model emits no attachment fact or coverage.
+
+receivers = []
+builtins = []
+filters = []
+routes = []
+
+[[route_decorators]]
+callee = ".get"
+method = "GET"
+path_argument = 0
+prefixes = [{ kind = "constructor", callee = "APIRouter", keyword = "prefix" }, { kind = "constructor", callee = "FastAPI", keyword = "prefix" }, { kind = "attachment", callee = ".include_router", child_argument = 0, prefix_keyword = "prefix" }]
+receiver_names = ["app", "router", "server", "api", "bp", "blueprint", "route"]
+
+[[semantic_rules]]
+id = "dependency"
+namespace = "fastapi"
+scope = "project"
+activation = [{ kind = "package", name = "fastapi" }]
+operation = { kind = "call_to_symbol", language = "python", callee = { kind = "imported", module = "fastapi", export = "Depends" }, argument = 0, target = { kind = "imported_symbol", language = "python" }, relation = "injects_dependency" }
+
+[[semantic_rules]]
+id = "response-model-get"
+namespace = "fastapi"
+scope = "project"
+activation = [{ kind = "package", name = "fastapi" }]
+operation = { kind = "symbol_attachment", language = "python", callee = { kind = "constructed_member", module = "fastapi", constructors = ["FastAPI", "APIRouter"], member = "get" }, source = { kind = "decorated_callable" }, target = { kind = "keyword", name = "response_model" }, relation = "uses_model" }

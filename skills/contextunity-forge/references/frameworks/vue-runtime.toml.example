@@ -1,0 +1,31 @@
+# Copy to .forge/frameworks/vue-runtime.toml.
+# This is a partial extension of the bundled pack, using its exact rule identities.
+# Default merging retains other bundled rules; matching identities are replaced.
+# Keep replace omitted; replace=true would discard unlisted bundled rules.
+# To disable the effective pack, add enabled=false to this complete valid manifest.
+# Vue macros and imported Pinia options/setup factories use existing typed operations.
+# Callable aliases retain actual indexed targets; non-node state remains unresolved.
+# Canonical bundled identity is vue-runtime, not vue.
+
+receivers = []
+builtins = []
+filters = []
+routes = []
+
+[[syntax_rules]]
+id = "pinia-options-store"
+language = "typescript"
+activation = [{ kind = "package", name = "pinia" }]
+operation = { kind = "factory_members", callee = { kind = "imported", module = "pinia", export = "defineStore" }, argument = 1, state_member = "state", actions_member = "actions" }
+
+[[syntax_rules]]
+id = "pinia-setup-store"
+language = "typescript"
+activation = [{ kind = "package", name = "pinia" }]
+operation = { kind = "factory_members", callee = { kind = "imported", module = "pinia", export = "defineStore" }, argument = 1, shape = "setup_return", configured_module = "@pinia/nuxt" }
+
+[[syntax_rules]]
+id = "component-macros"
+language = "vue"
+display = { builtin = "builtin:vue_macro" }
+operation = { kind = "component_macros", props = "defineProps", emits = "defineEmits", slots = "defineSlots", markers = ["defineExpose", "withDefaults", "defineOptions", "defineModel"] }
