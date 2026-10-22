@@ -28,6 +28,9 @@ pub enum FrameworkManifestValue {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FrameworkManifest {
+    /// Whether this effective pack may contribute rules; local false masks bundled defaults.
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
     /// Framework identifier, taken from the user manifest's filename stem.
     #[serde(skip)]
     pub name: String,
@@ -59,6 +62,8 @@ pub struct FrameworkManifest {
     pub di_calls: Vec<DiCallRule>,
     #[serde(default)]
     pub(crate) semantic_rules: Vec<super::SemanticRule>,
+    #[serde(default)]
+    pub(crate) syntax_rules: Vec<super::syntax::SyntaxRule>,
 }
 
 /// External members supplied by a known base class.
@@ -89,6 +94,41 @@ pub struct RouteDecoratorRule {
     /// Whether route paths may omit a leading slash or caret.
     #[serde(default)]
     pub allow_relative_path: bool,
+    /// Optional literal method-list keyword.
+    #[serde(default)]
+    pub methods_keyword: Option<String>,
+    /// Prefix providers eligible for this route rule.
+    #[serde(default)]
+    pub prefixes: Vec<RoutePrefixRule>,
+}
+
+/// Finite syntax forms that contribute a route prefix.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RoutePrefixRule {
+    /// A statically attached child receiver and optional literal prefix.
+    Attachment {
+        /// Configured qualified member suffix.
+        callee: String,
+        /// Child receiver argument.
+        child_argument: usize,
+        /// Optional prefix keyword on the attachment.
+        prefix_keyword: String,
+    },
+    /// A constructor assigned to a lexical receiver.
+    Constructor {
+        /// Configured constructor identity.
+        callee: String,
+        /// Literal prefix keyword.
+        keyword: String,
+    },
+    /// A literal argument on an enclosing class decorator.
+    ClassDecorator {
+        /// Configured decorator identity.
+        callee: String,
+        /// Literal positional prefix argument.
+        argument: usize,
+    },
 }
 
 /// Route metadata extracted from a registration call.
@@ -110,6 +150,33 @@ pub struct RouteCallRule {
     /// Whether route paths may omit a leading slash or caret.
     #[serde(default)]
     pub allow_relative_path: bool,
+    /// Optional literal method-list keyword.
+    #[serde(default)]
+    pub methods_keyword: Option<String>,
+    /// Optional literal route-name keyword.
+    #[serde(default)]
+    pub name_keyword: Option<String>,
+    /// Prefix providers eligible for this route rule.
+    #[serde(default)]
+    pub prefixes: Vec<RoutePrefixRule>,
+    /// Optional literal module include accepted in a handler position.
+    #[serde(default)]
+    pub include: Option<RouteIncludeRule>,
+    /// Named finite receiver-registration proof required before admission.
+    #[serde(default)]
+    pub registration_guard: Option<String>,
+}
+
+/// Module include identity extracted from a route handler argument.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RouteIncludeRule {
+    /// Exact or member-suffix callee.
+    pub callee: String,
+    /// Literal module argument.
+    pub argument: usize,
+    /// Literal namespace keyword.
+    pub namespace_keyword: String,
 }
 
 /// A dependency-injection call argument that names a provider.
@@ -200,7 +267,7 @@ impl ClassHierarchyReceiverRule {
 }
 
 impl RouteDecoratorRule {
-    fn identity(&self) -> RuleIdentity {
+    pub(crate) fn identity(&self) -> RuleIdentity {
         RuleIdentity::Route {
             callee: self.callee.clone(),
             method: self.method.clone(),
@@ -209,7 +276,7 @@ impl RouteDecoratorRule {
 }
 
 impl RouteCallRule {
-    fn identity(&self) -> RuleIdentity {
+    pub(crate) fn identity(&self) -> RuleIdentity {
         RuleIdentity::Route {
             callee: self.callee.clone(),
             method: self.method.clone(),
@@ -218,7 +285,7 @@ impl RouteCallRule {
 }
 
 impl DiCallRule {
-    fn identity(&self) -> RuleIdentity {
+    pub(crate) fn identity(&self) -> RuleIdentity {
         RuleIdentity::DependencyInjection {
             callee: self.callee.clone(),
         }
@@ -233,8 +300,15 @@ impl super::SemanticRule {
     }
 }
 
+fn default_enabled() -> bool {
+    true
+}
+
 impl FrameworkManifest {
     pub(crate) fn rule_identities(&self, domain: RuleDomain) -> BTreeSet<RuleIdentity> {
+        if !self.enabled {
+            return BTreeSet::new();
+        }
         match domain {
             RuleDomain::ClassHierarchyReceivers => self
                 .class_hierarchy_receivers
@@ -294,6 +368,7 @@ impl FrameworkManifest {
         };
         Self {
             name: self.name,
+            enabled: self.enabled,
             extend: false,
             replace: false,
             receivers: Self::merge_rules(&self.receivers, &bundled.receivers, source_identity),
@@ -320,6 +395,14 @@ impl FrameworkManifest {
                 &bundled.semantic_rules,
                 super::SemanticRule::identity,
             ),
+            syntax_rules: {
+                let mut seen = BTreeSet::new();
+                self.syntax_rules
+                    .into_iter()
+                    .chain(bundled.syntax_rules.iter().cloned())
+                    .filter(|rule| seen.insert(rule.id.clone()))
+                    .collect()
+            },
             di_calls: merge_typed_rules(self.di_calls, &bundled.di_calls, DiCallRule::identity),
         }
     }
@@ -337,20 +420,51 @@ impl FrameworkManifest {
             );
         }
         for rule in &self.route_decorators {
+            anyhow::ensure!(rule.path_argument < 32, "route path argument exceeds limit");
             validate_callee(&rule.callee)?;
             validate_method(&rule.method)?;
             validate_receiver_names(&rule.receiver_names)?;
+            validate_route_metadata(rule.methods_keyword.as_deref(), &rule.prefixes)?;
         }
         for rule in &self.route_calls {
+            anyhow::ensure!(
+                rule.path_argument < 32
+                    && rule.handler_argument.is_none_or(|argument| argument < 32),
+                "route argument exceeds limit"
+            );
             validate_callee(&rule.callee)?;
             validate_method(&rule.method)?;
             validate_receiver_names(&rule.receiver_names)?;
+            validate_route_metadata(rule.methods_keyword.as_deref(), &rule.prefixes)?;
+            if let Some(keyword) = &rule.name_keyword {
+                validate_callee(keyword)?;
+            }
+            if let Some(include) = &rule.include {
+                validate_callee(&include.callee)?;
+                validate_callee(&include.namespace_keyword)?;
+                anyhow::ensure!(include.argument < 32, "include argument exceeds limit");
+            }
+            if let Some(guard) = &rule.registration_guard {
+                anyhow::ensure!(
+                    self.syntax_rules.iter().any(|syntax| syntax.id == *guard
+                        && matches!(
+                            syntax.operation,
+                            super::syntax::SyntaxOperation::ReceiverRegistration { .. }
+                        )),
+                    "registration_guard must name a receiver_registration rule"
+                );
+            }
             anyhow::ensure!(
                 rule.handler_argument != Some(rule.path_argument),
                 "route path and handler arguments must differ"
             );
         }
         let mut ids = BTreeSet::new();
+        for rule in &self.syntax_rules {
+            anyhow::ensure!(ids.insert(&rule.id), "duplicate syntax rule id {}", rule.id);
+            rule.validate()?;
+        }
+        ids.clear();
         for rule in &self.semantic_rules {
             anyhow::ensure!(
                 ids.insert(&rule.id),
@@ -386,7 +500,8 @@ impl FrameworkManifest {
         Self::contains_rule(&self.filters, rule)
     }
 
-    /// Resolves a receiver rule encoded as `source=target`.
+    /// Resolves a route rule encoded as `source=target`.
+    #[cfg(test)]
     pub(crate) fn receiver_target(&self, source: &str) -> Option<&str> {
         Self::mapping_target(&self.receivers, source)
     }
@@ -431,6 +546,34 @@ impl FrameworkManifest {
         manifest.name = name;
         Ok(manifest)
     }
+}
+
+fn validate_route_metadata(methods: Option<&str>, prefixes: &[RoutePrefixRule]) -> Result<()> {
+    if let Some(keyword) = methods {
+        validate_callee(keyword)?;
+    }
+    for prefix in prefixes {
+        match prefix {
+            RoutePrefixRule::Attachment {
+                callee,
+                child_argument,
+                prefix_keyword,
+            } => {
+                validate_callee(callee)?;
+                validate_callee(prefix_keyword)?;
+                anyhow::ensure!(*child_argument < 32, "attachment argument exceeds limit");
+            }
+            RoutePrefixRule::Constructor { callee, keyword } => {
+                validate_callee(callee)?;
+                validate_callee(keyword)?;
+            }
+            RoutePrefixRule::ClassDecorator { callee, argument } => {
+                validate_callee(callee)?;
+                anyhow::ensure!(*argument < 32, "decorator argument exceeds limit");
+            }
+        }
+    }
+    Ok(())
 }
 
 fn merge_typed_rules<T: Clone>(
