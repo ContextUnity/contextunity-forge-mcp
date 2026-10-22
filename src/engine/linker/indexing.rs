@@ -13,9 +13,10 @@ use std::{collections::BTreeMap, path::Path};
 
 pub(super) struct NamespaceIndexes<'a> {
     pub(super) profiles: HashMap<&'a str, &'static dyn LanguageProfile>,
-    pub(super) nuxt_config_scopes: HashSet<&'a str>,
     pub(super) normalized_imports: HashMap<(&'a str, &'a str), Option<ImportPath>>,
     pub(super) modules_by_namespace: ModulesByNamespace<'a>,
+    #[cfg(feature = "lang-rust")]
+    pub(super) rust_forwarding: languages::rust::linker::RustForwarding<'a>,
 }
 
 impl<'a> NamespaceIndexes<'a> {
@@ -42,14 +43,20 @@ impl<'a> NamespaceIndexes<'a> {
             .filter(|(_, profile)| profile.family() == LanguageFamily("javascript"))
             .map(|(path, _)| languages::module_stem(path).trim_end_matches("/index"))
             .collect();
-        let nuxt_config_scopes: HashSet<&str> = profiles
-            .keys()
-            .filter_map(|path| {
-                if *path == "nuxt.config.ts" {
-                    Some("")
-                } else {
-                    path.strip_suffix("/nuxt.config.ts")
+        let rust_library_modules: HashMap<&str, (&str, &Node)> = all
+            .iter()
+            .filter_map(|(path, facts)| {
+                let (workspace, local_path) = languages::workspace_path(path);
+                if local_path != "src/lib.rs" {
+                    return None;
                 }
+                let module = facts
+                    .as_ref()
+                    .nodes
+                    .iter()
+                    .find(|node| node.kind == "module" && node.language == "rust")?;
+                let name = dependency_registry.rust_library_for_path(path)?;
+                Some((workspace, (name, module)))
             })
             .collect();
         let mut normalized_imports: HashMap<(&str, &str), Option<ImportPath>> = HashMap::new();
@@ -77,6 +84,30 @@ impl<'a> NamespaceIndexes<'a> {
                 normalized_imports
                     .entry((path.as_str(), module))
                     .or_insert_with(|| {
+                        if profile.is_some_and(|profile| profile.id() == "rust") {
+                            if let Some((library, _root_module)) =
+                                rust_library_modules.get(languages::workspace_path(path).0)
+                            {
+                                let (first, tail) = module.split_once("::").unwrap_or((module, ""));
+                                if first == *library {
+                                    if dependency_registry.rust_library_for_path(path)
+                                        != Some(*library)
+                                    {
+                                        return None;
+                                    }
+                                    let namespace = if tail.is_empty() {
+                                        "src".to_owned()
+                                    } else {
+                                        format!("src.{}", tail.replace("::", "."))
+                                    };
+                                    return Some(ImportPath {
+                                        namespace,
+                                        relative: true,
+                                        symbol_path: true,
+                                    });
+                                }
+                            }
+                        }
                         profile.and_then(|profile| {
                             #[cfg(feature = "lang-rust")]
                             if let Some(normalized) = root_rust_crate.and_then(|name| {
@@ -103,6 +134,14 @@ impl<'a> NamespaceIndexes<'a> {
                 let (workspace, local_path) = languages::workspace_path(&node.path);
                 let local_module = profile.module_name(local_path);
                 let mut namespaces = vec![node.qualname.clone()];
+                #[cfg(feature = "lang-rust")]
+                if local_path == "src/lib.rs"
+                    && rust_library_modules
+                        .get(workspace)
+                        .is_some_and(|(_, root_module)| root_module.id == node.id)
+                {
+                    namespaces.push("src".to_owned());
+                }
                 if !workspace.is_empty() && node.qualname.starts_with(&format!("{workspace}.")) {
                     namespaces.push(node.qualname[workspace.len() + 1..].to_string());
                 }
@@ -136,11 +175,19 @@ impl<'a> NamespaceIndexes<'a> {
             }
         }
 
+        #[cfg(feature = "lang-rust")]
+        let rust_forwarding = languages::rust::linker::RustForwarding::build(
+            all,
+            &modules_by_namespace,
+            &normalized_imports,
+        );
+
         Self {
             profiles,
-            nuxt_config_scopes,
             normalized_imports,
             modules_by_namespace,
+            #[cfg(feature = "lang-rust")]
+            rust_forwarding,
         }
     }
 }
@@ -153,9 +200,12 @@ pub(super) fn package_exports<'a>(
     public_all: Option<&'a BTreeMap<String, Facts>>,
     borrowed: Option<&'a BTreeMap<String, &'a Facts>>,
     root: Option<&Path>,
+    #[cfg(feature = "lang-rust")] rust_forwarding: &languages::rust::linker::RustForwarding<'a>,
 ) -> HashMap<&'static str, PackageExports<'a>> {
-    let language_ids: HashSet<&'static str> =
+    let mut language_ids: HashSet<&'static str> =
         profiles.values().map(|profile| profile.id()).collect();
+    #[cfg(feature = "lang-rust")]
+    language_ids.remove("rust");
     let mut package_exports: HashMap<&'static str, PackageExports<'a>> = language_ids
         .into_iter()
         .map(|id| {
@@ -180,6 +230,8 @@ pub(super) fn package_exports<'a>(
         })
         .collect();
     package_exports.insert("", HashMap::new());
+    #[cfg(feature = "lang-rust")]
+    package_exports.insert("rust", rust_forwarding.package_exports().clone());
     package_exports
 }
 
@@ -327,6 +379,8 @@ impl<'a> InheritanceIndexes<'a> {
                             path: &class.path,
                             dependencies: dependency_registry,
                             reference: import,
+                            #[cfg(feature = "lang-rust")]
+                            rust_forwarding: Some(&namespaces.rust_forwarding),
                             normalized: Some(normalized),
                             selected_namespace: &normalized.namespace,
                             family: profile.family(),

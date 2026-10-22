@@ -52,6 +52,10 @@ pub struct ImportContext<'ctx, 'a, 'input> {
     pub dependencies: &'ctx DependencyRegistry,
     /// Parsed import reference.
     pub reference: &'input Reference,
+    /// Rust's bounded canonical named-forwarding index, when Rust is enabled.
+    #[cfg(feature = "lang-rust")]
+    pub(crate) rust_forwarding:
+        Option<&'a crate::engine::languages::rust::linker::RustForwarding<'a>>,
     /// Normalized import path from the language profile.
     pub normalized: Option<&'input ImportPath>,
     /// Namespace prefix that selected the indexed module.

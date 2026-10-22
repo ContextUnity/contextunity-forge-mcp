@@ -944,6 +944,416 @@ fn rust_manifest_types_preserve_receiver_origin_for_aliases_and_qualified_names(
     }
 }
 
+#[cfg(feature = "lang-rust")]
+#[test]
+fn rust_named_forwarding_and_root_library_bindings_survive_delta() {
+    use contextunity_forge_mcp::core::commitments;
+    use rusqlite::{params, Connection};
+    type Probe<'a> = (&'a str, &'a str, Option<(&'a str, &'a str)>, &'a str);
+
+    let mut failures = Vec::new();
+    let observe = |conn: &Connection,
+                   phase: &str,
+                   probes: &[Probe<'_>],
+                   failures: &mut Vec<String>| {
+        commitments::verify(conn).unwrap();
+        let errors: i64 = conn
+            .query_row("SELECT count(*) FROM errors", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(errors, 0, "{phase}: fixture must parse");
+        for &(owner, expression, target, status) in probes {
+            let coverage: Vec<(usize, String)> = conn.prepare("SELECT c.line,c.status FROM resolution_coverage c JOIN path_dictionary p ON p.path_id=c.path_id JOIN coverage_expressions x ON x.expression_id=c.expression_id WHERE p.path=?1 AND x.expression=?2 ORDER BY c.line,c.status").unwrap()
+                .query_map(params![owner, expression], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+            if coverage.is_empty() || coverage.iter().any(|(_, actual)| actual != status) {
+                failures.push(format!(
+                    "{phase}: {owner} {expression} coverage {coverage:?}, expected {status}"
+                ));
+            }
+            let mut actual = Vec::<String>::new();
+            for (line, _) in &coverage {
+                actual.extend(conn.prepare("SELECT n.id FROM edge_occurrences o JOIN nodes n ON n.node_hash=o.dst_hash JOIN path_dictionary p ON p.path_id=o.owner_id WHERE p.path=?1 AND o.line=?2 AND o.kind='calls' ORDER BY n.id").unwrap()
+                    .query_map(params![owner, line], |r| r.get(0)).unwrap().collect::<rusqlite::Result<Vec<String>>>().unwrap());
+            }
+            actual.sort();
+            actual.dedup();
+            let expected: Vec<String> = target.map(|(path, name)| {
+                let ids: Vec<String> = conn.prepare("SELECT n.id FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path=?1 AND n.name=?2 AND n.kind IN ('function','method') ORDER BY n.id").unwrap()
+                    .query_map(params![path, name], |r| r.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+                assert_eq!(ids.len(), 1, "{phase}: canonical target {path}:{name}");
+                ids[0].clone()
+            }).into_iter().collect();
+            if actual != expected {
+                failures.push(format!(
+                    "{phase}: {owner} {expression} calls {actual:?}, expected {expected:?}"
+                ));
+            }
+            let dependencies: Vec<String> = conn.prepare("SELECT DISTINCT f.path FROM dependencies d JOIN path_dictionary p ON p.path_id=d.owner_id JOIN files f ON f.path_hash=d.target_hash WHERE p.path=?1 AND d.symbol=?2 AND d.kind='calls' AND d.resolution='resolved' ORDER BY f.path").unwrap()
+                .query_map(params![owner, expression], |r| r.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+            let expected_paths: Vec<String> = target
+                .filter(|(path, _)| *path != owner)
+                .map(|(path, _)| path.to_owned())
+                .into_iter()
+                .collect();
+            if dependencies != expected_paths {
+                failures.push(format!("{phase}: {owner} {expression} dependencies {dependencies:?}, expected {expected_paths:?}"));
+            }
+        }
+    };
+    let snapshot = |conn: &Connection| -> Vec<Vec<String>> {
+        [
+            "SELECT json_array(id,kind,qualname,line,end_line,details) FROM nodes ORDER BY id",
+            "SELECT json_array(s.id,d.id,o.kind,p.path,o.line,e.evidence,c.evidence) FROM edge_occurrences o JOIN nodes s ON s.node_hash=o.src_hash JOIN nodes d ON d.node_hash=o.dst_hash JOIN path_dictionary p ON p.path_id=o.owner_id JOIN coverage_evidence e ON e.evidence_id=o.evidence_id JOIN coverage_evidence c ON c.evidence_id=o.confidence_id ORDER BY s.id,d.id,o.kind,p.path,o.line,e.evidence,c.evidence",
+            "SELECT json_array(p.path,c.line,x.expression,c.status,e.evidence) FROM resolution_coverage c JOIN path_dictionary p ON p.path_id=c.path_id JOIN coverage_expressions x ON x.expression_id=c.expression_id JOIN coverage_evidence e ON e.evidence_id=c.evidence_id ORDER BY p.path,c.line,x.expression,c.status,e.evidence",
+            "SELECT json_array(p.path,d.ordinal,f.path,d.kind,d.symbol,d.resolution) FROM dependencies d JOIN path_dictionary p ON p.path_id=d.owner_id LEFT JOIN files f ON f.path_hash=d.target_hash ORDER BY p.path,d.ordinal",
+            "SELECT json_array(domain,owner_id,hex(digest)) FROM domain_commitments ORDER BY domain,owner_id",
+        ].iter().map(|sql| conn.prepare(sql).unwrap().query_map([], |r| r.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap()).collect()
+    };
+    let parity = |w: &Workspace, phase: &str, failures: &mut Vec<String>| {
+        let incremental = w.open();
+        commitments::verify(&incremental).unwrap();
+        let cold_path = w.0.join(".forge/rust-cold.sqlite");
+        writer::build(&w.0, &cold_path, None).unwrap();
+        let cold = reader::open(&cold_path, &w.0).unwrap();
+        commitments::verify(&cold).unwrap();
+        if snapshot(&incremental) != snapshot(&cold) {
+            failures.push(format!("{phase}: persisted cold/delta projections differ"));
+        }
+    };
+
+    let w = Workspace::new();
+    w.write("src/lib.rs", "pub mod provider;\nmod parent;\npub mod facade;\npub mod bridge;\nmod consumer;\nmod cycle_a;\nmod cycle_b;\nmod a;\nmod b;\n");
+    let provider = "pub fn build() {}\npub fn other() {}\npub struct Workspace;\nimpl Workspace { pub fn new() -> Self { Self } }\n";
+    w.write("src/provider.rs", provider);
+    let parent = "use crate::provider::{build as writer, Workspace};\nmod child;\n";
+    w.write("src/parent/mod.rs", parent);
+    w.write("src/parent/child.rs", "use super::{writer as emit, Workspace as Room};\nuse crate::provider::{self as direct};\nfn probe() {\n    emit();\n    Room::new();\n    direct::build();\n}\n");
+    let facade = "pub use crate::provider::{build as forwarded, Workspace as Room};\npub use crate::provider as tools;\npub use crate::provider::missing as absent;\npub use crate::provider::build as conflict;\npub use crate::provider::other as conflict;\npub use crate::parent::writer as leaked;\n";
+    w.write("src/facade.rs", facade);
+    w.write(
+        "src/bridge.rs",
+        "pub use crate::facade::{forwarded as twice, Room as Hall, tools};\n",
+    );
+    w.write("src/consumer.rs", "use crate::bridge::{twice as invoke, Hall, tools};\nuse super::facade::{self as api, absent, conflict, leaked};\nuse crate::cycle_a::ring;\nuse crate::parent::writer as private_parent;\nfn probe() {\n    invoke();\n    Hall::new();\n    tools::build();\n    api::forwarded();\n    absent();\n    conflict();\n    ring();\n    private_parent();\n    leaked();\n}\n");
+    w.write("src/cycle_a.rs", "pub use crate::cycle_b::ring;\n");
+    w.write("src/cycle_b.rs", "pub use crate::cycle_a::ring;\n");
+    w.write("src/a.rs", "use crate::provider::build as hidden;\n");
+    w.write(
+        "src/b/mod.rs",
+        "use crate::a::hidden as indirect;\nmod child;\n",
+    );
+    w.write(
+        "src/b/child.rs",
+        "use super::indirect;\nfn probe() {\n    indirect();\n}\n",
+    );
+    let probes = [
+        (
+            "src/parent/child.rs",
+            "emit",
+            Some(("src/provider.rs", "build")),
+            "resolved",
+        ),
+        (
+            "src/parent/child.rs",
+            "Room::new",
+            Some(("src/provider.rs", "new")),
+            "resolved",
+        ),
+        (
+            "src/parent/child.rs",
+            "direct::build",
+            Some(("src/provider.rs", "build")),
+            "resolved",
+        ),
+        (
+            "src/consumer.rs",
+            "invoke",
+            Some(("src/provider.rs", "build")),
+            "resolved",
+        ),
+        (
+            "src/consumer.rs",
+            "Hall::new",
+            Some(("src/provider.rs", "new")),
+            "resolved",
+        ),
+        (
+            "src/consumer.rs",
+            "tools::build",
+            Some(("src/provider.rs", "build")),
+            "resolved",
+        ),
+        (
+            "src/consumer.rs",
+            "api::forwarded",
+            Some(("src/provider.rs", "build")),
+            "resolved",
+        ),
+        ("src/consumer.rs", "absent", None, "unresolved"),
+        ("src/consumer.rs", "conflict", None, "ambiguous"),
+        ("src/consumer.rs", "ring", None, "unresolved"),
+        ("src/consumer.rs", "private_parent", None, "unresolved"),
+        ("src/consumer.rs", "leaked", None, "unresolved"),
+        ("src/b/child.rs", "indirect", None, "unresolved"),
+    ];
+    drop(w.build());
+    observe(&w.open(), "cold forwarding", &probes, &mut failures);
+    parity(&w, "cold forwarding", &mut failures);
+    for (phase, replacement, target, status) in [
+        (
+            "retarget export",
+            facade.replacen("build as forwarded", "other as forwarded", 1),
+            Some(("src/provider.rs", "other")),
+            "resolved",
+        ),
+        (
+            "remove export",
+            facade.replacen("build as forwarded, ", "", 1),
+            None,
+            "unresolved",
+        ),
+        (
+            "restore export",
+            facade.to_owned(),
+            Some(("src/provider.rs", "build")),
+            "resolved",
+        ),
+    ] {
+        w.write("src/facade.rs", &replacement);
+        w.delta("src/facade.rs");
+        observe(
+            &w.open(),
+            phase,
+            &[
+                ("src/consumer.rs", "invoke", target, status),
+                ("src/consumer.rs", "api::forwarded", target, status),
+            ],
+            &mut failures,
+        );
+        parity(&w, phase, &mut failures);
+    }
+    for (phase, replacement, target, status) in [
+        (
+            "rename parent alias",
+            parent.replace("as writer", "as renamed"),
+            None,
+            "unresolved",
+        ),
+        (
+            "restore parent alias",
+            parent.to_owned(),
+            Some(("src/provider.rs", "build")),
+            "resolved",
+        ),
+    ] {
+        w.write("src/parent/mod.rs", &replacement);
+        w.delta("src/parent/mod.rs");
+        observe(
+            &w.open(),
+            phase,
+            &[("src/parent/child.rs", "emit", target, status)],
+            &mut failures,
+        );
+        parity(&w, phase, &mut failures);
+    }
+    for (phase, replacement, target, status) in [
+        (
+            "remove provider",
+            provider.replace("pub fn build() {}\n", ""),
+            None,
+            "unresolved",
+        ),
+        (
+            "restore provider",
+            provider.to_owned(),
+            Some(("src/provider.rs", "build")),
+            "resolved",
+        ),
+    ] {
+        w.write("src/provider.rs", &replacement);
+        w.delta("src/provider.rs");
+        observe(
+            &w.open(),
+            phase,
+            &[("src/consumer.rs", "invoke", target, status)],
+            &mut failures,
+        );
+        parity(&w, phase, &mut failures);
+    }
+
+    for (case, manifest, library, expected) in [
+        ("package name", "[package]\nname='root-kit'\n", true, true),
+        (
+            "explicit library name",
+            "[package]\nname='different'\n[lib]\nname='root_kit'\n",
+            true,
+            true,
+        ),
+        (
+            "wrong package",
+            "[package]\nname='other-kit'\n",
+            true,
+            false,
+        ),
+        (
+            "absent library",
+            "[package]\nname='root-kit'\n",
+            false,
+            false,
+        ),
+        (
+            "disabled library",
+            "[package]\nname='root-kit'\nautolib=false\n",
+            true,
+            false,
+        ),
+        (
+            "missing package name",
+            "[workspace]\n[lib]\nname='root_kit'\n",
+            true,
+            false,
+        ),
+        (
+            "inherited package name",
+            "[package]\nname.workspace=true\n[lib]\nname='root_kit'\n",
+            true,
+            false,
+        ),
+        (
+            "explicit enabled library",
+            "[package]\nname='root-kit'\nautolib=false\n[lib]\n",
+            true,
+            true,
+        ),
+        (
+            "unsupported custom path",
+            "[package]\nname='root-kit'\n[lib]\npath='custom/lib.rs'\n",
+            true,
+            false,
+        ),
+    ] {
+        let w = Workspace::new();
+        w.write("Cargo.toml", manifest);
+        if library {
+            w.write("src/lib.rs", "pub fn build() {}\npub struct Workspace;\nimpl Workspace { pub fn new() -> Self { Self } }\n");
+        }
+        w.write("foreign/Cargo.toml", "[package]\nname='root-kit'\n");
+        w.write("foreign/src/lib.rs", "pub fn build() {}\n");
+        w.write("tests/api.rs", "use root_kit::{build as execute, Workspace};\nfn probe() {\n    execute();\n    Workspace::new();\n}\n");
+        drop(w.build());
+        let exact = [
+            (
+                "tests/api.rs",
+                "execute",
+                Some(("src/lib.rs", "build")),
+                "resolved",
+            ),
+            (
+                "tests/api.rs",
+                "Workspace::new",
+                Some(("src/lib.rs", "new")),
+                "resolved",
+            ),
+        ];
+        if expected {
+            observe(&w.open(), case, &exact, &mut failures);
+            w.write("Cargo.toml", "[package]\nname='renamed-kit'\n");
+            w.delta("Cargo.toml");
+        } else if case == "missing package name" || case == "inherited package name" {
+            observe(
+                &w.open(),
+                case,
+                &[
+                    ("tests/api.rs", "execute", None, "external"),
+                    ("tests/api.rs", "Workspace::new", None, "external"),
+                ],
+                &mut failures,
+            );
+        }
+        let calls: i64 = w.open().query_row("SELECT count(*) FROM edge_occurrences o JOIN path_dictionary p ON p.path_id=o.owner_id WHERE p.path='tests/api.rs' AND o.kind='calls'", [], |r| r.get(0)).unwrap();
+        if calls != 0 {
+            failures.push(format!(
+                "{case}: absent or renamed root identity emitted {calls} exact calls"
+            ));
+        }
+        parity(&w, case, &mut failures);
+        if expected {
+            w.write("Cargo.toml", manifest);
+            w.delta("Cargo.toml");
+            observe(&w.open(), "restored root identity", &exact, &mut failures);
+            parity(&w, "restored root identity", &mut failures);
+        }
+    }
+    let w = Workspace::new();
+    w.write("Cargo.toml", "[package]\nname='root-kit'\n");
+    w.write("src/lib.rs", "pub mod provider;\n");
+    w.write("src/provider.rs", "pub fn build() {}\n");
+    w.write("foreign/Cargo.toml", "[package]\nname='foreign-kit'\n");
+    w.write("foreign/src/lib.rs", "pub mod provider;\nmod consumer;\n");
+    w.write("foreign/src/provider.rs", "pub fn build() {}\n");
+    for path in ["src/consumer.rs", "foreign/src/consumer.rs"] {
+        w.write(path, "use crate::provider::build as from_crate;\nuse super::provider::build as from_super;\nuse self::local as own_alias;\nuse missing_api::build as external;\nfn local() {}\nfn probe() {\n    from_crate();\n    from_super();\n    own_alias();\n    external();\n}\n");
+    }
+    w.write(
+        "foreign/tests/probe.rs",
+        "use root_kit::provider::build as execute;\nfn probe() { execute(); }\n",
+    );
+    w.write(
+        "tests/control.rs",
+        "use root_kit::provider::build as execute;\nfn probe() { execute(); }\n",
+    );
+    drop(w.build());
+    observe(
+        &w.open(),
+        "nested consumer package boundary",
+        &[
+            (
+                "tests/control.rs",
+                "execute",
+                Some(("src/provider.rs", "build")),
+                "resolved",
+            ),
+            ("foreign/tests/probe.rs", "execute", None, "unresolved"),
+        ],
+        &mut failures,
+    );
+    parity(&w, "nested consumer package boundary", &mut failures);
+    for (phase, manifest) in [
+        ("valid root metadata", "[package]\nname='root-kit'\n"),
+        ("missing root metadata", "[workspace]\n"),
+        (
+            "inherited root metadata",
+            "[package]\nname.workspace=true\n",
+        ),
+        ("restored root metadata", "[package]\nname='root-kit'\n"),
+    ] {
+        w.write("Cargo.toml", manifest);
+        w.delta("Cargo.toml");
+        for (owner, provider) in [
+            ("src/consumer.rs", "src/provider.rs"),
+            ("foreign/src/consumer.rs", "foreign/src/provider.rs"),
+        ] {
+            observe(
+                &w.open(),
+                phase,
+                &[
+                    (owner, "from_crate", Some((provider, "build")), "resolved"),
+                    (owner, "from_super", Some((provider, "build")), "resolved"),
+                    (owner, "own_alias", Some((owner, "local")), "resolved"),
+                    (owner, "external", None, "external"),
+                ],
+                &mut failures,
+            );
+        }
+        parity(&w, phase, &mut failures);
+    }
+
+    assert!(
+        failures.is_empty(),
+        "Rust binding contract failures:\n{}",
+        failures.join("\n")
+    );
+}
+
 #[cfg(feature = "lang-python")]
 #[test]
 fn persisted_imports_require_complete_language_and_workspace_identity() {

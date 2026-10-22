@@ -1,5 +1,43 @@
 use tree_sitter::{Node, Parser};
 
+/// Reports whether a manifest contains one exact top-level table.
+///
+/// This keeps empty tables observable to bounded manifest consumers such as
+/// Cargo's explicit `[lib]` target declaration, which has no key/value pair.
+pub(crate) fn has_table(source: &str, expected: &str) -> bool {
+    let mut parser = Parser::new();
+    if parser
+        .set_language(&tree_sitter_toml_ng::language())
+        .is_err()
+    {
+        return false;
+    }
+    let Some(tree) = parser.parse(source, None) else {
+        return false;
+    };
+    if tree.root_node().has_error() {
+        return false;
+    }
+
+    let root = tree.root_node();
+    let mut cursor = root.walk();
+    let found = root.named_children(&mut cursor).any(|table| {
+        if table.kind() != "table" {
+            return false;
+        }
+        let mut cursor = table.walk();
+        let table_name = table
+            .named_children(&mut cursor)
+            .take_while(|child| child.kind() != "pair")
+            .find(|child| matches!(child.kind(), "bare_key" | "quoted_key" | "dotted_key"))
+            .and_then(|key| source.get(key.byte_range()))
+            .map(str::trim)
+            .map(|key| key.trim_matches(['\'', '"']));
+        table_name == Some(expected)
+    });
+    found
+}
+
 /// Visits TOML key/value pairs with their current dotted table path.
 ///
 /// The value remains a syntax node so callers can handle strings, arrays, and

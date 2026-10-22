@@ -383,6 +383,45 @@ impl LanguageProfile for Rust {
     ) -> Result<()> {
         parse_file(self, path, source, module, facts)
     }
+    fn module_exports_with_bindings(
+        &self,
+        root: Syntax<'_>,
+        source: &str,
+        _bindings: &crate::engine::ast::ScopeBindings,
+    ) -> Option<Vec<crate::core::semantic::ExportBinding>> {
+        let mut exports = Vec::new();
+        let mut cursor = root.walk();
+        for declaration in root
+            .named_children(&mut cursor)
+            .filter(|node| node.kind() == "use_declaration")
+        {
+            let mut cursor = declaration.walk();
+            let is_public = declaration
+                .named_children(&mut cursor)
+                .find(|child| child.kind() == "visibility_modifier")
+                .and_then(|visibility| source.get(visibility.byte_range()))
+                .is_some_and(|visibility| visibility.trim() == "pub");
+            if !is_public {
+                continue;
+            }
+            let Some(argument) = declaration.child_by_field_name("argument") else {
+                continue;
+            };
+            let mut imports = Vec::new();
+            collect_use(argument, source, "", &mut imports);
+            exports.extend(imports.into_iter().map(|(_target, name)| {
+                let local = name.clone();
+                crate::core::semantic::ExportBinding {
+                    name,
+                    local: Some(local),
+                    module: None,
+                    type_only: false,
+                    star: false,
+                }
+            }));
+        }
+        Some(exports)
+    }
     fn value_flow(&self, node: Syntax<'_>, source: &str) -> crate::core::semantic::ValueFlowFacts {
         value_flow::extract(node, source)
     }

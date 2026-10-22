@@ -1,12 +1,413 @@
 use crate::core::models::{Facts, Node};
-use crate::engine::languages::LanguageProfile;
-use crate::engine::linker::traits::LanguageLinker;
+use crate::engine::languages::{self, ImportPath, LanguageFamily, LanguageProfile};
+use crate::engine::linker::traits::{
+    resolve_default_import, ImportContext, ImportResolution, LanguageLinker, ModulesByNamespace,
+    PackageExports,
+};
 use hashbrown::{HashMap, HashSet};
 use std::collections::BTreeMap;
+
+const RUST_ALIAS_DEPTH: usize = 64;
+
+fn direct_members<'a, F: AsRef<Facts>>(
+    all: &'a BTreeMap<String, F>,
+    module: &'a Node,
+    name: &str,
+) -> Vec<&'a Node> {
+    let qualified = format!("{}.{}", module.qualname, name);
+    all.get(module.path.as_str())
+        .into_iter()
+        .flat_map(|facts| facts.as_ref().nodes.iter())
+        .filter(|node| node.qualname == qualified && node.kind != "module")
+        .collect()
+}
+
+fn is_public_export(module: &Node, name: &str) -> bool {
+    module.details["exports"].as_array().is_some_and(|exports| {
+        exports
+            .iter()
+            .any(|export| export["name"].as_str() == Some(name))
+    })
+}
+
+fn modules_at_import<'a>(
+    modules_by_namespace: &ModulesByNamespace<'a>,
+    family: LanguageFamily,
+    normalized: &ImportPath,
+    workspace: &str,
+) -> Vec<(&'a Node, String)> {
+    let mut namespace = normalized.namespace.as_str();
+    loop {
+        let modules: Vec<_> = modules_by_namespace
+            .get(&family)
+            .and_then(|namespaces| namespaces.get(namespace))
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(|module| languages::workspace_path(&module.path).0 == workspace)
+            .collect();
+        if !modules.is_empty() {
+            let tail = normalized
+                .namespace
+                .strip_prefix(namespace)
+                .unwrap_or_default()
+                .trim_start_matches('.')
+                .to_owned();
+            return modules
+                .into_iter()
+                .map(|module| (module, tail.clone()))
+                .collect();
+        }
+        if !normalized.symbol_path {
+            return Vec::new();
+        }
+        let Some((parent, _)) = namespace.rsplit_once('.') else {
+            return Vec::new();
+        };
+        namespace = parent;
+    }
+}
+
+type AliasKey = (String, String, bool);
+
+fn is_descendant_module(requester: &str, owner: &Node) -> bool {
+    requester
+        .strip_prefix(owner.qualname.as_str())
+        .is_some_and(|suffix| suffix.starts_with('.'))
+}
+
+struct AliasResolver<'a, 'lookup, F: AsRef<Facts>> {
+    all: &'a BTreeMap<String, F>,
+    modules_by_namespace: &'lookup ModulesByNamespace<'a>,
+    normalized_imports: &'lookup HashMap<(&'a str, &'a str), Option<ImportPath>>,
+    memo: HashMap<AliasKey, Vec<&'a Node>>,
+    visiting: HashSet<AliasKey>,
+}
+
+impl<'a, 'lookup, F: AsRef<Facts>> AliasResolver<'a, 'lookup, F> {
+    fn resolve(
+        &mut self,
+        module: &'a Node,
+        name: &str,
+        public_only: bool,
+        depth: usize,
+    ) -> Vec<&'a Node> {
+        if depth >= RUST_ALIAS_DEPTH || (public_only && !is_public_export(module, name)) {
+            return Vec::new();
+        }
+        let key = (module.path.clone(), name.to_owned(), public_only);
+        if let Some(candidates) = self.memo.get(&key) {
+            return candidates.clone();
+        }
+        if !self.visiting.insert(key.clone()) {
+            return Vec::new();
+        }
+        let mut candidates = Vec::new();
+        if let Some(facts) = self.all.get(module.path.as_str()).map(AsRef::as_ref) {
+            for reference in facts.references.iter().filter(|reference| {
+                reference.kind == "imports"
+                    && reference.source == module.id
+                    && reference.alias.as_deref() == Some(name)
+            }) {
+                let raw = reference.module.as_deref().unwrap_or(&reference.expression);
+                let Some(normalized) = self
+                    .normalized_imports
+                    .get(&(module.path.as_str(), raw))
+                    .and_then(Option::as_ref)
+                else {
+                    continue;
+                };
+                let workspace = languages::workspace_path(&module.path).0;
+                for (target_module, tail) in modules_at_import(
+                    self.modules_by_namespace,
+                    LanguageFamily("rust"),
+                    normalized,
+                    workspace,
+                ) {
+                    if tail.is_empty() {
+                        candidates.push(target_module);
+                        continue;
+                    }
+                    let direct = direct_members(self.all, target_module, &tail);
+                    if !direct.is_empty() || tail.contains('.') {
+                        candidates.extend(direct);
+                    } else {
+                        if !is_public_export(target_module, &tail)
+                            && !is_descendant_module(&module.qualname, target_module)
+                        {
+                            continue;
+                        }
+                        candidates.extend(self.resolve(
+                            target_module,
+                            &tail,
+                            public_only,
+                            depth + 1,
+                        ));
+                    }
+                }
+            }
+        }
+        self.visiting.remove(&key);
+        candidates.sort_by(|left, right| left.id.cmp(&right.id));
+        candidates.dedup_by_key(|node| node.id.as_str());
+        self.memo.insert(key, candidates.clone());
+        candidates
+    }
+}
+
+/// Canonical named-import targets prepared once from persisted Rust facts.
+/// Private aliases are admitted only to descendant modules; public aliases use
+/// only the finite export projection recorded by the Rust profile.
+#[derive(Default)]
+pub(crate) struct RustForwarding<'a> {
+    private: HashMap<&'a str, HashMap<&'a str, Vec<&'a Node>>>,
+    public: HashMap<&'a str, HashMap<&'a str, Vec<&'a Node>>>,
+    exports: PackageExports<'a>,
+}
+
+impl<'a> RustForwarding<'a> {
+    pub(crate) fn build<F: AsRef<Facts>>(
+        all: &'a BTreeMap<String, F>,
+        modules_by_namespace: &ModulesByNamespace<'a>,
+        normalized_imports: &HashMap<(&'a str, &'a str), Option<ImportPath>>,
+    ) -> Self {
+        let mut resolver = AliasResolver {
+            all,
+            modules_by_namespace,
+            normalized_imports,
+            memo: HashMap::new(),
+            visiting: HashSet::new(),
+        };
+        let mut private: HashMap<&'a str, HashMap<&'a str, Vec<&'a Node>>> = HashMap::new();
+        let mut public: HashMap<&'a str, HashMap<&'a str, Vec<&'a Node>>> = HashMap::new();
+        let mut exports = PackageExports::new();
+
+        for facts in all.values() {
+            let facts = facts.as_ref();
+            let Some(module) = facts
+                .nodes
+                .iter()
+                .find(|node| node.kind == "module" && node.language == "rust")
+            else {
+                continue;
+            };
+            let mut names = HashSet::new();
+            for reference in facts.references.iter().filter(|reference| {
+                reference.kind == "imports"
+                    && reference.source == module.id
+                    && reference.alias.as_deref().is_some_and(|name| name != "*")
+            }) {
+                if let Some(name) = reference.alias.as_deref() {
+                    names.insert(name);
+                }
+            }
+
+            for name in names {
+                let private_targets = resolver.resolve(module, name, false, 0);
+                if !private_targets.is_empty() {
+                    private
+                        .entry(module.path.as_str())
+                        .or_default()
+                        .insert(name, private_targets);
+                }
+                if is_public_export(module, name) {
+                    let public_targets = resolver.resolve(module, name, true, 0);
+                    public
+                        .entry(module.path.as_str())
+                        .or_default()
+                        .insert(name, public_targets);
+                }
+            }
+
+            if let Some(bindings) = module.details["exports"].as_array() {
+                let members = exports.entry(module.path.as_str()).or_default();
+                for name in bindings
+                    .iter()
+                    .filter_map(|binding| binding["name"].as_str())
+                {
+                    let targets = public
+                        .get(module.path.as_str())
+                        .and_then(|aliases| aliases.get(name))
+                        .map(Vec::as_slice)
+                        .unwrap_or_default();
+                    members.insert(name, (targets.len() == 1).then(|| targets[0]));
+                }
+            }
+        }
+
+        Self {
+            private,
+            public,
+            exports,
+        }
+    }
+
+    pub(crate) fn package_exports(&self) -> &PackageExports<'a> {
+        &self.exports
+    }
+
+    fn targets<'forwarding>(
+        &'forwarding self,
+        module: &Node,
+        name: &str,
+        requester: &str,
+    ) -> &'forwarding [&'a Node] {
+        if is_public_export(module, name) {
+            return self
+                .public
+                .get(module.path.as_str())
+                .and_then(|aliases| aliases.get(name))
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+        }
+        if is_descendant_module(requester, module) {
+            return self
+                .private
+                .get(module.path.as_str())
+                .and_then(|aliases| aliases.get(name))
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+        }
+        &[]
+    }
+}
+
+fn declared_exports<'a, F: AsRef<Facts>>(all: &'a BTreeMap<String, F>) -> PackageExports<'a> {
+    let mut exports = PackageExports::new();
+    for facts in all.values() {
+        let facts = facts.as_ref();
+        let Some(module) = facts
+            .nodes
+            .iter()
+            .find(|node| node.kind == "module" && node.language == "rust")
+        else {
+            continue;
+        };
+        let Some(bindings) = module.details["exports"].as_array() else {
+            continue;
+        };
+        let members = exports.entry(module.path.as_str()).or_default();
+        for name in bindings
+            .iter()
+            .filter_map(|binding| binding["name"].as_str())
+        {
+            members.insert(name, None);
+        }
+    }
+    exports
+}
 
 pub(crate) struct RustLinker;
 pub(crate) static RUST_LINKER: RustLinker = RustLinker;
 impl LanguageLinker for RustLinker {
+    fn needs_reference_identity(&self, _path: &str, facts: &Facts) -> bool {
+        facts
+            .references
+            .iter()
+            .any(|reference| reference.kind == "imports")
+    }
+
+    fn reference_identity_changed(&self, _path: &str, old: &Facts, new: &Facts) -> bool {
+        fn imports(facts: &Facts) -> HashSet<(&str, Option<&str>, Option<&str>)> {
+            facts
+                .references
+                .iter()
+                .filter(|reference| reference.kind == "imports")
+                .map(|reference| {
+                    (
+                        reference.expression.as_str(),
+                        reference.alias.as_deref(),
+                        reference.module.as_deref(),
+                    )
+                })
+                .collect()
+        }
+
+        imports(old) != imports(new)
+    }
+
+    fn resolve_import<'ctx, 'a, 'input>(
+        &self,
+        context: &mut ImportContext<'ctx, 'a, 'input>,
+    ) -> ImportResolution<'a> {
+        let resolution = resolve_default_import(context);
+        if !context.candidates.is_empty() {
+            return resolution;
+        }
+        let Some(name) = context.tail().filter(|name| !name.is_empty()) else {
+            return resolution;
+        };
+        if context.modules.len() != 1 {
+            return resolution;
+        }
+        let module = context.modules[0];
+        if module.language != "rust" {
+            return resolution;
+        }
+        let Some(forwarding) = context.rust_forwarding else {
+            return resolution;
+        };
+        let requester = context
+            .by_module
+            .get(context.path)
+            .into_iter()
+            .flatten()
+            .find(|node| node.kind == "module")
+            .map_or(module.qualname.as_str(), |owner| owner.qualname.as_str());
+        context
+            .candidates
+            .extend(forwarding.targets(module, name, requester).iter().copied());
+        resolution
+    }
+
+    fn resolve_imported_member<'a>(
+        &self,
+        module: &'a Node,
+        member: &str,
+        by_module: &HashMap<&'a str, Vec<&'a Node>>,
+        _by_qual: &HashMap<&'a str, Vec<&'a Node>>,
+        exports: &PackageExports<'a>,
+        lookup_key: &mut String,
+    ) -> Vec<&'a Node> {
+        if let Some(Some(target)) = exports
+            .get(module.path.as_str())
+            .and_then(|members| members.get(member))
+        {
+            return vec![*target];
+        }
+        lookup_key.clear();
+        lookup_key.push_str(&module.qualname);
+        lookup_key.push('.');
+        lookup_key.push_str(member);
+        by_module
+            .get(module.path.as_str())
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(|node| node.qualname == lookup_key.as_str() && node.kind != "module")
+            .collect()
+    }
+
+    fn package_exports<'a>(
+        &self,
+        all: &'a BTreeMap<String, Facts>,
+        _modules_by_namespace: &ModulesByNamespace<'a>,
+        _by_module: &HashMap<&'a str, Vec<&'a Node>>,
+        _root: Option<&std::path::Path>,
+    ) -> PackageExports<'a> {
+        declared_exports(all)
+    }
+
+    fn package_exports_borrowed<'a>(
+        &self,
+        all: &'a BTreeMap<String, &'a Facts>,
+        _modules_by_namespace: &ModulesByNamespace<'a>,
+        _by_module: &HashMap<&'a str, Vec<&'a Node>>,
+        _root: Option<&std::path::Path>,
+    ) -> PackageExports<'a> {
+        declared_exports(all)
+    }
+
     fn required_full_facts(
         &self,
         facts: &BTreeMap<String, Facts>,
