@@ -465,37 +465,88 @@ receipt:
 
 ```yaml
 task_ref: safe-source-snippet-continuation
-target: "Recover an omitted source continuation generation only when the prior source request proves the active snapshot is unchanged"
+target: Recover an omitted source continuation generation only when the prior source request proves the active snapshot is unchanged
 proof_policy: seam-test-first
-contract_revision: 3
+contract_revision: 4
 depends_on:
-  - byte-bounded-single-symbol-snippets
+- byte-bounded-single-symbol-snippets
 scope:
-  - src/mcp/server.rs
-  - src/mcp/tools.rs
-  - src/mcp/tools/inputs.rs
-  - src/db/symbols.rs
-  - src/core/response.rs
-  - src/cli/mod.rs
-  - tests/mcp/context.rs
-  - tests/mcp/tool_evolution/mcp_boundaries.rs
-  - tests/query_context/diagnostics_and_source.rs
-  - docs/reference/mcp-tools.md
-  - docs/reference/cli.md
-  - skills/contextunity-forge/SKILL.md
-  - skills/contextunity-forge/references/tool-catalog.md
+- src/mcp/server.rs
+- src/mcp/tools.rs
+- src/mcp/response.rs
+- src/mcp/tools/inputs.rs
+- src/db/symbols.rs
+- src/core/response.rs
+- src/cli/mod.rs
+- tests/mcp/context.rs
+- tests/mcp/tool_evolution/mcp_boundaries.rs
+- tests/query_context/diagnostics_and_source.rs
+- tests/common/mcp_client.rs
+- docs/reference/mcp-tools.md
+- docs/reference/cli.md
+- skills/contextunity-forge/SKILL.md
+- skills/contextunity-forge/references/tool-catalog.md
 invariants:
-  - "SOURCE-CONTINUATION-SNAPSHOT: Auto-heal never combines source pages from different snapshots, sessions, selected worktrees, databases, or symbols. Explicit generation validation remains authoritative."
-status: planned
+- 'SOURCE-CONTINUATION-SNAPSHOT: Auto-heal never combines source pages from different snapshots, sessions, selected worktrees, databases, or symbols. Explicit generation validation remains authoritative.'
+status: completed
+receipt:
+  contract_revision: 4
+  passed_at: 2026-10-22T00:09:54.477756336+00:00
+  evidence:
+    command_proof:
+      command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --test query_context && cargo test --test mcp
+      exit_code: 0
+      tests_passed: 134
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: PASS. Candidate is bound to base f2c64447c576c25de0e2fc610403ebdb951ee70d and scoped diff SHA-256 1d418441f3dadec2b68b92b918c51c713881dd46e477d4d843dec726e2e70ed0. The accepted paths are within rev4 scope; task snapshot matches the current scoped worktree. Dirty ADR0011 and milestone/compact manifest changes are excluded and preserved. No reviewer edits.
+        claims:
+          applicable: true
+          evidence: 'PASS. F1 receipt is a private typed value derived from compacted final source metadata only after presentation/render and byte-budget success; unsuccessful, oversized, complete/no-cursor, and source-disabled results do not seed. No source/rendered-text parsing or pre-trim staging remains. F1''s contract-red JSON cursor 37, default Markdown cursor 35, and marker-spoof false-success failures are recorded in #969; #973 records the killed pre-trim and marker mutations. Independent real-stdio F1 seam passed. Explicit token authority, collection-generation separation, and 4-KiB JSON/default-Markdown trimmed-page inference are covered.'
+        concurrency:
+          applicable: true
+          evidence: PASS. F2's production stdio seam queues both requests before receiving either, tests both submission orders, receives by response ID without FIFO assumptions, validates per-request results, and leaves the G1/G2 request ambiguous after an index change. Current finalization state is returned as a per-call tuple; no global staged generation can cross requests. Focused seam passed; full MCP suite passed.
+        project_isolation:
+          applicable: true
+          evidence: 'PASS. Request identity still binds canonical root/database plus exact tool/request selector and selected worktree; generation and symbol digest remain checked by the ordinary reader path. New server has no session seed; foreign symbol, stale explicit generation, changed source/index, wrong cursor, source-disabled and collection-offset cases fail closed. Existing linked-worktree continuation/selection seam passed. The prior #962 mutation claims for unchanged key, reader, and CLI guards were not rerun; corresponding code is unchanged in this repair and both complete targets were rerun.'
+        administration:
+          applicable: true
+          evidence: PASS. No profile, schema/migration, credential, or response-cap changes; runtime remains bounded by the existing 64-KiB ceiling and the 64-entry cache. Only the Forge deliver gate may write the generated receipt/commit. Verification used a fresh copied skill fixture and command-scoped CONTEXTUNITY_FORGE_TEST_GLOBAL_SKILL_DIR; no ~/.agents writes, skip, or source-path alias.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-SINGLE-DOCUMENT-PROJECTION: Symbol inspection exposes one documentation page per cited section, with doc_id, path, section title, document type, citation line, and a resolved file:/// URI. Explain keeps its own documents page and does not grow a second inspect projection.'
+    - 'INV-COMPACT-DOC-HINT-ONCE: A compact get_doc response emits each omitted-detail hint once. Referenced-symbol rows keep the citing section and citation line. Full detail still returns candidate evidence.'
+    - 'INV-NARROWEST-NAVIGATION: Agent guidance selects the narrowest useful tool, reuses sufficient previews, and passes worktree when the server root is not the checkout being edited.'
+    - 'INV-RESPONSE-CONTRACT-PRESERVATION: Deduplication preserves pagination, generation validation, detail-level behavior, response budgets, exact evidence, and CLI/MCP parity.'
+    - 'INV-READ-ONLY-SQL-FIDELITY: Opaque user SQL keeps literals, comments, trailing semicolons of one statement, requested columns, and SQLite text. Structural graph rows keep parsed details and stripped internal ids. Writes and multiple statements stay rejected.'
+    - 'INV-TASK-PRESENTATION-DEDUPLICATION: Inspect Markdown uses the task-record heading and renders equal scope, target, proof policy, and task invariants once. A fixture with those repeated fields is smaller in Markdown than in JSON. The contract digest hash is omitted from task responses. Revisions, receipts, gates, attempts, and findings stay visible.'
+    - 'INV-EXPLICIT-DIAGNOSTIC-SCOPE: An unindexed analyze or lint target fails with PATH_NOT_INDEXED. An indexed scope with zero diagnostics stays success. The diagnostics and cycles mode errors stay specific. Unsupported overview aspects fail with the allowed set.'
+    - 'INV-CLICKABLE-COORDINATE-COMPLETENESS: Presentation attachment resolves a workspace path before file_uri_for_path. A resolvable coordinate is a file:/// link. Markdown omits the (link unavailable) fallback.'
+    - 'SOURCE-CONTINUATION-SNAPSHOT: Auto-heal never combines source pages from different snapshots, sessions, selected worktrees, databases, or symbols. Explicit generation validation remains authoritative.'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Acceptance
 
 1. For a source continuation with `source_offset > 0` and no explicit `generation`, reuse the prior successful source page's generation only when the same MCP session has an unambiguous matching request and the selected worktree's active generation still equals that captured generation. Never substitute the current hash without evidence of the previous page's snapshot.
-2. Keep any inferred continuation state bounded and session-local, keyed by resolved workspace/database identity and exact symbol/request identity. Only successfully returned source pages seed it; failed, oversized, unrelated, or source-disabled requests do not. Inference must not leak between parallel requests, sessions, worktrees, linked workspace sources, or selectors that resolve to different symbols. No durable task-store or code-index writes are required for this convenience.
+2. Keep any inferred continuation state bounded and session-local, keyed by resolved workspace/database identity and exact symbol/request identity. Only successfully returned source pages with a retained continuation cursor seed it, using typed source metadata after final byte trimming and presentation, not a pre-trim cursor or strings found in rendered Markdown/source. Failed, oversized, unrelated, source-disabled, and no-cursor results do not seed it. Inference must not leak between parallel requests, sessions, worktrees, linked workspace sources, or selectors that resolve to different symbols. No durable task-store or code-index writes are required for this convenience.
 3. An explicit generation always uses the existing validation path, including stale rejection. After an index change, unknown prior request, restart, or ambiguous cached match, fail closed with an actionable error explaining that the caller must restart at `source_offset=0` or provide the previous page's generation. A stateless CLI continuation without that proof gets the same actionable requirement rather than guessing a generation.
 4. Preserve source-file digest checks and validation within the same read snapshot used for source extraction; a change between inference and reading cannot produce a mixed-version success. Missing or inferred tokens must not relax unrelated collection pagination requirements.
-5. Extend existing production-seam cases for an unchanged first-page/continuation sequence with omitted generation, explicit valid and stale tokens, an intervening source/index change, a new session, different worktrees and symbols, ambiguous/failed seed requests, source-disabled requests that must not seed state, bounded-cache eviction, concurrent requests, and a stateless CLI continuation that returns the actionable token/restart error. Assert the chosen finite cache bound and behavior at and beyond it. Mutation checks must reject unconditional active-generation substitution, missing workspace identity, omitted generation validation, unbounded retention, seeding from a source-disabled result, and token-free stateless CLI continuation. Document successful inference without exposing internal cache contents.
+5. Extend existing production-seam cases for an unchanged first-page/continuation sequence with omitted generation, explicit valid and stale tokens, an intervening source/index change, a new session, different worktrees and symbols, ambiguous/failed seed requests, source-disabled requests that must not seed state, bounded-cache eviction, concurrent requests, and a stateless CLI continuation that returns the actionable token/restart error. Include a 4-KiB trimmed-page continuation without an explicit token in both Markdown and JSON, and source-body cursor-marker text that cannot establish provenance. For concurrency, send at least two requests on the same stdio transport before receiving either response, correlate their response IDs, exercise both request orders and available finalization orders without assuming FIFO replies, and check continuation state per request. Assert the chosen finite cache bound and behavior at and beyond it. Mutation checks must reject unconditional active-generation substitution, missing workspace identity, omitted generation validation, unbounded retention, pre-trim/text-marker seeding, seeding from a source-disabled result, and token-free stateless CLI continuation. Document successful inference without exposing internal cache contents.
 6. This task may add only the source-continuation state to the existing MCP server owner; the deferred default-worktree selection behavior remains out of scope. Co-evolve the admitted tool/CLI/agent guidance. Run strict all-target/all-feature Clippy and complete `mcp` and `query_context` targets at Build and Review.
 
 ### task: normalize-and-resolve-milestone-references
@@ -592,14 +643,15 @@ receipt:
 task_ref: emit-compact-document-hint-once
 target: "Print each compact omission hint once, drop empty relation headings, and keep citation identity on referenced symbols"
 proof_policy: seam-test-first
-contract_revision: 4
+contract_revision: 5
 depends_on:
   - single-document-projection-for-inspection
 scope:
   - src/core/format/coordination.rs
   - src/db/reader.rs
-  - tests/mcp/context.rs
-  - docs/reference/mcp-tools.md
+  - tests/query_context/symbol_context.rs
+  - tests/mcp/freshness/stdio_and_response.rs
+  - docs/reference/mcp-markdown-contracts.md
 status: planned
 ```
 

@@ -102,7 +102,7 @@ pub struct Inspect {
     pub leading_lines: Option<usize>,
     /// Optional source body line limit; values clamp to 1..=500, omitted uses the configured default (200 by default).
     pub max_body_lines: Option<usize>,
-    /// Body line offset returned as next_source_offset by a previous preview.
+    /// Body line offset returned by a previous source page. Nonzero offsets require that page's generation explicitly.
     #[serde(default)]
     pub source_offset: usize,
     #[serde(flatten)]
@@ -140,7 +140,7 @@ pub struct Snippet {
     pub leading_lines: Option<usize>,
     /// Optional smaller source body line limit; omitted requests the complete symbol within the response byte budget.
     pub max_body_lines: Option<usize>,
-    /// Body line offset returned as next_source_offset by a previous preview.
+    /// Body line offset returned by a previous source page. Nonzero offsets require that page's generation explicitly.
     #[serde(default)]
     pub source_offset: usize,
     #[serde(flatten)]
@@ -151,7 +151,7 @@ impl Snippet {
     pub(super) fn source(&self, policy: &ResponsePolicy) -> anyhow::Result<SourceOptions> {
         anyhow::ensure!(
             self.source_offset == 0 || self.page.generation.is_some(),
-            "source continuation requires generation from the previous preview"
+            "source continuation requires generation from the previous preview; pass the previous page's generation or restart at source_offset=0"
         );
         SourceOptions::resolve_full_symbol(
             policy,
@@ -173,7 +173,7 @@ fn source_options(
 ) -> anyhow::Result<SourceOptions> {
     anyhow::ensure!(
         source_offset == 0 || generation.is_some(),
-        "source continuation requires generation from the previous preview"
+        "source continuation requires generation from the previous preview; pass the previous page's generation or restart at source_offset=0"
     );
     SourceOptions::resolve(
         policy,
@@ -204,7 +204,7 @@ pub struct Explain {
     pub leading_lines: Option<usize>,
     /// Optional source body line limit; values clamp to 1..=500, omitted uses the configured default (200 by default).
     pub max_body_lines: Option<usize>,
-    /// Body line offset returned as next_source_offset by a previous preview.
+    /// Body line offset returned by a previous source page. Nonzero offsets require that page's generation explicitly.
     #[serde(default)]
     pub source_offset: usize,
     #[serde(flatten)]
@@ -219,7 +219,7 @@ impl Explain {
     ) -> anyhow::Result<SourceOptions> {
         anyhow::ensure!(
             self.source_offset == 0 || self.page.generation.is_some(),
-            "source continuation requires generation from the previous preview"
+            "source continuation requires generation from the previous preview; pass the previous page's generation or restart at source_offset=0"
         );
         SourceOptions::resolve(
             policy,

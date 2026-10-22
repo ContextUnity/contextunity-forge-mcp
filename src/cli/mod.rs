@@ -698,6 +698,12 @@ pub enum QueryCommand {
         #[arg(long)]
         /// Whether show source applies.
         show_source: bool,
+        #[arg(long, default_value_t = 0)]
+        /// Source body offset returned by the prior preview.
+        source_offset: usize,
+        #[arg(long)]
+        /// Generation returned by the prior source preview.
+        generation: Option<String>,
     },
     /// Represents the search case.
     Search {
@@ -1104,7 +1110,24 @@ impl Cli {
                         path,
                         show_doc,
                         show_source,
+                        source_offset,
+                        generation,
                     } => {
+                        anyhow::ensure!(source_offset == 0 || generation.is_some(), "source continuation requires restarting at source_offset=0 or providing the previous page's generation");
+                        let source = SourceOptions::resolve(
+                            &ResponsePolicy::default(),
+                            Some(show_source),
+                            None,
+                            None,
+                            source_offset,
+                        )?;
+                        let page = QueryOptions::resolve(
+                            &ResponsePolicy::default(),
+                            Some(100),
+                            0,
+                            None,
+                            generation,
+                        )?;
                         let mut result = symbols::inspect_with_path_options(
                             &conn,
                             &root,
@@ -1112,11 +1135,11 @@ impl Cli {
                             path.as_deref(),
                             &symbols::InspectOptions {
                                 show_doc,
-                                source: &cli_source(show_source)?,
+                                source: &source,
                                 coverage: CoverageOptions {
                                     include_coverage: true,
                                 },
-                                page: &cli_page(100)?,
+                                page: &page,
                             },
                         )?;
                         if output_format == OutputFormat::Markdown {

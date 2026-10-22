@@ -281,6 +281,45 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
     .unwrap();
     assert_eq!(empty["source"], "");
     assert!(empty["source_preview"]["end_line"].is_null());
+    let cli_first = common::mcp_client::run_cli_json(
+        &workspace.1,
+        &["query", "inspect", "selected_201", "--show-source"],
+    );
+    common::assertions::assert_command_succeeded(&cli_first);
+    let cli_first: Value = serde_json::from_slice(&cli_first.stdout).unwrap();
+    let cli_offset = cli_first["source_preview"]["next_source_offset"]
+        .as_u64()
+        .expect("large CLI source must produce a continuation cursor");
+    let cli_generation = cli_first["generation"].as_str().unwrap();
+    let cli_missing = common::mcp_client::run_cli_json(
+        &workspace.1,
+        &[
+            "query",
+            "inspect",
+            "selected_201",
+            "--show-source",
+            "--source-offset",
+            &cli_offset.to_string(),
+        ],
+    );
+    assert!(!cli_missing.status.success());
+    assert!(String::from_utf8_lossy(&cli_missing.stderr).contains("previous page's generation"));
+    let cli_valid = common::mcp_client::run_cli_json(
+        &workspace.1,
+        &[
+            "query",
+            "inspect",
+            "selected_201",
+            "--show-source",
+            "--source-offset",
+            &cli_offset.to_string(),
+            "--generation",
+            cli_generation,
+        ],
+    );
+    common::assertions::assert_command_succeeded(&cli_valid);
+    let cli_valid: Value = serde_json::from_slice(&cli_valid.stdout).unwrap();
+    assert_eq!(cli_valid["source_preview"]["body_offset"], cli_offset);
     assert!(symbols::inspect_with_options(
         &conn,
         &workspace.0,
@@ -293,7 +332,159 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
         }
     )
     .is_err());
+    let mut client = common::mcp_client::StdioClient::new(&workspace.1);
+    let mcp_first = client.payload(
+        "get_code_snippet",
+        serde_json::json!({"selector":"selected","max_body_lines":35,"format":"json"}),
+    );
+    assert_eq!(mcp_first["source_preview"]["next_source_offset"], 35);
+    let (_, inferred_response) = client.call(
+        "get_code_snippet",
+        serde_json::json!({
+            "selector":"selected",
+            "max_body_lines":35,
+            "source_offset":mcp_first["source_preview"]["next_source_offset"],
+            "format":"json"
+        }),
+    );
+    assert_eq!(
+        inferred_response["result"]["isError"],
+        true,
+        "source continuation must require an explicit generation even in the same session: {inferred_response}"
+    );
+    let resumed = client.payload(
+        "get_code_snippet",
+        serde_json::json!({
+            "selector":"selected",
+            "max_body_lines":35,
+            "source_offset":35,
+            "generation":mcp_first["generation"],
+        }),
+    );
+    assert_eq!(resumed["source_preview"]["body_offset"], 35);
     let mut failures = Vec::new();
+    let bounded_workspace = Workspace::new();
+    bounded_workspace.write(
+        "forge-mcp.yaml",
+        "roots: [.]\nresponse:\n  max_output_bytes: 4096\n  source_context:\n    max_body_lines: 16\n",
+    );
+    let bounded_body = (0..700)
+        .map(|index| format!("    value_{index:04} = '{}\\\"Привіт'\n", "x".repeat(36)))
+        .collect::<String>();
+    let bounded_source = format!("def bounded():\n{bounded_body}    return value_0000\n");
+    bounded_workspace.write("bounded.py", &bounded_source);
+    let mut bounded_client = common::mcp_client::StdioClient::new(&bounded_workspace.1);
+    let markdown_number = |text: &str, field: &str| -> Option<usize> {
+        let marker = format!("**{field}**: `");
+        let (_, remainder) = text.split_once(marker.as_str())?;
+        let (number, _) = remainder.split_once('`')?;
+        number.parse().ok()
+    };
+    for (label, format) in [("JSON", Some("json")), ("default Markdown", None)] {
+        let mut arguments = serde_json::json!({
+            "selector":"bounded.py:bounded",
+            "leading_lines":0,
+            "max_body_lines":800
+        });
+        if let Some(format) = format {
+            arguments["format"] = serde_json::json!(format);
+        }
+        let (first_bytes, first_response) =
+            bounded_client.call("get_code_snippet", arguments.clone());
+        if first_response["result"]["isError"] == true {
+            failures.push(format!("{label} bounded first page errored: {first_response}"));
+            continue;
+        }
+        if first_bytes > 4096 || first_bytes <= 2048 {
+            failures.push(format!("{label} page was not a bounded 4-KiB response: {first_bytes} bytes"));
+        }
+        let cursor = if format.is_some() {
+            let page = common::assertions::mcp_payload(&first_response);
+            let preview = &page["source_preview"];
+            if preview["body_lines"]
+                .as_u64()
+                .zip(preview["total_body_lines"].as_u64())
+                .is_none_or(|(body, total)| body >= total)
+                || preview["omitted_body_lines"].as_u64().unwrap_or_default() == 0
+            {
+                failures.push(format!("{label} response did not retain a trimmed source page: {preview}"));
+            }
+            preview["next_source_offset"].as_u64().map(|offset| offset as usize)
+        } else {
+            let text = first_response["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap_or_default();
+            let body_lines = markdown_number(text, "body_lines");
+            let total_lines = markdown_number(text, "total_body_lines");
+            if body_lines.zip(total_lines).is_none_or(|(body, total)| body >= total) {
+                failures.push(format!("{label} response did not retain a trimmed source page"));
+            }
+            markdown_number(text, "next_source_offset")
+        };
+        let Some(cursor) = cursor.filter(|cursor| *cursor > 0) else {
+            failures.push(format!("{label} bounded first page has no retained cursor"));
+            continue;
+        };
+        let mut continuation = arguments;
+        continuation["source_offset"] = serde_json::json!(cursor);
+        let (_, missing_generation) =
+            bounded_client.call("get_code_snippet", continuation.clone());
+        assert_eq!(missing_generation["result"]["isError"], true);
+        let generation = if format.is_some() {
+            common::assertions::mcp_payload(&first_response)["generation"].clone()
+        } else {
+            let text = first_response["result"]["content"][0]["text"].as_str().unwrap();
+            let encoded = text.split_once("**generation**: `").unwrap().1.split('`').next().unwrap();
+            serde_json::from_str(encoded).unwrap()
+        };
+        continuation["generation"] = generation;
+        let (_, next_response) = bounded_client.call("get_code_snippet", continuation);
+        if next_response["result"]["isError"] == true {
+            failures.push(format!("{label} trimmed page rejected explicit generation at {cursor}: {next_response}"));
+            continue;
+        }
+        if format.is_some() {
+            let first = common::assertions::mcp_payload(&first_response);
+            let next = common::assertions::mcp_payload(&next_response);
+            if next["source_preview"]["body_offset"].as_u64() != Some(cursor as u64)
+                || next["generation"] != first["generation"]
+            {
+                failures.push(format!("{label} continuation lost the retained cursor/generation: {next}"));
+            }
+        } else {
+            let text = next_response["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap_or_default();
+            if !text.contains(&format!("**body_offset**: `{cursor}`")) {
+                failures.push(format!("{label} continuation did not resume at {cursor}: {text}"));
+            }
+        }
+    }
+
+    let line_workspace = Workspace::new();
+    line_workspace.write("forge-mcp.yaml", "roots: [.]\nresponse:\n  max_output_bytes: 4096\n");
+    line_workspace.write(
+        "single_line.py",
+        &format!("def budget_line():\n    return '{}'\n", "\\\\".repeat(950)),
+    );
+    let mut line_client = common::mcp_client::StdioClient::new(&line_workspace.1);
+    let first_line = line_client.payload(
+        "get_code_snippet",
+        serde_json::json!({"selector":"budget_line","leading_lines":0,"max_body_lines":1}),
+    );
+    for format in ["json", "markdown"] {
+        let (bytes, response) = line_client.call(
+            "get_code_snippet",
+            serde_json::json!({
+                "selector":"budget_line","leading_lines":0,"max_body_lines":1,
+                "source_offset":1,"generation":first_line["generation"],"format":format,
+            }),
+        );
+        assert!(bytes <= 4096, "{format}: {bytes}");
+        assert_eq!(response["result"]["isError"], true, "{format}: {response}");
+        assert!(response["result"]["content"][0]["text"].as_str().unwrap().contains("line exceeds"));
+    }
+
     for (lines, name, body) in cases {
         for requested in [None, Some(35), Some(500)] {
             for explain in [false, true] {
@@ -368,6 +559,25 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
             }
         }
     }
+    workspace.write(
+        "preview_201.py",
+        "def selected_201():\n    replacement = True\n    return replacement\n",
+    );
+    workspace.1.build();
+    let cli_stale = common::mcp_client::run_cli_json(
+        &workspace.1,
+        &[
+            "query",
+            "inspect",
+            "selected_201",
+            "--show-source",
+            "--source-offset",
+            &cli_offset.to_string(),
+            "--generation",
+            cli_generation,
+        ],
+    );
+    assert!(!cli_stale.status.success());
     workspace.write("code.py", "def selected(): return 99\n");
     assert!(symbols::inspect_with_options(
         &conn,
