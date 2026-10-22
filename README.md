@@ -8,7 +8,7 @@ Forge is a local Rust engine for AI coding agents. It keeps a structural map of 
 
 It follows a **zero-daemon, local-first architecture**: pure execution over stdio or CLI without background daemons, cloud dependencies, or idle RAM consumption. High-speed Tree-sitter indexing creates `.forge/code-map.sqlite` incrementally on the first call and refreshes only changed files on subsequent reads.
 
-Each tool call returns a bounded slice: a symbol and its neighbors, a documentation section linked to that symbol, or the task bundle for the gate just claimed. Responses stay within 64 KiB. The agent continues from that slice — the contract, the code, and the docs that bear on the current step — while the rest of the repository stays on disk.
+Each tool call returns a bounded slice: a symbol and its neighbors, a documentation section linked to that symbol, or the task bundle for the gate just claimed. MCP responses have a 96 KiB default and maximum; smaller configured limits remain authoritative, including this repository's 64 KiB setting. The agent continues from that slice — the contract, the code, and the docs that bear on the current step — while the rest of the repository stays on disk.
 
 Tool content and CLI command results default to Markdown. Select MCP
 `format: "json"` or CLI `--format json` for structured processing. Stdio MCP
@@ -147,7 +147,7 @@ contextunity-forge-mcp task claim <task-id> --stage contract --worker agent-1 --
 contextunity-forge-mcp task submit <task-id> --stage contract --action pass --evidence '<JSON>'
 ```
 
-`task list` defaults to ready tasks in active milestones. Claim is atomic: a second worker asking for the same gate gets `TASK_ALREADY_CLAIMED`. Submit records pass or reject against that claim revision. Scope can grow during the task with `extend-scope`, and Forge refuses paths another active task already owns. Profiles under `.forge/acdd/` are protected from casual scope extension, so an agent in an ordinary task leaves the gate rules alone.
+`task list` defaults to ready tasks in the selected workspace's unique active milestone. No active milestone returns an empty page; multiple active milestones require an explicit milestone or milestone-status filter. Claim is atomic: a second worker asking for the same gate gets `TASK_ALREADY_CLAIMED`. Submit records pass or reject against that claim revision. Scope can grow during the task with `extend-scope`, and Forge refuses paths another active task already owns. Profiles under `.forge/acdd/` are protected from casual scope extension, so an agent in an ordinary task leaves the gate rules alone.
 
 Subtasks record discoveries under the current task. They do not become new milestone roots. The [task reference](docs/reference/tasks.md) has the evidence schemas, state transitions, and the matching MCP arguments.
 
@@ -196,7 +196,7 @@ A **language** needs a compiled profile. Implement `LanguageProfile` for discove
 
 Markdown under the adapter's `docs` paths is split into sections at `##` and `###` headings. `search_docs` runs full-text search over those sections, optionally filtered by `doc_type`. `get_doc` returns one document or one heading.
 
-Symbols written in backticks, such as `LanguageProfile`, become edges between the section and the code entity. `code_map_inspect` and `code_map_explain` return those sections with the symbol. A GitHub alert that contains `Invariant:` is stored as an invariant and surfaced with impact and inspection, so the rule is in context when the agent is about to change the code it constrains.
+Uniquely resolved documentary symbol claims, such as `LanguageProfile`, become edges between the section and the code entity; ambiguous candidates remain navigation only. `code_map_inspect` and `code_map_explain` return verified sections with the symbol. A GitHub alert containing `Invariant:` marks an invariant section. An `INV-*` rule creates a governance edge only when a uniquely resolved code claim with an explicit source-file target appears on the same line, so verified rules can arrive with impact and inspection.
 
 That is why documentation pages use YAML frontmatter, stable headings, and backticked symbols. The authoring rules are in [documentation instructions](docs/AGENTS.md).
 

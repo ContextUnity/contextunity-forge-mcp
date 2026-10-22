@@ -185,12 +185,16 @@ error: provide that generation or restart at `source_offset=0`. Ordinary
 collection pagination also requires its explicit generation.
 
 `code_map_inspect`, `code_map_explain`, and `get_code_snippet` include serialized
-metadata and Markdown or JSON rendering in the configured byte limit. If the
-complete symbol does not fit, they return a bounded page with a truthful
-`next_source_offset`, `has_more`, and the active generation. Source pages contain
-only complete lines. A single line that cannot fit returns a clear budget error
-and a local-file recovery hint, never a partial line or a non-advancing cursor.
-Source reads still verify the on-disk digest and reject stale generations.
+metadata and Markdown or JSON rendering in the configured byte limit.
+`get_code_snippet` pages an oversized symbol to fit that serialized limit, with
+truthful `next_source_offset`, `has_more`, and the active generation. Inspect and
+explain keep their configured preview line limits and 8 KiB source sub-budget;
+if the resulting response still exceeds the serialized limit after collection
+trimming, request fewer source lines, less detail, or `get_code_snippet` instead.
+Source pages contain only complete lines. A single line that cannot fit returns
+a clear budget error and a local-file recovery hint, never a partial line or a
+non-advancing cursor. Source reads still verify the on-disk digest and reject
+stale generations.
 
 Code-map paged tools accept `limit` (default 30, range 1–100) and `offset`. Continue an ordinary page with its `next_offset` and `generation`; ordinary pages omit the repeated continuation text. A completed zero-result code-map page contains `total` and `items` without pagination fields. Computation and byte limits retain their truncation status and recovery hint, including when no items were returned. The response byte budget is configurable from 1,024 to 98,304 bytes; actual UTF-8 serialization, metadata, and JSON/Markdown escaping count toward it. Task-list pagination is separate: it always reports `total`, `limit`, `offset`, actual `returned`, `has_more`, and its task-view `generation`, with `next_offset` only when another page remains. When response trimming removes task or collection tails, it preserves whole records and advances to the actual returned offset. Task-view generations bind the selected workspace, task filters, and complete task/subtask state, not the code-index snapshot.
 
@@ -255,4 +259,4 @@ Compact responses omit candidate data and return a hint to request full detail; 
 
 `code_map_inspect` returns paged `documented_in` sections for verified symbol references. Its Markdown presents each cited section once with document identity, citation line, and a resolved file URI; it does not repeat the separate JSON `documents` page. `code_map_explain` retains its own `documents` page. `code_map_impact` returns paged `affected_docs` for a selected path or symbol. Exact Markdown `code_map_analyze` responses may include paged `doc_diagnostics`: `broken_doc_link` for a link that does not resolve, `dead_doc_symbol` for a claim with no matching declaration (with an optional `suggested_symbol`), and `stale_doc_sections` when an in-bounds source range is disjoint from the unique current symbol range. Suggestions are remediation hints, not graph edges; ambiguous, unsafe, malformed, or out-of-bounds claims do not prove stale documentation.
 
-Lines that declare `INV-*` rules are indexed as invariant nodes and linked to uniquely referenced symbols by `governs` and `governed_by` edges. Inspect, impact, and task context can surface verified governing rules with a single-line rule and source path/line. Navigation includes at most five direct rules and five IDs governing one-hop callers or callees; omitted counts and source references keep the response bounded. This graph context does not replace or truncate task contract invariants, profile guidance, decisions, commands, or proof receipts.
+Lines that declare `INV-*` rules are indexed as invariant nodes. A `governs` / `governed_by` edge requires a uniquely resolved code claim with an explicit normalized source-file target on the same line as the invariant ID; uniqueness alone is insufficient. Inspect, impact, and task context can surface verified governing rules with a single-line rule and source path/line. Navigation includes at most five direct rules and five IDs governing one-hop callers or callees; omitted counts and source references keep the response bounded. This graph context does not replace or truncate task contract invariants, profile guidance, decisions, commands, or proof receipts.

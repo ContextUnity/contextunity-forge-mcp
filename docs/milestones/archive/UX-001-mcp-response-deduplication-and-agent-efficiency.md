@@ -2,7 +2,7 @@
 id: m-mcp-response-deduplication-and-agent-efficiency
 title: MCP response deduplication, Markdown presentation compaction, and agent call efficiency
 doc_type: contract
-status: active
+status: completed
 depends_on:
 - m-markdown-first-dual-surface-and-agent-ergonomics:completed
 owners:
@@ -37,6 +37,49 @@ related_plans:
 - docs/plans/forge-mcp-audit-and-architecture.md
 - docs/plans/universal-multi-worktree-resolution.md
 started_at: 2026-10-21T16:00:08+00:00
+handoff:
+  completed_at: 2026-10-22T17:15:58.190081668+00:00
+  duration: 25h 15m
+  commit: 3ae3866d594c93802d21e455171d9214a68fbd51
+  target_base: fa79618b2dc2455940033d176f0cc66c438a7b7c
+  integration_evidence:
+    binding:
+      version: 1
+      repository: forge-mcp
+      project: forge-mcp
+      milestone: m-mcp-response-deduplication-and-agent-efficiency
+      authority_digest: 78dd5f7a6a3b2554c5ebdb84764cfe8ad72f8c25beeb83e787488fe699b1affd
+      implementation_digest: 2ac58669e272f3ff08906211d45188046a354f744379a47b65c60a949180f0ec
+      target_base_digest: 707fb8336291440ad0329cda73f47a1cb42528c66bba289fa382accdfd3ad5c3
+      builders:
+      - kilo-ux001-budget-coordinator-builder
+      - kilo-ux001-compact-builder
+      - kilo-ux001-continuation-builder
+      - kilo-ux001-coordinates-builder
+      - kilo-ux001-dedup-builder
+      - kilo-ux001-diagnostics-builder
+      - kilo-ux001-final-doc-coordinator-builder
+      - kilo-ux001-inspect-docs-builder
+      - kilo-ux001-references-builder
+      - kilo-ux001-source-builder
+      - kilo-ux001-sql-builder
+    target_base: fa79618b2dc2455940033d176f0cc66c438a7b7c
+    review:
+      worker_id: kilo-ux001-final-integration-reviewer
+      decision: pass
+      summary: Final integrated content and documentation satisfy the admitted milestone authority. Accepted proofs are preserved, final scope is admitted, and no blocking integration defects remain. Source continuations require explicit generation, source pages contain complete lines only, and the user-authorized simplification supersedes the historical cache contract.
+      scope_findings: []
+      contract_findings: []
+    verification:
+      command: cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets
+      exit_code: 0
+      tests_passed: 815
+      tests_failed: 0
+  verification:
+    command: cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets
+    status: passed
+    tests_passed: 815
+    tests_failed: 0
 ---
 
 # MCP response deduplication, Markdown presentation compaction, and agent call efficiency
@@ -51,13 +94,13 @@ Tasks share `src/db/reader.rs` in this order: SQL fidelity, diagnostic scope, in
 
 | Case | Evidence | Owning task |
 | --- | --- | --- |
-| **SQL statement boundaries** | [`analyze_paged`](../../src/db/reader.rs#L1649) rejects any `sql.contains(';')` and classifies a statement by the first whitespace token. `SELECT ';' AS marker` fails. A leading comment such as `/* ; */ SELECT 1` is not recognized as SQL. | `preserve-read-only-sql-results` |
-| **Shared row projection** | [`rows`](../../src/db/reader.rs#L525) drops `node_hash`, `path_hash`, `path_id`, and `owner_path_id` for every caller, and JSON-decodes text in `details`, `invariants`, and `referenced_symbols`. `SELECT path_id, '{"a":1}' AS details, 'raw text' AS note` returns an object `details` and omits `path_id`. `'raw text'` already stays a string. [`document_reference_candidate_page`](../../src/db/reader.rs#L1341) and `document_diagnostics` read `details.symbol_claims` as JSON. | `preserve-read-only-sql-results` |
-| **Inspect document dump** | Inspect builds `documented_in` and `documents` for the same `references_doc` edges. Markdown renders the first as rows and the second through [`render_json_section`](../../src/core/format/discovery.rs#L285) under the heading `## documents`. Pretty JSON starts with `"total"`, not `"items"`. | `single-document-projection-for-inspection` |
-| **Compact hint and citations** | [`render_candidate_page`](../../src/core/format/coordination.rs#L245) prints the omission stub in page metadata and again when `items` is absent. `get_doc` referenced symbols omit the citing section and `e.line`, so distinct citations of one symbol render as identical rows. Empty relation pages still emit headings. | `emit-compact-document-hint-once` |
-| **Task inspect repetition** | `task_manage(action="inspect")` uses [`render_record`](../../src/core/format/lifecycle.rs#L360) and the heading `## Task record`. `## Contract` belongs to claim context. Equal scope is stored as `spec.scope`, `authority_snapshot.task_scope`, `initial_scope`, and `allowed_write_scope`. Equal target is stored as `spec.target`, `authority_snapshot.task_target`, and `goal`. There is no `current_scope` field. | `deduplicate-task-inspection-presentation` |
+| **SQL statement boundaries** | [`analyze_paged`](../../../src/db/reader.rs#L1649) rejects any `sql.contains(';')` and classifies a statement by the first whitespace token. `SELECT ';' AS marker` fails. A leading comment such as `/* ; */ SELECT 1` is not recognized as SQL. | `preserve-read-only-sql-results` |
+| **Shared row projection** | [`rows`](../../../src/db/reader.rs#L525) drops `node_hash`, `path_hash`, `path_id`, and `owner_path_id` for every caller, and JSON-decodes text in `details`, `invariants`, and `referenced_symbols`. `SELECT path_id, '{"a":1}' AS details, 'raw text' AS note` returns an object `details` and omits `path_id`. `'raw text'` already stays a string. [`document_reference_candidate_page`](../../../src/db/reader.rs#L1341) and `document_diagnostics` read `details.symbol_claims` as JSON. | `preserve-read-only-sql-results` |
+| **Inspect document dump** | Inspect builds `documented_in` and `documents` for the same `references_doc` edges. Markdown renders the first as rows and the second through [`render_json_section`](../../../src/core/format/discovery.rs#L285) under the heading `## documents`. Pretty JSON starts with `"total"`, not `"items"`. | `single-document-projection-for-inspection` |
+| **Compact hint and citations** | [`render_candidate_page`](../../../src/core/format/coordination.rs#L245) prints the omission stub in page metadata and again when `items` is absent. `get_doc` referenced symbols omit the citing section and `e.line`, so distinct citations of one symbol render as identical rows. Empty relation pages still emit headings. | `emit-compact-document-hint-once` |
+| **Task inspect repetition** | `task_manage(action="inspect")` uses [`render_record`](../../../src/core/format/lifecycle.rs#L360) and the heading `## Task record`. `## Contract` belongs to claim context. Equal scope is stored as `spec.scope`, `authority_snapshot.task_scope`, `initial_scope`, and `allowed_write_scope`. Equal target is stored as `spec.target`, `authority_snapshot.task_target`, and `goal`. There is no `current_scope` field. | `deduplicate-task-inspection-presentation` |
 | **Diagnostic scope** | A missing analyze path returns zero totals and tells the caller to pick from `top_files`. `overview_with_options` ignores unknown aspects and the JSON envelope is freshness only. Lint already rejects a missing path with a compiled-profile sentence, not `PATH_NOT_INDEXED`. Targets `diagnostics` and `cycles` have their own mode error. | `resolve-diagnostic-scope-ambiguity` |
-| **Coordinates** | [`file_uri_for_path`](../../src/core/format/discovery.rs#L21) encodes an absolute path. [`attach_uri`](../../src/cli/mod.rs#L492) resolves the workspace path first. MCP Markdown calls that helper from `src/mcp/tools.rs`. The literal `(link unavailable)` exists only in `src/core/format/discovery.rs`. Coordination falls back to inline code, and traversal `coordinate` falls back to `` `path:line` ``, when `uri` is absent. | `universal-clickable-coordinates-and-heading-compaction` |
+| **Coordinates** | [`file_uri_for_path`](../../../src/core/format/discovery.rs#L21) encodes an absolute path. [`attach_uri`](../../../src/cli/mod.rs#L492) resolves the workspace path first. MCP Markdown calls that helper from `src/mcp/tools.rs`. The literal `(link unavailable)` exists only in `src/core/format/discovery.rs`. Coordination falls back to inline code, and traversal `coordinate` falls back to `` `path:line` ``, when `uri` is absent. | `universal-clickable-coordinates-and-heading-compaction` |
 | **Navigation docs** | `skills/contextunity-forge/references/tool-catalog.md` is present. Guidance still has to describe the narrowed calls, opaque SQL, diagnostic errors, and explicit `worktree` selection. | `document-efficient-agent-navigation` |
 
 ## Tasks in this milestone
@@ -135,7 +178,7 @@ receipt:
 1. Skip whitespace and comments, then accept one `SELECT` or `WITH` statement. Accept `SELECT ';' AS marker`, a quoted identifier containing `;`, semicolons inside `/* */` and `--` comments, a leading comment before that statement, and a trailing semicolon whose remainder is whitespace.
 2. Reject a second statement. Reject writes and writable CTEs. Keep the existing `tests/mcp/tool_evolution/mcp_boundaries.rs` rejections for those cases.
 3. `code_map_analyze` and `code_map_query(operation="sql")` share this classifier. A comment-led `SELECT` stays SQL and does not enter the path branch.
-4. Add an opaque mode on [`rows`](../../src/db/reader.rs#L525) / [`query`](../../src/db/paging.rs#L60). User SQL uses it. The default structural mode stays.
+4. Add an opaque mode on [`rows`](../../../src/db/reader.rs#L525) / [`query`](../../../src/db/paging.rs#L60). User SQL uses it. The default structural mode stays.
 5. Opaque mode returns selected `path_id`, `owner_path_id`, `node_hash`, and `path_hash`, and returns `details`, `invariants`, and `referenced_symbols` as SQL text. `'{"a":1}'` and `'null'` stay strings.
 6. Structural mode still JSON-decodes those names. `document_reference_candidate_page`, `document_diagnostics`, and ambiguous-candidate signature lookup keep working.
 7. Add the new cases to `tests/mcp/tool_evolution/mcp_boundaries.rs`. Align the existing opaque-SQL metadata seam in `tests/mcp/context.rs` with preserved SQL text while retaining its nested metadata checks. Use `tests/query_context/diagnostics_and_source.rs` only for an analyze seam that already lives there.
@@ -291,7 +334,7 @@ receipt:
 
 #### Acceptance
 
-1. `code_map_inspect` and `code_map_query(operation="inspect")` share one `documented_in` page per cited section. Each entry keeps `doc_id`, path, section title, document type, citation line, and the `file:///` URI attached by [`attach_inspect_uris`](../../src/cli/mod.rs#L404).
+1. `code_map_inspect` and `code_map_query(operation="inspect")` share one `documented_in` page per cited section. Each entry keeps `doc_id`, path, section title, document type, citation line, and the `file:///` URI attached by [`attach_inspect_uris`](../../../src/cli/mod.rs#L404).
 2. Remove the inspect `documents` JSON dump. Markdown has no `## documents` code fence. The coverage page stays; it is not a copy of `documented_in`.
 3. Explain continues to render its `documents` relationship page and does not also receive `documented_in`.
 4. Pagination and `include_coverage` stay intact.
@@ -654,6 +697,7 @@ scope:
 - docs/reference/mcp-markdown-contracts.md
 status: completed
 receipt:
+  commit: ae26dc6aed6bb51d30a36f1f7edb7e81cdbcefdc
   contract_revision: 5
   passed_at: 2026-10-22T00:28:55.762898676+00:00
   evidence:
@@ -788,7 +832,7 @@ receipt:
 
 #### Acceptance
 
-1. Close gaps in [`attach_presentation_uris`](../../src/cli/mod.rs#L248), [`attach_document_presentation_uris`](../../src/cli/mod.rs#L183), and [`attach_traversal_presentation_uris`](../../src/cli/mod.rs#L285) so every Markdown coordinate those formatters display receives `uri` when [`resolve_file_path`](../../src/core/config.rs#L456) succeeds. Pass the absolute path to [`file_uri_for_path`](../../src/core/format/discovery.rs#L21).
+1. Close gaps in [`attach_presentation_uris`](../../../src/cli/mod.rs#L248), [`attach_document_presentation_uris`](../../../src/cli/mod.rs#L183), and [`attach_traversal_presentation_uris`](../../../src/cli/mod.rs#L285) so every Markdown coordinate those formatters display receives `uri` when [`resolve_file_path`](../../../src/core/config.rs#L456) succeeds. Pass the absolute path to [`file_uri_for_path`](../../../src/core/format/discovery.rs#L21).
 2. Delete the `(link unavailable)` fallback in `src/core/format/discovery.rs`. When attachment cannot resolve a path, render the plain coordinate without that marker.
 3. Coordination and traversal use the attached `uri` for `[path#Lline](file:///...)`. Their current fallbacks are inline code and `` `path:line` ``, not the discovery marker.
 4. After task-record deduplication, render a resolvable inspect scope path as a `file:///` link.
@@ -801,7 +845,7 @@ receipt:
 task_ref: document-efficient-agent-navigation
 target: Document the narrowed navigation, opaque SQL, diagnostic errors, and explicit worktree selection
 proof_policy: direct-proof
-contract_revision: 6
+contract_revision: 7
 depends_on:
 - preserve-read-only-sql-results
 - resolve-diagnostic-scope-ambiguity
@@ -813,6 +857,7 @@ depends_on:
 - byte-bounded-single-symbol-snippets
 - safe-source-snippet-continuation
 scope:
+- README.md
 - docs/reference/mcp-tools.md
 - docs/reference/tasks.md
 - docs/reference/mcp-markdown-contracts.md
@@ -824,33 +869,34 @@ invariants:
 - 'DOC-NAV-READONLY-PROOF: The admitted reader and existing symbol-context test are unchanged proof anchors for the documented get_doc/inspection capability. This task edits only its documentation and skill files; source and test blobs must match the candidate baseline.'
 status: completed
 receipt:
-  contract_revision: 6
-  passed_at: 2026-10-22T04:11:27.531479841+00:00
+  commit: 3ae3866d594c93802d21e455171d9214a68fbd51
+  contract_revision: 7
+  passed_at: 2026-10-22T17:12:53.436338997+00:00
   evidence:
     command_proof:
       command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --test query_context
       exit_code: 0
-      tests_passed: 43
       tests_failed: 0
+      tests_passed: 43
   review:
     review_proof:
       decision: pass
       contours:
         paths:
           applicable: true
-          evidence: Four documentation/skill consumers corrected within admitted scope. reader.rs and symbol_context.rs proof anchors identical to baseline. Frozen candidate scope hash9f646da0eb18afe81a8d11226c1e92d73df6c90e14214f3150beca8b2e2a897b matches; no reviewer edits; unrelated ADR/manifest preserved.
+          evidence: All8 formally admitted paths match accepted snapshot. Only four docs files changed; source/test proof anchors identical baseline0c291f5. ScopedSHA714d35074017190f27812c9a1bc88c4ff5eabf0a47f036a85e653f51e9328786. No reviewer file edits.
         claims:
           applicable: true
-          evidence: 'NAV-R1/R2 confirmed-fixed: all20 universal routing before typed dispatch and canonical-root omission are main-compatible guarantees explicitly gated on connected schema/runtime. Legacy UX is not claimed fixed. Narrow navigation, source limits/cache64FIFO, SQL/diagnostic/URI/history/paging claims retained. Independent Clippy/query_context43/MCP91/ACDD116 pass; portable links and reader seam included.'
+          evidence: Live source confirms96default/max vs repo64, active-task selection, same-line unique-source-target governance, inspect citations vs declaration coordinates, snippet paging vs8KiB previews and explicit-generation wholelines. Caller2135/call2145 verified. Independent Clippy/query43/portablelinks1 pass; root full815pass0fail1ignored attributed separately.
         concurrency:
           applicable: true
-          evidence: Documentation-only candidate leaves runtime/storage/task locking unchanged. Full task lifecycle ACDD116 passes. No indexing timing or other host measurement started.
+          evidence: Docs-only correction; no runtime, source/test, transaction, revision or history semantics changed. Full coordinator gates were completed on identical runtime; no duplicate heavy tests.
         project_isolation:
           applicable: true
-          evidence: Checked main dispatcher/server/inputs and legacy UX differences. Guidance separates task affinity and shared tasks_db from request-local workspace, CLI root/cwd from MCP client cwd, and requires compatible server before relying on routing. Integration gap recorded on task board1008.
+          evidence: Merged universal20tools routing and canonical server default remain correctly documented. No legacy no-worktree claim or active-claim fallback reintroduced. Relative links unchanged and portable fixture test passes.
         administration:
           applicable: true
-          evidence: User-authorized docs-only correction. No main merge, schema/profile/global update, 96KiB implementation, benchmark, handoff, or manual commit. All checks used fresh copied skill fixture via env hook. Main test receipts attributed to builder only; independent reviewer results recorded separately.
+          evidence: README legitimately readmitted by taskAPI rev7; no manual receipt edit. Fresh owned skillfixture, no globals, migration, profile change, code integration or history mutation. No unresolved docs findings; futurehandoff remains coordinator-owned.
   decision: pass
   rollup:
     verified_invariants:
@@ -864,7 +910,7 @@ receipt:
     - 'INV-CLICKABLE-COORDINATE-COMPLETENESS: Presentation attachment resolves a workspace path before file_uri_for_path. A resolvable coordinate is a file:/// link. Markdown omits the (link unavailable) fallback.'
     - 'DOC-NAV-READONLY-PROOF: The admitted reader and existing symbol-context test are unchanged proof anchors for the documented get_doc/inspection capability. This task edits only its documentation and skill files; source and test blobs must match the candidate baseline.'
     architectural_notes:
-    - 'decisions: {"decision":"NAV-R1 and NAV-R2 confirmed-fixed in documentation only","candidate":"4e1f7d74316bafa259ece3c4dbe1c840de9eb36b","base":"faf8e0f57ff4f1a941e24f8a68acc1d2e38e0a36","scope_sha256":"9f646da0eb18afe81a8d11226c1e92d73df6c90e14214f3150beca8b2e2a897b","authority":"USER docs-only correction taking approved main fa79618/f0e1684 into account. Same independent reviewer claim14 rev6.","closure":"All four corrected consumers remove blanket Task MCP exclusion. Universal-routing contract covers all20 tools, root resolution before typed dispatch, canonical server-root default/no claim redirect; claim/next preserve required affinity, others optional. Guidance explicitly requires connected schema AND compatible runtime; it does not make legacy UX universal. Existing taskDB sharing is distinct from request-root selection; CLI paths/environment/cwd are distinct from MCP client cwd.","independent_source":"Main tools.rs941-983/server.rs472-496/inputs.rs409-431 and claim/next normalization300-338 were directly checked. UX task bypass and legacy claim fallback remain unchanged. Source reader.rs and test symbol_context.rs match baseline; reviewed scoped files match frozen candidate; diff-check and scope hash pass.","independent_checks":"Fresh fixture /tmp/kilo/ux001-navigation-closure-skill-20261022T0408Z via env hook for every check. Exact strict Clippy followed by full query_context43/43, mcp91/91, acdd116/116 passed. MCP suite includes global-copy parity and portable install-layout links; reader tests include direct bounded summary/doc projections. No ~/.agents writes. Main all20/task-routing runtime receipts are builder-only #1007, not claimed as reviewer runs.","preserved":"Narrowest-tool navigation, SQL text/columns, diagnostics, URI safety, task history/dedup, complete-symbol byte bounds, 64-entry session FIFO, pagination and explicit generation semantics remain accurate. Current cap64KiB, no96KiB/tasklist feature implemented.","integration_gap":"Approved main universal routing is NOT integrated into UX faf8e0f. Later code integration belongs to coordinator planning and needs separate authorization; it is not a defect requiring a merge in this documentation task. Do not infer universal routing from affinity fields. Benchmark/indexing measurements are separate and were not started by reviewer."}'
+    - 'decisions: {"decision":"PASS rev7 final documentation correction","candidate":"808df163991be12ad22fb7f996ac18f5a6b776e2","base":"0c291f5d5c3cdedd852fff86943af2379c72c445","scope_sha256":"714d35074017190f27812c9a1bc88c4ff5eabf0a47f036a85e653f51e9328786","findings":[],"scope":"README formally readmitted with existing7 paths; four doc changes only, no source/test changes vs current baseline. All8 scoped candidate paths match. Reader and symbol-context proof anchors unchanged; diffcheck clean.","claims":"96default/max vs configured64; unique-active list/default; governance requires unique normalized sourcepath claim on same invariant line; get_doc citation_line vs declline separated from inspect line/doc_line; caller2135/call2145 exact; snippet complete serialized paging differs from configured inspect/explain8KiB source budget; explicit tokens and wholeline/error, universal20tool merged runtime, opaqueSQL/diagnostics/history/URI remain truthful.","independent_checks":"strictClippy alltargets/allfeatures-Dwarnings; full query_context43/43; exact portable skill link1/1. Fresh /tmp/kilo/ux001-final-doc-review-skill-20261022T1710Z via env for all, no globalwrites.","coordinator_checks":"Independently inspected tool_164946bb0001ALHOry3K0QVhJe: separate commitment_integrity16, strictClippy, cargo test--all-targets815passed0failed1ignored including integrity16 once. These full gates are coordinator-run, not reviewer-run. Finaldocscan changes only docs; runtime immutable since that verified code.","remaining":"No task defects/deferred functional work. Coordinator alone performs authorized finalhandoff archival/final commit after external integration evidence. Reviewer only ordinary doc delivery then read-only final integration binding. No source edits, manualcommit, history repack, handoff/archive/cleanup, mainlanding or push."}'
     review_summary:
       decision: pass
       contours:
@@ -983,7 +1029,7 @@ receipt:
 
 #### Acceptance
 
-1. Implement the owner-approved 96 KiB (`98_304` bytes) default and maximum from [ADR 0011](../adr/0011-bounded-mcp-response-budgets.md) in the canonical response policy and its MCP consumers. Configured smaller limits remain authoritative. Ensure JSON framing and Markdown responses honor this ceiling uniformly across MCP tools; budget preservation means preserving bounded serialization, not retaining the superseded numeric ceiling.
+1. Implement the owner-approved 96 KiB (`98_304` bytes) default and maximum from [ADR 0011](../../adr/0011-bounded-mcp-response-budgets.md) in the canonical response policy and its MCP consumers. Configured smaller limits remain authoritative. Ensure JSON framing and Markdown responses honor this ceiling uniformly across MCP tools; budget preservation means preserving bounded serialization, not retaining the superseded numeric ceiling.
 2. In `src/mcp/response.rs` and the response trimmer, trim overflowing collections at intact item boundaries, supporting the existing `items` pages and the `task_list` `tasks` array. Preserve each retained task and all its subtasks, UTF-8 validity, metadata, active filters, and snapshot token. For task pages, `pagination` reports `total`, `limit`, `offset`, `returned`, `next_offset`, `has_more`, the logical task-view `generation`, and the number of requested-page items omitted by byte trimming. `total` counts all matching tasks before slicing; `next_offset` advances by the number actually returned, not the requested limit, and is absent at the end. A continuation hint repeats the effective canonical workspace/milestone/status/detail filters and generation. If one intact requested record or the required metadata cannot fit even alone, return a bounded actionable budget error identifying the case and suggesting a narrower or compact request, rather than an empty non-advancing continuation or a partial record.
 3. In `task_list` (MCP tool and CLI):
    - Scope default: Use the root and namespace already selected by CLI `--root` or the current MCP server task handler. This task does not change the deferred default-worktree resolver or infer an agent's unrelated checkout. When no milestone is supplied under the default active-milestone filter, choose its unique active milestone; no active milestone returns an empty result, and multiple active milestones return an actionable ambiguity error listing candidates instead of choosing one or leaking unrelated history. Explicit milestone selection and explicit all-milestone selection retain their existing meaning and workspace confinement.

@@ -477,7 +477,7 @@ For the live exact call to `diagnostic_reason`, the edge coordinate differs from
 the caller's declaration coordinate:
 
 ```markdown
-- [annotate_diagnostic_page](file:///home/oleksii/ContextUnity/projects/contextunity-forge-mcp/src/db/reader.rs#L1961) [proven call] — calls diagnostic_reason at [src/db/reader.rs:1971](file:///home/oleksii/ContextUnity/projects/contextunity-forge-mcp/src/db/reader.rs#L1971)
+- [annotate_diagnostic_page](file:///home/oleksii/ContextUnity/projects/contextunity-forge-mcp/src/db/reader.rs#L2135) [proven call] — calls diagnostic_reason at [src/db/reader.rs:2145](file:///home/oleksii/ContextUnity/projects/contextunity-forge-mcp/src/db/reader.rs#L2145)
 ```
 
 A `possible_calls` fixture renders `[heuristic / candidate]` and its actual
