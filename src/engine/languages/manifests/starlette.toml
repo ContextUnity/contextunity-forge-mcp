@@ -1,0 +1,82 @@
+receivers = []
+builtins = []
+filters = []
+routes = []
+
+[[class_hierarchy_receivers]]
+bases = ["starlette.responses.JSONResponse"]
+provider = "starlette.responses.JSONResponse"
+members = ["render", "body", "headers", "media_type", "status_code"]
+
+[[class_hierarchy_receivers]]
+bases = ["starlette.responses.HTMLResponse"]
+provider = "starlette.responses.HTMLResponse"
+members = ["render", "body", "headers", "media_type", "status_code"]
+
+[[route_calls]]
+callee = "Route"
+method = "ANY"
+methods_keyword = "methods"
+path_argument = 0
+handler_argument = 1
+allow_relative_path = true
+
+[[route_calls]]
+callee = "routing.Route"
+method = "ANY"
+methods_keyword = "methods"
+path_argument = 0
+handler_argument = 1
+allow_relative_path = true
+
+[[route_calls]]
+callee = "starlette.routing.Route"
+method = "ANY"
+methods_keyword = "methods"
+path_argument = 0
+handler_argument = 1
+allow_relative_path = true
+
+[[route_calls]]
+callee = "Mount"
+method = "MOUNT"
+path_argument = 0
+allow_relative_path = true
+
+[[route_calls]]
+callee = "routing.Mount"
+method = "MOUNT"
+path_argument = 0
+allow_relative_path = true
+
+[[route_calls]]
+callee = "starlette.routing.Mount"
+method = "MOUNT"
+path_argument = 0
+allow_relative_path = true
+
+[[route_calls]]
+callee = "WebSocketRoute"
+method = "WEBSOCKET"
+path_argument = 0
+handler_argument = 1
+allow_relative_path = true
+
+[[route_calls]]
+callee = "routing.WebSocketRoute"
+method = "WEBSOCKET"
+path_argument = 0
+handler_argument = 1
+allow_relative_path = true
+
+[[route_calls]]
+callee = "starlette.routing.WebSocketRoute"
+method = "WEBSOCKET"
+path_argument = 0
+handler_argument = 1
+allow_relative_path = true
+
+[[class_hierarchy_receivers]]
+bases = ["starlette.middleware.base.BaseHTTPMiddleware"]
+provider = "starlette.middleware.base.BaseHTTPMiddleware"
+members = ["__init__"]
