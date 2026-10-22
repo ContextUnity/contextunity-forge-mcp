@@ -10,7 +10,74 @@ receivers = [
   "$id",
   "$root",
   "$parent",
+  "$root.querySelector",
+  "$root.querySelectorAll",
+  "$root.closest",
+  "$root.contains",
+  "$root.getAttribute",
+  "$root.addEventListener",
+  "$el.addEventListener",
 ]
 builtins = []
 filters = []
 routes = []
+
+[[syntax_rules]]
+id = "store-definition"
+language = "javascript"
+operation = { kind = "named_binding", domain = "store", binding = { kind = "call_definition", callee = { kind = "global_member", receiver = "Alpine", member = "store" }, key = { kind = "argument", index = 0 }, target = { kind = "argument", index = 1 }, target_kind = "object" } }
+
+[[syntax_rules]]
+id = "store-reference"
+language = "javascript"
+operation = { kind = "named_binding", domain = "store", binding = { kind = "member_reference", root = "$store" } }
+
+[[syntax_rules]]
+id = "event-definition"
+language = "html"
+operation = { kind = "named_binding", domain = "event", binding = { kind = "attribute_definition", prefix = "x-on:", scope = "event_handler" } }
+
+[[syntax_rules]]
+id = "event-reference"
+language = "javascript"
+operation = { kind = "named_binding", domain = "event", binding = { kind = "call_reference", callee = { kind = "global", name = "$dispatch" }, key = { kind = "argument", index = 0 } } }
+
+[[syntax_rules]]
+id = "implicit-receivers"
+display = { builtin = "framework builtin: Alpine magic" }
+language = "javascript"
+operation = { kind = "implicit_receivers", package = "alpinejs" }
+
+[[syntax_rules]]
+id = "object-factory"
+language = "javascript"
+operation = { kind = "object_factory", callees = [".data", ".mixin"], unshadowed_globals = ["Alpine"] }
+
+[[syntax_rules]]
+id = "script-attributes"
+language = "html"
+operation = { kind = "html_script_attributes", event_prefixes = ["@", "x-on:"], object_attribute = "x-data", event_scope = "alpine_event", object_scope = "alpine_data" }
+
+[[syntax_rules]]
+id = "globals-javascript"
+display = { builtin = "JavaScript/Web platform" }
+language = "javascript"
+operation = { kind = "implicit_builtins", names = ["Alpine", "Alpine.data", "Alpine.store", "Alpine.start", "Alpine.plugin", "Alpine.directive", "Alpine.magic", "Alpine.$data", "window.Alpine", "window.Alpine.$data"] }
+
+[[syntax_rules]]
+id = "globals-typescript"
+display = { builtin = "JavaScript/Web platform" }
+language = "typescript"
+operation = { kind = "implicit_builtins", names = ["Alpine", "Alpine.data", "Alpine.store", "Alpine.start", "Alpine.plugin", "Alpine.directive", "Alpine.magic", "Alpine.$data", "window.Alpine", "window.Alpine.$data"] }
+
+[[syntax_rules]]
+id = "globals-html"
+display = { builtin = "JavaScript/Web platform" }
+language = "html"
+operation = { kind = "implicit_builtins", names = ["Alpine", "Alpine.data", "Alpine.store", "Alpine.start", "Alpine.plugin", "Alpine.directive", "Alpine.magic", "Alpine.$data", "window.Alpine", "window.Alpine.$data"] }
+
+[[syntax_rules]]
+id = "globals-vue"
+display = { builtin = "JavaScript/Web platform" }
+language = "vue"
+operation = { kind = "implicit_builtins", names = ["Alpine", "Alpine.data", "Alpine.store", "Alpine.start", "Alpine.plugin", "Alpine.directive", "Alpine.magic", "Alpine.$data", "window.Alpine", "window.Alpine.$data"] }
