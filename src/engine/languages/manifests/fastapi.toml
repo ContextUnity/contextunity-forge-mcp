@@ -7,54 +7,85 @@ routes = []
 callee = ".get"
 method = "GET"
 path_argument = 0
+prefixes = [{ kind = "constructor", callee = "APIRouter", keyword = "prefix" }, { kind = "constructor", callee = "FastAPI", keyword = "prefix" }, { kind = "attachment", callee = ".include_router", child_argument = 0, prefix_keyword = "prefix" }]
 receiver_names = ["app", "router", "server", "api", "bp", "blueprint", "route"]
 
 [[route_decorators]]
 callee = ".post"
 method = "POST"
 path_argument = 0
+prefixes = [{ kind = "constructor", callee = "APIRouter", keyword = "prefix" }, { kind = "constructor", callee = "FastAPI", keyword = "prefix" }, { kind = "attachment", callee = ".include_router", child_argument = 0, prefix_keyword = "prefix" }]
 receiver_names = ["app", "router", "server", "api", "bp", "blueprint", "route"]
 
 [[route_decorators]]
 callee = ".put"
 method = "PUT"
 path_argument = 0
+prefixes = [{ kind = "constructor", callee = "APIRouter", keyword = "prefix" }, { kind = "constructor", callee = "FastAPI", keyword = "prefix" }, { kind = "attachment", callee = ".include_router", child_argument = 0, prefix_keyword = "prefix" }]
 receiver_names = ["app", "router", "server", "api", "bp", "blueprint", "route"]
 
 [[route_decorators]]
 callee = ".patch"
 method = "PATCH"
 path_argument = 0
+prefixes = [{ kind = "constructor", callee = "APIRouter", keyword = "prefix" }, { kind = "constructor", callee = "FastAPI", keyword = "prefix" }, { kind = "attachment", callee = ".include_router", child_argument = 0, prefix_keyword = "prefix" }]
 receiver_names = ["app", "router", "server", "api", "bp", "blueprint", "route"]
 
 [[route_decorators]]
 callee = ".delete"
 method = "DELETE"
 path_argument = 0
+prefixes = [{ kind = "constructor", callee = "APIRouter", keyword = "prefix" }, { kind = "constructor", callee = "FastAPI", keyword = "prefix" }, { kind = "attachment", callee = ".include_router", child_argument = 0, prefix_keyword = "prefix" }]
 receiver_names = ["app", "router", "server", "api", "bp", "blueprint", "route"]
 
 [[route_decorators]]
 callee = ".head"
 method = "HEAD"
 path_argument = 0
+prefixes = [{ kind = "constructor", callee = "APIRouter", keyword = "prefix" }, { kind = "constructor", callee = "FastAPI", keyword = "prefix" }, { kind = "attachment", callee = ".include_router", child_argument = 0, prefix_keyword = "prefix" }]
 receiver_names = ["app", "router", "server", "api", "bp", "blueprint", "route"]
 
 [[route_decorators]]
 callee = ".options"
 method = "OPTIONS"
 path_argument = 0
+prefixes = [{ kind = "constructor", callee = "APIRouter", keyword = "prefix" }, { kind = "constructor", callee = "FastAPI", keyword = "prefix" }, { kind = "attachment", callee = ".include_router", child_argument = 0, prefix_keyword = "prefix" }]
 receiver_names = ["app", "router", "server", "api", "bp", "blueprint", "route"]
 
 [[route_decorators]]
 callee = ".all"
 method = "ANY"
 path_argument = 0
+prefixes = [{ kind = "constructor", callee = "APIRouter", keyword = "prefix" }, { kind = "constructor", callee = "FastAPI", keyword = "prefix" }, { kind = "attachment", callee = ".include_router", child_argument = 0, prefix_keyword = "prefix" }]
 receiver_names = ["app", "router", "server", "api", "bp", "blueprint", "route"]
 
 [[route_decorators]]
 callee = ".route"
 method = "ANY"
+methods_keyword = "methods"
 path_argument = 0
+prefixes = [{ kind = "constructor", callee = "APIRouter", keyword = "prefix" }, { kind = "constructor", callee = "FastAPI", keyword = "prefix" }, { kind = "attachment", callee = ".include_router", child_argument = 0, prefix_keyword = "prefix" }]
+receiver_names = ["app", "router", "server", "api", "bp", "blueprint", "route"]
+
+[[route_decorators]]
+callee = ".api_route"
+method = "ANY"
+path_argument = 0
+prefixes = [{ kind = "constructor", callee = "APIRouter", keyword = "prefix" }, { kind = "constructor", callee = "FastAPI", keyword = "prefix" }, { kind = "attachment", callee = ".include_router", child_argument = 0, prefix_keyword = "prefix" }]
+receiver_names = ["app", "router", "server", "api", "bp", "blueprint", "route"]
+
+[[route_decorators]]
+callee = ".websocket"
+method = "WEBSOCKET"
+path_argument = 0
+prefixes = [{ kind = "constructor", callee = "APIRouter", keyword = "prefix" }, { kind = "constructor", callee = "FastAPI", keyword = "prefix" }, { kind = "attachment", callee = ".include_router", child_argument = 0, prefix_keyword = "prefix" }]
+receiver_names = ["app", "router", "server", "api", "bp", "blueprint", "route"]
+
+[[route_decorators]]
+callee = ".websocket_route"
+method = "WEBSOCKET"
+path_argument = 0
+prefixes = [{ kind = "constructor", callee = "APIRouter", keyword = "prefix" }, { kind = "constructor", callee = "FastAPI", keyword = "prefix" }, { kind = "attachment", callee = ".include_router", child_argument = 0, prefix_keyword = "prefix" }]
 receiver_names = ["app", "router", "server", "api", "bp", "blueprint", "route"]
 
 [[route_calls]]
@@ -62,6 +93,7 @@ callee = ".get"
 method = "GET"
 path_argument = 0
 handler_argument = 1
+prefixes = [{ kind = "constructor", callee = "APIRouter", keyword = "prefix" }, { kind = "constructor", callee = "FastAPI", keyword = "prefix" }, { kind = "attachment", callee = ".include_router", child_argument = 0, prefix_keyword = "prefix" }]
 receiver_names = ["app", "router", "server", "api", "bp", "blueprint", "route"]
 
 [[route_calls]]
@@ -69,6 +101,7 @@ callee = ".post"
 method = "POST"
 path_argument = 0
 handler_argument = 1
+prefixes = [{ kind = "constructor", callee = "APIRouter", keyword = "prefix" }, { kind = "constructor", callee = "FastAPI", keyword = "prefix" }, { kind = "attachment", callee = ".include_router", child_argument = 0, prefix_keyword = "prefix" }]
 receiver_names = ["app", "router", "server", "api", "bp", "blueprint", "route"]
 
 [[route_calls]]
@@ -76,6 +109,7 @@ callee = ".put"
 method = "PUT"
 path_argument = 0
 handler_argument = 1
+prefixes = [{ kind = "constructor", callee = "APIRouter", keyword = "prefix" }, { kind = "constructor", callee = "FastAPI", keyword = "prefix" }, { kind = "attachment", callee = ".include_router", child_argument = 0, prefix_keyword = "prefix" }]
 receiver_names = ["app", "router", "server", "api", "bp", "blueprint", "route"]
 
 [[route_calls]]
@@ -83,6 +117,7 @@ callee = ".patch"
 method = "PATCH"
 path_argument = 0
 handler_argument = 1
+prefixes = [{ kind = "constructor", callee = "APIRouter", keyword = "prefix" }, { kind = "constructor", callee = "FastAPI", keyword = "prefix" }, { kind = "attachment", callee = ".include_router", child_argument = 0, prefix_keyword = "prefix" }]
 receiver_names = ["app", "router", "server", "api", "bp", "blueprint", "route"]
 
 [[route_calls]]
@@ -90,6 +125,7 @@ callee = ".delete"
 method = "DELETE"
 path_argument = 0
 handler_argument = 1
+prefixes = [{ kind = "constructor", callee = "APIRouter", keyword = "prefix" }, { kind = "constructor", callee = "FastAPI", keyword = "prefix" }, { kind = "attachment", callee = ".include_router", child_argument = 0, prefix_keyword = "prefix" }]
 receiver_names = ["app", "router", "server", "api", "bp", "blueprint", "route"]
 
 [[route_calls]]
@@ -97,6 +133,7 @@ callee = ".head"
 method = "HEAD"
 path_argument = 0
 handler_argument = 1
+prefixes = [{ kind = "constructor", callee = "APIRouter", keyword = "prefix" }, { kind = "constructor", callee = "FastAPI", keyword = "prefix" }, { kind = "attachment", callee = ".include_router", child_argument = 0, prefix_keyword = "prefix" }]
 receiver_names = ["app", "router", "server", "api", "bp", "blueprint", "route"]
 
 [[route_calls]]
@@ -104,6 +141,7 @@ callee = ".options"
 method = "OPTIONS"
 path_argument = 0
 handler_argument = 1
+prefixes = [{ kind = "constructor", callee = "APIRouter", keyword = "prefix" }, { kind = "constructor", callee = "FastAPI", keyword = "prefix" }, { kind = "attachment", callee = ".include_router", child_argument = 0, prefix_keyword = "prefix" }]
 receiver_names = ["app", "router", "server", "api", "bp", "blueprint", "route"]
 
 [[route_calls]]
@@ -111,15 +149,125 @@ callee = ".all"
 method = "ANY"
 path_argument = 0
 handler_argument = 1
+prefixes = [{ kind = "constructor", callee = "APIRouter", keyword = "prefix" }, { kind = "constructor", callee = "FastAPI", keyword = "prefix" }, { kind = "attachment", callee = ".include_router", child_argument = 0, prefix_keyword = "prefix" }]
 receiver_names = ["app", "router", "server", "api", "bp", "blueprint", "route"]
 
 [[route_calls]]
 callee = ".route"
 method = "ANY"
+methods_keyword = "methods"
 path_argument = 0
 handler_argument = 1
+prefixes = [{ kind = "constructor", callee = "APIRouter", keyword = "prefix" }, { kind = "constructor", callee = "FastAPI", keyword = "prefix" }, { kind = "attachment", callee = ".include_router", child_argument = 0, prefix_keyword = "prefix" }]
+receiver_names = ["app", "router", "server", "api", "bp", "blueprint", "route"]
+
+[[route_calls]]
+callee = ".add_api_route"
+method = "ANY"
+path_argument = 0
+handler_argument = 1
+prefixes = [{ kind = "constructor", callee = "APIRouter", keyword = "prefix" }, { kind = "constructor", callee = "FastAPI", keyword = "prefix" }, { kind = "attachment", callee = ".include_router", child_argument = 0, prefix_keyword = "prefix" }]
+receiver_names = ["app", "router", "server", "api", "bp", "blueprint", "route"]
+
+[[route_calls]]
+callee = ".add_api_websocket_route"
+method = "WEBSOCKET"
+path_argument = 0
+handler_argument = 1
+prefixes = [{ kind = "constructor", callee = "APIRouter", keyword = "prefix" }, { kind = "constructor", callee = "FastAPI", keyword = "prefix" }, { kind = "attachment", callee = ".include_router", child_argument = 0, prefix_keyword = "prefix" }]
 receiver_names = ["app", "router", "server", "api", "bp", "blueprint", "route"]
 
 [[di_calls]]
 callee = "Depends"
 argument = 0
+
+[[semantic_rules]]
+id = "dependency"
+namespace = "fastapi"
+scope = "project"
+activation = [{ kind = "package", name = "fastapi" }]
+operation = { kind = "call_to_symbol", language = "python", callee = { kind = "imported", module = "fastapi", export = "Depends" }, argument = 0, target = { kind = "imported_symbol", language = "python" }, relation = "injects_dependency" }
+
+[[semantic_rules]]
+id = "response-model-get"
+namespace = "fastapi"
+scope = "project"
+activation = [{ kind = "package", name = "fastapi" }]
+operation = { kind = "symbol_attachment", language = "python", callee = { kind = "constructed_member", module = "fastapi", constructors = ["FastAPI", "APIRouter"], member = "get" }, source = { kind = "decorated_callable" }, target = { kind = "keyword", name = "response_model" }, relation = "uses_model" }
+
+[[semantic_rules]]
+id = "response-model-post"
+namespace = "fastapi"
+scope = "project"
+activation = [{ kind = "package", name = "fastapi" }]
+operation = { kind = "symbol_attachment", language = "python", callee = { kind = "constructed_member", module = "fastapi", constructors = ["FastAPI", "APIRouter"], member = "post" }, source = { kind = "decorated_callable" }, target = { kind = "keyword", name = "response_model" }, relation = "uses_model" }
+
+[[semantic_rules]]
+id = "response-model-put"
+namespace = "fastapi"
+scope = "project"
+activation = [{ kind = "package", name = "fastapi" }]
+operation = { kind = "symbol_attachment", language = "python", callee = { kind = "constructed_member", module = "fastapi", constructors = ["FastAPI", "APIRouter"], member = "put" }, source = { kind = "decorated_callable" }, target = { kind = "keyword", name = "response_model" }, relation = "uses_model" }
+
+[[semantic_rules]]
+id = "response-model-patch"
+namespace = "fastapi"
+scope = "project"
+activation = [{ kind = "package", name = "fastapi" }]
+operation = { kind = "symbol_attachment", language = "python", callee = { kind = "constructed_member", module = "fastapi", constructors = ["FastAPI", "APIRouter"], member = "patch" }, source = { kind = "decorated_callable" }, target = { kind = "keyword", name = "response_model" }, relation = "uses_model" }
+
+[[semantic_rules]]
+id = "response-model-delete"
+namespace = "fastapi"
+scope = "project"
+activation = [{ kind = "package", name = "fastapi" }]
+operation = { kind = "symbol_attachment", language = "python", callee = { kind = "constructed_member", module = "fastapi", constructors = ["FastAPI", "APIRouter"], member = "delete" }, source = { kind = "decorated_callable" }, target = { kind = "keyword", name = "response_model" }, relation = "uses_model" }
+
+[[semantic_rules]]
+id = "response-model-head"
+namespace = "fastapi"
+scope = "project"
+activation = [{ kind = "package", name = "fastapi" }]
+operation = { kind = "symbol_attachment", language = "python", callee = { kind = "constructed_member", module = "fastapi", constructors = ["FastAPI", "APIRouter"], member = "head" }, source = { kind = "decorated_callable" }, target = { kind = "keyword", name = "response_model" }, relation = "uses_model" }
+
+[[semantic_rules]]
+id = "response-model-options"
+namespace = "fastapi"
+scope = "project"
+activation = [{ kind = "package", name = "fastapi" }]
+operation = { kind = "symbol_attachment", language = "python", callee = { kind = "constructed_member", module = "fastapi", constructors = ["FastAPI", "APIRouter"], member = "options" }, source = { kind = "decorated_callable" }, target = { kind = "keyword", name = "response_model" }, relation = "uses_model" }
+
+[[semantic_rules]]
+id = "response-model-all"
+namespace = "fastapi"
+scope = "project"
+activation = [{ kind = "package", name = "fastapi" }]
+operation = { kind = "symbol_attachment", language = "python", callee = { kind = "constructed_member", module = "fastapi", constructors = ["FastAPI", "APIRouter"], member = "all" }, source = { kind = "decorated_callable" }, target = { kind = "keyword", name = "response_model" }, relation = "uses_model" }
+
+[[semantic_rules]]
+id = "response-model-route"
+namespace = "fastapi"
+scope = "project"
+activation = [{ kind = "package", name = "fastapi" }]
+operation = { kind = "symbol_attachment", language = "python", callee = { kind = "constructed_member", module = "fastapi", constructors = ["FastAPI", "APIRouter"], member = "route" }, source = { kind = "decorated_callable" }, target = { kind = "keyword", name = "response_model" }, relation = "uses_model" }
+
+[[semantic_rules]]
+id = "response-model-api_route"
+namespace = "fastapi"
+scope = "project"
+activation = [{ kind = "package", name = "fastapi" }]
+operation = { kind = "symbol_attachment", language = "python", callee = { kind = "constructed_member", module = "fastapi", constructors = ["FastAPI", "APIRouter"], member = "api_route" }, source = { kind = "decorated_callable" }, target = { kind = "keyword", name = "response_model" }, relation = "uses_model" }
+
+[[semantic_rules]]
+id = "exception-handler"
+namespace = "fastapi"
+scope = "project"
+activation = [{ kind = "package", name = "fastapi" }]
+operation = { kind = "symbol_attachment", language = "python", callee = { kind = "constructed_member", module = "fastapi", constructors = ["FastAPI", "APIRouter"], member = "exception_handler" }, source = { kind = "decorated_callable" }, target = { kind = "argument", index = 0 }, relation = "references" }
+
+[[semantic_rules]]
+id = "registered-exception-handler"
+namespace = "fastapi"
+scope = "project"
+activation = [{ kind = "package", name = "fastapi" }]
+operation = { kind = "symbol_attachment", language = "python", callee = { kind = "constructed_member", module = "fastapi", constructors = ["FastAPI", "APIRouter"], member = "add_exception_handler" }, source = { kind = "argument", index = 1 }, target = { kind = "argument", index = 0 }, relation = "references" }
