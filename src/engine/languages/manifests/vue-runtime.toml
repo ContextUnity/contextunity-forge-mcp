@@ -1,0 +1,33 @@
+receivers = []
+builtins = []
+filters = []
+routes = []
+
+[[syntax_rules]]
+id = "pinia-options-store"
+language = "typescript"
+activation = [{ kind = "package", name = "pinia" }]
+operation = { kind = "factory_members", callee = { kind = "imported", module = "pinia", export = "defineStore" }, argument = 1, state_member = "state", actions_member = "actions" }
+
+[[syntax_rules]]
+id = "pinia-setup-store"
+language = "typescript"
+activation = [{ kind = "package", name = "pinia" }]
+operation = { kind = "factory_members", callee = { kind = "imported", module = "pinia", export = "defineStore" }, argument = 1, shape = "setup_return", configured_module = "@pinia/nuxt" }
+
+[[syntax_rules]]
+id = "component-macros"
+language = "vue"
+display = { builtin = "builtin:vue_macro" }
+operation = { kind = "component_macros", props = "defineProps", emits = "defineEmits", slots = "defineSlots", markers = ["defineExpose", "withDefaults", "defineOptions", "defineModel"] }
+
+[[syntax_rules]]
+id = "component-options"
+language = "vue"
+operation = { kind = "component_options", module = "vue", export = "defineComponent", components_key = "components" }
+
+[[syntax_rules]]
+id = "implicit-runtime"
+display = { builtin = "builtin:vue_runtime" }
+language = "vue"
+operation = { kind = "implicit_builtins", names = ["ref","computed","reactive","shallowRef","shallowReactive","toRef","toRefs","unref","isRef","watch","watchEffect","onMounted","onUnmounted","onUpdated","onBeforeMount","onBeforeUnmount","nextTick","inject","provide","useSlots","useAttrs","useI18n","useFetch","useAsyncData","useLazyFetch","useLazyAsyncData","useRoute","useRouter","navigateTo","useState","useCookie","useHead","useSeoMeta","useError","createError","clearError","defineNuxtComponent","defineNuxtRouteMiddleware","definePageMeta","abortNavigation","setResponseStatus","useRuntimeConfig","useNuxtApp","useRequestEvent","useRequestHeaders","useResponseEvent"] }
