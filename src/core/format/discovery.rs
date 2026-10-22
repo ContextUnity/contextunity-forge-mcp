@@ -756,12 +756,10 @@ fn render_inspect(output: &mut String, value: &Value) {
                     format!("[{path}#L{line}]({uri})")
                 }
                 (Some(path), Some(line), None) => {
-                    format!("`{}`#L{line} (link unavailable)", escape_text(path))
+                    format!("`{}`#L{line}", escape_text(path))
                 }
                 (Some(path), None, Some(uri)) => format!("[{path}]({uri})"),
-                (Some(path), None, None) => {
-                    format!("`{}` (line and link unavailable)", escape_text(path))
-                }
+                (Some(path), None, None) => format!("`{}`", escape_text(path)),
                 (None, _, Some(uri)) => format!("[source]({uri})"),
                 (None, _, None) => "source coordinate unavailable".to_owned(),
             };

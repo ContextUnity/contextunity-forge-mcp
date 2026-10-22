@@ -624,6 +624,153 @@ mod tests {
         assert!(rendered.contains("**complete**: `false`"));
         assert!(rendered.contains("\"row\""));
         assert!(rendered.contains("`null`"));
+
+        let empty_page = || json!({"total":0,"offset":0,"limit":10,"items":[]});
+        let heading_cases = vec![
+            (
+                "code_map_explain",
+                json!({
+                    "incoming":empty_page(),"outgoing":empty_page(),
+                    "documents":empty_page(),"affected_docs":empty_page(),
+                    "analysis_gaps":empty_page()
+                }),
+                vec![
+                    "Inbound relationships",
+                    "Outbound relationships",
+                    "Verified documentation",
+                    "Affected documents",
+                    "Analysis gaps",
+                ],
+            ),
+            (
+                "code_map_impact",
+                json!({
+                    "nodes":empty_page(),"changed_symbols":empty_page(),
+                    "tests":empty_page(),"unmapped_changes":empty_page(),
+                    "affected_docs":empty_page()
+                }),
+                vec![
+                    "Reached nodes",
+                    "Changed symbols",
+                    "Affected tests",
+                    "Unmapped changes",
+                    "Affected documents",
+                ],
+            ),
+            (
+                "code_map_tests",
+                json!({"nodes":empty_page()}),
+                vec!["Related tests and dependencies"],
+            ),
+            (
+                "code_map_analyze",
+                json!({
+                    "diagnostics":empty_page(),"untested_public_surface":empty_page(),
+                    "errors":empty_page(),"resolution":empty_page(),
+                    "external_imports":empty_page(),"doc_diagnostics":empty_page(),
+                    "top_files":empty_page(),"resolution_statuses":empty_page(),
+                    "resolution_causes":empty_page(),"parse_error_languages":empty_page()
+                }),
+                vec![
+                    "Syntax diagnostics",
+                    "Untested public surface",
+                    "Parse errors",
+                    "Unresolved and ambiguous references",
+                    "External references",
+                    "Documentation diagnostics",
+                    "Files with the most recorded issues",
+                    "Resolution statuses",
+                    "Resolution causes",
+                    "Parse errors by language",
+                ],
+            ),
+        ];
+        let mut formatting_failures = Vec::new();
+        for (title, value, headings) in heading_cases {
+            let rendered = render_for_operation(
+                &value,
+                OutputFormat::Markdown,
+                title,
+                None,
+                OperationKind::Navigation,
+            );
+            for heading in headings {
+                if rendered.contains(&format!("## {heading}\n")) {
+                    formatting_failures.push(format!("{title} rendered empty heading {heading}"));
+                }
+            }
+            if rendered.contains("No indexed results in this page.") {
+                formatting_failures.push(format!("{title} rendered an empty-page notice"));
+            }
+        }
+
+        let compact_stub = render_for_operation(
+            &json!({"incoming":{"total":3,"offset":0,"limit":3,"omitted":true}}),
+            OutputFormat::Markdown,
+            "code_map_explain",
+            None,
+            OperationKind::Navigation,
+        );
+        if !compact_stub.contains("## Inbound relationships\n") {
+            formatting_failures.push("non-empty compact stub lost its heading".into());
+        }
+
+        let unresolved = render_presented(
+            &json!({"nodes":{"total":2,"items":[
+                {"name":"missing","path":"src/missing.rs","line":4},
+                {"name":"unsafe","path":"../outside.rs","line":5}
+            ]}}),
+            OutputFormat::Markdown,
+            "code_map_search",
+            Some(DiscoveryKind::Search),
+        );
+        if unresolved.contains("(link unavailable)") {
+            formatting_failures.push("unresolved paths gained a link-unavailable marker".into());
+        }
+        if !unresolved.contains("src/missing.rs") || !unresolved.contains("../outside.rs") {
+            formatting_failures.push("unresolved or unsafe coordinate was omitted".into());
+        }
+        let unresolved_inspect = render_presented(
+            &json!({
+                "node":{"qualname":"selected","path":"src/missing.rs","line":7},
+                "governing_invariants":{"direct":[],"omitted_sources":[
+                    {"id":"INV-MISSING","source":{"path":"src/missing.rs","line":7}},
+                    {"id":"INV-UNSAFE","source":{"path":"../outside.rs"}}
+                ]}
+            }),
+            OutputFormat::Markdown,
+            "code_map_inspect",
+            Some(DiscoveryKind::Inspect),
+        );
+        if unresolved_inspect.contains("link unavailable") {
+            formatting_failures.push("unresolved or unsafe inspect source gained a link marker".into());
+        }
+        if !unresolved_inspect.contains("src/missing.rs")
+            || !unresolved_inspect.contains("../outside.rs")
+        {
+            formatting_failures.push("unresolved inspect coordinates were omitted".into());
+        }
+
+        let existing_uri = "file:///tmp/workspace/src/space%20dir/%23unicode-%CE%BB.rs#L9";
+        let rendered_uri = render_presented(
+            &json!({"nodes":{"total":1,"items":[{
+                "name":"symbol","path":"src/space dir/#unicode-λ.rs","line":9,
+                "uri":existing_uri
+            }]}}),
+            OutputFormat::Markdown,
+            "code_map_search",
+            Some(DiscoveryKind::Search),
+        );
+        if !rendered_uri.contains(existing_uri) {
+            formatting_failures.push("pre-attached encoded URI was not preserved".into());
+        }
+        if rendered_uri.contains("%2520") || rendered_uri.contains("%2523") {
+            formatting_failures.push("pre-attached URI was double encoded".into());
+        }
+        assert!(
+            formatting_failures.is_empty(),
+            "formatter contract failures: {formatting_failures:#?}"
+        );
     }
 
     #[test]

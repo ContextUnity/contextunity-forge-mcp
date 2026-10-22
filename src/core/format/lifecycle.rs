@@ -388,13 +388,26 @@ fn render_record(value: &Value, title: &str, heading: &str) -> String {
         "worker_id",
         "worktree",
         "digest",
+        "_presentation_scope_uris",
     ];
-    let fields = if title == "task_manage" && object.get("spec").is_some() {
+    let task_inspection = title == "task_manage" && object.get("spec").is_some();
+    let fields = if task_inspection {
         task_inspection_fields(object, &skip)
     } else {
         fields_without(object, &skip)
     };
-    render_fields(&mut output, &fields, 0, &mut state);
+    let scope_uris = task_inspection
+        .then(|| {
+            object
+                .get("_presentation_scope_uris")
+                .and_then(Value::as_object)
+        })
+        .flatten();
+    if let Some(scope_uris) = scope_uris {
+        render_task_fields(&mut output, &fields, scope_uris, 0, &mut state);
+    } else {
+        render_fields(&mut output, &fields, 0, &mut state);
+    }
     output
 }
 
@@ -628,6 +641,89 @@ fn quote_field(output: &mut String, label: &str, value: Option<&Value>) {
 
 fn summary_is_truncated(payload: &str) -> bool {
     payload.ends_with("... [truncated]")
+}
+
+fn render_task_fields(
+    output: &mut String,
+    fields: &Map<String, Value>,
+    scope_uris: &Map<String, Value>,
+    depth: usize,
+    state: &mut RenderState,
+) {
+    for (key, value) in ordered_fields(fields) {
+        if key == "spec" {
+            if let Some(spec) = value.as_object() {
+                bullet_prefix(output, depth);
+                output.push_str("**");
+                output.push_str(&escape_label(display_label(key)));
+                output.push_str("**\n");
+                for (spec_key, spec_value) in ordered_fields(spec) {
+                    if spec_key == "scope" {
+                        render_task_scope(output, spec_value, scope_uris, depth + 1, state);
+                    } else {
+                        render_field(output, spec_key, spec_value, depth + 1, state);
+                    }
+                }
+                continue;
+            }
+        }
+        render_field(output, key, value, depth, state);
+    }
+}
+
+fn render_task_scope(
+    output: &mut String,
+    scope: &Value,
+    scope_uris: &Map<String, Value>,
+    depth: usize,
+    state: &mut RenderState,
+) {
+    match scope {
+        Value::Array(paths) => render_scope_group(output, "scope", paths, scope_uris, depth, state),
+        Value::Object(groups) => {
+            bullet_prefix(output, depth);
+            output.push_str("**Scope**\n");
+            for (key, value) in ordered_fields(groups) {
+                if let Some(paths) = value.as_array() {
+                    render_scope_group(output, key, paths, scope_uris, depth + 1, state);
+                } else {
+                    render_field(output, key, value, depth + 1, state);
+                }
+            }
+        }
+        _ => render_field(output, "scope", scope, depth, state),
+    }
+}
+
+fn render_scope_group(
+    output: &mut String,
+    key: &str,
+    paths: &[Value],
+    scope_uris: &Map<String, Value>,
+    depth: usize,
+    state: &mut RenderState,
+) {
+    if paths.is_empty() {
+        render_field(output, key, &Value::Array(Vec::new()), depth, state);
+        return;
+    }
+    bullet_prefix(output, depth);
+    output.push_str("**");
+    output.push_str(&escape_label(display_label(key)));
+    output.push_str("**\n");
+    for (index, value) in paths.iter().enumerate() {
+        let item_key = format!("[{index}]");
+        let Some(path) = value.as_str() else {
+            render_field(output, &item_key, value, depth + 1, state);
+            continue;
+        };
+        if let Some(uri) = scope_uris.get(path).and_then(Value::as_str) {
+            bullet_prefix(output, depth + 1);
+            output.push_str(&format!("[{}]({uri})\n", escape_label(path)));
+        } else {
+            render_field(output, &item_key, value, depth + 1, state);
+        }
+    }
 }
 
 #[derive(Default)]

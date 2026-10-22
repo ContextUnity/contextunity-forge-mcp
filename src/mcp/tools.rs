@@ -335,7 +335,11 @@ impl Server {
             request.worktree = None;
         }
         self.responding(format, OperationKind::Task, "task_manage", |_, _| {
-            super::tasks::manage(&self.root, request)
+            let mut value = super::tasks::manage(&self.root, request)?;
+            if format == OutputFormat::Markdown {
+                cli::discovery::attach_task_scope_uris(&self.root, &mut value);
+            }
+            Ok(value)
         })
     }
     #[tool(

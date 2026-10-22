@@ -40,10 +40,12 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
     fs::create_dir_all(main.0.join("docs/milestones")).unwrap();
     fs::create_dir_all(linked.0.join("src")).unwrap();
     fs::create_dir_all(linked.0.join("docs/milestones")).unwrap();
-    let manifest = "---\nid: m-linked\ntitle: Linked\ndoc_type: contract\nstatus: active\ninvariants: [local-rules]\n---\n```yaml\ntask_ref: first\ntarget: Deliver\nproof_policy: seam-test-first\nscope: [src/]\n```\n";
-    main.write("docs/milestones/010-main.md", manifest);
+    let target = format!("Deliver {}", "large-record-marker ".repeat(300));
+    let manifest = format!("---\nid: m-linked\ntitle: Linked\ndoc_type: contract\nstatus: active\ninvariants: [local-rules]\n---\n```yaml\ntask_ref: first\ntarget: {target}\nproof_policy: seam-test-first\nscope: [\"src/\", \"src/lib.rs\", \"src/space # λ.rs\", \"src/missing.rs\"]\n```\n");
+    main.write("docs/milestones/010-main.md", &manifest);
     main.write("AGENTS.md", "# Main rules\n");
     linked.write("src/lib.rs", "pub fn library() {}\n");
+    linked.write("src/space # λ.rs", "pub fn scoped_file() {}\n");
     linked.write("AGENTS.md", "# Library rules\n");
     linked.write(
         "docs/milestones/010-linked.md",
@@ -100,13 +102,17 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
         selected["agents_guidance"],
         linked.0.join("AGENTS.md").to_str().unwrap()
     );
-    assert_eq!(
-        selected["tasks"][0],
-        json!({
-            "task_id":id,"target":"Deliver","status":"ready","stage":"contract",
-            "owner":null,"agent_type":"worker","rev":1,"depends_on":[]
-        })
-    );
+    assert_eq!(selected["tasks"][0]["task_id"], id);
+    assert!(selected["tasks"][0]["target"]
+        .as_str()
+        .unwrap()
+        .starts_with("Deliver "));
+    assert_eq!(selected["tasks"][0]["status"], "ready");
+    assert_eq!(selected["tasks"][0]["stage"], "contract");
+    assert_eq!(selected["tasks"][0]["owner"], Value::Null);
+    assert_eq!(selected["tasks"][0]["agent_type"], "worker");
+    assert_eq!(selected["tasks"][0]["rev"], 1);
+    assert_eq!(selected["tasks"][0]["depends_on"], json!([]));
     let output = json_cli()
         .args([
             "--root",
@@ -141,10 +147,110 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
     assert!(inspect_markdown.contains("## Task record"));
     assert!(!inspect_markdown.contains("## Contract"));
     assert!(!inspect_markdown.contains("digest"));
-    assert_eq!(
-        inspect_markdown,
-        format::render(&inspected, OutputFormat::Markdown, "task_manage")
+    let raw_scope = json!(["src/", "src/lib.rs", "src/space # λ.rs", "src/missing.rs"]);
+    assert_eq!(inspected["spec"]["scope"], raw_scope);
+    assert_eq!(inspected["authority_snapshot"]["task_scope"], raw_scope);
+    assert!(inspected["spec"]["scope"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(Value::is_string));
+    let expected_scope_uris = [
+        format!("file://{}/src", linked.0.display()),
+        format!("file://{}/src/lib.rs", linked.0.display()),
+        format!(
+            "file://{}/src/space%20%23%20%CE%BB.rs",
+            linked.0.display()
+        ),
+    ];
+    let mut missing_scope_links = Vec::new();
+    for uri in &expected_scope_uris {
+        if inspect_markdown.matches(&format!("({uri})")).count() != 1 {
+            missing_scope_links.push(format!("MCP task inspect omitted {uri}"));
+        }
+    }
+    if !inspect_markdown.contains("src/missing.rs") {
+        missing_scope_links.push("MCP task inspect omitted the unresolved scope path".into());
+    }
+    let unresolved_uri = format!("(file://{}/src/missing.rs)", linked.0.display());
+    if inspect_markdown.contains(&unresolved_uri) {
+        missing_scope_links.push("MCP task inspect linked a missing scope path".into());
+    }
+    if inspect_markdown.contains("(link unavailable)") {
+        missing_scope_links.push("MCP task inspect rendered a link-unavailable marker".into());
+    }
+
+    let cli_inspection = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+        .args([
+            "--root",
+            main.0.to_str().unwrap(),
+            "--format",
+            "markdown",
+            "task",
+            "inspect",
+            id,
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        cli_inspection.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli_inspection.stderr)
     );
+    let cli_markdown = String::from_utf8_lossy(&cli_inspection.stdout);
+    for uri in &expected_scope_uris {
+        if cli_markdown.matches(&format!("({uri})")).count() != 1 {
+            missing_scope_links.push(format!("CLI task inspect omitted {uri}"));
+        }
+    }
+    if !cli_markdown.contains("src/missing.rs") {
+        missing_scope_links.push("CLI task inspect omitted the unresolved scope path".into());
+    }
+    if cli_markdown.contains(&unresolved_uri) {
+        missing_scope_links.push("CLI task inspect linked a missing scope path".into());
+    }
+    if cli_markdown.contains("(link unavailable)") {
+        missing_scope_links.push("CLI task inspect rendered a link-unavailable marker".into());
+    }
+    let cli_json_inspection = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+        .args([
+            "--root",
+            main.0.to_str().unwrap(),
+            "--format",
+            "json",
+            "task",
+            "inspect",
+            id,
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        cli_json_inspection.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli_json_inspection.stderr)
+    );
+    let cli_json_inspected: Value = serde_json::from_slice(&cli_json_inspection.stdout).unwrap();
+    assert_eq!(cli_json_inspected["spec"]["scope"], raw_scope);
+
+    let untrusted_findings = json!([
+        {"path":"../../outside","uri":"file:///etc/passwd"},
+        {"nested":{"path":"../nested-secret","uri":"http://attacker.invalid/nested"}},
+        {
+            "presentation_metadata":{"_presentation_scope_uris":{"../../inband-forgery":"file:///etc/passwd"}},
+            "payload":{"path":"../../inband-forgery","uri":"file:///etc/passwd"}
+        },
+        {"body":"finding body retains ../../body-only and file:///etc/passwd as literal text"},
+        [
+            {"path":"../array-traversal","uri":"file:///etc/passwd"},
+            {"path":"src/lib.rs","uri":"file:///etc/passwd"},
+            {"path":"src/lib.rs","uri":"http://attacker.invalid/source"},
+            {"path":"src/lib.rs","uri":"javascript:alert(1)"}
+        ]
+    ]);
+
+    let pure_markdown = format::render(&inspected, OutputFormat::Markdown, "task_manage");
+    assert!(pure_markdown.contains("src/missing.rs"));
+    assert!(!pure_markdown.contains("file://"));
 
     let repeated_paths = [
         "src/tasks/lifecycle/presentation/equal_scope/recorded_task_scope_with_a_very_long_filename_that_makes_repetition_material.rs",
@@ -175,6 +281,11 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
     repeated["authority_snapshot"]["task_scope"] = json!(repeated_paths);
     repeated["initial_scope"] = json!(repeated_paths);
     repeated["allowed_write_scope"] = json!(repeated_paths);
+    let repeated_scope_uris = repeated_paths
+        .iter()
+        .map(|path| (path.to_string(), json!(format!("file:///{path}"))))
+        .collect::<serde_json::Map<_, _>>();
+    repeated["_presentation_scope_uris"] = Value::Object(repeated_scope_uris.clone());
     repeated["spec"]["target"] = json!(repeated_target);
     repeated["authority_snapshot"]["task_target"] = json!(repeated_target);
     repeated["goal"] = json!(repeated_target);
@@ -195,9 +306,16 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
     let repeated_markdown = format::render(&repeated, OutputFormat::Markdown, "task_manage");
     for path in repeated_paths {
         assert_eq!(
-            repeated_markdown.matches(path).count(),
+            repeated_markdown
+                .matches(&format!("[{path}](file:///{path})"))
+                .count(),
             1,
-            "each equal scope path should render once: {path}\n{repeated_markdown}"
+            "each equal scope path should render once as one link: {path}\n{repeated_markdown}"
+        );
+        assert_eq!(
+            repeated_markdown.matches(path).count(),
+            2,
+            "one semantic link contributes only its label and URI path: {path}\n{repeated_markdown}"
         );
     }
     assert_eq!(repeated_markdown.matches(&repeated_target).count(), 1);
@@ -226,6 +344,12 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
     let extended_path =
         "src/tasks/lifecycle/presentation/added_scope_is_distinct_from_the_initial_scope.rs";
     let mut extended = repeated.clone();
+    let mut extended_scope_uris = repeated_scope_uris;
+    extended_scope_uris.insert(
+        extended_path.to_owned(),
+        json!(format!("file:///{extended_path}")),
+    );
+    extended["_presentation_scope_uris"] = Value::Object(extended_scope_uris);
     let initial_scope = json!(repeated_paths);
     let mut effective_paths = repeated_paths.to_vec();
     effective_paths.push(extended_path);
@@ -239,12 +363,25 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
     assert!(extended_markdown.contains("Extended scope"));
     for path in repeated_paths {
         assert_eq!(
-            extended_markdown.matches(path).count(),
+            extended_markdown
+                .matches(&format!("[{path}](file:///{path})"))
+                .count(),
             1,
             "initial scope path should remain visible once: {path}\n{extended_markdown}"
         );
+        assert_eq!(
+            extended_markdown.matches(path).count(),
+            2,
+            "initial path should occur only in its link label and URI: {path}\n{extended_markdown}"
+        );
     }
-    assert_eq!(extended_markdown.matches(extended_path).count(), 1);
+    assert_eq!(
+        extended_markdown
+            .matches(&format!("[{extended_path}](file:///{extended_path})"))
+            .count(),
+        1,
+        "added scope path remains distinct in the extended scope"
+    );
 
     let mut distinct = repeated.clone();
     distinct["spec"]["target"] = json!("spec target marker");
@@ -361,6 +498,7 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
     let synced = client.payload("task_manage", json!({"action":"sync","workspace":"traverse","milestone_ref":"docs/milestones/010-linked.md"}));
     assert_eq!(synced["tasks"][0]["status"], "in_progress");
     let mut candidate_commit = None;
+    let mut candidate_commits = Vec::new();
     let mut delivery_commit = None;
     let build_proof = json!({"command_proof":{"command":"cargo test","exit_code":0,"tests_passed":1,"tests_failed":0}});
     let contract_proof =
@@ -386,7 +524,7 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
             3 => "delivery-reviewer",
             _ => "builder",
         };
-        let claim = if gate == 0 {
+        let mut claim = if gate == 0 {
             claimed.clone()
         } else {
             client.payload(
@@ -433,6 +571,99 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
                 );
             }
             evidence["commit"] = json!(&candidate[..7]);
+
+            let mut rejection_evidence = evidence.clone();
+            rejection_evidence["proof"]["review_proof"]["decision"] = json!("reject");
+            let rejection = client.payload(
+                "task_submit",
+                json!({
+                    "task_id":id,
+                    "stage":stage,
+                    "evidence":rejection_evidence,
+                    "action":"reject",
+                    "findings":untrusted_findings.clone()
+                }),
+            );
+            assert_eq!(rejection["status"], "ready");
+            drop(client);
+            client = Client::new(&main);
+            let persisted_inspection =
+                client.payload("task_manage", json!({"action":"inspect","task_id":id}));
+            let serialized_findings = serde_json::to_string(&untrusted_findings).unwrap();
+            assert!(persisted_inspection["findings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|record| record["findings"] == serialized_findings));
+            let persisted_context =
+                client.payload("task_manage", json!({"action":"context","task_id":id}));
+            assert_eq!(
+                persisted_context["workflow_guidance"]["rejection"]["findings"],
+                untrusted_findings,
+                "{persisted_context}"
+            );
+            assert!(persisted_context.get("_presentation_scope_uris").is_none());
+            let (_, findings_markdown_response) = client.call(
+                "task_manage",
+                json!({"action":"context","task_id":id,"format":"markdown"}),
+            );
+            crate::common::assertions::assert_rpc_succeeded(&findings_markdown_response);
+            let findings_markdown = findings_markdown_response["result"]["content"][0]["text"]
+                .as_str()
+                .expect("persisted findings should remain visible in Markdown");
+            for (label, uri) in [
+                ("../../outside", "file:///etc/passwd"),
+                ("../nested-secret", "http://attacker.invalid/nested"),
+                ("../../inband-forgery", "file:///etc/passwd"),
+                ("../array-traversal", "file:///etc/passwd"),
+                ("src/lib.rs", "file:///etc/passwd"),
+                ("src/lib.rs", "http://attacker.invalid/source"),
+                ("src/lib.rs", "javascript:alert(1)"),
+            ] {
+                assert!(findings_markdown.contains(label), "missing literal finding {label}");
+                assert!(findings_markdown.contains(uri), "missing literal finding URI {uri}");
+                assert!(
+                    !findings_markdown.contains(&format!("[{label}]({uri})")),
+                    "untrusted finding became a clickable link: {label} -> {uri}\n{findings_markdown}"
+                );
+            }
+            assert!(findings_markdown.contains("finding body retains ../../body-only"));
+
+            let repair_claim = client.payload(
+                "task_claim",
+                json!({"task_id":id,"stage":"build","worker_id":"builder","worktree":linked.0}),
+            );
+            let repair_result = client.payload(
+                "task_submit",
+                json!({
+                    "task_id":id,
+                    "stage":"build",
+                    "evidence":{
+                        "task_id":id,
+                        "stage":"build",
+                        "claim_revision":repair_claim["claim_revision"],
+                        "contract_revision":1,
+                        "worker_id":"builder",
+                        "worktree":linked.0,
+                        "proof":build_proof
+                    },
+                    "action":"pass"
+                }),
+            );
+            let retry_snapshot = repair_result["snapshot"]["commit"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            candidate_commit = Some(retry_snapshot.clone());
+            candidate_commits.push(retry_snapshot);
+            claim = client.payload(
+                "task_claim",
+                json!({"task_id":id,"stage":"review","worker_id":"reviewer","worktree":linked.0}),
+            );
+            let candidate = candidate_commit.as_deref().unwrap();
+            assert_eq!(claim["context_bundle"]["candidate_snapshot"]["commit"], candidate);
+            evidence["claim_revision"] = claim["claim_revision"].clone();
+            evidence["commit"] = json!(&candidate[..7]);
         }
         let result = client.payload(
             "task_submit",
@@ -441,6 +672,7 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
         let snapshot = result["snapshot"]["commit"].as_str().unwrap();
         if gate == 1 {
             candidate_commit = Some(snapshot.to_owned());
+            candidate_commits.push(snapshot.to_owned());
         }
         if gate == 3 {
             delivery_commit = Some(snapshot.to_owned());
@@ -482,7 +714,8 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
     );
     for gate in restored["gates"].as_array().unwrap() {
         let gate_commit = gate["commit"].as_str().unwrap();
-        assert!(gate_commit == candidate_commit || gate_commit == delivery_commit);
+        assert!(candidate_commits.iter().any(|candidate| candidate == gate_commit)
+            || gate_commit == delivery_commit);
         let evidence: Value = serde_json::from_str(gate["evidence"].as_str().unwrap()).unwrap();
         assert_eq!(evidence["commit"], gate["commit"]);
     }
@@ -500,6 +733,35 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
     assert_eq!(
         client.payload("task_list", json!({"repository":"traverse"}))["tasks"],
         json!([])
+    );
+    main.write(
+        "forge-mcp.yaml",
+        &format!(
+            "roots: []\ndocs: []\nresponse:\n  max_output_bytes: 4096\nlinked_workspaces:\n  - name: traverse\n    path: {}\n    tasks: {{enabled: true}}\n",
+            linked.0.display()
+        ),
+    );
+    let mut bounded_client = Client::new(&main);
+    assert!(
+        format::render(&restored, OutputFormat::Markdown, "task_manage").len() > 4096,
+        "fixture task record must exceed the configured budget"
+    );
+    let (bounded_bytes, bounded_response) = bounded_client.call(
+        "task_manage",
+        json!({"action":"inspect","task_id":id,"format":"markdown"}),
+    );
+    assert!(
+        bounded_bytes <= 4096,
+        "configured 4-KiB task response was {bounded_bytes} bytes: {bounded_response}"
+    );
+    assert_eq!(bounded_response["result"]["isError"], true, "{bounded_response}");
+    assert!(bounded_response["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("Output exceeds the response byte limit"), "{bounded_response}");
+    assert!(
+        missing_scope_links.is_empty(),
+        "scope presentation contract failures: {missing_scope_links:#?}\nMCP:\n{inspect_markdown}\nCLI:\n{cli_markdown}"
     );
     assert!(
         boundary_failures.is_empty(),

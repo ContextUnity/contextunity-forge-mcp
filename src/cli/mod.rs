@@ -212,6 +212,44 @@ pub(crate) mod discovery {
         }
     }
 
+    /// Adds guarded scope links for task Markdown without opening the code map.
+    pub(crate) fn attach_task_scope_uris(root: &Path, value: &mut Value) {
+        let root = value
+            .get("workspace_root")
+            .and_then(Value::as_str)
+            .map(Path::new)
+            .unwrap_or(root);
+        let Ok(adapter) = scanner::load_adapter(root, None) else {
+            return;
+        };
+        let Some(scope) = value
+            .pointer("/spec/scope")
+            .and_then(Value::as_array)
+            .or_else(|| {
+                value
+                    .pointer("/authority_snapshot/task_scope")
+                    .and_then(Value::as_array)
+            })
+        else {
+            return;
+        };
+        let mut uris = serde_json::Map::new();
+        for path in scope.iter().filter_map(Value::as_str) {
+            if let Ok(absolute) = scanner::resolve_file_path(root, &adapter, path) {
+                if absolute.exists() {
+                    if let Ok(absolute) = absolute.canonicalize() {
+                        if let Some(uri) = file_uri_for_path(&absolute, None) {
+                            uris.insert(path.to_owned(), json!(uri));
+                        }
+                    }
+                }
+            }
+        }
+        if !uris.is_empty() {
+            value["_presentation_scope_uris"] = json!(uris);
+        }
+    }
+
     fn attach_page_uris(root: &Path, adapter: &Adapter, page: Option<&mut Value>) {
         let Some(items) = page
             .and_then(|page| page.get_mut("items"))
@@ -1309,6 +1347,9 @@ impl Cli {
                         &mut result,
                         title,
                     );
+                }
+                if title == "task_manage" {
+                    discovery::attach_task_scope_uris(&root, &mut result);
                 }
                 if operation == OperationKind::Navigation
                     && discovery.is_none()

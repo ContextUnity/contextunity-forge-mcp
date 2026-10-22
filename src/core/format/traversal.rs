@@ -652,15 +652,21 @@ fn render_page(
     page: &Value,
     mut render_item: impl FnMut(&mut String, &Value),
 ) {
+    let items = page.get("items").and_then(Value::as_array);
+    if items.is_none_or(Vec::is_empty)
+        && page.get("total").and_then(Value::as_u64) == Some(0)
+        && page.get("has_more") != Some(&Value::Bool(true))
+        && page.get("next_offset").is_none_or(Value::is_null)
+        && page.get("omitted") != Some(&Value::Bool(true))
+    {
+        return;
+    }
     output.push_str(&format!("\n## {}\n\n", escape_text(heading)));
-    let Some(items) = page.get("items").and_then(Value::as_array) else {
+    let Some(items) = items else {
         render_remaining(output, page, &[], 0);
         return;
     };
     render_remaining(output, page, &["items"], 0);
-    if items.is_empty() && page.get("total").and_then(Value::as_u64) == Some(0) {
-        output.push_str("No indexed results in this page.\n");
-    }
     for item in items {
         render_item(output, item);
     }

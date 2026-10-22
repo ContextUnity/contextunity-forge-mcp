@@ -1070,6 +1070,21 @@ fn stdio_analyze_preserves_sql_columns_named_like_metadata() {
     assert_eq!(sql["rows"]["items"][0]["items"], "[]");
 
     assert_eq!(sql["rows"]["items"][0]["complete"], "false");
+    let coordinate_named_columns = client.payload(
+        "code_map_analyze",
+        json!({
+            "format":"json",
+            "target":"SELECT 'opaque path # λ' AS path, 37 AS line, 'file:///literal%20uri#L9' AS uri"
+        }),
+    );
+    assert_eq!(
+        coordinate_named_columns["rows"]["items"][0],
+        json!({
+            "path":"opaque path # λ",
+            "line":37,
+            "uri":"file:///literal%20uri#L9"
+        })
+    );
     let complete = json!({"total":1,"offset":0,"limit":1,"has_more":false,
         "next_offset":null,"generation":"inactive-display-generation","items":[{"name":"retained"}]});
     let durable = json!({"task_id":"project/milestone:task","stage":"build","claim_revision":0,
@@ -2659,7 +2674,7 @@ fn stdio_server_keeps_its_linked_worktree_and_resolves_registered_sibling_names(
     let primary = Workspace::new();
     primary.write(
         "forge-mcp.yaml",
-        "roots: [src]\ntasks_db: .forge/tasks.sqlite\n",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
     );
     primary.write("src/lib.rs", "pub fn primary_only() {}\n");
     let git = |args: &[&str]| {
@@ -2682,10 +2697,37 @@ fn stdio_server_keeps_its_linked_worktree_and_resolves_registered_sibling_names(
     let linked = primary.path(".worktrees/049-current");
     let sibling_container = Workspace::new();
     let sibling = sibling_container.path("051-external");
+    let mirror = sibling_container.path("052-mirror");
     git(&["worktree", "add", "--detach", linked.to_str().unwrap()]);
     git(&["worktree", "add", "--detach", sibling.to_str().unwrap()]);
-    fs::write(linked.join("src/lib.rs"), "pub fn linked_only() {}\n").unwrap();
-    fs::write(sibling.join("src/lib.rs"), "pub fn sibling_only() {}\n").unwrap();
+    git(&["worktree", "add", "--detach", mirror.to_str().unwrap()]);
+    fs::write(
+        linked.join("src/lib.rs"),
+        "pub fn linked_only() {}\npub fn shared_source() {\n    linked_only();\n    let b = 2;\n    let c = 3;\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        sibling.join("src/lib.rs"),
+        "pub fn sibling_only() {}\npub fn shared_source() {\n    sibling_only();\n    let y = 2;\n    let z = 3;\n}\n#[cfg(test)]\nmod tests {\n    use super::sibling_only;\n    #[test]\n    fn exercises_sibling_symbol() {\n        sibling_only();\n    }\n}\n",
+    )
+    .unwrap();
+    fs::create_dir_all(sibling.join("src/space dir")).unwrap();
+    fs::write(
+        sibling.join("src/space dir/#unicode-λ.rs"),
+        "pub fn escaped_path_symbol() {}\n",
+    )
+    .unwrap();
+    fs::create_dir_all(linked.join("docs")).unwrap();
+    fs::write(
+        linked.join("docs/linked symbols.md"),
+        "# Linked symbol reference\n\nThe `linked_only` function is declared in the source.\n",
+    )
+    .unwrap();
+    fs::write(
+        mirror.join("src/lib.rs"),
+        "pub fn linked_only() {}\npub fn shared_source() {\n let a = 1;\n let b = 2;\n let c = 3;\n}\n",
+    )
+    .unwrap();
     fs::create_dir_all(primary.path(".forge")).unwrap();
     let conn = rusqlite::Connection::open(primary.path(".forge/tasks.sqlite")).unwrap();
     conn.execute_batch("CREATE TABLE task_claims(worktree TEXT, ended INTEGER);")
@@ -2802,11 +2844,142 @@ fn stdio_server_keeps_its_linked_worktree_and_resolves_registered_sibling_names(
 
     assert!(custom_db.is_file());
     assert!(!linked.join(".forge/code-map.sqlite").exists());
-    assert_eq!(
-        client.payload(
-            "code_map_search",
-            json!({"pattern":"sibling_only", "exact":true, "worktree":"external"})
-        )["nodes"]["total"],
-        1
+    let sibling_result = client.payload(
+        "code_map_search",
+        json!({"pattern":"sibling_only", "exact":true, "worktree":"external"}),
     );
+    assert_eq!(sibling_result["nodes"]["total"], 1);
+    assert!(sibling_result["nodes"]["items"][0].get("uri").is_none());
+    let linked_page = client.payload(
+        "get_code_snippet",
+        json!({"selector":"shared_source","max_body_lines":1,"leading_lines":0,"worktree":"."}),
+    );
+    assert_eq!(linked_page["source_preview"]["next_source_offset"], 1);
+    let (_, mirror_continuation) = client.call(
+        "get_code_snippet",
+        json!({"selector":"shared_source","max_body_lines":1,"leading_lines":0,"source_offset":1,"worktree":"mirror","format":"json"}),
+    );
+    assert_eq!(mirror_continuation["result"]["isError"], true);
+    assert!(mirror_continuation["result"]["content"][0]["text"].as_str().unwrap().contains("generation"));
+    let (_, sibling_continuation) = client.call(
+        "get_code_snippet",
+        json!({"selector":"shared_source","max_body_lines":1,"leading_lines":0,"source_offset":1,"worktree":"external","format":"json"}),
+    );
+    assert_eq!(sibling_continuation["result"]["isError"], true);
+
+    let expected_sibling_source = format!("file://{}/src/lib.rs#L1", sibling.display());
+    let expected_special_source = format!(
+        "file://{}/src/space%20dir/%23unicode-%CE%BB.rs#L1",
+        sibling.display()
+    );
+    let expected_linked_source = format!("file://{}/src/lib.rs#L1", linked.display());
+    let uri_cases = [
+        (
+            "relative root symbol",
+            "code_map_search",
+            json!({"pattern":"linked_only","exact":true,"worktree":".","format":"markdown"}),
+            expected_linked_source,
+        ),
+        (
+            "registered linked-workspace symbol",
+            "code_map_search",
+            json!({"pattern":"sibling_only","exact":true,"worktree":"external","format":"markdown"}),
+            expected_sibling_source.clone(),
+        ),
+        (
+            "encoded physical path",
+            "code_map_search",
+            json!({"pattern":"escaped_path_symbol","exact":true,"worktree":"external","format":"markdown"}),
+            expected_special_source.clone(),
+        ),
+        (
+            "AST match",
+            "ast_grep_search",
+            json!({"language":"rust","pattern":"pub fn escaped_path_symbol() {}","worktree":"external","format":"markdown"}),
+            expected_special_source,
+        ),
+        (
+            "inspect symbol",
+            "code_map_inspect",
+            json!({"selector":"shared_source","worktree":"external","format":"markdown"}),
+            format!("file://{}/src/lib.rs#L2", sibling.display()),
+        ),
+        (
+            "impact traversal node",
+            "code_map_impact",
+            json!({"selector":"sibling_only","direction":"inbound","worktree":"external","format":"markdown"}),
+            format!("file://{}/src/lib.rs#L2", sibling.display()),
+        ),
+        (
+            "traversal call edge",
+            "code_map_explain",
+            json!({"selector":"shared_source","direction":"outbound","worktree":"external","format":"markdown"}),
+            format!("file://{}/src/lib.rs#L3", sibling.display()),
+        ),
+        (
+            "test edge",
+            "code_map_tests",
+            json!({"selector":"sibling_only","direction":"inbound","worktree":"external","format":"markdown"}),
+            format!("file://{}/src/lib.rs#L11", sibling.display()),
+        ),
+        (
+            "documentation section",
+            "search_docs",
+            json!({"query":"linked symbol reference","format":"markdown"}),
+            format!("file://{}/docs/linked%20symbols.md", linked.display()),
+        ),
+    ];
+    let mut uri_failures = Vec::new();
+    for (label, tool, arguments, expected_uri) in uri_cases {
+        let (_, response) = client.call(tool, arguments);
+        assertions::assert_rpc_succeeded(&response);
+        let markdown = response["result"]["content"][0]["text"]
+            .as_str()
+            .expect("Markdown tool call should return text");
+        if !markdown.contains(&expected_uri) {
+            uri_failures.push(format!("{label} did not link to {expected_uri}: {markdown}"));
+        }
+        if markdown.contains("(link unavailable)") {
+            uri_failures.push(format!("{label} retained a link-unavailable marker: {markdown}"));
+        }
+    }
+
+    let doc_path = "docs/linked symbols.md";
+    let doc_json = client.payload("get_doc", json!({"path_or_id":doc_path}));
+    let referenced_symbol = doc_json["referenced_symbols"]["items"]
+        .as_array()
+        .and_then(|items| items.first());
+    if let Some(referenced_symbol) = referenced_symbol {
+        assert_eq!(referenced_symbol["path"], "src/lib.rs");
+        assert_eq!(referenced_symbol["line"], 1);
+        assert_eq!(referenced_symbol["citation_line"], 3);
+        assert!(referenced_symbol["doc_id"].as_str().is_some_and(|id| !id.is_empty()));
+        assert!(referenced_symbol.get("uri").is_none());
+    } else {
+        uri_failures.push(format!("get_doc did not retain the referenced symbol row: {doc_json}"));
+    }
+    let doc_line = doc_json["sections"]["items"][0]["line"]
+        .as_u64()
+        .unwrap_or(1);
+    let expected_doc_uri = format!(
+        "file://{}/docs/linked%20symbols.md#L{doc_line}",
+        linked.display()
+    );
+    let (_, doc_markdown_response) = client.call(
+        "get_doc",
+        json!({"path_or_id":doc_path,"format":"markdown"}),
+    );
+    assertions::assert_rpc_succeeded(&doc_markdown_response);
+    let doc_markdown = doc_markdown_response["result"]["content"][0]["text"]
+        .as_str()
+        .expect("get_doc should return Markdown text");
+    for expected_uri in [
+        expected_doc_uri,
+        format!("file://{}/src/lib.rs#L1", linked.display()),
+    ] {
+        if !doc_markdown.contains(&expected_uri) {
+            uri_failures.push(format!("get_doc did not link to {expected_uri}: {doc_markdown}"));
+        }
+    }
+    assert!(uri_failures.is_empty(), "coordinate URI failures: {uri_failures:#?}");
 }

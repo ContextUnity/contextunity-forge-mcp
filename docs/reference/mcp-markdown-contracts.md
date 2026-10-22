@@ -102,6 +102,14 @@ retained. `bundle: false` stays minimal and only presents fields supplied by tha
 mode. Inspect and submit layouts retain available gate history, claim attempts,
 findings, candidate bindings, and durable receipts.
 
+Task-inspection Markdown links each resolvable scope coordinate against the
+selected task workspace root. Missing or unsafe paths remain plain text, and
+the task scope arrays stay unchanged in JSON. Task presentation resolves these
+paths with the workspace adapter without opening the code map.
+Arbitrary JSON values, including persisted task findings with `path` and `uri`
+fields, remain literal data; only workspace-resolved scope presentation metadata
+produces coordinate links.
+
 Full inspect uses `## Task record`; claim context keeps `## Contract`. Inspect
 Markdown retains the task specification as canonical and omits equal scope,
 target, proof-policy, and task-invariant projections from `authority_snapshot`
@@ -286,6 +294,11 @@ nodes, actual call/edge coordinates, available docstrings and classification,
 governing invariants, affected documents, and incompleteness. An empty traversal
 reports no indexed matching dependencies within the selected bounds; it does not
 prove an unreferenced terminal leaf or safe removal.
+
+Traversal and diagnostics Markdown omits sections and empty-page notices for
+zero-item pages. It retains compact omission stubs and continuation evidence
+when the producer reports a positive total, even if the current page has no
+items.
 
 Git-change impact supports existing `changes: staged|unstaged|head`, exclusive
 with selector. Render `changes.files`, `changed_symbols`, `nodes`,

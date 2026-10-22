@@ -714,23 +714,76 @@ receipt:
 
 ```yaml
 task_ref: universal-clickable-coordinates-and-heading-compaction
-target: "Resolve presentation coordinates before encoding file:/// URIs, and omit empty traversal headings"
+target: Resolve presentation coordinates before encoding file:/// URIs, and omit empty traversal headings
 proof_policy: seam-test-first
-contract_revision: 2
+contract_revision: 4
 depends_on:
-  - emit-compact-document-hint-once
-  - deduplicate-task-inspection-presentation
+- emit-compact-document-hint-once
+- deduplicate-task-inspection-presentation
 scope:
-  - src/cli/mod.rs
-  - src/core/format/discovery.rs
-  - src/core/format/lifecycle.rs
-  - src/core/format/coordination.rs
-  - src/core/format/traversal.rs
-  - tests/mcp/context.rs
-  - docs/reference/mcp-markdown-contracts.md
+- src/cli/mod.rs
+- src/mcp/tools.rs
+- src/core/format/mod.rs
+- src/core/format/discovery.rs
+- src/core/format/lifecycle.rs
+- src/core/format/coordination.rs
+- src/core/format/traversal.rs
+- tests/mcp/context.rs
+- tests/acdd/mcp.rs
+- docs/reference/mcp-markdown-contracts.md
 invariants:
-  - "INV-CLICKABLE-COORDINATE-COMPLETENESS: Resolve with the workspace path resolver, then encode with file_uri_for_path. Omit (link unavailable) for a resolvable path."
-status: planned
+- 'INV-CLICKABLE-COORDINATE-COMPLETENESS: Resolve with the workspace path resolver, then encode with file_uri_for_path. Omit (link unavailable) for a resolvable path.'
+status: completed
+receipt:
+  contract_revision: 4
+  passed_at: 2026-10-22T03:13:26.645345579+00:00
+  evidence:
+    command_proof:
+      command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --lib && CONTEXTUNITY_FORGE_TEST_GLOBAL_SKILL_DIR=/tmp/kilo/ux001-f3-buildskill-final-20261022T0246Z cargo test --test acdd && CONTEXTUNITY_FORGE_TEST_GLOBAL_SKILL_DIR=/tmp/kilo/ux001-f3-buildskill-final-20261022T0246Z cargo test --test mcp
+      exit_code: 0
+      tests_passed: 303
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: Candidate is bound to the accepted scope and baseline. Scoped diff SHA-256 is 70c14c332b78e60181a8aa2581d3ca941256962add49ad1c7508fb843b45b395. Unrelated dirty ADR and future manifest fields are preserved.
+        claims:
+          applicable: true
+          evidence: F1 semantic equality-before-presentation and F2 configured MCP output policy are independently confirmed fixed. F3 generic arbitrary path/URI promotion is removed; exact findings JSON remains literal after durable restart, while resolved task-scope links remain positive. Focused real CLI/MCP seam and mutation receipts cover every ledger case.
+        concurrency:
+          applicable: true
+          evidence: No task transaction, claim fencing, revision, receipt, or lock semantics changed. Production submission persists transactionally, and the seam test closes/reopens the MCP client before re-inspecting SQLite-backed history.
+        project_isolation:
+          applicable: true
+          evidence: URI attachment uses selected workspace_root and workspace path resolution. Traversal labels, foreign file/http/javascript URIs, nested objects/arrays, and forged presentation metadata remain literal after persistence and restart.
+        administration:
+          applicable: true
+          evidence: No schema/migration/profile/config/dependency changes. Build snapshot is bound to original milestone HEAD 08a876b6. Auto-commit delivery will run through task_submit; no manual Git operation was performed.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-SINGLE-DOCUMENT-PROJECTION: Symbol inspection exposes one documentation page per cited section, with doc_id, path, section title, document type, citation line, and a resolved file:/// URI. Explain keeps its own documents page and does not grow a second inspect projection.'
+    - 'INV-COMPACT-DOC-HINT-ONCE: A compact get_doc response emits each omitted-detail hint once. Referenced-symbol rows keep the citing section and citation line. Full detail still returns candidate evidence.'
+    - 'INV-NARROWEST-NAVIGATION: Agent guidance selects the narrowest useful tool, reuses sufficient previews, and passes worktree when the server root is not the checkout being edited.'
+    - 'INV-RESPONSE-CONTRACT-PRESERVATION: Deduplication preserves pagination, generation validation, detail-level behavior, response budgets, exact evidence, and CLI/MCP parity.'
+    - 'INV-READ-ONLY-SQL-FIDELITY: Opaque user SQL keeps literals, comments, trailing semicolons of one statement, requested columns, and SQLite text. Structural graph rows keep parsed details and stripped internal ids. Writes and multiple statements stay rejected.'
+    - 'INV-TASK-PRESENTATION-DEDUPLICATION: Inspect Markdown uses the task-record heading and renders equal scope, target, proof policy, and task invariants once. A fixture with those repeated fields is smaller in Markdown than in JSON. The contract digest hash is omitted from task responses. Revisions, receipts, gates, attempts, and findings stay visible.'
+    - 'INV-EXPLICIT-DIAGNOSTIC-SCOPE: An unindexed analyze or lint target fails with PATH_NOT_INDEXED. An indexed scope with zero diagnostics stays success. The diagnostics and cycles mode errors stay specific. Unsupported overview aspects fail with the allowed set.'
+    - 'INV-CLICKABLE-COORDINATE-COMPLETENESS: Presentation attachment resolves a workspace path before file_uri_for_path. A resolvable coordinate is a file:/// link. Markdown omits the (link unavailable) fallback.'
+    - 'INV-CLICKABLE-COORDINATE-COMPLETENESS: Resolve with the workspace path resolver, then encode with file_uri_for_path. Omit (link unavailable) for a resolvable path.'
+    architectural_notes:
+    - 'decisions: Closure-authority adjudication of#995 before edits: F1 semantic-scope equality owner task_inspection_fields andF2 response-policy owner MCPtask_manage are independentlyconfirmedfixed. F3 is pre-existing-missed in genericJSONrenderer(render_value), introducedinoriginal136bec9 andunchangedbyF1/F2repair—notcausedbylastremediation andnotincomplete-remediation-dominant round. Samefile is notsameownercluster: existing INVCLICKABLE+projectisolation authorizes only resolved trusted coordinate links, not arbitrarypersistedfindings. Thus blanket same-owner anti-loop claim is notapplicable; current user implementationauthority+same frozen rev4 writeunion authorize ONE distinct trust-boundary cluster repair. No newscope/protocol/securitypolicy: no genericdata-shape promotion; preserve arbitraryfindingsasdata andlegitresolvedscopelinks. Beforecode: freshrequiredgraph+live Submit.findings->SQLite->inspect->genericrenderer map and runtime-red regression+mutationmatrix. Matrix: direct/nested/map/array exacttwo-string objects; validlabel+foreignURI; traversallabel; file/http/javascript URI strings remainliteraldata, rawJSONunchanged; knownadapter-resolvedscope link remainspositive. Mutationrestoregenericshape-linkbranchmustfail. Cumulativeledger retainsF1/F2fixed,F3unresolveduntilredgreenmutations/fullgates+sameindependentreview. No furtherreviewadmissionwithoutcompleteledger; ifgenuineresidualincompleteclusterreturns,stop. This explicitcoordinatordirectiondoesnotalteruserauthority, scope, receipts, orscopeguards.'
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Acceptance
