@@ -53,9 +53,15 @@ obtain independent integration review against that exact final content and base.
 Follow the documentation-agent scan in [AGENTS.md](AGENTS.md#documentation-scan-before-handoff)
 before final verification. Supply the completed review and verification record to
 `milestone handoff <id> --evidence-file /tmp/handoff-evidence.json`; see the
-[record fields](docs/reference/tasks.md#milestone-cli-lifecycle). Forge validates
-and records supplied evidence without running verification. Changed content or
-authority requires fresh final review and verification.
+[record fields](docs/reference/tasks.md#milestone-cli-lifecycle). Handoff context
+commits admitted working-tree polish before producing the review binding. Run the
+required commands above on that content and obtain fresh independent review.
+For source polish, select its registered project verification command through
+`verification.project_command`; handoff executes it again and records the observation.
+Select the registered lint command explicitly through `verification.lint_command`;
+only its actual successful execution reports clean lint. These observations do not
+replace the mandatory commands or their count rules. Changed content or authority
+requires fresh final review and verification.
 
 Use `test-suite-refactor` only when the admitted change splits, replaces,
 deduplicates, or removes a typed test suite. It is not a general final-verification

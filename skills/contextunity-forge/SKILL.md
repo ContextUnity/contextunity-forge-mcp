@@ -202,8 +202,9 @@ Before handoff, follow the repository documentation scan. The coordinator runs `
 the final diff and admitted docs, records the result on the milestone board, and reviews changes
 before final verification; Forge launches no agent and adds no gate.
 
-Commit the final implementation, prepare a binding, obtain independent integration review, and
-verify the same content against the target base:
+Prepare the final integration binding, obtain independent integration review, and
+verify that exact content against the target base. Handoff context commits admitted
+working-tree polish before producing the binding:
 
 ```sh
 contextunity-forge-mcp milestone handoff-context <id> --target-base main > /tmp/handoff-context.json
@@ -214,8 +215,16 @@ contextunity-forge-mcp milestone handoff <id> --evidence-file /tmp/handoff-evide
 Use the task reference for typed evidence/projection. Integration review must differ from every
 accepted task builder. Preserve task proofs through rebase/cherry-pick/merge/squash; optional
 navigation SHAs may change without reopening tasks. Changed content or authority needs fresh final
-review and verification. Forge validates and archives the supplied record but runs no tests or
-agents. Commit the archive and working manifest removal afterward under repository Git permissions.
+review and verification. For source polish, select a registered project verification
+command in `verification.project_command`. Select a registered lint command explicitly
+in `verification.lint_command`; handoff executes selected commands and archives their
+observed results. Missing lint selection remains unobserved. Forge launches no agents.
+Preserve shared proof pins owned by active tasks or prepared handoffs in linked
+worktrees. Require exact durable terminal outcomes and source/landed receipts for
+torn archive repair; cancelled tasks receive no individual completion credit.
+Use the task reference for retry states, archive-authoritative dependencies and the
+pre-prune passport in the archive and Git notes. Commit the archive and working
+manifest removal afterward under repository Git permissions.
 
 ## Adapters and framework packs
 

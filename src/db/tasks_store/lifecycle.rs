@@ -93,7 +93,12 @@ impl TasksStore {
             if !task_belongs_to(&context.repository, &context.project, &task.task_id)
                 || task.worker_id.is_some()
                 || !matches!(task.status.as_str(), "ready" | "parked")
-                || !dependencies_ready(&tx, &task.task_id)?
+                || !dependencies_ready(
+                    &tx,
+                    &task.task_id,
+                    &context.repository,
+                    context.workspace_root.as_deref(),
+                )?
             {
                 continue;
             }
@@ -473,7 +478,8 @@ impl ClaimContext {
         if task.status != "ready" && task.status != "parked" {
             bail!("TASK_NOT_READY: task '{id}'. status is '{}' (active stage '{}'). Do: claim only ready tasks at their active stage.", task.status, task.stage);
         }
-        let dependencies = unsatisfied_dependencies(tx, id)?;
+        let dependencies =
+            unsatisfied_dependencies(tx, id, &self.repository, self.workspace_root.as_deref())?;
         if !dependencies.is_empty() {
             bail!("TASK_NOT_READY: task '{id}' has unsatisfied dependencies: [{}]. Do: complete dependencies before claiming stage '{}'.", dependencies.join(", "), task.stage);
         }

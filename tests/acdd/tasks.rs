@@ -8609,6 +8609,137 @@ fn cross_milestone_dependency_diagnostic_gates_readiness_and_claim() {
         .unwrap();
     assert_eq!(claimed.task_id, consumer_id);
     assert_eq!(claimed.status, "in_progress");
+
+    // Archived predecessors unlock newly synced consumers without bridge rows.
+    let mut authority_failures = Vec::new();
+    for (root_mode, (authority, dependency, expected_ready)) in [
+        ("tombstone", "m-first:producer", true),
+        ("tombstone", "m-first:cancelled", false),
+        ("tombstone", "m-first", true),
+        ("nonterminal-tombstone", "m-first", false),
+        ("nonterminal-tombstone", "m-first:producer", true),
+        ("foreign-tombstone", "m-first:producer", false),
+        ("archive", "m-first:producer", true),
+        ("archive", "m-first:cancelled", false),
+        ("archive", "m-first", true),
+        ("archive", "other/m-first:producer", false),
+        ("alias-archive", "old/m-first:producer", true),
+        ("late-archive", "m-first:producer", true),
+        ("torn-archive", "m-first:producer", false),
+        ("active-archive", "m-first:producer", false),
+        ("nonterminal-archive", "m-first:producer", false),
+        ("undated-archive", "m-first:producer", false),
+        ("foreign-archive", "m-first:producer", false),
+    ]
+    .into_iter()
+    .flat_map(|case| ["default", "wildcard", "concrete"].map(|mode| (mode, case)))
+    {
+        let root = ScopedWorkspace::new("forge_archived_dependency");
+        root.write("src/lib.rs", "pub fn f() {}\n");
+        root.write(
+            "forge-mcp.yaml",
+            "task_project: old\naliases: {old: forge-mcp, forge-mcp: other}\n",
+        );
+        let nested = root_mode != "default";
+        if nested {
+            let dir = if root_mode == "wildcard" {
+                "extensions/*/docs/milestones"
+            } else {
+                "extensions/base/docs/milestones"
+            };
+            root.write("forge-mcp.yaml", &format!("task_project: old\nmilestones: [docs/milestones, '{dir}']\nowners: {{extensions/base: old}}\naliases: {{old: forge-mcp, forge-mcp: other}}\n"));
+        }
+        let mut deferred_archive = None;
+        let mut store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
+        if authority.ends_with("tombstone") {
+            let identity = if authority == "foreign-tombstone" {
+                "forge-mcp/other/m-first"
+            } else {
+                "forge-mcp/forge-mcp/m-first"
+            };
+            store
+                .connection
+                .execute(
+                    "INSERT INTO milestone_tombstones VALUES(?1,0,?2,?3)",
+                    rusqlite::params![
+                        identity,
+                        authority != "nonterminal-tombstone",
+                        "[\"forge-mcp/m-first:producer\"]"
+                    ],
+                )
+                .unwrap();
+        } else {
+            let archive = "---\nid: m-first\nstatus: completed\nhandoff:\n  completed_at: 2026-10-01T10:00:00Z\n  commit: 0123456789012345678901234567890123456789\n---\n```yaml\ntask_ref: producer\ntarget: Archived producer\nstatus: completed\nscope: [src/]\n```\n```yaml\ntask_ref: cancelled\ntarget: Transferred work\nstatus: cancelled\nscope: [other/]\n```\n";
+            let archive = archive
+                .replace(
+                    "target: Archived producer\n",
+                    "target: Archived producer\nproof_policy: seam-test-first\n",
+                )
+                .replace(
+                    "target: Transferred work\n",
+                    "target: Transferred work\nproof_policy: seam-test-first\n",
+                );
+            let archive = match authority {
+                "torn-archive" => "---\nid: [torn".to_owned(),
+                "active-archive" => archive.replacen("status: completed", "status: active", 1),
+                "nonterminal-archive" => archive.replace("status: cancelled", "status: ready"),
+                "undated-archive" => archive.replace("2026-10-01T10:00:00Z", "not-a-date"),
+                "alias-archive" => archive.replace("id: m-first", "id: m-first\nproject: old"),
+                "foreign-archive" => archive.replace("id: m-first", "id: m-other"),
+                _ => archive,
+            };
+            if authority == "late-archive" {
+                deferred_archive = Some(archive);
+            } else {
+                root.write(
+                    if nested {
+                        "extensions/base/docs/milestones/archive/m-first.md"
+                    } else {
+                        "docs/milestones/archive/m-first.md"
+                    },
+                    &archive,
+                );
+            }
+        }
+        let consumer = m2_text.replace("m-first:producer", dependency);
+        let milestone = Milestone::parse(&consumer, "forge-mcp").unwrap();
+        root.write("docs/milestones/m2.md", &consumer);
+        store
+            .sync(&milestone, "docs/milestones/m2.md", &root.0)
+            .unwrap();
+        if let Some(archive) = deferred_archive {
+            root.write(
+                if nested {
+                    "extensions/base/docs/milestones/archive/m-first.md"
+                } else {
+                    "docs/milestones/archive/m-first.md"
+                },
+                &archive,
+            );
+        }
+        let tasks = store.list(None, "all", None).unwrap();
+        assert_eq!(
+            tasks.len(),
+            1,
+            "{root_mode}/{authority}/{dependency}: no bridge tasks"
+        );
+        let claim = store.claim(
+            &tasks[0].task_id,
+            "contract",
+            "archived-consumer",
+            root.0.to_str().unwrap(),
+        );
+        if (tasks[0].status == "ready") != expected_ready || claim.is_ok() != expected_ready {
+            authority_failures.push(format!(
+                "{root_mode}/{authority}/{dependency}: status={}, claim={claim:?}",
+                tasks[0].status
+            ));
+        }
+    }
+    assert!(
+        authority_failures.is_empty(),
+        "archive authority matrix: {authority_failures:?}"
+    );
 }
 
 #[test]

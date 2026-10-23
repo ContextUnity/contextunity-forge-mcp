@@ -622,10 +622,15 @@ Supply a JSON `IntegrationEvidence` record through `--evidence-file`:
 | `review.scope_findings`, `review.contract_findings` | Empty arrays after resolving unadmitted changes and contract/invariant findings. |
 | `verification.command`, `verification.exit_code` | Exact completed repository verification command and `0`. |
 | `verification.tests_passed`, `verification.tests_failed` | Recorded counts and `0` failures. |
+| `verification.lint_command` | Optional registered command ID explicitly selected as the project linter. Forge executes it and records its exact command, exit code, output digests and content provenance. A missing selection is `unobserved`, never `clean`; a selected failing linter rejects handoff. |
+| `verification.project_command` | Registered verification command ID required when the integration commit contains source polish prepared by handoff context. Forge executes it against the reviewed content. |
 
 Keep the evidence file outside tracked implementation content, for example under
-`/tmp/`. Forge reads the record; the coordinator runs verification and launches
-review/documentation agents according to repository instructions.
+`/tmp/`. The coordinator supplies independent review and repository verification.
+`handoff-context` absorbs admitted working-tree polish into an integration commit
+before producing its binding. Obtain fresh review for that binding; changed content
+never inherits an earlier review. Source polish additionally requires the selected
+registered project verification command at handoff. Forge launches no agents.
 
 > [!IMPORTANT]
 > Invariant: Final evidence binds current task contracts and accepted gate proofs,
@@ -633,8 +638,8 @@ review/documentation agents according to repository instructions.
 > addition, deletion and file content. The versioned projection removes only
 > renderer-owned milestone frontmatter `status`, `started_at`, `handoff`, task
 > `status`/`receipt`, and generated subtask `status`/`evidence`; contract and prose
-> bytes remain bound. Unfamiliar YAML spellings stay bound. Dirty files, untracked
-> deliverables, foreign/stale evidence, failed verification, non-independent review,
+> bytes remain bound. Unfamiliar YAML spellings stay bound. Dirty files after context
+> preparation, untracked deliverables, foreign/stale evidence, failed verification, non-independent review,
 > incomplete tasks, and paths outside admitted task scopes reject before publication.
 
 Rebase, cherry-pick, merge, amend, and multi-task squash may change branch SHAs
@@ -649,10 +654,21 @@ Task `receipt.commit` is navigation metadata: handoff retains known accepted
 ancestor pointers or refreshes a unique scope-equivalent rewritten landing;
 unresolved pointers are omitted. `record_task_commits: false` and `commit_tracking:
 off|milestone_only` omit individual navigation pointers in both SQLite and Markdown.
-Accepted proof objects remain reachable under `refs/forge/evidence/` after branch
-rewrites, reflog expiry and handoff; preparing context pins available historical
-proofs. Restore missing immutable proof objects rather than recreating accepted
-gate evidence.
+Preparing context pins available historical proofs until archive publication.
+Initial handoff still requires accepted immutable proof objects. Before pruning,
+handoff records every gate commit/baseline, receipt commit, integration commit and
+target base in `handoff.proof_shas`. After durable publication it deletes those
+evidence refs and milestone keeper/snapshot refs. Cleanup preserves shared SHA pins
+owned by another active milestone's task proofs or prepared handoff in a linked
+worktree. Prepared handoff ownership is a replaceable Git-note entry per canonical
+milestone/worktree and records both the prepared commit and its actual selected
+target base. Cleanup removes the outgoing milestone's entries after durable
+publication. Terminal foreign milestones without recorded ownership fail cleanup
+closed; refresh their handoff contexts with their actual target bases before
+retrying. Task ownership is captured before the pruning decision, so recovery
+cleanup does not query SQLite.
+The archive retains proof identities;
+identities alone do not keep Git objects reachable after garbage collection.
 
 Handoff archives the supplied integration record and verification result in
 frontmatter, records the selected final implementation commit (default `HEAD`),
@@ -670,6 +686,45 @@ Duration starts at `started_at` or the earliest
 claim timestamp. Commit the archive afterward, staging its addition and the
 working manifest's removal; this later commit SHA is not part of its own receipt.
 Historical archived receipts remain readable without rewriting them.
+
+Handoff evaluates active document, archive and namespaced tombstone before checking
+live task readiness. An existing pre-prune archive is backed up as `.md.bak` and
+restored if the SQLite transaction fails. A valid post-prune archive permits direct
+active-file removal and repeat cleanup without gate rows or reverse relocation.
+A torn post-prune archive is repaired only from matching terminal active authority,
+the re-invoked evidence and the durable Git-note passport. Exact terminal task IDs,
+completed/cancelled outcomes, source receipts and landed receipts must agree;
+missing or contradictory terminal metadata rejects repair. Invalid or foreign
+authority leaves both files unchanged. A tombstone without a local archive returns
+`MILESTONE_ALREADY_HANDED_OFF` with merge/pull guidance. With neither local file,
+a matching valid archive in `HEAD` permits repeat cleanup; otherwise the same
+diagnostic applies. A completed archived handoff is an idempotent success, including
+project-level pruning opt-out after relocation.
+
+The milestone Engineering Telemetry Passport is persisted in `handoff.passport`
+and `refs/notes/forge` before SQLite pruning. It contains duration, task counts,
+claim-to-completion wall times (not CPU or agent-active time), observed review cycles,
+source/test/docs diff statistics, AST symbol deltas, supplied test results, selected
+command observations and resolved milestone topology. Unavailable cancelled-task
+completion time is null. Unknown lint status stays `unobserved`. The
+`verified_handoff_proof` digest binds the passport content, exact integration binding
+and landed receipts; separate milestone namespaces coexist in one commit note.
+
+Archive dependency discovery uses the same confined concrete and wildcard milestone
+directories, owner mappings and aliases as milestone discovery. Cancelled tasks
+satisfy terminal milestone completion but never individual completed-task dependencies.
+Archive project declarations retain the parser's original owner/alias input;
+canonical passport and tombstone identities apply the configured alias once.
+Dependency admission normalizes explicitly qualified projects once; reads use the
+persisted canonical IDs without applying aliases again.
+Torn recovery verifies that digest and active contract projection before rewriting.
+
+Missing predecessor task rows resolve through canonical repository/project/milestone
+tombstones and valid archives, without bridge tasks. A valid archive has parseable
+frontmatter with matching identity, `status: completed`, dated `handoff.completed_at`,
+a full `handoff.commit`, and only completed/cancelled task blocks. Only completed
+task membership satisfies a task dependency; the terminal milestone sentinel may
+include cancelled history. Active, torn and foreign archives grant no completion credit.
 
 Build validation treats a missing Git-enumerated scoped source file as deleted,
 including an unstaged deletion. Other read failures still reject the submission.

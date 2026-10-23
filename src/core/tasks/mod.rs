@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     path::{Component, Path, PathBuf},
 };
 /// Implements gates support.
@@ -1153,6 +1153,122 @@ pub fn infer_project_from_path(path: &Path) -> Option<String> {
         }
     }
     None
+}
+
+/// Returns the list of milestone directories configured for the workspace.
+pub fn configured_milestone_dirs(root: &Path) -> Vec<PathBuf> {
+    if let Ok(config) = std::fs::read_to_string(root.join("forge-mcp.yaml")) {
+        #[derive(serde::Deserialize)]
+        struct Cfg {
+            milestones: Option<Vec<String>>,
+        }
+        if let Ok(cfg) = serde_yaml::from_str::<Cfg>(&config) {
+            if let Some(dirs) = cfg.milestones {
+                let resolved = resolve_dirs_with_wildcards(root, &dirs);
+                if !resolved.is_empty() {
+                    return resolved;
+                }
+            }
+        }
+    }
+    vec![root.join("docs/milestones")]
+}
+
+fn resolve_dirs_with_wildcards(root: &Path, patterns: &[String]) -> Vec<PathBuf> {
+    let mut resolved = Vec::new();
+    for pat in patterns {
+        let norm = pat.trim_matches('/').replace('\\', "/");
+        if norm.contains("..") {
+            continue;
+        }
+        if norm.contains('*') {
+            let parts: Vec<&str> = norm.split('/').collect();
+            expand_parts(root, root, &parts, &mut resolved);
+        } else {
+            let candidate = root.join(&norm);
+            if candidate.exists() {
+                if let (Ok(canon), Ok(root_canon)) = (candidate.canonicalize(), root.canonicalize())
+                {
+                    if canon.starts_with(&root_canon) {
+                        resolved.push(candidate);
+                    }
+                }
+            } else {
+                resolved.push(candidate);
+            }
+        }
+    }
+    resolved.sort();
+    resolved.dedup();
+    resolved
+}
+
+fn expand_parts(root: &Path, current: &Path, parts: &[&str], out: &mut Vec<PathBuf>) {
+    if parts.is_empty() {
+        if current.exists() && current.is_dir() {
+            if let (Ok(canon), Ok(root_canon)) = (current.canonicalize(), root.canonicalize()) {
+                if canon.starts_with(&root_canon) {
+                    out.push(current.to_path_buf());
+                }
+            }
+        }
+        return;
+    }
+    let first = parts[0];
+    let remaining = &parts[1..];
+    if first == "*" {
+        if let Ok(entries) = std::fs::read_dir(current) {
+            for entry in entries.flatten() {
+                if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                    expand_parts(root, &entry.path(), remaining, out);
+                }
+            }
+        }
+    } else {
+        let next = current.join(first);
+        if next.exists() {
+            expand_parts(root, &next, remaining, out);
+        }
+    }
+}
+
+/// Resolve structural and explicitly configured milestone ownership.
+pub fn project_for_path(path: &Path, default: &str, owners: &BTreeMap<String, String>) -> String {
+    owners
+        .iter()
+        .filter_map(|(prefix, owner)| {
+            let prefix = prefix
+                .strip_suffix("/*")
+                .unwrap_or(prefix)
+                .trim_end_matches('/');
+            (!prefix.is_empty() && path.starts_with(prefix)).then_some((prefix.len(), owner))
+        })
+        .max_by_key(|(length, _)| *length)
+        .map(|(_, owner)| owner.clone())
+        .or_else(|| infer_project_from_path(path))
+        .unwrap_or_else(|| default.to_owned())
+}
+
+/// Normalize a project through the configured, single-hop alias map.
+pub fn canonical_project(project: &str, aliases: &BTreeMap<String, String>) -> Result<String> {
+    let project = aliases.get(project).map(String::as_str).unwrap_or(project);
+    valid_identity(project)?;
+    Ok(project.to_owned())
+}
+
+/// Parse active and archived authority using the same ownership rules.
+pub fn parse_milestone_manifest(
+    text: &str,
+    reference: &Path,
+    repository: &str,
+    project: &str,
+    owners: &BTreeMap<String, String>,
+    aliases: &BTreeMap<String, String>,
+) -> Result<Milestone> {
+    let default = project_for_path(reference, project, owners);
+    let mut milestone = Milestone::parse_with_identity(text, repository, &default)?;
+    milestone.project = canonical_project(&milestone.project, aliases)?;
+    Ok(milestone)
 }
 
 #[cfg(test)]

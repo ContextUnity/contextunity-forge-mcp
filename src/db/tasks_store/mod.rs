@@ -829,6 +829,7 @@ impl TasksStore {
             bail!("MILESTONE_STATUS_INVALID: expected active, planned, completed, or cancelled");
         }
         let milestone_identity = self.milestone_identity(&milestone.id);
+        let dependency_settings = ArchiveSettings::load(root)?;
         let tx = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -1169,6 +1170,8 @@ impl TasksStore {
                 )?;
             }
             for dep in &spec.depends_on {
+                let resolved = canonical_dependency_ref(dep, &dependency_settings.aliases)?;
+                let dep = &resolved;
                 if milestone.tasks.iter().any(|t| t.task_ref == *dep) {
                     let dependency_id = format!("{}/{}:{}", milestone.project, milestone.id, dep);
                     let satisfied = milestone
@@ -1191,7 +1194,14 @@ impl TasksStore {
                             params![dependency_id],
                             |r| r.get(0),
                         )
-                        .unwrap_or(false);
+                        ?;
+                    let satisfied = satisfied
+                        || archived_dependency_satisfied(
+                            &tx,
+                            &dependency_id,
+                            &milestone.repository,
+                            Some(root),
+                        )?;
                     tx.execute(
                         "INSERT INTO task_dependencies VALUES(?1,?2,?3)",
                         params![id, dependency_id, satisfied],
@@ -1212,10 +1222,20 @@ impl TasksStore {
                         }
                     }
                     if dep_tasks.is_empty() {
-                        let dependency_id = format!("{}/{}:__milestone__", milestone.project, dep);
+                        let dependency_id = if dep.contains('/') {
+                            format!("{dep}:__milestone__")
+                        } else {
+                            format!("{}/{}:__milestone__", milestone.project, dep)
+                        };
+                        let satisfied = archived_dependency_satisfied(
+                            &tx,
+                            &dependency_id,
+                            &milestone.repository,
+                            Some(root),
+                        )?;
                         tx.execute(
-                            "INSERT INTO task_dependencies VALUES(?1,?2,0)",
-                            params![id, dependency_id],
+                            "INSERT INTO task_dependencies VALUES(?1,?2,?3)",
+                            params![id, dependency_id, satisfied],
                         )?;
                     } else {
                         for (dep_task_id, satisfied) in dep_tasks {
@@ -1286,7 +1306,14 @@ impl TasksStore {
             if let Some(requested) = stage {
                 known_stage |= profile.index_of(requested).is_some();
             }
-            if task.status == "ready" && !dependencies_ready(&self.connection, &task.task_id)? {
+            if task.status == "ready"
+                && !dependencies_ready(
+                    &self.connection,
+                    &task.task_id,
+                    &self.repository,
+                    self.workspace_root.as_deref(),
+                )?
+            {
                 task.status = "blocked".into();
             }
             if status != "all" && task.status != status {
@@ -1567,7 +1594,12 @@ pub(crate) fn check_stage(task_id: &str, active_gate: &str, stage: &str) -> Resu
     }
     Ok(())
 }
-pub(crate) fn unsatisfied_dependencies(conn: &Connection, id: &str) -> Result<Vec<String>> {
+pub(crate) fn unsatisfied_dependencies(
+    conn: &Connection,
+    id: &str,
+    repository: &str,
+    root: Option<&Path>,
+) -> Result<Vec<String>> {
     let mut statement = conn.prepare(
         "SELECT d.dependency_id FROM task_dependencies d \
          LEFT JOIN tasks t ON t.task_id=d.dependency_id \
@@ -1575,13 +1607,239 @@ pub(crate) fn unsatisfied_dependencies(conn: &Connection, id: &str) -> Result<Ve
            AND (t.task_id IS NULL OR json_extract(t.descriptor,'$.status')!='completed') \
          ORDER BY d.dependency_id",
     )?;
-    let dependencies = statement
+    let dependencies: Vec<String> = statement
         .query_map([id], |row| row.get(0))?
         .collect::<std::result::Result<_, _>>()?;
-    Ok(dependencies)
+    let task = load(conn, id)?;
+    let settings = root
+        .map(ArchiveSettings::load)
+        .transpose()?
+        .unwrap_or_default();
+    let mut milestone_dependencies = std::collections::BTreeSet::new();
+    if let Some(task) = &task {
+        let project = task
+            .task_id
+            .split_once('/')
+            .map(|(project, _)| project)
+            .unwrap_or(repository);
+        for dep in task.spec.depends_on.iter().filter(|dep| !dep.contains(':')) {
+            let dep = canonical_dependency_ref(dep, &settings.aliases)?;
+            milestone_dependencies.insert(if dep.contains('/') {
+                dep
+            } else {
+                format!("{project}/{dep}")
+            });
+        }
+    }
+    dependencies
+        .into_iter()
+        .filter_map(|dependency| {
+            let satisfaction = (|| {
+                if archived_dependency_satisfied(conn, &dependency, repository, root)? {
+                    return Ok(true);
+                }
+                if let Some((owner, _)) = dependency.rsplit_once(':') {
+                    if milestone_dependencies.contains(owner) {
+                        return archived_dependency_satisfied(
+                            conn,
+                            &format!("{owner}:__milestone__"),
+                            repository,
+                            root,
+                        );
+                    }
+                }
+                Ok(false)
+            })();
+            match satisfaction {
+                Ok(true) => None,
+                Ok(false) => Some(Ok(dependency)),
+                Err(error) => Some(Err(error)),
+            }
+        })
+        .collect()
 }
-fn dependencies_ready(conn: &Connection, id: &str) -> Result<bool> {
-    Ok(unsatisfied_dependencies(conn, id)?.is_empty())
+fn dependencies_ready(
+    conn: &Connection,
+    id: &str,
+    repository: &str,
+    root: Option<&Path>,
+) -> Result<bool> {
+    Ok(unsatisfied_dependencies(conn, id, repository, root)?.is_empty())
+}
+
+/// Parse durable handoff authority, including terminal cancelled history without
+/// granting cancelled tasks completion credit.
+pub fn valid_milestone_archive(text: &str, repository: &str, project: &str) -> Option<Milestone> {
+    let milestone = Milestone::parse_with_identity(text, repository, project).ok()?;
+    (milestone.repository == repository
+        && milestone.project == project
+        && archive_valid(text, &milestone))
+    .then_some(milestone)
+}
+
+fn archive_valid(text: &str, milestone: &Milestone) -> bool {
+    archive_header_valid(text).is_some()
+        && milestone.status.as_deref() == Some("completed")
+        && milestone
+            .tasks
+            .iter()
+            .all(|task| matches!(task.status.as_deref(), Some("completed" | "cancelled")))
+}
+
+fn archive_header_valid(text: &str) -> Option<()> {
+    let text = text.replace("\r\n", "\n");
+    let yaml = text.strip_prefix("---\n")?.split_once("\n---\n")?.0;
+    let metadata: serde_yaml::Value = serde_yaml::from_str(yaml).ok()?;
+    let handoff = &metadata["handoff"];
+    chrono::DateTime::parse_from_rfc3339(handoff["completed_at"].as_str()?).ok()?;
+    let commit = handoff["commit"].as_str()?;
+    if commit.len() != 40 || !commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some(())
+}
+
+#[derive(Default, Deserialize)]
+struct ArchiveSettings {
+    task_project: Option<String>,
+    #[serde(default)]
+    owners: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    aliases: std::collections::BTreeMap<String, String>,
+}
+impl ArchiveSettings {
+    fn load(root: &Path) -> Result<Self> {
+        let config = root.join("forge-mcp.yaml");
+        if !config.exists() {
+            return Ok(Self::default());
+        }
+        Ok(
+            serde_yaml::from_str::<Option<Self>>(&std::fs::read_to_string(config)?)?
+                .unwrap_or_default(),
+        )
+    }
+    fn parse(&self, text: &str, reference: &Path, repository: &str) -> Result<Milestone> {
+        crate::core::tasks::parse_milestone_manifest(
+            text,
+            reference,
+            repository,
+            self.task_project.as_deref().unwrap_or(repository),
+            &self.owners,
+            &self.aliases,
+        )
+    }
+}
+
+// Explicit projects are raw manifest input; unqualified dependencies already use
+// the milestone's canonical project. Persist canonical IDs at writer admission.
+fn canonical_dependency_ref(
+    dependency: &str,
+    aliases: &std::collections::BTreeMap<String, String>,
+) -> Result<String> {
+    let Some((project, rest)) = dependency.split_once('/') else {
+        return Ok(dependency.to_owned());
+    };
+    Ok(format!(
+        "{}/{}",
+        crate::core::tasks::canonical_project(project, aliases)?,
+        rest
+    ))
+}
+
+/// Read archive authority under the same canonical namespace rules as live manifests.
+pub fn read_milestone_archive(
+    root: &Path,
+    path: &Path,
+    repository: &str,
+    project: &str,
+) -> Result<Option<Milestone>> {
+    let path = crate::core::fs::checked_child(root, path.strip_prefix(root).unwrap_or(path))?;
+    let text = std::fs::read_to_string(&path)?;
+    configured_milestone_archive(root, &text, &path, repository, project)
+}
+
+/// Validate on-disk or reconstructed archive content with configured ownership.
+pub(crate) fn configured_milestone_archive(
+    root: &Path,
+    text: &str,
+    path: &Path,
+    repository: &str,
+    project: &str,
+) -> Result<Option<Milestone>> {
+    let path = crate::core::fs::checked_child(root, path.strip_prefix(root).unwrap_or(path))?;
+    let settings = ArchiveSettings::load(root)?;
+    let Ok(milestone) = settings.parse(text, path.strip_prefix(root)?, repository) else {
+        return Ok(None);
+    };
+    Ok((milestone.repository == repository
+        && milestone.project == project
+        && archive_valid(text, &milestone))
+    .then_some(milestone))
+}
+
+fn archived_dependency_satisfied(
+    conn: &Connection,
+    dependency: &str,
+    repository: &str,
+    root: Option<&Path>,
+) -> Result<bool> {
+    let Some((owner, task_ref)) = dependency.rsplit_once(':') else {
+        return Ok(false);
+    };
+    let Some((project, milestone_id)) = owner.split_once('/') else {
+        return Ok(false);
+    };
+    let settings = root
+        .map(ArchiveSettings::load)
+        .transpose()?
+        .unwrap_or_default();
+    let canonical_dependency = format!("{project}/{milestone_id}:{task_ref}");
+    let tombstone: Option<(bool, String)> = conn.query_row(
+        "SELECT all_tasks_terminal, completed_task_ids FROM milestone_tombstones WHERE milestone_id=?1",
+        [format!("{repository}/{project}/{milestone_id}")],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    ).optional()?;
+    if let Some((terminal, completed)) = tombstone {
+        let completed: Vec<String> = serde_json::from_str(&completed)?;
+        return Ok(if task_ref == "__milestone__" {
+            terminal
+        } else {
+            completed.iter().any(|id| id == &canonical_dependency)
+        });
+    }
+    let Some(root) = root else { return Ok(false) };
+    let dirs = crate::core::tasks::configured_milestone_dirs(root);
+    for dir in dirs {
+        let archive =
+            crate::core::fs::checked_child(root, &dir.strip_prefix(root)?.join("archive"))?;
+        if !archive.exists() {
+            continue;
+        }
+        for entry in std::fs::read_dir(archive)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_file()
+                || entry.path().extension().is_none_or(|ext| ext != "md")
+            {
+                continue;
+            }
+            let text = std::fs::read_to_string(entry.path())?;
+            if let Ok(milestone) =
+                settings.parse(&text, entry.path().strip_prefix(root)?, repository)
+            {
+                if milestone.id == milestone_id
+                    && milestone.repository == repository
+                    && milestone.project == project
+                    && archive_valid(&text, &milestone)
+                {
+                    return Ok(task_ref == "__milestone__"
+                        || milestone.tasks.iter().any(|task| {
+                            task.task_ref == task_ref && task.status.as_deref() == Some("completed")
+                        }));
+                }
+            }
+        }
+    }
+    Ok(false)
 }
 /// Performs now.
 pub fn now() -> i64 {

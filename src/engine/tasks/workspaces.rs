@@ -883,28 +883,14 @@ pub(super) fn project_for_path(
     default: &str,
     owners: &std::collections::BTreeMap<String, String>,
 ) -> String {
-    owners
-        .iter()
-        .filter_map(|(prefix, owner)| {
-            let prefix = prefix
-                .strip_suffix("/*")
-                .unwrap_or(prefix)
-                .trim_end_matches('/');
-            (!prefix.is_empty() && path.starts_with(prefix)).then_some((prefix.len(), owner))
-        })
-        .max_by_key(|(length, _)| *length)
-        .map(|(_, owner)| owner.clone())
-        .or_else(|| crate::core::tasks::infer_project_from_path(path))
-        .unwrap_or_else(|| default.to_owned())
+    crate::core::tasks::project_for_path(path, default, owners)
 }
 
 pub(super) fn canonical_project(
     project: &str,
     aliases: &std::collections::BTreeMap<String, String>,
 ) -> Result<String> {
-    let project = aliases.get(project).map(String::as_str).unwrap_or(project);
-    valid_identity(project)?;
-    Ok(project.to_owned())
+    crate::core::tasks::canonical_project(project, aliases)
 }
 
 pub(super) fn parse_milestone_manifest(
@@ -915,10 +901,9 @@ pub(super) fn parse_milestone_manifest(
     owners: &std::collections::BTreeMap<String, String>,
     aliases: &std::collections::BTreeMap<String, String>,
 ) -> Result<Milestone> {
-    let default = project_for_path(reference, project, owners);
-    let mut milestone = Milestone::parse_with_identity(text, repository, &default)?;
-    milestone.project = canonical_project(&milestone.project, aliases)?;
-    Ok(milestone)
+    crate::core::tasks::parse_milestone_manifest(
+        text, reference, repository, project, owners, aliases,
+    )
 }
 
 pub(super) struct Registry {

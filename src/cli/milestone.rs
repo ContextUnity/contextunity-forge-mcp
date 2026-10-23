@@ -38,7 +38,7 @@ pub enum MilestoneCommand {
         #[arg(long)]
         evidence_file: PathBuf,
     },
-    /// Prepares content identities for external integration review and verification.
+    /// Commits admitted polish and prepares exact content identities for independent review.
     HandoffContext {
         /// The milestone ID or numeric prefix.
         id: String,
