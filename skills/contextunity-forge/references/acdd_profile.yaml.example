@@ -1,112 +1,328 @@
-# Example complete workflow profile override.
-# Gate IDs persist as task stages. Defining `gates` replaces the complete gate
-# sequence, so include a terminal delivery gate and all preceding references.
+# =============================================================================
+# UNIFIED HIERARCHICAL ACDD PROFILE SPECIFICATION (v2)
+# Future proposal, not accepted by the current runtime parser.
+# Use acdd_profile.current.yaml.example for the executable current schema.
+#
+# Core Architectural Principles:
+# 1. Everything is a Gate (`gates:`):
+#    - Agent Gate:   has `role: <id>`    -> Claimed by LLM agent via `task claim`.
+#    - Command Gate: has `command: <cmd>` -> Executed autonomously by engine (0 tokens).
+#    - Container:    has `gates: [...]`  -> Nests child gates (e.g. per-task execution).
+# 2. Unified Persistence Policy (`persistence:`):
+#    Decouples snapshots, commits, and immutability from rigid stage types.
+#    - `pre: snapshot | commit` (omitted = none) -> Captured automatically before changes (on claim).
+#    - `post: snapshot | commit` (omitted = none) -> Captured/committed on stage pass.
+#    - `immutable: true` (default false) -> Prohibits working tree deviation from prior snapshot.
+#    - `restore_on_reject: true` (default false) -> Restores tree to pre-snapshot on rejection.
+#    - `git_commit_note: command.<id> | GitCommitNotePolicy` -> Attaches compact, structured output of configured command to `refs/notes/forge` on commit.
+#      Pure structured data (e.g. benchmark numbers) - not a warehouse for duplicate metadata (zero task_id, zero receipt_id).
+#      Bounded by `git_commit_note.limits.max_bytes` (default 2048 bytes / 2 KiB) to prevent Git object bloat.
+#    - On-demand tool safety net: `task_manage(action: "snapshot", name: "...")` and
+#      `task_manage(action: "rollback", name: "...")` allow agents to create manual restore points.
+# 3. Payload Overflow Guard & Resource Budgets (`limits:`):
+#    - Enforces a 2 KiB hard default limit (`max_metadata_bytes: 2048`) on custom metrics, task notes,
+#      and attached payloads to prevent SQLite, MCP response token, and Git object bloat.
+# 4. Architect-Driven DAG Optimization & Cross-Milestone Linkage:
+#    - The synthesis agent analyzes codebase impact radius (`code_map_impact`) and reshuffles
+#      tasks into topological parallel execution waves (Wave 0 upfront contracts, Wave 1 disjoint
+#      parallel tasks, Wave 2 integration/consumers).
+#    - Milestones declare coordination contours via `linked_to: [milestones...]`.
+#    - Tasks declare fine-grained cross-milestone blockers via `task_depends_on: [milestone:task_slug]`.
+# 5. Zero-Argument Transitions (`task submit`):
+#    Forge automatically compiles proof from SQLite execution trace and Git status.
+# 6. Two-Tier Scope Governance with Manifest Synchronization:
+#    - `scope`: Initial immutable baseline scope from milestone manifest.
+#    - `extended_scope`: Mid-flight additions added via `task extend-scope <task_id> <path> --reason "..."`
+#      or MCP `task_manage(action: "extend_scope", task_id: "...", path: "...", reason: "...")`.
+#      The command atomically writes to both SQLite and the milestone markdown manifest!
+#    - `review` gate enforces mandatory review proof verification of all extended_scope entries.
+# 7. Unified Breadcrumbs & SQLite Checkpoints:
+#    - Checkpoints are persisted in SQLite `gate_checkpoints`, keyed by the turn breadcrumb:
+#      `{milestone_id}/{gate_path}/{task_id}/{stage_id}`.
+# 8. Milestone Handoff State Purging:
+#    - `handoff` gate automatically purges archived tasks, temporary blackboard noise,
+#      gate execution traces, and ephemeral signals from active SQLite tables.
+# =============================================================================
 
+version: 2
+
+# =============================================================================
+# 0. GIT COMMIT NOTE & RESOURCE BUDGETS
+# =============================================================================
+git_commit_note:
+  limits:
+    max_bytes: 2048              # 2 KiB hard limit for Git commit notes attached to refs/notes/forge
+  telemetry:
+    # Telemetry passports are generated automatically by Forge on task delivery and milestone handoff.
+    # No manual agent flags needed.
+    format: markdown
+    sections:
+      - duration: true           # Total elapsed time (started_at -> completed_at)
+      - tasks_summary: true      # Completed tasks count and per-task durations (e.g. task-1: 15m)
+      - review_cycles: true      # Iterations, turns, and review rejections count
+      - diff_breakdown: true     # Line additions/deletions categorized by src, tests, docs
+      - ast_delta: true          # Net change in AST symbols (functions, structs, traits)
+      - test_suite: true         # Test counts passed/failed and generic linter status (clean / warnings)
+      - topology: true           # Upstream blockers resolved and downstream dependents unblocked
+
+limits:
+  max_metadata_bytes: 2048       # 2 KiB hard payload limit for arbitrary task/gate metadata & metrics
+  max_trace_summary_bytes: 4096  # Tail output size for gate_execution_traces snippet in SQLite
+
+# =============================================================================
+# 1. ROLES CATALOG (`roles`)
+# =============================================================================
 roles:
-  contract_author:
+  architect:
     mode: subagent
     reuse_on_reject: true
-    models: ['sol-6.1:high']
-    guidance: "Define a production-seam contract and submit its red proof. For greenfield files, create compiling production stubs and module/import declarations in admitted scope, then refresh the index. Changing proof policy does not bypass seam reachability."
+    models:
+      - 'gpt-6.1-sol:xhigh'
+      - 'claude-opus-5.5'
+
   builder:
     mode: subagent
     reuse_on_reject: true
     models:
-      - 'gpt6-luna:xhigh'
-    guidance: "Implement the accepted contract and run the registered command."
-  independent_reviewer:
+      - 'gpt-6.1-sol:medium'
+      - 'claude-opus-5.5'
+
+  reviewer:
     mode: subagent
     reuse_on_reject: true
     models:
-      - 'sol-6.1:high'
-    guidance: "Review the candidate independently against every configured contour."
-  schema_author:
-    guidance: "Submit structured evidence that matches the gate's recursive schema."
+      - 'gpt-6.1-sol:xhigh'
+      - 'claude-opus-5.5'
 
+  doc_writer:
+    mode: subagent
+    reuse_on_reject: false
+    models:
+      - 'gpt-6.1-sol:medium'
+
+# =============================================================================
+# 2. COMMANDS CATALOG (`commands`)
+# =============================================================================
 commands:
-  rust-check-and-test:
-    command: "cargo clippy --all-targets --all-features -- -D warnings && cargo test"
-    description: "Run strict Rust checks followed by the repository's test suite."
-  test:
-    command: "cargo test"
-    description: "Compatibility command for legacy task evidence; workflow guidance selects rust-check-and-test."
+  check_task:
+    # Pattern-based multi-language dispatch based on task scope files:
+    # Evaluates task scope against glob patterns. If matching files exist, executes the command.
+    # If a task touches multiple languages (e.g. .py and .ts), executes matching commands sequentially.
+    by_pattern:
+      "**/*.py": "basedpyright {scope_target} && pytest {scope_target}"
+      "**/*.{ts,tsx,vue}": "npm run typecheck && npm test -- {scope_target}"
+      "**/*.rs": "cargo clippy --lib --test {scope_target} && cargo test --test {scope_target} -- --nocapture"
+    timeout_seconds: 60
+
+  check_full_repo:
+    command: "cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets"
+    timeout_seconds: 600
+
+  benchmark:
+    # Language-agnostic benchmark command emitting structured metrics
+    by_pattern:
+      "**/*.py": "pytest benchmarks/ --benchmark-json"
+      "**/*.{ts,tsx}": "npm run bench -- --json"
+      "**/*.rs": "cargo bench -- --output-format bencher"
+      "**/*": "./scripts/benchmark.sh"
+    timeout_seconds: 120
+
+# =============================================================================
+# 3. UNIFIED GUIDANCE CATALOG (`guidance`)
+# =============================================================================
+guidance:
+  milestone.synthesis: >
+    Analyze requirements and impact radius across ALL milestone tasks.
+    Optimize the DAG into topological parallel waves (Wave 0 upfront contracts, Wave 1 disjoint parallel tasks).
+    Extract shared helpers and callouts into Wave 0 before builders start.
+    Inspect linked_to milestones and cross-milestone task_depends_on blockers.
+    Build cross-task seam matrix in SQLite.
+
+  task.contract: >
+    Define production-seam test for this task. Ensure additive seam evolution by
+    strengthening existing test fixtures. Verify runtime-red assertion failure (exit 101).
+
+  task.code: >
+    Implement minimal production code to satisfy accepted seam test.
+    Stay strictly within admitted task.scope (or approved task.extended_scope).
+
+  # Review Focus Lenses (Cognitive Contours)
+  contour.paths: >
+    Verify change boundaries: all modified files must be strictly within task.scope + task.extended_scope.
+    If extended_scope is present, explicitly review the recorded reason and confirm justification.
+
+  contour.claims: >
+    Verify evidence: every acceptance claim must be proven by a reproducible test run.
+
+  contour.concurrency: >
+    Verify thread safety, SQLite transaction fences (IMMEDIATE), and lock acquisition order.
+
+  contour.project_isolation: >
+    Verify workspace isolation: ensure zero modification to sibling/external workspaces.
+
+  contour.administration: >
+    Verify administrative integrity: no unauthorized edits to receipts or Git hooks.
+
+  milestone.review: >
+    Evaluate integrated milestone changes against milestone invariants, ADRs,
+    and cross-task seam boundaries. Verify receipts, proofs, and zero regression across all contours.
+
+  milestone.polish: >
+    Resolve integration failures, compilation breaks, or reviewer findings on the integrated milestone branch.
+    Verify full test suite and submit for integration re-review.
+
+  milestone.doc: >
+    Audit all milestone changes against documentation scope.
+    Reconcile README, reference docs, AGENTS.md, and skills with live code and tests.
+
+  milestone.handoff: >
+    Terminal milestone delivery. Handoff does not fail closed on working tree modifications
+    from documentation polish, test adjustments, or minor bugfixes; it absorbs all remaining
+    milestone changes into the definitive integration commit, captures the full milestone
+    telemetry passport, writes the archive manifest to docs/milestones/archive/<slug>.md, and
+    purges transient milestone records from SQLite while retaining milestone_tombstones.
+
+# =============================================================================
+# 4. POLICIES & TEMPLATES
+# =============================================================================
+subtask_dod:
+  - "Contract slice resolution: Demonstrably resolves an explicit, bounded slice of the contract without breaking boundaries."
+  - "Milestone & ADR alignment: Builds upon existing architectural seams rather than ad-hoc isolated patches."
+  - "Production-seam evidence: Validates through real production paths rather than synthetic stubs mocking away system complexity."
+  - "Systemic non-regression: Zero warnings/lints and complete behavioral preservation of untouched invariants."
+  - "Anti-looping invariant: If an approach fails after 2 iterations, halt, post blockers to task_blackboard, retain fail-closed behavior, and escalate."
 
 policies:
-  proof:
-    command:
-      require_zero_exit: true
-      max_log_bytes: 65536
-  review:
+  default_review:
     independent_worker: true
     require_all_contours: true
-  delivery:
-    atomic_receipt: true
+    audit_extended_scope: true       # Requires explicit reviewer sign-off if extended_scope exists
 
+# Reusable nested subgraphs
+gate_templates:
+  build_review_cycle:
+    gates:
+      - id: code
+        role: builder
+        guidance: [task.code]
+        proof: none
+        persistence:
+          pre: snapshot              # Captures starting state of builder turn
+          post: snapshot             # Captures candidate snapshot of implemented code
+
+      - id: verify
+        reject_to: code
+
+      - id: review
+        role: reviewer
+        policy: default_review
+        proof: review
+        reject_to: code
+        persistence:
+          immutable: true            # Prohibits any file mutation during review; must match candidate snapshot!
+
+# =============================================================================
+# 5. HIERARCHICAL GATES TREE (`gates`)
+# =============================================================================
 gates:
-  - id: contract
-    role: contract_author
+  # Gate 1: Upfront Milestone Synthesis & DAG Optimization (Agent Gate)
+  - id: contract_synthesis
+    role: architect
+    guidance: [milestone.synthesis]
     proof: contract
-    sha_snapshot: true
-    tools: ["task_claim", "code_map_inspect"]
-    steps:
-      - "Write or identify one production-seam test for the task contract."
-      - "Post the draft to task_blackboard with topic=draft and gate=implement."
-      - "Submit contract_proof with seam_test_ref and red_exit_code."
+    persistence:
+      pre: snapshot                  # Captures pristine working tree before architect reshuffles tasks/manifest
+      post: commit                   # Commits synthesized contracts and optimized wave plan to milestone branch
+      restore_on_reject: true        # Restores tree to pristine pre-snapshot if synthesis fails
 
-  - id: implement
-    role: builder
-    proof: command
-    sha_snapshot: true
-    tools: ["ast_grep_search", "code_map_inspect", "task_submit"]
-    steps:
-      - "Implement the accepted contract within the admitted scope."
-      - "Run the registered Rust check-and-test command, optionally scoped with --test <target>, and submit command_proof."
+  # Gate 2: Milestone Tasks Container (Container Gate: runs per-task in parallel)
+  - id: tasks_delivery
+    for_each: tasks
+    gates:
+      # Sub-Gate 2.1: Task Contract (Agent Gate)
+      - id: contract
+        role: architect
+        guidance: [task.contract]
+        proof: contract
+        expected_failure:
+          exit_codes: [1, 101, 134]          # Language-agnostic: Rust=101, Python/pytest=1, C=134
+          stderr_contains: "assertion failed" # Distinguishes runtime assertion from compiler/syntax error
+        persistence:
+          post: snapshot             # Captures red-seam baseline snapshot
 
-  - id: review
-    role: independent_reviewer
+      # Sub-Gate 2.2: Implement & Review (Reusable Subgraph Template parameterized with check_task)
+      # Note: Individual tasks can override this default by declaring `command: <custom_cmd>` in their manifest.
+      # Tasks declaring `mode: speculative` auto-rebase on upstream candidate snapshots during the implement
+      # phase before candidate snapshot submission, resolving conflicts autonomously via task_blackboard.
+      - id: implement
+        use: build_review_cycle
+        command: check_task
+        # mode: speculative         # Declared on speculative tasks to begin work ahead of upstream verification
+        # sync_on: snapshot         # Rebase trigger: auto-rebases on upstream snapshot during implement
+
+      # Sub-Gate 2.3: Autonomous Task Delivery (0 Tokens: Atomic Git commit & receipt)
+      # Coordinated Delivery Barrier: tasks do not transition to deliver until both their
+      # upstream dependencies and downstream dependents have passed review.
+      # Once the dependency contour passes review, delivery lands candidate snapshots simultaneously.
+      - id: deliver
+        proof: delivery
+        receipt: true                # Emits durable receipt and sets status: completed
+        delivery_barrier: contour_reviewed # Waits until upstream & downstream dependencies pass review
+        persistence:
+          immutable: true            # Strictly enforces that tree matches reviewed candidate snapshot
+          post: commit               # Lands candidate snapshot into milestone branch Git HEAD
+          git_commit_note: telemetry # Default: automated task engineering passport (diff breakdown, AST symbols, test suite, swarm)
+          # Alternative (command-driven):
+          # git_commit_note: command.benchmark # Attaches output of configured command.benchmark to refs/notes/forge
+
+  # Gate 3: Milestone Integration Verification & Polish
+  - id: milestone_verification
+    gates:
+      - id: verify
+        command: check_full_repo
+
+      - id: review
+        role: reviewer
+        policy: default_review
+        guidance: [milestone.review]
+        proof: review
+        persistence:
+          immutable: true
+
+    # Fallback subgraph if verification fails (parameterized with check_full_repo):
+    fallback:
+      use: build_review_cycle
+      command: check_full_repo
+      guidance: [milestone.polish]
+      max_attempts: 2
+
+    # Autonomous delivery of milestone integration polish (if verified/repaired):
+    deliver:
+      proof: delivery
+      receipt: true
+      persistence:
+        immutable: true
+        post: commit
+
+  # Gate 4: Milestone Documentation (Agent Gate)
+  - id: documentation
+    role: doc_writer
+    guidance: [milestone.doc]
     proof: review
-    independent_from: implement
-    reject_to: implement
-    contours: standard
-    tools: ["code_map_impact", "code_map_tests"]
-    steps:
-      - "Inspect the candidate snapshot and verify the configured review contours."
-      - "Submit review_proof with a decision and evidence for each contour."
+    persistence:
+      pre: snapshot
+      post: commit
 
-  - id: metadata
-    role: schema_author
-    proof:
-      scheme:
-        type: object
-        properties:
-          summary:
-            type: string
-          changed_files:
-            type: array
-            items:
-              type: string
-        required: [summary, changed_files]
-        additionalProperties: false
-    reject_to: implement
-    tools: ["task_claim", "task_submit"]
-    steps:
-      - "Submit scheme_proof with summary and changed_files."
-
-  - id: deliver
-    role: independent_reviewer
+  # Gate 5: Terminal Milestone Handoff (Agent Gate)
+  - id: handoff
+    role: architect
+    guidance: [milestone.handoff]
     proof: delivery
-    auto_commit: true
-    independent_from: implement
-    receipt_review: review
-    review_sources: [review]
-    reject_to: implement
-    contours: standard
-    tools: ["task_submit", "milestone show"]
-    steps:
-      - "Continue in the same independent reviewer session used for review; do not launch preflight subagents."
-      - "Verify the candidate and accepted review proof."
-      - "Submit delivery_proof; Forge writes the receipt and commits the candidate tree with hooks enabled."
-
-completed:
-  tools: ["task_manage"]
-  steps: ["Read the durable task receipt."]
+    absorb_working_tree: true        # Absorbs remaining test/doc polish into milestone integration commit
+    persistence:
+      post: commit
+      git_commit_note: telemetry     # Attaches complete milestone telemetry passport
+      # Alternative (command-driven custom benchmark / verification script):
+      # git_commit_note: command.benchmark
+    prune_archived_state: true       # Purges tasks, claims, revisions, transitions, traces, checkpoints, and blackboard from active SQLite
+    tombstone_eviction: safe_guard   # Retains SQLite milestone_tombstone cache indefinitely; pruned only when verified across all worktrees that no active manifest remains and archive has valid handoff proof token

@@ -36,10 +36,10 @@ Deliver lifecycle cleanliness, zero-bloat persistence, and robust crash recovery
 
 1. **SQLite Handoff State Pruning & Version Migration (v5 $\to$ v6)**: Fully prune completed milestone tasks, claims, subtasks, revisions, blackboard messages, and traces from SQLite `.forge/tasks.sqlite` upon `milestone handoff`. This is an engine-wide global project setting enabled by default across all workflows (configurable/opt-out in `forge-mcp.yaml`), not a per-workflow profile setting. The durable record lives in `docs/milestones/archive/<slug>.md`. Schema upgrades via a one-shot v5 $\to$ v6 migration updating `task_store_metadata.schema_version` while preserving lock-free opens for v6 databases.
 2. **Resurrection Guard (`milestone_tombstones`)**: Prevent stale active manifests (e.g. on unmerged worktrees or branches) from resurrecting pruned milestones into SQLite during batch `task sync` in `manage_inner`, while explicit sync fails closed.
-3. **Archive-Authoritative Dependency Satisfaction & Fast Cache**: Treat `docs/milestones/archive/*.md` and Git history as permanent ground truth (<100ms directory scan if DB unrecovered). Use `milestone_tombstones` as a fast SQLite cache without arbitrary timers, evicted only after verifying across linked worktrees that no active manifest remains and archive contains a verified handoff token.
+3. **Archive-Authoritative Dependency Satisfaction**: Resolve completed dependencies from canonical `milestone_tombstones` or verified configured archive documents, including wildcard roots, without retained bridge tasks or a measured latency guarantee. Cancelled tasks do not receive completion credit.
 4. **Idempotent 7-Case Handoff State Machine**: Handle process interruptions safely before, during, or after archive writing, torn archive post-prune repair, SQLite pruning, cross-worktree unmerged active manifests, and active file deletion, with `.bak` backup/restore compensation on write failure, eliminating dangerous reverse ref-swaps post-prune.
-5. **Elimination of Git Ref Bloat (`refs/forge/evidence/*`)**: Discontinue permanent evidence refs (pruning milestone-scoped proof SHAs at handoff and legacy ~15 MB dead refs). Amend ADR 0015 and `docs/reference/tasks.md` to establish the markdown archive and branch history as permanent proof storage. Keep parentless snapshots pure while maintaining a single moving keeper pointer `refs/forge/state/<milestone>/<task_slug>` per active task (chaining snapshots as parents to protect from `git gc`), deleted in all handoff completion paths.
-6. **Disaster Recovery (`milestone db-recover`)**: Enable zero-loss reconstruction of SQLite state from active worktree manifests and in-flight Git state pointers if `tasks.sqlite` is lost, discovering all linked worktrees via `git worktree list --porcelain` and pre-seeding tombstones from archive manifests to prevent active manifest resurrection from other worktrees.
+5. **Elimination of Git Ref Bloat (`refs/forge/evidence/*`)**: Discontinue permanent evidence refs. ADR 0015 and `docs/reference/tasks.md` establish the Markdown archive and branch history as permanent records, without promising perpetual snapshot-object reachability. Pure parentless snapshots are retained by moving `refs/forge/state/<repository>/<project>/<milestone>/<task_slug>` keepers until handoff cleanup, which preserves active foreign ownership.
+6. **Acknowledged-State Recovery (`milestone db-recover`)**: Restore checkpointed active provenance after SQLite loss, subject to the Task3-local acknowledged-state contract below. Discover linked worktrees and preseed archive tombstones. SQLite COMMIT remains authoritative; pending publication retries without replaying mutations. Missing uncheckpointed legacy state, unresolved intents, and incomplete publication cohorts fail closed rather than inventing claims or guaranteeing recovery of unacknowledged lost state.
 7. **Markdown-First `milestone list` with Pagination**: Replace pipe tables with structured Markdown cards, add `--limit` (default 10, clamped 1..=100) for archive listings, calculate completion stats from markdown task blocks, and render clear agent guidance.
 
 ---
@@ -251,12 +251,13 @@ receipt:
 task_ref: eliminate-legacy-evidence-refs-and-state-recovery-pointer
 target: Amend ADR 0015 and tasks.md, retire fail-closed evidence-ref check in handoff.rs, prune milestone proof refs and unpinned evidence, establish keeper refs, and implement multi-worktree milestone db-recover
 proof_policy: seam-test-first
-contract_revision: 9
+contract_revision: 10
 invariants:
 - 'INV-KEEPER-SQLITE-COMMIT: SQLite remains the logical commit owner; task keepers checkpoint committed task state and never authorize an uncommitted gate. No store-wide ref, synthetic task owner, or Git-first decision journal is introduced.'
 - 'INV-KEEPER-ACKNOWLEDGED-RECOVERY: Recover acknowledged active task, claim, revision and gate provenance. Publish complete task checkpoints before managed success or observation of new state; refuse pending reads without taking a writer lock. If SQL is lost during an unresolved checkpoint intent, fail closed without reviving an old claim or fabricating the unacknowledged outcome.'
 - 'INV-KEEPER-TASK-FENCE: Genuine task-owned intent and revision reservations may precede SQL commit solely to fence stale claims and detect ambiguity. They are not accepted gate evidence. Preserve maximum allocated revisions and reject incomplete publication cohorts.'
 - 'INV-KEEPER-LEGACY-ENROLLMENT: Enroll healthy existing task state before retiring legacy pins or promising recoverability. Already-lost uncheckpointed runtime state is explicitly unrecoverable; manifests do not recreate claims or proof history.'
+- 'INV-KEEPER-AUTOMATIC-ORPHAN-RECOVERY: Plain milestone db-recover uses healthy SQLite authority to rewind orphaned precommit refs to acknowledged ref@{1}, end interrupted submit claims and advance revisions without accepting provisional proofs. Obsolete archives without handoff.proof_shas and their stale active copies supply no recovery authority; missing SQL with an unresolved intent remains fail-closed.'
 scope:
 - src/core/git.rs
 - src/db/tasks_store/mod.rs
@@ -271,15 +272,16 @@ scope:
 - src/engine/tasks/lifecycle.rs
 - src/engine/tasks/gates.rs
 - src/engine/tasks/workspaces.rs
+- src/engine/tasks/git_snapshot.rs
 - src/cli/milestone.rs
 - src/cli/task.rs
 - tests/acdd/milestones.rs
 - tests/acdd/tasks.rs
+- tests/acdd/subtasks.rs
 - skills/contextunity-forge/SKILL.md
 - docs/adr/0015-acdd-lifecycle-snapshots-and-proactive-defect-resolution.md
 - docs/reference/tasks.md
 - docs/reference/cli.md
-status: completed
 subtasks:
 - subtask_ref: adr-0015-and-tasks-doc-proof-retention-amendment
   title: Amend ADR 0015, docs/reference/tasks.md, and SKILL.md to define archive manifests and branch commits as permanent proof storage while deprecating refs/forge/evidence
@@ -297,9 +299,10 @@ subtasks:
   title: Implement milestone db-recover CLI command discovering worktrees via git worktree list --porcelain, pre-seeding tombstones from archive manifests across all worktrees, and reconstructing SQLite task store from active manifests and state refs
   status: completed
   evidence: 'T3-CR9-B18-recovery: public db-recover checkpoint tamper matrix 12 variants x passed/rejected gates (24 refusals), valid recovery/inspect/idempotent retry, pure pinned GateDef proof validation and exact claim/submission transitions. Two R1 mutation kills. Prior owner isolation/1073 independent confirmations retained; full ACDD116/0; current findings pending independent review.'
+status: completed
 receipt:
-  contract_revision: 9
-  passed_at: 2026-10-23T08:36:31.391065964+00:00
+  contract_revision: 10
+  passed_at: 2026-10-23T15:04:02.369252851+00:00
   evidence:
     command_proof:
       command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --test acdd
@@ -312,19 +315,19 @@ receipt:
       contours:
         paths:
           applicable: true
-          evidence: Effective live scope23 is admitted by1082 (git_snapshot.rs) and prior lawful subtasks extension. All23 postimages/modes equal candidate481653174913612b894639c9640c3723090edfad;22 differ from baseline. Only9 paths change this repair;14 match the prior reviewed source. Frozen Cargo.toml, root manifest/plan/future-v2, staged foreign blobs/hash and empty continue preserved. No reviewer source/docs/test/scope edits.
+          evidence: All 23 admitted Task3 postimages exactly match candidate 092efd88e6107bea92b89318c5ee5fc1f593997c. Scoped diff SHA256 versus baseline HEAD3939e5de is 598d0e55568a941bd512595788886600ed897c87ef379e0ebd6159ad2f17752d. Task5 five-path candidate remains unchanged. No reviewer edits, Git mutations, delivery, repack, or handoff.
         claims:
           applicable: true
-          evidence: 'R1 confirmed-fixed at recovery.rs1392-1558: historical pinned GateDef pure proof validation, exact ended claim/stage and submission action/result/findings linkage before import. Existing public recovery seam tests24 malformed cases across passed contract/rejected review plus valid restore and subsequent mutation. R2 confirmed-fixed at handoff.rs857-887 and recovery.rs110: absent-only fallback, exact empty/full40 list, malformed values reject before promotion/cleanup;8 metadata rows. R3 confirmed-fixed at git_snapshot.rs655-773/coregit8-178: GC exclusion before writes -> unique task-owned kept pack -> unchanged commit-tree/GC -> SQL-owned keeper; candidate parentless. Review cargo test --test acdd exit0 116/116 once,198.00s; current-bound accepted strict Clippy0 reused. Six builder mutations inspected and restored; no gratuitous reruns.'
+          evidence: 'Raw1110 R1/R2 are closed by current source and public seam evidence: exact acknowledged/SQL preimage plus bounded reservation/live claim/token/cohort validation prevents arbitrary claim revocation; transient canonical obsolete-owner classification excludes typed/corrupt keeper payloads before reads, mutation, enrollment and restoration without granting dependency credit. Present current archive proof_shas remains strict. Independent cargo test --test acdd passed116/0 in705.87s; accepted BUILD strictClippy0 and focused mutation/replay evidence reviewed. Task blackboard1115.'
         concurrency:
           applicable: true
-          evidence: SQLite COMMIT remains logical owner under decision1071. R3 provisional KeptObjects spans capture through actual keeper publication; typed Pending retains protection across process exit, lifecycle_error preserves Pending identity, and healthy reconcile only republishes stored Publication then clears marker. Existing snapshot seam executes actual successful GC at commit-tree stdout, refused GC during construction, post-SQL fault, keeper ancestry and parentless checks. Prior reader-fence1073 and exact owner/cohort/delta closures retained by unchanged source region hashes and existing full-target seams. No all-history or unacknowledged-loss recovery promise.
+          evidence: SQLite remains logical owner. Genuine orphan recovery keeps intent fencing through SQL end_claim/revision commit, then CAS-rewinds the exact observed tip to exact ref@{1}. Exact already-released SQL recognition makes retry after COMMIT/Git failure CAS-only with the same revision and no double release. Conflicting tokens, invalid bounds, changed preimages and incomplete prior cohorts fail before SQL/ref mutation.
         project_isolation:
           applicable: true
-          evidence: Confirmed canonical absolute object homes and alias-once namespaces remain unchanged. Kept pack ownership contains genuine task ID plus exact candidate; unique owner blob avoids shared keep-file release, release requires same owner and actual ancestor of durable task keeper. Prior planner/states/coverage/prepared-owner/observation-fence regions byte-identical to prior reviewed candidate. Task1/Task2 completed provenance and IN001 UNENROLLED authority are compared through current compatible CLI, without direct shared SQL access. All fault/GC tests use isolated TempDir fixtures.
+          evidence: Owner selection uses canonical effective repository/default-project/owners/aliases and configured milestone roots across equivalent Git worktrees; no linked profile compilation or obsolete TaskSpec parsing occurs. Prefixes include complete repository/project/milestone identities. Headerless/unidentified historical garbage receives no namespace, while recognized obsolete owners are ignored unchanged in healthy recovery, composed reads and missing/corrupt restoration.
         administration:
           applicable: true
-          evidence: Contract9/scope23/BUILD18/REVIEW26 exact binding verified. Shared proof parser propagates Result at12 free and1 qualified production calls; archives validated across roots before cleanup, staging validates before promotion. Canonical pinned profile proof validators remain leaf-owned, no new DB->engine import. Quiescent legacy enrollment and ambiguity limitations remain documented. Fixture-only gc.auto/maintenance.auto settings retain explicit GC and deletion assertions; no production config change. Four advisory builder evidence records inspected, no manual status/receipt mutation. Delivery allowed only through same-reviewer current CLI auto_commit on unchanged binding and scoped index preservation.
+          evidence: No manual recovery flag/API, schema, global journal, DB-to-engine dependency, rollback state machine, profile-v2 runtime, receipt acceptance, or unrelated IN001 change was introduced. Missing/corrupt SQL with pending intent remains fail-closed. Affected documentation scan against main95d4e052 is milestone blackboard1114; no documentation edits needed.
   decision: pass
   rollup:
     verified_invariants:
@@ -339,8 +342,8 @@ receipt:
     - 'INV-KEEPER-ACKNOWLEDGED-RECOVERY: Recover acknowledged active task, claim, revision and gate provenance. Publish complete task checkpoints before managed success or observation of new state; refuse pending reads without taking a writer lock. If SQL is lost during an unresolved checkpoint intent, fail closed without reviving an old claim or fabricating the unacknowledged outcome.'
     - 'INV-KEEPER-TASK-FENCE: Genuine task-owned intent and revision reservations may precede SQL commit solely to fence stale claims and detect ambiguity. They are not accepted gate evidence. Preserve maximum allocated revisions and reject incomplete publication cohorts.'
     - 'INV-KEEPER-LEGACY-ENROLLMENT: Enroll healthy existing task state before retiring legacy pins or promising recoverability. Already-lost uncheckpointed runtime state is explicitly unrecoverable; manifests do not recreate claims or proof history.'
-    architectural_notes:
-    - 'decisions: Admitted minimal SQLite-first interpretation after1070, superseding proposal hold1068/analysis1069 ONLY for this alternate: Task3 contract9 initial scope21, sync succeeded. SQLite COMMIT remains logical authority. Durable recovery promise covers successfully acknowledged managed active task/claim/revision/gate provenance; SQL-committed but unacknowledged checkpoint ambiguity MUST fail closed, never revive old claim/fabricate outcome/report complete recovery. Managed reads may return TASK_CHECKPOINT_PENDING without taking writer lock. Genuine task-owned preSQL intent/reservation/cohort metadata is admitted solely as fencing, not gate evidence or synthetic coordinator. No store-wide ref, Git-first decision, notes backup or all-store history promise. Healthy-first enrollment precedes retiring pins/recoverability; lost legacy runtime without preexisting checkpoint is explicitly unavailable. Exact4 task-local invariants now freeze these boundaries. Use proposed1070 typed active-state ports and deterministic failure/promotion tests within these limits. No change to Task1/2 receipts, global invariant fields or Task4 scope. Source/test implementation now authorized via fresh contract9 claim, required gate proof and independent review; recover/test only isolated stores, never reset or exercise db-recover destructively on actual shared DB. No metadata or historical evidence fabrication.'
+    - 'INV-KEEPER-AUTOMATIC-ORPHAN-RECOVERY: Plain milestone db-recover uses healthy SQLite authority to rewind orphaned precommit refs to acknowledged ref@{1}, end interrupted submit claims and advance revisions without accepting provisional proofs. Obsolete archives without handoff.proof_shas and their stale active copies supply no recovery authority; missing SQL with an unresolved intent remains fail-closed.'
+    architectural_notes: []
     review_summary:
       decision: pass
       contours:
@@ -358,6 +361,7 @@ receipt:
 3. Candidate snapshot commits remain parentless (created via `git commit-tree` without `-p`). A moving keeper ref `refs/forge/state/<milestone>/<task_slug>` points to a lightweight commit listing the in-flight candidate snapshots as parents (`-p`), keeping them reachable from `git gc` during active execution without mutating candidate commit SHAs.
 4. All `milestone handoff` completion and post-prune recovery paths delete all `refs/forge/state/<milestone>/*` refs for that milestone via `git update-ref -d` idempotently (missing refs succeed).
 5. Command `contextunity-forge-mcp milestone db-recover` executes in strict deterministic order: (1) runs `git worktree list --porcelain` to discover all linked worktree paths; (2) inspects `.forge/tasks.sqlite`: if corrupt or unreadable, renames to `.forge/tasks.sqlite.corrupt.<timestamp>`, then opens or initializes empty schema v6 SQLite database via `TasksStore::open_project` before tombstone pre-seeding; (3) scans `docs/milestones/archive/*.md` across every discovered worktree root to pre-seed `milestone_tombstones` (parsing frontmatter: `status: completed` sets `all_tasks_terminal = 1`, `status: cancelled` sets `all_tasks_terminal = 0`, and extracting completed task IDs from task blocks) FIRST; (4) imports active manifests across discovered worktrees only after tombstones are seeded, strictly skipping any milestone whose ID exists in `milestone_tombstones` or whose path matches `is_archived_path`; (5) reconstructs active tasks, claims, and revisions from active manifests and in-flight `refs/forge/state/` pointers; (6) idempotently deletes legacy `refs/forge/evidence/<sha>` refs using the single fallback rule across archive manifests (read `handoff.proof_shas`; if absent, take `commit`, `candidate_baseline_head`, and 40-char hex SHAs; missing refs succeed) and orphan keeper refs `refs/forge/state/<milestone>/*` for tombstoned milestones (missing refs succeed).
+6. With healthy SQL, automatically resolve orphaned precommit submit intents without a CLI abandonment flag: rewind each keeper to its acknowledged `ref@{1}`, preserve consumed reservations, call `end_claim`, clear worker/worktree ownership, advance the interrupted claim revision, and select `ready` or `parked`. Commit the claim release before ref rollback so retries cannot release it twice. Skip obsolete archives lacking `handoff.proof_shas` before task parsing, validation and tombstone seeding; skip their stale active copies and keeper namespaces during restoration. Present malformed/null proof lists remain errors. Never fabricate a gate result or infer an unacknowledged outcome after SQL loss.
 
 ---
 
@@ -446,3 +450,85 @@ receipt:
 3. `milestone list --archive` accepts `--limit <N>` (default 10, clamped between 1 and 100) and displays total archived count vs. displayed count.
 4. Archive milestone completion and task metrics are derived directly from the fenced `task_ref:` YAML blocks within archive markdown files (completed / total manifest tasks including cancelled), without querying SQLite or reading document frontmatter.
 5. Terminal output includes clear next-step guidance for agents (e.g. command syntax for viewing details or querying archive history).
+
+### task: reconcile-delivery-configuration-and-documentation
+
+```yaml
+task_ref: reconcile-delivery-configuration-and-documentation
+target: Admit and verify the existing test-profile adjustment, delivered plan, and current-versus-proposed profile documentation without implementing profile-v2 runtime
+proof_policy: direct-proof
+contract_revision: 2
+scope:
+- Cargo.toml
+- src/core/tasks/profile.rs
+- docs/plans/milestone-handoff-pruning-and-list-guidance.md
+- docs/reference/profiles.md
+- skills/contextunity-forge/references/acdd_profile.yaml.example
+depends_on: []
+status: completed
+receipt:
+  contract_revision: 2
+  passed_at: 2026-10-23T14:45:11.901390704+00:00
+  evidence:
+    command_proof:
+      command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --test acdd
+      exit_code: 0
+      tests_passed: 116
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: All five admitted postimages exactly match candidate 95525a42ba9b5c5bf261e4ecc36f6945bc1da8f7 and current baseline HEAD3939e5de. No profile-v2 runtime, neighboring configuration, manifest receipt, source, or review edits were introduced.
+        claims:
+          applicable: true
+          evidence: Cargo test profile adjustment, current profile parser owner, completed plan, profile reference, and future-v2 proposal are consistently separated. docs/reference/profiles links the executable current example and explicitly labels acdd_profile.yaml.example unsupported future v2. Independent cargo test --test acdd passed 116/0 in 394.06s; accepted strict Clippy0 and focused profile seam1/0 evidence reused.
+        concurrency:
+          applicable: false
+          evidence: Supplemental admission changes no runtime transaction, claim, checkpoint, receipt, or concurrent mutation behavior; src/core/tasks/profile.rs postimage is existing unchanged runtime dependency evidence only.
+        project_isolation:
+          applicable: true
+          evidence: Profile documentation preserves active-root loading precedence, linked-workspace override exclusion, path pinning, SHA tamper checks, and protected .forge/acdd scope. Candidate contains no external or sibling workspace changes.
+        administration:
+          applicable: true
+          evidence: Current executable schema remains distinct from the unimplemented v2 proposal; profile pins, gate references, terminal delivery requirements, auto_commit, hook and receipt behavior are documented without implementing v2. Independent branch-wide documentation scan is milestone blackboard1111.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-SHARED-STORE-TOMBSTONE-GUARD: milestone_tombstones records archived milestone IDs, terminal completion status, and completed task IDs; directory sync silently ignores tombstoned active manifests while explicit sync fails closed.'
+    - 'INV-HANDOFF-SQLITE-PRUNING: Completed milestones are completely purged from active SQLite tasks, claims, revisions, blackboard messages, and traces upon handoff; the archive manifest is the canonical durable record.'
+    - 'INV-ARCHIVE-AUTHORITATIVE-DEPENDENCY: Dependencies on completed milestones and tasks are satisfied by milestone_tombstones and docs/milestones/archive/*.md, requiring zero bridge tasks in SQLite.'
+    - 'INV-IDEMPOTENT-HANDOFF-MATRIX: Handoff evaluates the 7-case state matrix prior to ready_milestone, ensuring clean crash recovery across archive writing, torn archive repair, SQLite pruning, cross-worktree unmerged manifests, and file deletion.'
+    - 'INV-EPHEMERAL-STATE-REFS: Legacy permanent refs/forge/evidence/<sha> refs are discontinued and pruned; in-flight tasks maintain a single moving keeper ref refs/forge/state/<milestone>/<task_slug> chaining parentless root snapshots, deleted upon milestone handoff.'
+    - 'INV-CRASH-DB-RECOVERABILITY: If tasks.sqlite is deleted or corrupted, milestone db-recover reconstructs active milestone and task state from active worktrees, manifest files, and refs/forge/state/ pointers, pre-seeding tombstones across all linked worktrees from archive manifests.'
+    - 'INV-MARKDOWN-FIRST-MILESTONE-LIST: Terminal milestone list renders structured Markdown blocks without pipe tables, supports --limit on archive listings, calculates task completion from task blocks, and provides actionable guidance.'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: not_applicable
+        paths: accepted
+        project_isolation: accepted
+```
+
+#### Acceptance
+
+1. Preserve the existing explicit test-profile `opt-level = 0` adjustment and verify supported task-profile resolution with existing production-seam tests; make no benchmark or latency claim.
+   `src/core/tasks/profile.rs` is the unchanged production dependency connecting the profile seam; it admits verification, not profile-v2 implementation.
+2. Keep the runnable current example separate from the preserved future-v2 proposal, explicitly label the proposal unsupported by the current parser, and point executable-profile guidance at the runnable example. Do not implement any profile-v2 runtime capability.
+3. Reconcile the delivered plan with accepted task proofs and acknowledged-state recovery. Preserve all four completed task contracts and receipts, and include this bounded supplemental adjustment in independent review and final integration verification.
+
+#### Recovery Verification
+
+The supported plain `milestone db-recover` resolves the interrupted supplemental
+submit using healthy SQL and acknowledged keeper history. Its claim returns to
+`ready` / `contract`, revision 5, with no accepted gate, without manual SQLite,
+keeper, receipt or archive edits. The same operation succeeds twice on the copied
+28-worktree topology; missing/corrupt SQL with that unresolved intent refuses
+`TASK_RECOVERY_AMBIGUOUS`. The focused crash seam, strict Clippy and full ACDD
+target pass before live recovery. Task3 contract 10 owns this bounded repair;
+the supplemental task owns the existing configuration/documentation adjustment.

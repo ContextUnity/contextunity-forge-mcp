@@ -182,5 +182,5 @@ For auditability and protection against prompt injection or rogue agents alterin
 
 ## Reference Examples
 
-- See the canonical executable profile example in [`skills/contextunity-forge/references/acdd_profile.yaml.example`](../../skills/contextunity-forge/references/acdd_profile.yaml.example).
+- See the canonical executable profile example in [`skills/contextunity-forge/references/acdd_profile.current.yaml.example`](../../skills/contextunity-forge/references/acdd_profile.current.yaml.example). The separate [`v2 proposal`](../../skills/contextunity-forge/references/acdd_profile.yaml.example) is not supported by the current parser.
 - See [Workspace configuration](configuration.md#declarative-acdd-profile-and-role-configuration) for full schema details and adapter settings.
