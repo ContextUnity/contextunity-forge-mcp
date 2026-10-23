@@ -503,8 +503,12 @@ fn task_rows(snapshot: &Snapshot, stored: &[Task]) -> Vec<Value> {
     snapshot.tasks.iter().map(|spec| {
         let task_ref = spec["task_ref"].as_str().unwrap_or("");
         let id = format!("{}/{}:{task_ref}", snapshot.project, snapshot.id);
-        let status = stored.iter().find(|task| task.task_id == id)
-            .map(|task| task.status.as_str()).unwrap_or("unsynced");
+        let status = if is_archived_path(&snapshot.path) {
+            spec["status"].as_str().unwrap_or("planned")
+        } else {
+            stored.iter().find(|task| task.task_id == id)
+                .map(|task| task.status.as_str()).unwrap_or("unsynced")
+        };
         json!({"task_ref":task_ref,"target":spec["target"].as_str().unwrap_or(""),"status":status,
             "proof_policy":spec["proof_policy"].as_str().unwrap_or(""),
             "contract_revision":spec["contract_revision"].as_u64().unwrap_or(1),
@@ -513,6 +517,9 @@ fn task_rows(snapshot: &Snapshot, stored: &[Task]) -> Vec<Value> {
 }
 
 fn stored_tasks(root: &Path, snapshot: &Snapshot) -> Result<Vec<Task>> {
+    if is_archived_path(&snapshot.path) {
+        return Ok(Vec::new());
+    }
     let path = tasks::database_path(root)?;
     let mut store = TasksStore::open_project(&path, &snapshot.repository, &snapshot.project)?;
     store.set_profile(crate::core::tasks::profile::load_for_workspace(root)?);
@@ -542,8 +549,8 @@ fn view(snapshot: &Snapshot, stored: &[Task]) -> Result<Value> {
         "invariants":snapshot.invariants,"outcome":outcome}))
 }
 
-/// Lists milestone metadata and completion ratios from the task store.
-pub fn list(root: &Path, archive: bool, status: Option<&str>) -> Result<Value> {
+/// Lists current task-store progress and bounded, manifest-owned archive progress.
+pub fn list(root: &Path, archive: bool, status: Option<&str>, limit: usize) -> Result<Value> {
     let _observation = tasks::read_checkpoint_fence(root)?;
     if status
         .is_some_and(|s| !matches!(s, "all" | "planned" | "active" | "completed" | "cancelled"))
@@ -551,30 +558,32 @@ pub fn list(root: &Path, archive: bool, status: Option<&str>) -> Result<Value> {
         bail!("invalid milestone status");
     }
     let mut rows = Vec::new();
+    let limit = limit.clamp(1, 100);
+    let mut archive_total = 0;
+    let mut archive_displayed = 0;
     for item in snapshots(
         root,
         archive || matches!(status, Some("all" | "completed" | "cancelled")),
         None,
     )? {
-        let row = view(&item, &stored_tasks(root, &item)?)?;
-        if status.is_some_and(|s| s != "all" && row["status"] != s) {
+        if status.is_some_and(|s| s != "all" && item.status != s) {
             continue;
         }
-        rows.push(row);
+        if is_archived_path(&item.path) {
+            archive_total += 1;
+            if archive_displayed == limit {
+                continue;
+            }
+            archive_displayed += 1;
+        }
+        let row = view(&item, &stored_tasks(root, &item)?)?;
+        let document = json!({"path":item.path.strip_prefix(root)?, "absolute_path":item.path});
+        rows.push((row, document));
     }
-    rows.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
-    let mut table = String::from("ID | title | status | started_at | completion\n");
-    for row in &rows {
-        table.push_str(&format!(
-            "{} | {} | {} | {} | {}\n",
-            row["id"].as_str().unwrap_or(""),
-            row["title"].as_str().unwrap_or(""),
-            row["status"].as_str().unwrap_or(""),
-            row["started_at"].as_str().unwrap_or("-"),
-            row["completion"].as_str().unwrap_or("")
-        ));
-    }
-    Ok(json!({"table":table,"milestones":rows}))
+    rows.sort_by(|a, b| a.0["id"].as_str().cmp(&b.0["id"].as_str()));
+    let (rows, documents): (Vec<_>, Vec<_>) = rows.into_iter().unzip();
+    Ok(json!({"milestones":rows,"documents":documents,
+        "archive_total":archive_total,"archive_displayed":archive_displayed}))
 }
 
 /// Shows one milestone by ID, prefix, stem, or path.

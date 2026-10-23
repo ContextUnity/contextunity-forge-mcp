@@ -79,7 +79,7 @@ pub(crate) mod discovery {
     }
 
     fn active_milestones(root: &Path, page: &QueryOptions) -> Value {
-        let listing = match crate::engine::milestones::list(root, false, Some("active")) {
+        let listing = match crate::engine::milestones::list(root, false, Some("active"), 10) {
             Ok(listing) => listing,
             Err(_) => {
                 return json!({
@@ -901,6 +901,9 @@ fn command_presentation(command: &Command) -> (OperationKind, &'static str, Opti
             };
             (OperationKind::Task, title, None)
         }
+        Command::Milestone {
+            command: milestone::MilestoneCommand::List { .. },
+        } => (OperationKind::Task, "milestone_list", None),
         Command::Milestone { .. } => (OperationKind::Task, "task result", None),
         Command::Guide { .. } => (OperationKind::Guide, "forge_guide", None),
         Command::Checkpoint { .. } => (OperationKind::Checkpoint, "session_checkpoint", None),

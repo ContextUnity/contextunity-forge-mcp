@@ -205,7 +205,7 @@ SQLite and milestone Markdown, resets the task to the first gate in its active p
 provides task operations and has no milestone lifecycle tools.
 
 ```sh
-contextunity-forge-mcp milestone list [--archive] [--status planned|active|completed|cancelled|all]
+contextunity-forge-mcp milestone list [--archive] [--limit N] [--status planned|active|completed|cancelled|all]
 contextunity-forge-mcp milestone show <id-or-number> [--full]
 contextunity-forge-mcp milestone init [--num 011] [--slug short-name] [--title "Title"] [--plan docs/plans/proposal.md] [--dir docs/milestones] [--desc "Purpose"] [--depends-on m-prior] [--active]
 contextunity-forge-mcp milestone handoff-context <id-or-number> --target-base <git-selector>
@@ -213,11 +213,23 @@ contextunity-forge-mcp milestone handoff <id-or-number> [--commit <git-selector>
 contextunity-forge-mcp milestone db-recover
 ```
 
-`milestone list` returns a table and structured rows containing ID, title,
-status, `started_at`, task states, and the SQLite completion ratio. The default
-list reads current milestone files; `--archive` includes archived files, and
-`--status completed|cancelled` includes matching archived files. Status values
-are `planned`, `active`, `completed`, `cancelled`, and `all`. `milestone show`
+`milestone list` renders Markdown sections for active and planned milestones,
+with status, start time, completion, clickable document paths, and next-step
+commands. Completed and cancelled sections appear when matching documents are
+included. `--format json` preserves the `milestones` array and its row fields;
+top-level `documents` contains aligned path coordinates, and `archive_total` /
+`archive_displayed` report matching versus displayed archived documents.
+The default list reads current milestone files; `--archive` includes archived
+files, and `--status completed|cancelled|all` also includes archives.
+`--limit` bounds only the archived portion: default 10, clamped to 1..=100,
+selected in configured document path order. Active and planned documents are not
+limited. Archive completion is completed task blocks / all task blocks, including
+cancelled tasks in the denominator. These task states come from fenced YAML
+`task_ref` blocks, not frontmatter counters or SQLite. Current document progress
+continues to use SQLite. Markdown reports the archive counts and suggests
+`milestone show <ID> --full`, `task list --milestone <ID> --status all`, and
+archive/status filters. Status values are `planned`, `active`, `completed`,
+`cancelled`, and `all`. `milestone show`
 resolves a full ID, tagged prefix (e.g. `P-001`, `EC-001`), or numeric file prefix and returns frontmatter, outcomes, and task metadata. `--full` includes
 the complete Markdown document.
 

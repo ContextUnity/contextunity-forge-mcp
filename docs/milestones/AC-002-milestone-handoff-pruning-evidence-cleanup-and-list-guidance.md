@@ -365,26 +365,78 @@ receipt:
 
 ```yaml
 task_ref: markdown-milestone-list-and-archive-limit
-target: "Refactor milestone list to Markdown-first format, add archive pagination limit, and provide actionable agent guidance"
+target: Refactor milestone list to Markdown-first format, add archive pagination limit, and provide actionable agent guidance
 proof_policy: seam-test-first
-contract_revision: 8
+contract_revision: 9
 scope:
-  - src/cli/milestone.rs
-  - src/engine/milestones/mod.rs
-  - src/mcp/tools.rs
-  - tests/acdd/milestones.rs
-  - docs/reference/cli.md
-status: planned
+- src/cli/milestone.rs
+- src/cli/mod.rs
+- src/core/format/mod.rs
+- src/engine/milestones/mod.rs
+- src/mcp/tools.rs
+- tests/acdd/milestones.rs
+- docs/reference/cli.md
+status: completed
 subtasks:
-  - subtask_ref: markdown-card-formatting
-    title: "Render active and planned milestones as GitHub-Flavored Markdown blocks with status indicators, clickable paths, and no pipe tables"
-    status: pending
-  - subtask_ref: archive-limit-and-task-block-stats
-    title: "Add --limit <N> (default 10, clamped 1..=100) for archive listing and calculate completion directly from fenced YAML task blocks in archive markdown"
-    status: pending
-  - subtask_ref: actionable-cli-guidance-footer
-    title: "Append guidance notes explaining how to inspect archived milestones, view active tasks, or filter results, preserving --format json milestones array"
-    status: pending
+- subtask_ref: markdown-card-formatting
+  title: Render active and planned milestones as GitHub-Flavored Markdown blocks with status indicators, clickable paths, and no pipe tables
+  status: completed
+  evidence: 'CR9 BUILD12: existing public CLI seam runtime red101 for escaped generic table, green GFM Active/Planned/Completed sections, empty sections, status/start/completion and real encoded clickable file URI. JSON10-key rows unchanged; formatter pure and CLI identity separate. Full ACDD116/0; strict Clippy0.'
+- subtask_ref: archive-limit-and-task-block-stats
+  title: Add --limit <N> (default 10, clamped 1..=100) for archive listing and calculate completion directly from fenced YAML task blocks in archive markdown
+  status: completed
+  evidence: 'CR9 BUILD12: same public seam102 isolated archives; default10,0->1,1,100,101->100; active/planned never limited. Archived statuses/completion derive fenced task YAML:1completed+1cancelled+1planned=>1/3 despite fake frontmatter99/99 and unreadable SQLite sentinel unchanged. Statuscompleted implicit archive and Markdown1of102 counts. Two runtime101 mutation kills: limit minimum10 and restored archiveSQL read; mutations restored. Full ACDD116/0 Clippy0.'
+- subtask_ref: actionable-cli-guidance-footer
+  title: Append guidance notes explaining how to inspect archived milestones, view active tasks, or filter results, preserving --format json milestones array
+  status: completed
+  evidence: CR9 BUILD12 same supported CLI seam asserts milestone show/task list/archive/status command guidance; cli.md coevolved with limit semantics, task denominator, stable path order and JSON top-level aligned documents/count metadata. No MCP milestone tool added, no change to task-list API. Full ACDD116/0 Clippy0; no benchmarks.
+receipt:
+  contract_revision: 9
+  passed_at: 2026-10-23T09:51:06.889330481+00:00
+  evidence:
+    command_proof:
+      command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --test acdd
+      exit_code: 0
+      tests_passed: 116
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: All seven scoped candidate postimages exactly match snapshot 1bc8261c6ad4366adb883976ee66324a94452e37; six files differ from baseline, src/mcp/tools.rs is unchanged, and diff-check is clean. Repair delta is confined to src/core/format/mod.rs and the existing tests/acdd/milestones.rs seam, with only nonsemantic canonical style2021 formatting elsewhere in that admitted test file.
+        claims:
+          applicable: true
+          evidence: 'R1 raw1093 is closed: renderer locally normalizes manifest display text to one line, escapes structural Markdown in headings and link labels, preserves raw JSON/path bytes and canonical URI encoding, and hostile public CLI coverage proves literal GFM, clickable encoded original path, no injected headings, and unchanged JSON. Complete cargo test --test acdd passed 116/0 in 386.02s on the frozen candidate; accepted final-binding strict Clippy evidence is exit0 with zero warnings.'
+        concurrency:
+          applicable: false
+          evidence: Milestone list remains read-only under the existing checkpoint fence; no transaction, claim, rollback, lock-order, concurrent mutation, or namespace behavior changed.
+        project_isolation:
+          applicable: true
+          evidence: Renderer consumes aligned row/document data only, preserves workspace-relative JSON paths and original absolute path bytes for canonical file URI encoding, and introduces no cross-workspace lookup or mutable shared-store access.
+        administration:
+          applicable: false
+          evidence: No schema, migration, profile pin, hook, receipt, snapshot-parent, delivery, privileged configuration, Git mutation, or administrative recovery behavior changed.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-SHARED-STORE-TOMBSTONE-GUARD: milestone_tombstones records archived milestone IDs, terminal completion status, and completed task IDs; directory sync silently ignores tombstoned active manifests while explicit sync fails closed.'
+    - 'INV-HANDOFF-SQLITE-PRUNING: Completed milestones are completely purged from active SQLite tasks, claims, revisions, blackboard messages, and traces upon handoff; the archive manifest is the canonical durable record.'
+    - 'INV-ARCHIVE-AUTHORITATIVE-DEPENDENCY: Dependencies on completed milestones and tasks are satisfied by milestone_tombstones and docs/milestones/archive/*.md, requiring zero bridge tasks in SQLite.'
+    - 'INV-IDEMPOTENT-HANDOFF-MATRIX: Handoff evaluates the 7-case state matrix prior to ready_milestone, ensuring clean crash recovery across archive writing, torn archive repair, SQLite pruning, cross-worktree unmerged manifests, and file deletion.'
+    - 'INV-EPHEMERAL-STATE-REFS: Legacy permanent refs/forge/evidence/<sha> refs are discontinued and pruned; in-flight tasks maintain a single moving keeper ref refs/forge/state/<milestone>/<task_slug> chaining parentless root snapshots, deleted upon milestone handoff.'
+    - 'INV-CRASH-DB-RECOVERABILITY: If tasks.sqlite is deleted or corrupted, milestone db-recover reconstructs active milestone and task state from active worktrees, manifest files, and refs/forge/state/ pointers, pre-seeding tombstones across all linked worktrees from archive manifests.'
+    - 'INV-MARKDOWN-FIRST-MILESTONE-LIST: Terminal milestone list renders structured Markdown blocks without pipe tables, supports --limit on archive listings, calculates task completion from task blocks, and provides actionable guidance.'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: not_applicable
+        claims: accepted
+        concurrency: not_applicable
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Acceptance

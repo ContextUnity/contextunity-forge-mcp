@@ -20,6 +20,9 @@ pub enum MilestoneCommand {
         /// Selects planned, active, completed, or all milestones.
         #[arg(long)]
         status: Option<String>,
+        /// Maximum archived documents to include, clamped to 1..=100.
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
     },
     /// Shows one milestone by ID or numeric file prefix.
     Show {
@@ -81,9 +84,11 @@ pub enum MilestoneCommand {
 pub fn run(root: &Path, command: MilestoneCommand) -> Result<Value> {
     match command {
         MilestoneCommand::DbRecover => milestones::db_recover(root),
-        MilestoneCommand::List { archive, status } => {
-            milestones::list(root, archive, status.as_deref())
-        }
+        MilestoneCommand::List {
+            archive,
+            status,
+            limit,
+        } => milestones::list(root, archive, status.as_deref(), limit),
         MilestoneCommand::Show { id, full } => milestones::show(root, &id, full),
         MilestoneCommand::Handoff {
             id,

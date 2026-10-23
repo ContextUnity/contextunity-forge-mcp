@@ -7,7 +7,7 @@ mod coordination;
 mod discovery;
 pub(crate) mod lifecycle;
 mod traversal;
-pub use discovery::{DiscoveryKind, file_uri_for_path};
+pub use discovery::{file_uri_for_path, DiscoveryKind};
 
 /// Selects the wire presentation without changing the semantic response value.
 #[derive(
@@ -61,6 +61,7 @@ pub fn render(value: &Value, format: OutputFormat, title: &str) -> String {
             Some(kind) => discovery::render(value, title, kind),
             None if lifecycle::handles_title(title) => lifecycle::render(value, title),
             None => match title {
+                "milestone_list" => render_milestone_list(value),
                 "task_blackboard" => coordination::render_blackboard(value, title),
                 "search_docs" | "get_doc" => coordination::render_docs(value, title),
                 _ => render_markdown(value, title),
@@ -228,6 +229,84 @@ pub fn shorten_metadata_hashes(value: &mut Value) {
             shorten_fields(freshness, &["output_root", "corpus_hash"]);
         }
     }
+}
+
+fn render_milestone_list(value: &Value) -> String {
+    let label = |text: &str| {
+        let mut escaped = String::new();
+        for character in text.chars() {
+            if character.is_whitespace() || character.is_control() {
+                escaped.push(' ');
+            } else {
+                if matches!(
+                    character,
+                    '\\' | '`' | '*' | '_' | '[' | ']' | '(' | ')' | '<' | '>' | '&' | '#' | '!'
+                ) {
+                    escaped.push('\\');
+                }
+                escaped.push(character);
+            }
+        }
+        escaped
+    };
+    let mut output = String::from("# Milestones\n\n");
+    let rows = value["milestones"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    for (status, heading) in [
+        ("active", "Active Milestones"),
+        ("planned", "Planned Milestones"),
+        ("completed", "Completed Milestones"),
+        ("cancelled", "Cancelled Milestones"),
+    ] {
+        let selected: Vec<_> = rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row["status"] == status)
+            .collect();
+        if selected.is_empty() && matches!(status, "completed" | "cancelled") {
+            continue;
+        }
+        output.push_str(&format!("## {heading}\n\n"));
+        if selected.is_empty() {
+            output.push_str("None.\n\n");
+        }
+        for (index, row) in selected {
+            let text = |key: &str| {
+                row[key]
+                    .as_str()
+                    .unwrap_or("-")
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            };
+            output.push_str(&format!(
+                "### {}: {}\n\n- Status: {}\n- Started: {}\n- Completion: {}\n",
+                label(&text("id")),
+                label(&text("title")),
+                inline_code(&text("status")),
+                inline_code(&text("started_at")),
+                inline_code(&text("completion"))
+            ));
+            let document = &value["documents"][index];
+            let path = document["path"].as_str().unwrap_or("");
+            if let Some(uri) = document["absolute_path"]
+                .as_str()
+                .and_then(|path| file_uri_for_path(std::path::Path::new(path), None))
+            {
+                output.push_str(&format!("- Document: [{}]({uri})\n", label(path)));
+            }
+            output.push('\n');
+        }
+    }
+    output.push_str(&format!(
+        "Archive: {} of {} documents displayed.\n\n",
+        value["archive_displayed"].as_u64().unwrap_or(0),
+        value["archive_total"].as_u64().unwrap_or(0)
+    ));
+    output.push_str("## Next Steps\n\n- Inspect a milestone: `contextunity-forge-mcp milestone show <ID> --full`.\n- View active tasks: `contextunity-forge-mcp task list --milestone <ID> --status all`.\n- Query archive history: `contextunity-forge-mcp milestone list --archive --limit 10`.\n- Filter milestones: `contextunity-forge-mcp milestone list --status active` (also `planned`, `completed`, `cancelled`, or `all`).\n");
+    output
 }
 
 fn render_markdown(value: &Value, title: &str) -> String {
@@ -743,7 +822,8 @@ mod tests {
             Some(DiscoveryKind::Inspect),
         );
         if unresolved_inspect.contains("link unavailable") {
-            formatting_failures.push("unresolved or unsafe inspect source gained a link marker".into());
+            formatting_failures
+                .push("unresolved or unsafe inspect source gained a link marker".into());
         }
         if !unresolved_inspect.contains("src/missing.rs")
             || !unresolved_inspect.contains("../outside.rs")

@@ -1147,13 +1147,34 @@ fn milestone_list_and_show_report_scoped_documents_and_sqlite_progress() {
     let listed = run(&["list"]);
     let rows = listed["milestones"].as_array().unwrap();
     assert_eq!(rows.len(), 2);
-    for heading in ["ID", "title", "status", "started_at", "completion"] {
-        assert!(listed["table"]
-            .as_str()
-            .unwrap()
-            .to_ascii_lowercase()
-            .contains(&heading.to_ascii_lowercase()));
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+        .args(["--root", root.0.to_str().unwrap(), "milestone", "list"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let markdown = String::from_utf8(output.stdout).unwrap();
+    for text in [
+        "## Active Milestones",
+        "## Planned Milestones",
+        "Live work",
+        "Queued work",
+        "docs/milestones/011-live.md",
+        "1/2",
+        "milestone show",
+        "task list",
+        "--archive",
+        "--status",
+    ] {
+        assert!(markdown.contains(text), "missing {text:?}: {markdown}");
     }
+    assert!(
+        !markdown.contains('|'),
+        "pipe tables are not milestone cards"
+    );
+    assert!(
+        markdown.contains("](file://"),
+        "milestone paths must be clickable"
+    );
     let queued_row = rows.iter().find(|row| row["id"] == "m-queued").unwrap();
     assert_eq!(
         (
@@ -1170,11 +1191,11 @@ fn milestone_list_and_show_report_scoped_documents_and_sqlite_progress() {
         .iter()
         .any(|task| task["task_ref"] == "file-only" && task["status"] == "unsynced"));
     let live = rows.iter().find(|row| row["id"] == "m-live").unwrap();
-    assert!(listed["table"]
-        .as_str()
-        .unwrap()
-        .lines()
-        .any(|line| line.contains("m-live") && line.contains("1/2")));
+    assert_eq!(
+        live.as_object().unwrap().len(),
+        10,
+        "preserve the JSON row shape"
+    );
     assert_eq!(
         (live["status"].as_str(), live["completion"].as_str()),
         (Some("active"), Some("1/2"))
@@ -1193,6 +1214,14 @@ fn milestone_list_and_show_report_scoped_documents_and_sqlite_progress() {
     for args in [&["list", "--archive"][..], &["list", "--status", "all"][..]] {
         assert_eq!(run(args)["milestones"].as_array().unwrap().len(), 3);
     }
+    assert_eq!(
+        run(&["list", "--archive", "--limit", "0"])["milestones"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3,
+        "archive limits must not hide active or planned milestones"
+    );
     let completed = run(&["list", "--status", "completed"]);
     assert_eq!(completed["milestones"][0]["id"], "m-prior");
     assert_eq!(completed["milestones"][0]["completion"], "1/1");
@@ -1266,6 +1295,121 @@ fn milestone_list_and_show_report_scoped_documents_and_sqlite_progress() {
         .unwrap();
     assert_eq!(override_row["completion"], "1/1");
     assert_eq!(override_row["tasks"][0]["status"], "completed");
+    // Archived task metrics remain available with no readable task database.
+    let history = ScopedWorkspace::new("forge_archive_list_limits");
+    history.write(
+        "forge-mcp.yaml",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+    );
+    history.write(".forge/tasks.sqlite", "unreadable SQLite sentinel");
+    for index in 0..102 {
+        history.write(&format!("docs/milestones/archive/{index:03}-history.md"), &format!(
+            "---\nid: m-history-{index:03}\ntitle: Archived {index}\ndoc_type: contract\nstatus: completed\ncompletion: 99/99\n---\n# Archive\n{}",
+            [("done", "completed"), ("cancelled", "cancelled"), ("waiting", "planned")].into_iter().map(|(name, status)| format!(
+                "### task: {name}\n```yaml\ntask_ref: {name}\ntarget: Historical task\nproof_policy: seam-test-first\nscope: [src/]\nstatus: {status}\n```\n"
+            )).collect::<String>()
+        ));
+    }
+    for (limit, expected) in [
+        (None, 10),
+        (Some("0"), 1),
+        (Some("1"), 1),
+        (Some("100"), 100),
+        (Some("101"), 100),
+    ] {
+        let mut args = vec!["list", "--archive"];
+        if let Some(limit) = limit {
+            args.extend(["--limit", limit]);
+        }
+        let output = milestone_cli(&history, &args);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["milestones"].as_array().unwrap().len(), expected);
+        assert_eq!(value["archive_total"], 102);
+        assert_eq!(value["archive_displayed"], expected);
+        assert_eq!(value["milestones"][0]["completion"], "1/3");
+        assert_eq!(value["milestones"][0]["tasks"][1]["status"], "cancelled");
+    }
+    assert_eq!(
+        std::fs::read(history.0.join(".forge/tasks.sqlite")).unwrap(),
+        b"unreadable SQLite sentinel"
+    );
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+        .args([
+            "--root",
+            history.0.to_str().unwrap(),
+            "milestone",
+            "list",
+            "--archive",
+            "--limit",
+            "1",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let markdown = String::from_utf8(output.stdout).unwrap();
+    assert!(markdown.contains("Archive: 1 of 102 documents displayed."));
+    assert!(markdown.contains("## Completed Milestones"));
+    assert!(markdown.contains("## Active Milestones\n\nNone."));
+    assert!(markdown.contains("## Planned Milestones\n\nNone."));
+    assert!(!markdown.contains('|'));
+    let filtered = milestone_cli(&history, &["list", "--status", "completed", "--limit", "1"]);
+    assert!(filtered.status.success());
+    let filtered: serde_json::Value = serde_json::from_slice(&filtered.stdout).unwrap();
+    assert_eq!(filtered["archive_total"], 102);
+    assert_eq!(filtered["milestones"].as_array().unwrap().len(), 1);
+    let hostile = ScopedWorkspace::new("forge_milestone_markdown_literals");
+    hostile.write(
+        "forge-mcp.yaml",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+    );
+    let filename = "docs/milestones/011-[docs]`code`_emphasis_<html>&.md";
+    let title = "Literal [link](target) `code` _emphasis_ <html>&\n\n## Injected";
+    hostile.write(filename, &format!(
+        "---\nid: m-literal\ntitle: {}\nstarted_at: \"first\\n\\n## Injected date\"\ndoc_type: contract\nstatus: active\n---\n# Literal\n",
+        serde_json::to_string(title).unwrap()
+    ));
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+        .args(["--root", hostile.0.to_str().unwrap(), "milestone", "list"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let markdown = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        !markdown.contains("\n## Injected"),
+        "manifest text must not create blocks: {markdown}"
+    );
+    for literal in [
+        r"Literal \[link\]\(target\) \`code\` \_emphasis\_ \<html\>\&",
+        r"[docs/milestones/011-\[docs\]\`code\`\_emphasis\_\<html\>\&.md](file://",
+        "%5Bdocs%5D%60code%60_emphasis_%3Chtml%3E%26.md)",
+        "- Started: `first ## Injected date`",
+    ] {
+        assert!(
+            markdown.contains(literal),
+            "missing literal {literal:?}: {markdown}"
+        );
+    }
+    let output = milestone_cli(&hostile, &["list"]);
+    assert!(output.status.success());
+    let literal_json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        literal_json["milestones"][0]["title"], title,
+        "only presentation may normalize text"
+    );
+    assert_eq!(literal_json["documents"][0]["path"], filename);
     root.write("docs/milestones/archive/030-broken.md", "---\nid: m-broken\ntitle: Broken archive\ndoc_type: contract\nstatus: completed\n---\n# Broken archive\n```yaml\ntask_ref: [invalid\n```\n");
     assert_eq!(run(&["list"])["milestones"].as_array().unwrap().len(), 3);
     assert_eq!(run(&["show", "011"])["id"], "m-live");
@@ -1960,14 +2104,14 @@ fn milestone_handoff_requires_completed_tasks_and_archives_typed_receipt() {
     assert!(!owners
         .values()
         .any(|owner| owner["identity"] == "forge-mcp/forge-mcp/m-close"));
-    assert!(owners
-        .values()
-        .any(|owner| owner["identity"] == "forge-mcp/other/m-foreign"
+    assert!(owners.values().any(|owner| {
+        owner["identity"] == "forge-mcp/other/m-foreign"
             && owner["proof_shas"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|sha| sha == &json!(selected_target))));
+                .any(|sha| sha == &json!(selected_target))
+    }));
     assert_eq!(
         owners
             .values()
@@ -2532,7 +2676,9 @@ fn milestone_handoff_requires_completed_tasks_and_archives_typed_receipt() {
                     .unwrap();
             }
             "dependent" => {
-                let pending = format!("{cancelled}\n```yaml\ntask_ref: dependent\ntarget: Must remain blocked on cancelled work\nproof_policy: seam-test-first\nscope: [dependent/]\ndepends_on: [transferred]\n```\n");
+                let pending = format!(
+                    "{cancelled}\n```yaml\ntask_ref: dependent\ntarget: Must remain blocked on cancelled work\nproof_policy: seam-test-first\nscope: [dependent/]\ndepends_on: [transferred]\n```\n"
+                );
                 root.write(active, &pending);
                 let pending_milestone = Milestone::parse(&pending, "forge-mcp").unwrap();
                 store.sync(&pending_milestone, active, &root.0).unwrap();
@@ -4171,7 +4317,8 @@ fn milestone_and_plan_directories_configured_and_excluded_from_scanner() {
     }
 
     // 2. Verify milestones::list discovers milestones across all configured milestone directories
-    let listed = contextunity_forge_mcp::engine::milestones::list(&root.0, false, None).unwrap();
+    let listed =
+        contextunity_forge_mcp::engine::milestones::list(&root.0, false, None, 10).unwrap();
     let milestones = listed["milestones"].as_array().unwrap();
     assert_eq!(milestones.len(), 2);
     let ids: Vec<_> = milestones
@@ -4233,7 +4380,7 @@ fn milestone_and_plan_directories_configured_and_excluded_from_scanner() {
 
     // Verify milestones::list now shows task as synced (ready, not unsynced)
     let listed_after_sync =
-        contextunity_forge_mcp::engine::milestones::list(&root.0, false, None).unwrap();
+        contextunity_forge_mcp::engine::milestones::list(&root.0, false, None, 10).unwrap();
     let commerce_m = listed_after_sync["milestones"]
         .as_array()
         .unwrap()
@@ -5930,7 +6077,10 @@ scope:
         std::fs::read_to_string(root.0.join("docs/milestones/archive/010-squash.md")).unwrap();
     let archived = Milestone::parse(&archive, "forge-mcp").unwrap();
     assert_eq!(
-        archived.tasks[0].receipt.as_ref().and_then(|r| r.commit.as_deref()),
+        archived.tasks[0]
+            .receipt
+            .as_ref()
+            .and_then(|r| r.commit.as_deref()),
         Some(squashed_sha.as_str()),
         "handoff must record the squashed commit that introduced the scoped changes, not the tip commit on top"
     );
@@ -6566,7 +6716,9 @@ fn default_project_alias_is_applied_once_across_task_lifecycle() {
             } else {
                 ""
             };
-            format!("---\nid: {id}\ntitle: Passport topology\nrepository: topology-repo\n{declaration}status: {state}\nstarted_at: 2026-10-01T00:00:00Z\n{dependencies}{handoff}---\n```yaml\ntask_ref: work\ntarget: Preserve topology\nproof_policy: seam-test-first\nscope: [src/lib.rs]\nstatus: {task_status}\n```\n")
+            format!(
+                "---\nid: {id}\ntitle: Passport topology\nrepository: topology-repo\n{declaration}status: {state}\nstarted_at: 2026-10-01T00:00:00Z\n{dependencies}{handoff}---\n```yaml\ntask_ref: work\ntarget: Preserve topology\nproof_policy: seam-test-first\nscope: [src/lib.rs]\nstatus: {task_status}\n```\n"
+            )
         };
         topology.write(
             &format!("{directory}/archive/001-up.md"),
