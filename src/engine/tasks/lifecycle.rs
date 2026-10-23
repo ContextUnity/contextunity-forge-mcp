@@ -1,5 +1,4 @@
 use super::*;
-use std::fs::{File, OpenOptions};
 
 // JSON is embedded in an MCP text block and escaped a second time. Keeping
 // task JSON below 24 KiB leaves room for that expansion and protocol metadata.
@@ -88,6 +87,7 @@ fn claim_inner(root: &Path, p: Claim) -> Result<Value> {
     let workspace = registry.owner(&p.task_id)?;
     registry.check_worktree(workspace, &worktree)?;
     let mut store = workspace.open(&registry.database)?;
+    store.lock_checkpoint()?;
     let task = store.inspect(&p.task_id)?;
     validate_authority(&task, &worktree, workspace, &registry)?;
     registry.check_scope(workspace, &task.spec.scope, Some(&worktree))?;
@@ -157,6 +157,13 @@ fn finish_claim(
         }
     })();
     if response.is_err() {
+        if response
+            .as_ref()
+            .err()
+            .is_some_and(crate::db::tasks_store::recovery::is_pending)
+        {
+            return response;
+        }
         store
             .release_failed_claim(id, claimed.claim_revision)
             .context("failed to release claim after context error")?;
@@ -165,18 +172,6 @@ fn finish_claim(
     }
     response.map(bound_task_response)
 }
-pub(super) fn lock_receipts(database: &Path) -> Result<File> {
-    let lock_path = database.with_extension("receipt.lock");
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(lock_path)?;
-    file.lock()?;
-    Ok(file)
-}
-
 /// Resets or reopens a task back to ready state at contract gate, clearing terminal receipt and updating milestone text if needed.
 pub fn reset(root: &Path, id: &str) -> Result<Task> {
     reset_inner(root, id).map_err(|error| lifecycle_error(id, error))
@@ -186,7 +181,7 @@ fn reset_inner(root: &Path, id: &str) -> Result<Task> {
     let registry = Registry::load(root)?;
     let workspace = registry.owner(id)?;
     let mut store = workspace.open(&registry.database)?;
-    let _receipt_lock = lock_receipts(&registry.database)?;
+    store.lock_checkpoint()?;
     let previous = store.inspect(id)?;
     if previous.status != "completed" {
         return store.reset(id);
@@ -198,10 +193,14 @@ fn reset_inner(root: &Path, id: &str) -> Result<Task> {
         .map(|(_, reference)| reference)
         .unwrap_or(id);
     let updated = crate::engine::milestones::clear_task_receipt(&original, task_ref)?;
-    crate::core::fs::atomic_replace(&milestone_path, updated.as_bytes())?;
-    match store.reset(id) {
+    match store.reset_with_pre_persist(id, || {
+        crate::core::fs::atomic_replace(&milestone_path, updated.as_bytes())
+    }) {
         Ok(task) => Ok(task),
         Err(error) => {
+            if crate::db::tasks_store::recovery::is_pending(&error) {
+                return Err(error);
+            }
             crate::core::fs::atomic_replace(&milestone_path, original.as_bytes())
                 .context("TASK_RECEIPT_ROLLBACK_FAILED")?;
             Err(error)
@@ -488,6 +487,14 @@ fn manage_inner(root: &Path, p: &mut Manage) -> Result<Value> {
         let action = manage_action_name(&p.action);
         bail!("TASK_SELECTOR_INVALID: action '{action}'. missing or invalid fields: [{}]. Do: pass required fields for '{action}'.", invalid_fields.join(", "));
     }
+    let _observation = if matches!(
+        p.action,
+        ManageAction::Inspect | ManageAction::Context | ManageAction::SubtaskList
+    ) {
+        read_checkpoint_fence(root)?
+    } else {
+        None
+    };
     let registry = Registry::load(root)?;
     let (workspace, resolved_milestone) = if let Some(id) = id {
         (registry.owner(id)?, None)
@@ -504,6 +511,7 @@ fn manage_inner(root: &Path, p: &mut Manage) -> Result<Value> {
     let mut store = workspace.open(&registry.database)?;
     match p.action {
         ManageAction::Next => {
+            store.lock_checkpoint()?;
             let worker = p.worker_id.as_deref().context("worker_id required")?;
             let worktree = p.worktree.as_deref().context("worktree required")?;
             let claimed = store.next(worker, worktree, |task, selected| {
@@ -614,12 +622,11 @@ fn manage_inner(root: &Path, p: &mut Manage) -> Result<Value> {
                 "byte_limited":returned < total,
                 "retrieval_hint":"All selected tasks were synchronized. Use task_list or CLI task list for task summaries and CLI task inspect <task_id> for full details."}))
         }
-        ManageAction::Inspect => {
-            workspace.guidance_envelope(store.inspect_details(id.context("task_id required")?)?)
-        }
+        ManageAction::Inspect => workspace
+            .guidance_envelope(checkpoint_details(&store, id.context("task_id required")?)?),
         ManageAction::Context => {
             let task_id = id.context("task_id required")?;
-            let details = workspace.guidance_envelope(store.inspect_details(task_id)?)?;
+            let details = workspace.guidance_envelope(checkpoint_details(&store, task_id)?)?;
             context_bundle(root, workspace, task_id, details).map(bound_task_response)
         }
         ManageAction::Delete => Ok(serde_json::to_value(store.delete(
@@ -676,4 +683,17 @@ fn manage_inner(root: &Path, p: &mut Manage) -> Result<Value> {
             workspace.envelope(serde_json::to_value(task)?)
         }
     }
+}
+
+// Runtime health composes Git/files with SQL under manage's observation fence.
+// The store's inspect_details remains a persisted SQL view.
+fn checkpoint_details(store: &TasksStore, id: &str) -> Result<Value> {
+    let mut details = store.inspect_details(id)?;
+    let task = store.inspect(id)?;
+    details["checkpoint_status"] = json!(if store.checkpoint_enrolled(&task)? {
+        "ENROLLED"
+    } else {
+        "UNENROLLED"
+    });
+    Ok(details)
 }

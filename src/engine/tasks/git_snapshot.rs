@@ -639,7 +639,7 @@ pub(super) fn capture_scoped_snapshot(
     worktree: &Path,
     task_id: &str,
     scope: &[String],
-) -> Result<Option<(String, String)>> {
+) -> Result<Option<(String, String, crate::core::git::KeptObjects)>> {
     let head_out = crate::core::git::git_command(worktree, &["rev-parse", "HEAD"]);
     let head = match head_out {
         Ok(out) if out.status.success() => {
@@ -652,6 +652,7 @@ pub(super) fn capture_scoped_snapshot(
         _ => return Ok(None),
     };
 
+    let gc = crate::core::git::GitGcProtection::acquire(worktree)?;
     let temp_index = TemporaryGitIndex::create()?;
     let temp_index_str = temp_index.path().to_string_lossy().to_string();
 
@@ -730,6 +731,18 @@ pub(super) fn capture_scoped_snapshot(
     }
 
     let commit_msg = format!("forge-snapshot: {task_id}");
+    // Materialize exactly the deterministic parentless commit while Git GC is
+    // excluded, then transfer it and its tree into a kept pack. The ordinary
+    // commit-tree invocation remains the identity check/public process boundary;
+    // even GC inside its stdout adapter can now run successfully.
+    let commit_bytes=format!("tree {tree_sha}\nauthor forge-agent <forge@contextunity.local> 946684800 +0000\ncommitter forge-agent <forge@contextunity.local> 946684800 +0000\n\n{commit_msg}\n");
+    let protected = crate::core::git::git_input(
+        worktree,
+        &["hash-object", "-t", "commit", "-w", "--stdin"],
+        commit_bytes.as_bytes(),
+    )?;
+    let objects = crate::core::git::keep_provisional(worktree, task_id, &protected, &gc)?;
+    drop(gc);
     let commit_out = std::process::Command::new("git")
         .args(["commit-tree", &tree_sha, "-m", &commit_msg])
         .env("GIT_INDEX_FILE", &temp_index_str)
@@ -753,6 +766,9 @@ pub(super) fn capture_scoped_snapshot(
     if !(7..=64).contains(&commit_sha.len()) {
         bail!("TASK_SNAPSHOT_FAILED: invalid commit SHA length: {commit_sha}");
     }
+    if commit_sha != protected {
+        bail!("TASK_SNAPSHOT_FAILED: protected commit identity mismatch");
+    }
 
-    Ok(Some((commit_sha, head)))
+    Ok(Some((commit_sha, head, objects)))
 }

@@ -4,9 +4,9 @@ impl TasksStore {
     /// Releases only the claim revision whose document activation failed.
     pub fn release_failed_claim(&mut self, id: &str, revision: u64) -> Result<()> {
         self.assert_id(id)?;
-        let tx = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let checkpoint = self.checkpoint_context()?;
+        let mut tx = super::recovery::transaction(&mut self.connection, checkpoint)?;
+        tx.enroll(&[id.to_owned()], false)?;
         let mut task = load(&tx, id)?.context(task_not_found_message(id))?;
         if task.status != "in_progress" {
             bail!(
@@ -39,9 +39,9 @@ impl TasksStore {
     }
     /// Clear resume metadata only after activation and context construction succeed.
     pub(crate) fn finish_resume(&mut self, id: &str, revision: u64) -> Result<()> {
-        let tx = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let checkpoint = self.checkpoint_context()?;
+        let mut tx = super::recovery::transaction(&mut self.connection, checkpoint)?;
+        tx.enroll(&[id.to_owned()], false)?;
         let mut task = load(&tx, id)?.context(task_not_found_message(id))?;
         if task.status != "in_progress" || task.claim_revision != revision {
             bail!("TASK_STALE_CLAIM: {id}. Claim changed while finishing dispatch. Do: inspect the active owner before retrying.");
@@ -60,9 +60,9 @@ impl TasksStore {
         self.assert_id(id)?;
         let context = ClaimContext::from_store(self);
         let worktree = crate::core::tasks::claim_worktree(worktree)?;
-        let tx = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let checkpoint = self.checkpoint_context()?;
+        let mut tx = super::recovery::transaction(&mut self.connection, checkpoint)?;
+        tx.enroll(&[id.to_owned()], false)?;
         let task = context.claim(&tx, id, stage, worker, &worktree)?;
         tx.commit()?;
         Ok(task)
@@ -80,9 +80,8 @@ impl TasksStore {
         }
         let context = ClaimContext::from_store(self);
         let requested_worktree = crate::core::tasks::claim_worktree(worktree)?;
-        let tx = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let checkpoint = self.checkpoint_context()?;
+        let mut tx = super::recovery::transaction(&mut self.connection, checkpoint)?;
         let descriptors: Vec<String> = tx
             .prepare("SELECT descriptor FROM tasks WHERE substr(task_id,1,length(?1))=?1 OR substr(task_id,1,length(?2))=?2")?
             .query_map(params![context.id_prefix, context.namespace], |row| row.get(0))?
@@ -158,6 +157,7 @@ impl TasksStore {
         } else {
             requested_worktree
         };
+        tx.enroll(std::slice::from_ref(&task.task_id), false)?;
         validate(&task, &selected_worktree)?;
         let claimed = context.claim(&tx, &task.task_id, &task.stage, worker, &selected_worktree)?;
         tx.commit()?;
@@ -165,12 +165,20 @@ impl TasksStore {
     }
     /// Performs reset.
     pub fn reset(&mut self, id: &str) -> Result<Task> {
+        self.reset_with_pre_persist(id, || Ok(()))
+    }
+
+    pub(crate) fn reset_with_pre_persist(
+        &mut self,
+        id: &str,
+        before_persist: impl FnOnce() -> Result<()>,
+    ) -> Result<Task> {
         self.assert_id(id)?;
         let workspace_root = self.workspace_root.clone();
         let base_profile = self.profile.clone();
-        let tx = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let checkpoint = self.checkpoint_context()?;
+        let mut tx = super::recovery::transaction(&mut self.connection, checkpoint)?;
+        tx.enroll(&[id.to_owned()], false)?;
         let mut task = load(&tx, id)?.context(task_not_found_message(id))?;
         let profile = resolve_task_profile(workspace_root.as_deref(), &base_profile, &task)?;
         if matches!(task.status.as_str(), "completed" | "cancelled") {
@@ -193,6 +201,7 @@ impl TasksStore {
             params![id, profile.gate_id(task.gate), task.claim_revision],
         )?;
         save(&tx, &task)?;
+        before_persist()?;
         tx.commit()?;
         Ok(task)
     }
@@ -210,9 +219,9 @@ impl TasksStore {
         let project = self.project.clone();
         let id_prefix = self.id_prefix.clone();
         let namespace = self.namespace.clone();
-        let tx = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let checkpoint = self.checkpoint_context()?;
+        let mut tx = super::recovery::transaction(&mut self.connection, checkpoint)?;
+        tx.enroll(&[id.to_owned()], false)?;
         let mut task = load(&tx, id)?.context(task_not_found_message(id))?;
         if matches!(task.status.as_str(), "completed" | "cancelled") {
             bail!("TASK_TERMINAL: cannot extend scope of completed or cancelled task; reopen or reset the task first (e.g. `task reset <task-id>`)");
@@ -352,9 +361,8 @@ impl TasksStore {
         let project = self.project.clone();
         let id_prefix = self.id_prefix.clone();
         let namespace = self.namespace.clone();
-        let tx = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let checkpoint = self.checkpoint_context()?;
+        let mut tx = super::recovery::transaction(&mut self.connection, checkpoint)?;
         let targets: Vec<String> = tx
             .prepare("SELECT task_id FROM tasks WHERE ((?1 IS NOT NULL AND task_id=?1) OR (?2 IS NOT NULL AND milestone_ref=?2)) AND (substr(task_id,1,length(?3))=?3 OR substr(task_id,1,length(?4))=?4)")?
             .query_map(params![id, milestone, id_prefix, namespace], |r| r.get::<_, String>(0))?
@@ -362,6 +370,14 @@ impl TasksStore {
             .into_iter()
             .filter(|task_id| task_belongs_to(&repository, &project, task_id))
             .collect();
+        tx.enroll(&targets, false)?;
+        let mut changes = Vec::new();
+        for id in &targets {
+            if load(&tx, id)?.is_some_and(|task| task.status == "completed") {
+                changes.push((id.clone(), true));
+            }
+        }
+        tx.enroll_dependencies(&changes)?;
         let mut revoked_claims = 0;
         for id in &targets {
             let task = load(&tx, id)?.context(task_not_found_message(id))?;

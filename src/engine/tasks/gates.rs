@@ -10,7 +10,7 @@ use crate::db::tasks_store::{
     check_stage, clear_blackboard, end_claim, load, now, save, Task, TasksStore,
 };
 use anyhow::{bail, Context, Result};
-use rusqlite::{params, OptionalExtension, TransactionBehavior};
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -1242,9 +1242,10 @@ impl TasksStore {
         } else {
             None
         };
-        let tx = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let checkpoint = self.checkpoint_context()?;
+        let mut tx =
+            crate::db::tasks_store::recovery::transaction(&mut self.connection, checkpoint)?;
+        tx.enroll(&[id.to_owned()], false)?;
         let mut task =
             load(&tx, id)?.context(crate::db::tasks_store::task_not_found_message(id))?;
         if task.profile_pin != observed_task.profile_pin || task.stage != observed_task.stage {
@@ -1266,7 +1267,6 @@ impl TasksStore {
                 && accepted.findings.as_ref() == findings
                 && accepted.task.contract_revision == task.contract_revision
             {
-                before_persist(&accepted.task)?;
                 return Ok(accepted.task);
             }
             bail!("TASK_STALE_SUBMISSION: task '{id}'. claim_revision {} already submitted with different evidence. Do: resubmit the accepted evidence for claim_revision {}.", evidence.claim_revision, evidence.claim_revision);
@@ -1713,6 +1713,12 @@ impl TasksStore {
             crate::core::fs::atomic_replace(path, written.as_bytes())?;
         }
         if let Err(error) = tx.commit() {
+            if crate::db::tasks_store::recovery::is_pending(&error) {
+                if let Some(rollback) = provisional_rollback.as_mut() {
+                    rollback.disarm();
+                }
+                return Err(error);
+            }
             if let Some(rollback) = provisional_rollback.as_mut() {
                 rollback
                     .restore()
@@ -1721,7 +1727,7 @@ impl TasksStore {
                 crate::core::fs::atomic_replace(path, original.as_bytes())
                     .context("failed to restore milestone document after SQLite commit error")?;
             }
-            return Err(error.into());
+            return Err(error);
         }
         if let Some(rollback) = provisional_rollback.as_mut() {
             rollback.disarm();

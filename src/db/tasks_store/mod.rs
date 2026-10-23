@@ -3,12 +3,13 @@ use crate::core::tasks::{
     snapshot_inspect_cmd, AuthoritySnapshot, Milestone, Receipt, SubtaskSpec, TaskSpec,
 };
 use anyhow::{bail, Context, Result};
-use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 mod blackboard;
 mod lifecycle;
+pub mod recovery;
 mod subtasks;
 
 pub(crate) use blackboard::clear_blackboard;
@@ -211,6 +212,11 @@ pub struct TasksStore {
     pub profile: std::sync::Arc<crate::core::tasks::profile::GateProfile>,
     workspace_root: Option<PathBuf>,
     handoff_pruning: bool,
+    pub(crate) database_path: PathBuf,
+    checkpoint_lock: Option<recovery::DatabaseFence>,
+    recovery_stage: bool,
+    preparation_owners: Vec<recovery::PreparationOwner>,
+    obsolete_checkpoint_owners: std::collections::BTreeSet<String>,
 }
 
 #[derive(Debug)]
@@ -548,6 +554,11 @@ impl TasksStore {
             profile: crate::core::tasks::profile::compiled(),
             workspace_root: None,
             handoff_pruning: true,
+            database_path: path.to_path_buf(),
+            checkpoint_lock: None,
+            recovery_stage: false,
+            preparation_owners: Vec::new(),
+            obsolete_checkpoint_owners: Default::default(),
         })
     }
     pub(crate) fn set_profile(
@@ -639,6 +650,7 @@ impl TasksStore {
     }
     /// Performs inspect.
     pub fn inspect(&self, id: &str) -> Result<Task> {
+        let _snapshot = recovery::read_snapshot(&self.connection)?;
         self.assert_id(id)?;
         let mut task = load(&self.connection, id)?.context(task_not_found_message(id))?;
         let profile = self.profile_for_task(&task)?;
@@ -647,7 +659,7 @@ impl TasksStore {
     }
     /// Performs inspect details.
     pub fn inspect_details(&self, id: &str) -> Result<serde_json::Value> {
-        let _snapshot = self.connection.unchecked_transaction()?;
+        let _snapshot = recovery::read_snapshot(&self.connection)?;
         let mut task = self.inspect(id)?;
         let profile = self.profile_for_task(&task)?;
         self.set_runtime_gate(&mut task, &profile)?;
@@ -747,9 +759,11 @@ impl TasksStore {
         let reference = crate::core::tasks::relative_path(reference)?;
         let relative_reference = reference.to_string_lossy();
         let milestone_scope_ref = self.milestone_scope_ref(&relative_reference)?;
-        let tx = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let checkpoint = self.checkpoint_context()?;
+        let mut tx = recovery::transaction(&mut self.connection, checkpoint)?;
+        let targets = tx.prepare("SELECT task_id FROM tasks WHERE milestone_ref=?1 AND (substr(task_id,1,length(?2))=?2 OR substr(task_id,1,length(?3))=?3)")?
+            .query_map(params![relative_reference.as_ref(), self.id_prefix, self.namespace], |row| row.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        tx.enroll(&targets, false)?;
 
         let columns = {
             let mut statement = tx.prepare("PRAGMA table_info(task_blackboard)")?;
@@ -830,9 +844,8 @@ impl TasksStore {
         }
         let milestone_identity = self.milestone_identity(&milestone.id);
         let dependency_settings = ArchiveSettings::load(root)?;
-        let tx = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let checkpoint = self.checkpoint_context()?;
+        let mut tx = recovery::transaction(&mut self.connection, checkpoint)?;
         // This read must follow writer admission: a competing handoff may have
         // committed after the engine's optimistic tombstone check.
         if milestone_tombstoned(&tx, &milestone_identity)? {
@@ -864,12 +877,33 @@ impl TasksStore {
             self.prune_cancelled(reference)?;
             return Ok(Vec::new());
         }
+        tx.enroll(
+            &milestone
+                .tasks
+                .iter()
+                .map(|spec| milestone.task_id(spec))
+                .collect::<Vec<_>>(),
+            true,
+        )?;
+        tx.enroll_dependencies(
+            &milestone
+                .tasks
+                .iter()
+                .filter(|spec| {
+                    spec.status.as_deref() == Some("cancelled")
+                        && task_ref.is_none_or(|selected| spec.task_ref == selected)
+                })
+                .map(|spec| (milestone.task_id(spec), false))
+                .collect::<Vec<_>>(),
+        )?;
+        tx.reserve_admissions(milestone, task_ref)?;
         let mut result = Vec::new();
         for spec in &milestone.tasks {
             if task_ref.is_some_and(|r| spec.task_ref != r) {
                 continue;
             }
             let id = milestone.task_id(spec);
+            tx.execute("INSERT INTO task_store_metadata VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![format!("checkpoint_home:{id}"), root.canonicalize()?.to_string_lossy()])?;
             let digest = milestone.digest(spec)?;
             let profile_pin = spec
                 .acdd_profile
@@ -1050,7 +1084,7 @@ impl TasksStore {
                     |r| r.get(0),
                 )
                 .optional()?;
-            if completed && archived.is_some() {
+            if completed && archived.is_some() && !tx.is_new_admission(&id) {
                 result.push(Task {
                     task_id: id,
                     milestone_ref: reference.into(),
@@ -1289,7 +1323,7 @@ impl TasksStore {
         status: &str,
         stage: Option<&str>,
     ) -> Result<Vec<Task>> {
-        let _snapshot = self.connection.unchecked_transaction()?;
+        let _snapshot = recovery::read_snapshot(&self.connection)?;
         let mut stmt = self.connection.prepare("SELECT descriptor FROM tasks WHERE (?1 IS NULL OR milestone_ref=?1) AND (substr(task_id,1,length(?2))=?2 OR substr(task_id,1,length(?3))=?3) ORDER BY milestone_ref,task_id")?;
         let mut result = Vec::new();
         let mut known_stage =
@@ -1341,6 +1375,7 @@ impl TasksStore {
     }
     /// Returns the first accepted claim time for one milestone.
     pub fn earliest_claim(&self, milestone_prefix: &str) -> Result<Option<i64>> {
+        let _snapshot = recovery::read_snapshot(&self.connection)?;
         Ok(self.connection.query_row(
             "SELECT MIN(c.claimed_at) FROM task_claims c JOIN tasks t ON t.task_id=c.task_id WHERE substr(t.task_id,1,length(?1))=?1 AND substr(t.task_id,1,length(?2))=?2",
             params![milestone_prefix, self.id_prefix], |row| row.get(0))?)
@@ -1353,9 +1388,9 @@ impl TasksStore {
         new_ref: &str,
         expected_ids: &[String],
     ) -> Result<()> {
-        let tx = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let checkpoint = self.checkpoint_context()?;
+        let mut tx = recovery::transaction(&mut self.connection, checkpoint)?;
+        tx.enroll(expected_ids, false)?;
         let mut stmt = tx.prepare("SELECT descriptor FROM tasks WHERE substr(task_id,1,length(?1))=?1 AND substr(task_id,1,length(?2))=?2")?;
         let tasks: Vec<String> = stmt
             .query_map(params![milestone_prefix, self.id_prefix], |row| row.get(0))?
@@ -1389,6 +1424,26 @@ impl TasksStore {
         expected_tasks: &[Task],
         receipts: &std::collections::BTreeMap<String, Receipt>,
     ) -> Result<()> {
+        self.handoff_milestone_with_unlink(
+            milestone_prefix,
+            old_ref,
+            new_ref,
+            expected_tasks,
+            receipts,
+            || Ok(()),
+        )
+    }
+
+    /// Unlink the journaled active manifest after checkpoint validation and before pruning.
+    pub fn handoff_milestone_with_unlink(
+        &mut self,
+        milestone_prefix: &str,
+        old_ref: &str,
+        new_ref: &str,
+        expected_tasks: &[Task],
+        receipts: &std::collections::BTreeMap<String, Receipt>,
+        unlink: impl FnOnce() -> Result<()>,
+    ) -> Result<()> {
         let old_scope = self.milestone_scope_ref(old_ref)?;
         let new_scope = self.milestone_scope_ref(new_ref)?;
         let milestone_id = milestone_prefix
@@ -1396,9 +1451,27 @@ impl TasksStore {
             .and_then(|prefix| prefix.strip_suffix(':'))
             .context("invalid milestone prefix")?;
         let milestone_identity = self.milestone_identity(milestone_id);
-        let tx = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let checkpoint = self.checkpoint_context()?;
+        let mut tx = recovery::transaction(&mut self.connection, checkpoint)?;
+        tx.enroll(
+            &expected_tasks
+                .iter()
+                .map(|task| task.task_id.clone())
+                .collect::<Vec<_>>(),
+            false,
+        )?;
+        if self.handoff_pruning {
+            let changes = expected_tasks
+                .iter()
+                .filter(|task| task.status == "completed")
+                .map(|task| (task.task_id.clone(), true))
+                .chain(std::iter::once((
+                    format!("{milestone_prefix}__milestone__"),
+                    true,
+                )))
+                .collect::<Vec<_>>();
+            tx.enroll_dependencies(&changes)?;
+        }
         let descriptors: Vec<(String, String, String)> = tx
             .prepare("SELECT task_id, milestone_ref, descriptor FROM tasks WHERE substr(task_id,1,length(?1))=?1 AND substr(task_id,1,length(?2))=?2")?
             .query_map(params![milestone_prefix, self.id_prefix], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
@@ -1473,6 +1546,13 @@ impl TasksStore {
         if found_ids != expected || receipt_ids != completed_ids {
             bail!("milestone task or receipt set changed during handoff");
         }
+        let satisfied = completed_ids
+            .iter()
+            .cloned()
+            .chain(std::iter::once(format!("{milestone_prefix}__milestone__")))
+            .collect();
+        tx.freeze_handoff(milestone_prefix, &satisfied)?;
+        unlink()?;
         if self.handoff_pruning {
             for dependency in completed_ids
                 .iter()
@@ -1482,6 +1562,12 @@ impl TasksStore {
                 tx.execute(
                     "UPDATE task_dependencies SET satisfied=1 WHERE dependency_id=?1",
                     [&dependency],
+                )?;
+            }
+            for task_id in &found_ids {
+                tx.execute(
+                    "DELETE FROM task_store_metadata WHERE key=?1",
+                    [format!("checkpoint_home:{task_id}")],
                 )?;
             }
             tx.execute(
@@ -1516,6 +1602,7 @@ impl TasksStore {
 
     /// Whether a milestone in this store's namespace has been archived and pruned.
     pub fn milestone_tombstoned(&self, milestone_id: &str) -> Result<bool> {
+        let _snapshot = recovery::read_snapshot(&self.connection)?;
         milestone_tombstoned(&self.connection, &self.milestone_identity(milestone_id))
     }
 }
@@ -1529,6 +1616,7 @@ fn milestone_tombstoned(connection: &Connection, milestone_identity: &str) -> Re
 }
 
 pub(crate) fn load(conn: &Connection, id: &str) -> Result<Option<Task>> {
+    let _snapshot = recovery::read_snapshot(conn)?;
     let value: Option<String> = conn
         .query_row("SELECT descriptor FROM tasks WHERE task_id=?1", [id], |r| {
             r.get(0)
@@ -1865,7 +1953,7 @@ mod tests {
         let mut writer = TasksStore::open(&path).unwrap();
         let tx = writer
             .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .unwrap();
         let opened = TasksStore::open(&path);
         tx.rollback().unwrap();

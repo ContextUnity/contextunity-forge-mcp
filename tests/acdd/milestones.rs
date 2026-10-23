@@ -88,6 +88,128 @@ fn milestone_cli(root: &ScopedWorkspace, args: &[&str]) -> std::process::Output 
         .unwrap()
 }
 
+fn handoff_with_journal_capture(
+    root: &ScopedWorkspace,
+    args: &[&str],
+    crash: &str,
+) -> (std::process::Output, std::path::PathBuf, serde_json::Value) {
+    use std::os::unix::fs::PermissionsExt;
+    let wrapper = root.0.join(".forge/journal-git/git");
+    root.write(".forge/journal-git/git", r#"#!/bin/sh
+if [ "$FORGE_FIXTURE_CRASH" = committed ] && [ -d "$PWD/.forge/captured" ] && [ ! -f "$PWD/docs/milestones/010-close.md" ]; then
+  kill -KILL "$PPID"
+  exit 0
+fi
+if [ "$1" = update-ref ] && [ "$2" = refs/notes/forge ]; then
+  mkdir -p "$PWD/.forge/captured"
+  for journal in "$PWD"/.forge/handoff-*.json; do
+    [ ! -f "$journal" ] || cp "$journal" "$PWD/.forge/captured/"
+  done
+  if [ "$FORGE_FIXTURE_CRASH" = note ]; then
+    /usr/bin/git "$@" || exit $?
+    kill -KILL "$PPID"
+    exit 0
+  fi
+fi
+if [ "$FORGE_FIXTURE_CRASH" = enrolled ] && [ -d "$PWD/.forge/captured" ]; then
+  reference=
+  sha=
+  for arg do
+    case "$arg" in refs/forge/state/forge-mcp/forge-mcp/m-close/*) reference="$arg";;
+      *) if [ -n "$reference" ] && [ -z "$sha" ]; then sha="$arg"; fi;;
+    esac
+  done
+  case "$*" in *update-ref*)
+    if [ -n "$sha" ]; then
+      payload=$(/usr/bin/git show "$sha:checkpoint.json" 2>/dev/null)
+      case "$payload" in *'"intent":"'*)
+        /usr/bin/git "$@" || exit $?
+        printf 'intent\n' >> "$PWD/.forge/intent-count"
+        if [ "$(wc -l < "$PWD/.forge/intent-count")" -ge 2 ]; then kill -KILL "$PPID"; fi
+        exit 0;;
+      esac
+    fi;;
+  esac
+fi
+exec /usr/bin/git "$@"
+"#);
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+        .args([
+            "--format",
+            "json",
+            "--root",
+            root.0.to_str().unwrap(),
+            "milestone",
+        ])
+        .args(args)
+        .env("FORGE_FIXTURE_CRASH", crash)
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                wrapper.parent().unwrap().display(),
+                std::env::var("PATH").unwrap()
+            ),
+        )
+        .current_dir(&root.0)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    if crash == "unlinked" {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while root.0.join("docs/milestones/010-close.md").exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "handoff did not reach unlink"
+            );
+            assert!(
+                child.try_wait().unwrap().is_none(),
+                "handoff exited before unlink"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        child.kill().unwrap();
+    }
+    let output = child.wait_with_output().unwrap();
+    if !crash.is_empty() {
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(
+            output.status.signal(),
+            Some(9),
+            "{crash}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    assert_eq!(
+        output.status.success(),
+        crash.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap_or_default();
+    let id = result["id"].as_str().unwrap_or(args[1]);
+    let captured = std::fs::read_dir(root.0.join(".forge/captured"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            let journal: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+            journal["binding"]["milestone"] == id
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(captured.len(), 1);
+    let path = root.0.join(".forge").join(captured[0].file_name().unwrap());
+    assert_eq!(
+        path.exists(),
+        !crash.is_empty(),
+        "only interrupted handoff retains its journal"
+    );
+    let journal = serde_json::from_slice(&std::fs::read(&captured[0]).unwrap()).unwrap();
+    (output, path, journal)
+}
+
 fn complete_task_through_engine(root: &ScopedWorkspace, store: &TasksStore, task_id: &str) {
     complete_task_with_builder(root, store, task_id, "builder");
 }
@@ -167,6 +289,11 @@ fn handoff_preserves_proofs_across_reviewed_history_rewrites() {
             );
             String::from_utf8(output.stdout).unwrap().trim().to_owned()
         };
+        if scenario == "gc" {
+            // This fixture owns its synchronous prune, not background maintenance.
+            git(&["config", "maintenance.auto", "false"]);
+            git(&["config", "gc.auto", "0"]);
+        }
         let recording = !matches!(scenario, "off" | "milestone-only" | "legacy-off");
         let setting = match scenario {
             "off" => "commit_tracking: off\n",
@@ -338,7 +465,9 @@ fn handoff_preserves_proofs_across_reviewed_history_rewrites() {
                     .unwrap();
                 assert!(
                     !missing.status.success(),
-                    "unreferenced navigation object survived pruning"
+                    "unreferenced navigation object survived pruning: root={} object={obsolete} packs={}",
+                    root.0.display(),
+                    git(&["count-objects", "-v"])
                 );
             }
             _ => {}
@@ -1174,6 +1303,138 @@ fn milestone_list_and_show_report_scoped_documents_and_sqlite_progress() {
 }
 #[test]
 fn milestone_handoff_requires_completed_tasks_and_archives_typed_receipt() {
+    for (proof, valid) in [
+        ("[]", true),
+        ("['0123456789012345678901234567890123456789']", true),
+        ("null", false),
+        ("not-a-list", false),
+        ("{}", false),
+        ("[bad-object]", false),
+        ("['0123456789012345678901234567890123456789', bad]", false),
+        (
+            "['0123456789012345678901234567890123456789012345678901234567890123']",
+            false,
+        ),
+    ] {
+        let fixture = ScopedWorkspace::new("forge_archive_proof_list");
+        fixture.write(
+            "forge-mcp.yaml",
+            "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+        );
+        fixture.write("docs/milestones/archive/010-terminal.md", &format!("---\nid: m-terminal\nstatus: cancelled\nclosure:\n  reason: Cancelled fixture\nhandoff:\n  proof_shas: {proof}\n---\n```yaml\ntask_ref: cancelled\ntarget: Preserve cancellation\nproof_policy: seam-test-first\nscope: [src/]\nstatus: cancelled\n```\n"));
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+            .args([
+                "--root",
+                fixture.0.to_str().unwrap(),
+                "--format",
+                "json",
+                "milestone",
+                "db-recover",
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.success(),
+            valid,
+            "proof_shas {proof}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(fixture.0.join(".forge/tasks.sqlite").exists(), valid);
+    }
+    for phase in ["enrolled", "unlinked", "committed"] {
+        let crash_root = ScopedWorkspace::new("forge_handoff_sql_crash");
+        crash_root.write(
+            "forge-mcp.yaml",
+            "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+        );
+        crash_root.write("src/lib.rs", "pub fn retained() {}\n");
+        let manifest = "---\nid: m-close\ntitle: Crash recovery\nstatus: active\nstarted_at: 2026-10-01T10:00:00Z\n---\n```yaml\ntask_ref: first\ntarget: Cancelled work\nproof_policy: seam-test-first\nscope: [src/]\nstatus: cancelled\n```\n```yaml\ntask_ref: second\ntarget: Cancelled work\nproof_policy: seam-test-first\nscope: [src/]\nstatus: cancelled\n```\n";
+        crash_root.write("docs/milestones/010-close.md", manifest);
+        let consumer = "---\nid: m-wait\ntitle: Dependent milestone\nstatus: active\nstarted_at: 2026-10-01T10:00:00Z\n---\n```yaml\ntask_ref: next\ntarget: Wait for terminal milestone\nproof_policy: seam-test-first\nscope: [consumer/]\ndepends_on: ['forge-mcp/m-close:__milestone__']\n```\n```yaml\ntask_ref: busy\ntarget: Preserve independent live claim\nproof_policy: seam-test-first\nscope: [busy/]\n```\n";
+        crash_root.write("docs/milestones/011-wait.md", consumer);
+        commit_handoff_fixture_inputs(&crash_root, &["forge-mcp.yaml", "src", "docs"]);
+        let mut crash_store = tasks::store(&crash_root.0).unwrap();
+        crash_store
+            .sync(
+                &Milestone::parse(manifest, "forge-mcp").unwrap(),
+                "docs/milestones/010-close.md",
+                &crash_root.0,
+            )
+            .unwrap();
+        crash_store
+            .sync(
+                &Milestone::parse(consumer, "forge-mcp").unwrap(),
+                "docs/milestones/011-wait.md",
+                &crash_root.0,
+            )
+            .unwrap();
+        let evidence =
+            fixture_evidence_file(&crash_root.0, "m-close", "cargo test --test acdd", 1, 0);
+        tasks::claim(
+            &crash_root.0,
+            tasks::Claim {
+                task_id: "forge-mcp/m-wait:busy".into(),
+                stage: "contract".into(),
+                worker_id: "busy-worker".into(),
+                worktree: crash_root.0.to_string_lossy().into_owned(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let busy = crash_store.inspect("forge-mcp/m-wait:busy").unwrap();
+        if phase == "unlinked" {
+            crash_store.connection.execute_batch("CREATE TRIGGER delay_pruning BEFORE DELETE ON tasks BEGIN SELECT sum(x) FROM (WITH RECURSIVE n(x) AS (VALUES(0) UNION ALL SELECT x+1 FROM n WHERE x<100000000) SELECT x FROM n); END;").unwrap();
+        }
+        let args = ["handoff", "m-close", "--evidence-file", &evidence];
+        let (killed, journal_path, _) = handoff_with_journal_capture(&crash_root, &args, phase);
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(killed.status.signal(), Some(9), "{phase}");
+        let count: i64 = crash_store
+            .connection
+            .query_row("SELECT count(*) FROM tasks", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, if phase == "committed" { 2 } else { 4 }, "{phase}");
+        if phase == "unlinked" {
+            crash_store
+                .connection
+                .execute_batch("DROP TRIGGER delay_pruning")
+                .unwrap();
+        }
+        let retry = milestone_cli(&crash_root, &args);
+        assert!(
+            retry.status.success(),
+            "{phase}: {}",
+            String::from_utf8_lossy(&retry.stderr)
+        );
+        assert!(!journal_path.exists(), "{phase}: journal leaked");
+        let remaining = crash_store.list(None, "all", None).unwrap();
+        assert_eq!(
+            remaining.len(),
+            2,
+            "{phase}: preserve the dependent milestone"
+        );
+        assert_eq!(
+            serde_json::to_value(crash_store.inspect("forge-mcp/m-wait:busy").unwrap()).unwrap(),
+            serde_json::to_value(&busy).unwrap(),
+            "{phase}: unrelated claim changed"
+        );
+        let satisfied: bool = crash_store
+            .connection
+            .query_row(
+                "SELECT satisfied FROM task_dependencies WHERE task_id='forge-mcp/m-wait:next'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            satisfied,
+            "{phase}: dependent checkpoint follows committed handoff"
+        );
+        assert!(
+            milestone_cli(&crash_root, &args).status.success(),
+            "{phase}: repeat retry"
+        );
+    }
     let root = ScopedWorkspace::new("forge_milestone_handoff");
     root.write(
         "forge-mcp.yaml",
@@ -1224,34 +1485,6 @@ fn milestone_handoff_requires_completed_tasks_and_archives_typed_receipt() {
     root.write("src/extra.rs", "pub fn admitted_extension() {}\n");
     complete_task_through_engine(&root, &store, &task.task_id);
     let foreign_id = "other/m-close:waiting";
-    let mut foreign_task = store.inspect(&task.task_id).unwrap();
-    foreign_task.task_id = foreign_id.into();
-    store
-        .connection
-        .execute(
-            "INSERT INTO tasks VALUES(?1,?2,?3)",
-            rusqlite::params![
-                foreign_id,
-                "docs/milestones/010-close.md",
-                serde_json::to_string(&foreign_task).unwrap()
-            ],
-        )
-        .unwrap();
-    for id in [&task.task_id, &foreign_id.to_owned()] {
-        store
-            .connection
-            .execute("INSERT OR IGNORE INTO task_revisions VALUES(?1,1)", [id])
-            .unwrap();
-    }
-    for dependency in [&task.task_id, &"forge-mcp/m-close:__milestone__".to_owned()] {
-        store
-            .connection
-            .execute(
-                "INSERT INTO task_dependencies VALUES(?1,?2,0)",
-                rusqlite::params![foreign_id, dependency],
-            )
-            .unwrap();
-    }
     let old_scope = store
         .milestone_scope_ref("docs/milestones/010-close.md")
         .unwrap();
@@ -1346,6 +1579,28 @@ fn milestone_handoff_requires_completed_tasks_and_archives_typed_receipt() {
     assert_eq!(foreign_context["target_base"], selected_target);
     assert_ne!(foreign_context["commit"], selected_target);
     assert_ne!(handoff_commit, selected_target);
+    let keeper = "refs/forge/state/forge-mcp/other/m-foreign/transfer";
+    let prepared = git(&foreign, &["show", &format!("{keeper}:checkpoint.json")]);
+    let prepared: serde_json::Value = serde_json::from_slice(&prepared.stdout).unwrap();
+    for proof in [
+        &selected_target,
+        foreign_context["commit"].as_str().unwrap(),
+    ] {
+        assert!(
+            prepared["prepared_proofs"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(proof)),
+            "new preparation must reach its real task keeper: {proof}"
+        );
+        let parents = git(&foreign, &["cat-file", "-p", keeper]);
+        assert!(
+            String::from_utf8_lossy(&parents.stdout)
+                .lines()
+                .any(|line| line == format!("parent {proof}")),
+            "actual prepared object must have a keeper parent: {proof}"
+        );
+    }
     git(
         &foreign,
         &[
@@ -1355,12 +1610,13 @@ fn milestone_handoff_requires_completed_tasks_and_archives_typed_receipt() {
             foreign_context["commit"].as_str().unwrap(),
         ],
     );
-    std::fs::write(foreign.join("docs/milestones/022-same-id.md"), "---\nid: m-close\nproject: other\ntitle: Foreign same-ID authority\nstatus: active\n---\n```yaml\ntask_ref: transfer\ntarget: Transferred work\nproof_policy: seam-test-first\nscope: [foreign/]\nstatus: ready\n```\n").unwrap();
+    std::fs::write(foreign.join("docs/milestones/022-same-id.md"), "---\nid: m-close\nproject: other\ntitle: Foreign same-ID authority\nstatus: active\n---\n```yaml\ntask_ref: waiting\ntarget: Wait for foreign milestone\nproof_policy: seam-test-first\nscope: [foreign/]\nstatus: ready\n```\n").unwrap();
     git(&foreign, &["add", "docs/milestones/022-same-id.md"]);
     std::fs::write(foreign.join("docs/milestones/021-proof.md"), "---\nid: m-proof\nproject: other\ntitle: Active foreign task\nstatus: active\nstarted_at: 2026-10-01T10:00:00Z\n---\n```yaml\ntask_ref: proof\ntarget: Keep an active proof\nproof_policy: seam-test-first\nscope: [foreign/]\n```\n").unwrap();
     git(&foreign, &["add", "docs/milestones/021-proof.md"]);
     git(&foreign, &["commit", "-m", "foreign task authority"]);
     foreign_cli(&["task", "sync", "--file", "docs/milestones/021-proof.md"]);
+    foreign_cli(&["task", "sync", "--file", "docs/milestones/022-same-id.md"]);
     tasks::claim(
         &foreign,
         tasks::Claim {
@@ -1378,9 +1634,28 @@ fn milestone_handoff_requires_completed_tasks_and_archives_typed_receipt() {
         "other",
     )
     .unwrap();
+    // Incoming cache updates require a genuine live foreign owner. Only the
+    // cache starts stale; namespace/task authority comes from the public sync.
+    for dependency in [&task.task_id, &"forge-mcp/m-close:__milestone__".to_owned()] {
+        foreign_store
+            .connection
+            .execute(
+                "INSERT INTO task_dependencies VALUES(?1,?2,0)",
+                rusqlite::params![foreign_id, dependency],
+            )
+            .unwrap();
+    }
     let foreign_task = foreign_store.inspect("other/m-proof:proof").unwrap();
     let accepted = tasks::submit(&foreign, serde_json::from_value(json!({"task_id":foreign_task.task_id,"stage":"contract","action":"pass","evidence":evidence(&foreign_task)})).unwrap()).unwrap();
     let foreign_proof = accepted["snapshot"]["commit"].as_str().unwrap().to_owned();
+    // Existing installations may still have global pins. New preparation and
+    // submissions use task keepers; exercise foreign ownership of legacy pins.
+    for sha in [&selected_target, &foreign_proof] {
+        git(
+            &foreign,
+            &["update-ref", &format!("refs/forge/evidence/{sha}"), sha],
+        );
+    }
     assert!(git(&foreign, &["status", "--porcelain"]).stdout.is_empty());
     // Simulate a crash after the archive write, before the SQLite transaction.
     root.write(
@@ -1448,6 +1723,50 @@ fn milestone_handoff_requires_completed_tasks_and_archives_typed_receipt() {
             std::str::from_utf8(&preparation.stdout).unwrap(),
             anchor.trim(),
         ],
+    );
+    let oversized_note = json!({"external_note": "x".repeat(2048)});
+    git(
+        &root.0,
+        &[
+            "notes",
+            "--ref=forge",
+            "add",
+            "-f",
+            "-m",
+            &oversized_note.to_string(),
+            &handoff_commit,
+        ],
+    );
+    let oversized = milestone_cli(&root, &completed_args);
+    assert!(!oversized.status.success());
+    assert!(String::from_utf8_lossy(&oversized.stderr).contains("HANDOFF_PASSPORT_TOO_LARGE"));
+    assert_eq!(
+        std::fs::read(root.0.join("docs/milestones/010-close.md")).unwrap(),
+        before_active
+    );
+    assert_eq!(
+        std::fs::read(root.0.join("docs/milestones/archive/010-close.md")).unwrap(),
+        before_archive
+    );
+    git(
+        &root.0,
+        &[
+            "notes",
+            "--ref=forge",
+            "add",
+            "-f",
+            "-m",
+            r#"{"milestone_passports":{"forge-mcp/other/m-close":{"retained":true}},"external_note":"preserved"}"#,
+            &handoff_commit,
+        ],
+    );
+    let (crashed, journal_path, journal) =
+        handoff_with_journal_capture(&root, &completed_args, "note");
+    use std::os::unix::process::ExitStatusExt;
+    assert_eq!(crashed.status.signal(), Some(9));
+    assert_eq!(
+        std::fs::read(root.0.join("docs/milestones/010-close.md")).unwrap(),
+        before_active
     );
     let completed = milestone_cli(&root, &completed_args);
     assert!(
@@ -1620,11 +1939,14 @@ fn milestone_handoff_requires_completed_tasks_and_archives_typed_receipt() {
         .output()
         .unwrap();
     assert!(note.status.success());
+    assert!(note.stdout.len() < 2048, "Git note must stay below 2 KiB");
     let note: serde_json::Value = serde_json::from_slice(&note.stdout).unwrap();
-    assert_eq!(
-        note["milestone_passports"]["forge-mcp/forge-mcp/m-close"],
-        passport
-    );
+    let compact = &note["milestone_passports"]["forge-mcp/forge-mcp/m-close"];
+    assert!(compact.get("terminal_tasks").is_none());
+    assert!(compact.get("landed_receipts").is_none());
+    assert!(compact.get("tasks").is_none());
+    assert_eq!(compact["tasks_count"], passport["tasks_count"]);
+    assert_eq!(compact["verification"]["tests_passed"], 7);
     assert_eq!(
         note["milestone_passports"]["forge-mcp/other/m-close"]["retained"],
         true
@@ -1705,16 +2027,11 @@ fn milestone_handoff_requires_completed_tasks_and_archives_typed_receipt() {
         "swapped-terminal-statuses",
         "missing-active-receipt",
         "altered-active-receipt",
-        "missing-receipts",
-        "foreign-receipt",
-        "altered-landed-receipt",
-        "missing-terminal-metadata",
-        "missing-source-receipt-key",
-        "missing-landed-receipt-key",
-        "unknown-terminal-task",
-        "unknown-terminal-status",
-        "missing-passport-outcome",
-        "duplicate-passport-outcome",
+        "missing-journal",
+        "corrupt-journal",
+        "altered-journal",
+        "missing-archive",
+        "post-unlink",
         "unmerged",
         "git-archive",
     ] {
@@ -1730,21 +2047,16 @@ fn milestone_handoff_requires_completed_tasks_and_archives_typed_receipt() {
             | "swapped-terminal-statuses"
             | "missing-active-receipt"
             | "altered-active-receipt"
-            | "missing-receipts"
-            | "foreign-receipt"
-            | "altered-landed-receipt"
-            | "missing-terminal-metadata"
-            | "missing-source-receipt-key"
-            | "missing-landed-receipt-key"
-            | "unknown-terminal-task"
-            | "unknown-terminal-status"
-            | "missing-passport-outcome"
-            | "duplicate-passport-outcome" => root.write(archive, "---\nid: m-close\nbroken: [\n"),
+            | "missing-journal"
+            | "corrupt-journal"
+            | "altered-journal"
+            | "post-unlink" => root.write(archive, "---\nid: m-close\nbroken: [\n"),
             "foreign" => root.write(
                 archive,
                 &archived.replacen("id: m-close", "id: m-foreign", 1),
             ),
             "unmerged" => std::fs::remove_file(root.0.join(archive)).unwrap(),
+            "missing-archive" => std::fs::remove_file(root.0.join(archive)).unwrap(),
             "git-archive" => {
                 std::fs::remove_file(root.0.join(active)).unwrap();
                 commit_handoff_fixture_inputs(&root, &["docs"]);
@@ -1803,73 +2115,31 @@ fn milestone_handoff_requires_completed_tasks_and_archives_typed_receipt() {
                 &delivered_active.replace(&receipt.passed_at, "2000-01-01T00:00:00Z"),
             );
         }
-        let mut current_note = note.clone();
-        let durable = &mut current_note["milestone_passports"]["forge-mcp/forge-mcp/m-close"];
-        let task_id = "forge-mcp/m-close:finish";
-        match scenario {
-            "missing-receipts" => durable["landed_receipts"] = json!({}),
-            "foreign-receipt" => {
-                durable["landed_receipts"]["other/m-close:finish"] =
-                    durable["landed_receipts"][task_id].clone()
+        if !matches!(scenario, "missing-journal" | "unmerged" | "git-archive") {
+            let mut prepared = journal.clone();
+            if scenario == "altered-journal" {
+                prepared["archive_text"] = "tampered".into();
             }
-            "altered-landed-receipt" => {
-                durable["landed_receipts"][task_id]["passed_at"] = "2000-01-01T00:00:00Z".into()
-            }
-            "missing-terminal-metadata" => {
-                durable.as_object_mut().unwrap().remove("terminal_tasks");
-            }
-            "missing-source-receipt-key" | "missing-landed-receipt-key" => {
-                let key = if scenario == "missing-source-receipt-key" {
-                    "source_receipt"
+            std::fs::write(
+                &journal_path,
+                if scenario == "corrupt-journal" {
+                    b"{broken".to_vec()
                 } else {
-                    "landed_receipt"
-                };
-                durable["terminal_tasks"][task_id]
-                    .as_object_mut()
-                    .unwrap()
-                    .remove(key);
-            }
-            "unknown-terminal-task" => {
-                durable["terminal_tasks"]["forge-mcp/m-close:unknown"] =
-                    durable["terminal_tasks"][task_id].clone()
-            }
-            "unknown-terminal-status" => {
-                durable["terminal_tasks"][task_id]["status"] = "unknown".into()
-            }
-            "missing-passport-outcome" => {
-                durable["tasks"].as_array_mut().unwrap().pop();
-            }
-            "duplicate-passport-outcome" => {
-                let duplicate = durable["tasks"][0].clone();
-                durable["tasks"].as_array_mut().unwrap().push(duplicate);
-            }
-            _ => {}
+                    serde_json::to_vec(&prepared).unwrap()
+                },
+            )
+            .unwrap();
         }
-        // Keep the checksum valid so semantic reconciliation, rather than the codec,
-        // must reject contradictory durable terminal data.
-        use sha2::{Digest, Sha256};
-        durable
-            .as_object_mut()
-            .unwrap()
-            .remove("verified_handoff_proof");
-        durable["verified_handoff_proof"] =
-            format!("{:x}", Sha256::digest(serde_json::to_vec(durable).unwrap())).into();
-        git(
-            &root.0,
-            &[
-                "notes",
-                "--ref=forge",
-                "add",
-                "-f",
-                "-m",
-                &serde_json::to_string(&current_note).unwrap(),
-                &handoff_commit,
-            ],
-        );
+        if scenario == "post-unlink" {
+            std::fs::remove_file(root.0.join(active)).unwrap();
+        }
         let before_active = std::fs::read(root.0.join(active)).ok();
         let before_archive = std::fs::read(root.0.join(archive)).ok();
         let output = milestone_cli(&root, &completed_args);
-        let success = matches!(scenario, "post-prune" | "torn" | "git-archive");
+        let success = matches!(
+            scenario,
+            "post-prune" | "torn" | "git-archive" | "missing-archive" | "post-unlink"
+        );
         if output.status.success() != success {
             recovery_failures.push(format!(
                 "{scenario}: {}",
@@ -1878,6 +2148,7 @@ fn milestone_handoff_requires_completed_tasks_and_archives_typed_receipt() {
             continue;
         }
         if success {
+            assert!(!journal_path.exists(), "{scenario}: journal cleanup");
             assert!(!root.0.join(active).exists(), "{scenario}");
             if scenario == "torn" {
                 let repaired = std::fs::read_to_string(root.0.join(archive)).unwrap();
@@ -1903,6 +2174,9 @@ fn milestone_handoff_requires_completed_tasks_and_archives_typed_receipt() {
                 assert!(String::from_utf8_lossy(&output.stderr)
                     .contains("MILESTONE_ALREADY_HANDED_OFF"));
             }
+        }
+        if journal_path.exists() {
+            std::fs::remove_file(&journal_path).unwrap();
         }
         assert!(reopened.list(None, "all", None).unwrap().is_empty());
     }
@@ -2066,6 +2340,53 @@ fn milestone_handoff_requires_completed_tasks_and_archives_typed_receipt() {
         meta["handoff"]["duration"].as_str().unwrap(),
         format!("{}h {}m", minutes / 60, minutes % 60)
     );
+
+    // Archive discovery precedes import even when another worktree still has
+    // the unmerged active document. Archived opt-out SQL history is not rebuilt.
+    let stale = fallback.0.join("stale-worktree");
+    git(
+        &fallback.0,
+        &[
+            "worktree",
+            "add",
+            "--detach",
+            stale.to_str().unwrap(),
+            &fallback_commit,
+        ],
+    );
+    let orphan = "refs/forge/state/forge-mcp/forge-mcp/m-fallback/orphan";
+    git(&fallback.0, &["update-ref", orphan, &fallback_commit]);
+    std::fs::remove_file(fallback.0.join(".forge/tasks.sqlite")).unwrap();
+    let recovered = milestone_cli(&fallback, &["db-recover"]);
+    assert!(
+        recovered.status.success(),
+        "{}",
+        String::from_utf8_lossy(&recovered.stderr)
+    );
+    let recovered_store = tasks::store(&fallback.0).unwrap();
+    assert!(recovered_store.list(None, "all", None).unwrap().is_empty());
+    assert!(recovered_store.milestone_tombstoned("m-fallback").unwrap());
+    assert!(!std::process::Command::new("git")
+        .args(["show-ref", "--verify", orphan])
+        .current_dir(&fallback.0)
+        .output()
+        .unwrap()
+        .status
+        .success());
+    drop(recovered_store);
+    let stale_sync = std::process::Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+        .args([
+            "--root",
+            stale.to_str().unwrap(),
+            "task",
+            "sync",
+            "--file",
+            "docs/milestones/020-fallback.md",
+        ])
+        .output()
+        .unwrap();
+    assert!(!stale_sync.status.success());
+    assert!(String::from_utf8_lossy(&stale_sync.stderr).contains("STORE_SYNC_FAILED"));
 
     let mut failures = Vec::new();
     for scenario in [
@@ -2309,17 +2630,34 @@ fn milestone_handoff_requires_completed_tasks_and_archives_typed_receipt() {
             let dependencies: i64 = store.connection.query_row("SELECT count(*) FROM task_dependencies WHERE dependency_id=?1 AND satisfied<>0", [&transferred_id], |row| row.get(0)).unwrap();
             assert_eq!(dependencies, 0);
         } else {
-            assert_eq!(
-                std::fs::read(root.0.join(active)).unwrap(),
-                before_doc,
-                "{scenario}"
-            );
             if scenario == "rollback" {
+                assert!(!root.0.join(active).exists());
+                let prepared = std::fs::read_to_string(root.0.join(archive)).unwrap();
                 assert_eq!(
-                    std::fs::read_to_string(root.0.join(archive)).unwrap(),
-                    "previous torn archive preserved on rollback\n"
+                    Milestone::parse(&prepared, "forge-mcp")
+                        .unwrap()
+                        .tasks
+                        .len(),
+                    2
+                );
+                assert!(
+                    std::fs::read_dir(root.0.join(".forge"))
+                        .unwrap()
+                        .any(|entry| {
+                            entry
+                                .unwrap()
+                                .file_name()
+                                .to_string_lossy()
+                                .starts_with("handoff-")
+                        }),
+                    "failed pruning must retain the prepared journal"
                 );
             } else {
+                assert_eq!(
+                    std::fs::read(root.0.join(active)).unwrap(),
+                    before_doc,
+                    "{scenario}"
+                );
                 assert!(!root.0.join(archive).exists(), "{scenario}");
             }
             assert!(
@@ -2331,6 +2669,34 @@ fn milestone_handoff_requires_completed_tasks_and_archives_typed_receipt() {
                     store.inspect_details(&id).unwrap(),
                     details,
                     "{scenario}: task history changed"
+                );
+            }
+            if scenario == "rollback" {
+                store
+                    .connection
+                    .execute_batch("DROP TRIGGER reject_cancelled_pruning")
+                    .unwrap();
+                let retried = milestone_cli(
+                    &root,
+                    &["handoff", "m-terminal", "--evidence-file", &evidence_file],
+                );
+                assert!(
+                    retried.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&retried.stderr)
+                );
+                assert!(store.list(None, "all", None).unwrap().is_empty());
+                assert!(
+                    !std::fs::read_dir(root.0.join(".forge"))
+                        .unwrap()
+                        .any(|entry| {
+                            entry
+                                .unwrap()
+                                .file_name()
+                                .to_string_lossy()
+                                .starts_with("handoff-")
+                        }),
+                    "recovered handoff must remove its journal"
                 );
             }
         }
@@ -3475,7 +3841,16 @@ fn deferred_final_task_context_survives_delivery_and_prunes_blackboard() {
         )
         .unwrap()
     };
+    // A forked child's descriptor shares the open-file description, but must
+    // not prolong a completed parent's managed operation fence until exec.
+    let fence = contextunity_forge_mcp::db::tasks_store::recovery::lock_database(
+        &root.0.join(".forge/tasks.sqlite"),
+    )
+    .unwrap();
+    let inherited_descriptor = fence.try_clone().unwrap();
+    drop(fence);
     assert_eq!(inspect()["spec"]["agent_type"], "gpt-6-sol");
+    drop(inherited_descriptor);
     let stages = ["contract", "build", "review", "deliver"];
     let mut candidate_commit = None;
     let mut delivery_commit = None;
@@ -5901,7 +6276,8 @@ fn subproject_milestones_handles_readme_owners_and_non_trivial_aliases() {
         let evidence_file =
             fixture_evidence_file(&root.0, milestone_id, "cargo test --test acdd", 1, 0);
         let handoff_args = ["handoff", milestone_id, "--evidence-file", &evidence_file];
-        let output = milestone_cli(&root, &handoff_args);
+        let (output, journal_path, journal) =
+            handoff_with_journal_capture(&root, &handoff_args, "");
         assert!(
             output.status.success(),
             "{}",
@@ -5922,11 +6298,12 @@ fn subproject_milestones_handles_readme_owners_and_non_trivial_aliases() {
                 .0,
         )
         .unwrap();
-        assert!(header["handoff"]["passport"]["terminal_tasks"]
-            .get(&task_id)
-            .is_some());
+        assert!(header["handoff"]["passport"]
+            .get("terminal_tasks")
+            .is_none());
         root.write(&format!("extensions/base/docs/milestones/{file}"), &text);
         root.write(&archive_path, "---\nid: [torn\n");
+        std::fs::write(&journal_path, serde_json::to_vec(&journal).unwrap()).unwrap();
         for _ in 0..2 {
             let retry = milestone_cli(&root, &handoff_args);
             assert!(
@@ -6050,7 +6427,8 @@ fn default_project_alias_is_applied_once_across_task_lifecycle() {
     let handoff_args = ["handoff", "001", "--evidence-file", &evidence_file];
     let active_text =
         std::fs::read_to_string(root.0.join("docs/milestones/001-default.md")).unwrap();
-    let handed_off = milestone_cli(&root, &handoff_args);
+    let (handed_off, journal_path, journal) =
+        handoff_with_journal_capture(&root, &handoff_args, "");
     assert!(
         handed_off.status.success(),
         "{}",
@@ -6070,6 +6448,7 @@ fn default_project_alias_is_applied_once_across_task_lifecycle() {
     );
     root.write("docs/milestones/001-default.md", &active_text);
     root.write("docs/milestones/archive/001-default.md", "---\nid: [torn\n");
+    std::fs::write(&journal_path, serde_json::to_vec(&journal).unwrap()).unwrap();
     for _ in 0..2 {
         let retry = milestone_cli(&root, &handoff_args);
         assert!(
@@ -6290,8 +6669,16 @@ fn default_project_alias_is_applied_once_across_task_lifecycle() {
             .output()
             .unwrap();
         assert!(note.status.success(), "{case}: {note:?}");
+        assert!(note.stdout.len() < 2048, "{case}: compact note budget");
         let note: serde_json::Value = serde_json::from_slice(&note.stdout).unwrap();
         let identity = format!("topology-repo/{project}/m-current");
+        assert_eq!(
+            note["milestone_passports"][&identity]["binding"],
+            context["binding"]
+        );
+        assert!(note["milestone_passports"][&identity]
+            .get("topology")
+            .is_none());
         for (location, observed) in [
             (
                 "response",
@@ -6300,10 +6687,6 @@ fn default_project_alias_is_applied_once_across_task_lifecycle() {
             (
                 "archive",
                 serde_json::to_value(&header["handoff"]["passport"]["topology"]).unwrap(),
-            ),
-            (
-                "note",
-                note["milestone_passports"][&identity]["topology"].clone(),
             ),
         ] {
             if observed != expected {

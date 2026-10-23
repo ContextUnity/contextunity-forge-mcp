@@ -201,7 +201,7 @@ SQLite and milestone Markdown, resets the task to the first gate in its active p
 
 ## Repository milestones
 
-`milestone init`, `list`, `show`, `handoff-context`, and `handoff` are CLI-only. The MCP interface
+`milestone init`, `list`, `show`, `handoff-context`, `handoff`, and `db-recover` are CLI-only. The MCP interface
 provides task operations and has no milestone lifecycle tools.
 
 ```sh
@@ -210,6 +210,7 @@ contextunity-forge-mcp milestone show <id-or-number> [--full]
 contextunity-forge-mcp milestone init [--num 011] [--slug short-name] [--title "Title"] [--plan docs/plans/proposal.md] [--dir docs/milestones] [--desc "Purpose"] [--depends-on m-prior] [--active]
 contextunity-forge-mcp milestone handoff-context <id-or-number> --target-base <git-selector>
 contextunity-forge-mcp milestone handoff <id-or-number> [--commit <git-selector>] --evidence-file <external-review.json>
+contextunity-forge-mcp milestone db-recover
 ```
 
 `milestone list` returns a table and structured rows containing ID, title,
@@ -248,6 +249,19 @@ Changed final or target-base content needs fresh review and verification. An
 optional `--commit` resolves a Git selector whose content must match the current
 clean worktree HEAD. Commit the archived manifest and working-file removal after
 handoff; that archive commit is not recorded in its own receipt.
+
+`milestone db-recover` enrolls healthy active SQL or completes a committed pending
+checkpoint publication without replaying its mutation. With healthy SQL, it also
+automatically rewinds orphaned intents to their prior acknowledged keeper and
+releases interrupted submit claims without accepting their provisional proofs.
+Archives without `handoff.proof_shas` are obsolete and skipped.
+For missing/corrupt SQL,
+it discovers linked worktrees/configured roots, preseeds archive tombstones, and
+imports validated active task keepers. It preserves original main/WAL/SHM bytes
+and reports their backup directory. Unknown/index/future stores, intents without
+healthy SQL authority, incomplete cohorts and missing legacy checkpoints fail closed. See
+[active recovery](tasks.md#active-task-checkpoints-and-database-recovery) for
+acknowledgment fencing, healthy-first enrollment and recovery limits.
 
 ## Server, guide, and checkpoints
 

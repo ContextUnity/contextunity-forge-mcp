@@ -15,11 +15,15 @@ use std::{
 mod contract;
 mod handoff;
 mod integration;
+pub(crate) use integration::configure_checkpoint_owners;
+pub mod recovery;
 use contract::{snapshot, Snapshot};
 pub use handoff::{handoff, handoff_context};
 pub use integration::{
     HandoffBinding, IntegrationEvidence, IntegrationReview, IntegrationVerification,
 };
+pub use recovery::db_recover;
+pub(crate) use recovery::obsolete_checkpoint_owners;
 
 /// Inputs for creating a milestone document.
 pub struct Init {
@@ -540,6 +544,7 @@ fn view(snapshot: &Snapshot, stored: &[Task]) -> Result<Value> {
 
 /// Lists milestone metadata and completion ratios from the task store.
 pub fn list(root: &Path, archive: bool, status: Option<&str>) -> Result<Value> {
+    let _observation = tasks::read_checkpoint_fence(root)?;
     if status
         .is_some_and(|s| !matches!(s, "all" | "planned" | "active" | "completed" | "cancelled"))
     {
@@ -574,6 +579,7 @@ pub fn list(root: &Path, archive: bool, status: Option<&str>) -> Result<Value> {
 
 /// Shows one milestone by ID, prefix, stem, or path.
 pub fn show(root: &Path, selector: &str, full: bool) -> Result<Value> {
+    let _observation = tasks::read_checkpoint_fence(root)?;
     let mut found = snapshots(root, true, Some(selector))?;
     if found.len() != 1 {
         bail!("milestone selector must resolve to exactly one document: {selector}");

@@ -27,9 +27,9 @@ impl TasksStore {
         if title.is_empty() {
             bail!("TASK_SUBTASK_TITLE_EMPTY: subtask title cannot be empty");
         }
-        let tx = self
-            .connection
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let checkpoint = self.checkpoint_context()?;
+        let mut tx = super::recovery::transaction(&mut self.connection, checkpoint)?;
+        tx.enroll(&[task_id.to_owned()], false)?;
         let mut task = load(&tx, task_id)?.context("TASK_NOT_FOUND")?;
         if matches!(task.status.as_str(), "completed" | "cancelled") {
             bail!("TASK_TERMINAL: cannot add subtasks to completed or cancelled task; reopen or reset the task first (e.g. `task reset <task-id>`)");
@@ -72,9 +72,9 @@ impl TasksStore {
     ) -> Result<SubtaskSpec> {
         self.assert_id(task_id)?;
         let status = crate::core::tasks::SubtaskStatus::parse(status)?.as_str();
-        let tx = self
-            .connection
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let checkpoint = self.checkpoint_context()?;
+        let mut tx = super::recovery::transaction(&mut self.connection, checkpoint)?;
+        tx.enroll(&[task_id.to_owned()], false)?;
         let mut task = load(&tx, task_id)?.context("TASK_NOT_FOUND")?;
         if matches!(task.status.as_str(), "completed" | "cancelled") {
             bail!("TASK_TERMINAL: cannot update subtasks of completed or cancelled task; reopen or reset the task first (e.g. `task reset <task-id>`)");
@@ -118,6 +118,7 @@ impl TasksStore {
     }
     /// List all subtasks for a task.
     pub fn subtask_list(&self, task_id: &str) -> Result<Vec<SubtaskSpec>> {
+        let _snapshot = super::recovery::read_snapshot(&self.connection)?;
         self.assert_id(task_id)?;
         let mut stmt = self.connection.prepare(
             "SELECT subtask_ref, title, status, evidence FROM task_subtasks WHERE task_id=?1 ORDER BY rowid",

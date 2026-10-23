@@ -263,7 +263,7 @@ struct LinkedIdentity {
     task_project: Option<String>,
 }
 
-fn numbered_manifests(directories: &[PathBuf]) -> Result<Vec<PathBuf>> {
+pub(crate) fn numbered_manifests(directories: &[PathBuf]) -> Result<Vec<PathBuf>> {
     let mut directories = directories.to_vec();
     let mut manifests = Vec::new();
     while let Some(directory) = directories.pop() {
@@ -381,7 +381,7 @@ fn normalize_milestone_reference(reference: &str) -> Option<NormalizedMilestoneR
     })
 }
 
-pub(super) struct Workspace {
+pub(crate) struct Workspace {
     pub name: String,
     pub root: PathBuf,
     pub repository: String,
@@ -460,6 +460,7 @@ impl Workspace {
         let mut store = TasksStore::open_project(database, &self.repository, &self.project)?;
         store.set_profile(self.gates.clone());
         store.set_workspace_root(&self.root);
+        crate::engine::milestones::configure_checkpoint_owners(&mut store, &self.root)?;
         Ok(store)
     }
     pub fn envelope(&self, mut value: Value) -> Result<Value> {
@@ -906,20 +907,20 @@ pub(super) fn parse_milestone_manifest(
     )
 }
 
-pub(super) struct Registry {
+pub(crate) struct Registry {
     pub database: PathBuf,
     workspaces: Vec<Workspace>,
     owners: std::collections::BTreeMap<String, String>,
     aliases: std::collections::BTreeMap<String, String>,
 }
 
-pub(super) struct ResolvedMilestoneReference<'a> {
+pub(crate) struct ResolvedMilestoneReference<'a> {
     pub workspace: &'a Workspace,
     pub milestone_ref: String,
     pub task_parent: Option<TaskParentResolution>,
 }
 
-pub(super) struct TaskParentResolution {
+pub(crate) struct TaskParentResolution {
     pub input: String,
     pub task_id: String,
     pub milestone_id: String,
@@ -940,11 +941,45 @@ impl TaskParentResolution {
 
 impl Registry {
     pub fn open(&self, workspace: &Workspace) -> Result<TasksStore> {
-        let mut store = workspace.open(&self.database)?;
+        self.open_at(workspace, &self.database)
+    }
+
+    pub(crate) fn open_at(&self, workspace: &Workspace, database: &Path) -> Result<TasksStore> {
+        let mut store = workspace.open(database)?;
         store.default_project = workspace.default_project.clone();
         store.project_owners = self.owners.clone();
         store.project_aliases = self.aliases.clone();
+        store.set_obsolete_checkpoint_owners(self.obsolete_checkpoint_owners()?);
         Ok(store)
+    }
+
+    pub(crate) fn obsolete_checkpoint_owners(&self) -> Result<std::collections::BTreeSet<String>> {
+        let mut owners = std::collections::BTreeSet::new();
+        for workspace in &self.workspaces {
+            owners.extend(crate::engine::milestones::obsolete_checkpoint_owners(
+                &workspace.root,
+                &workspace.milestones,
+                &workspace.repository,
+                &workspace.default_project,
+                &self.owners,
+                &self.aliases,
+            )?);
+        }
+        Ok(owners)
+    }
+
+    pub(crate) fn recovery_manifests(&self, workspace: &Workspace) -> Result<Vec<String>> {
+        let mut dirs = workspace.milestones.clone();
+        dirs.extend(workspace.milestones.iter().map(|dir| dir.join("archive")));
+        numbered_manifests(&dirs)?
+            .into_iter()
+            .map(|path| {
+                Ok(path
+                    .strip_prefix(&workspace.root)?
+                    .to_string_lossy()
+                    .into_owned())
+            })
+            .collect()
     }
 
     pub fn workspace_names(&self) -> Vec<String> {

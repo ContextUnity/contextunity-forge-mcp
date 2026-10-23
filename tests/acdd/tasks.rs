@@ -1,4 +1,5 @@
 use super::support::*;
+use contextunity_forge_mcp::engine::milestones::recovery::db_recover;
 
 #[test]
 fn task_mutations_bound_payloads_and_initialized_readers_avoid_writer_locks() {
@@ -118,7 +119,6 @@ fn task_mutations_bound_payloads_and_initialized_readers_avoid_writer_locks() {
                 spec.push_str(&format!("```yaml\ntask_ref: extra-{index}\ntarget: Extra task\nproof_policy: seam-test-first\nscope: [src/extra-{index}.rs]\n```\n"));
             }
         }
-        root.write("docs/010-test.md", &spec);
         let milestone = Milestone::parse(&spec, "forge-mcp").unwrap();
         // Use the same initial contract with large, valid authority metadata.
         store
@@ -129,6 +129,7 @@ fn task_mutations_bound_payloads_and_initialized_readers_avoid_writer_locks() {
                 contextunity_forge_mcp::db::tasks_store::now(),
             )
             .unwrap();
+        root.write("docs/010-test.md", &spec);
         store.sync(&milestone, "docs/010-test.md", &root.0).unwrap();
         let value = if matches!(action, "claim" | "minimal") {
             tasks::claim(
@@ -3790,6 +3791,7 @@ fn milestone_id_change_is_rejected_before_sync_admission_and_claim_lookup() {
 #[test]
 fn milestone_id_guard_ignores_foreign_project_at_the_same_manifest_path() {
     let root = ScopedWorkspace::new("forge_tasks_shared_manifest_path");
+    let foreign_root = ScopedWorkspace::new("forge_tasks_foreign_manifest_path");
     let database = root.0.join(".forge/tasks.sqlite");
     let mut foreign_store = TasksStore::open_project(&database, "forge-mcp", "aaa").unwrap();
     let mut current_store = TasksStore::open_project(&database, "forge-mcp", "zzz").unwrap();
@@ -3799,8 +3801,16 @@ fn milestone_id_guard_ignores_foreign_project_at_the_same_manifest_path() {
         )
     };
     let foreign = Milestone::parse(&specification("aaa", "m-test"), "forge-mcp").unwrap();
+    foreign_root.write(
+        "docs/milestones/010-shared.md",
+        &specification("aaa", "m-test"),
+    );
+    root.write(
+        "docs/milestones/010-shared.md",
+        &specification("zzz", "m-test"),
+    );
     foreign_store
-        .sync(&foreign, "docs/milestones/010-shared.md", &root.0)
+        .sync(&foreign, "docs/milestones/010-shared.md", &foreign_root.0)
         .unwrap();
     let current = Milestone::parse(&specification("zzz", "m-test"), "forge-mcp").unwrap();
     current_store
@@ -3832,6 +3842,11 @@ fn milestone_id_guard_ignores_foreign_project_at_the_same_manifest_path() {
         (&mut foreign_store, foreign, "aaa"),
         (&mut current_store, current, "zzz"),
     ] {
+        let workspace = if project == "aaa" {
+            &foreign_root.0
+        } else {
+            &root.0
+        };
         assert!(!store.milestone_tombstoned("m-test").unwrap(), "{project}");
         if project == "zzz" {
             root.write("src/lib.rs", "pub fn shared() {}\n");
@@ -3883,7 +3898,7 @@ fn milestone_id_guard_ignores_foreign_project_at_the_same_manifest_path() {
         }
         milestone.tasks[0].status = Some("cancelled".into());
         let terminal = store
-            .sync(&milestone, "docs/milestones/010-shared.md", &root.0)
+            .sync(&milestone, "docs/milestones/010-shared.md", workspace)
             .unwrap();
         store
             .handoff_milestone(
@@ -4039,6 +4054,10 @@ fn contract_readmission_and_reset_fence_old_evidence() {
 #[test]
 fn review_rejection_retains_findings_and_requires_a_new_build() {
     let (root, mut store, milestone) = fixture();
+    root.write(
+        "forge-mcp.yaml",
+        "roots: [src]\ndocs: [docs]\nmilestones: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+    );
     let id = milestone.task_id(&milestone.tasks[0]);
     for stage in ["contract", "build"] {
         let claimed = store
@@ -4076,6 +4095,176 @@ fn review_rejection_retains_findings_and_requires_a_new_build() {
     let rebuilt = store
         .claim(&id, "build", "builder", root.0.to_str().unwrap())
         .unwrap();
+    let before = store.inspect_details(&id).unwrap();
+    let maximum: u64 = store
+        .connection
+        .query_row(
+            "SELECT revision FROM task_revisions WHERE task_id=?1",
+            [&id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    drop(store);
+    let keeper_ref = format!("refs/forge/state/forge-mcp/{}", id.replace(':', "/"));
+    let checkpoint =
+        contextunity_forge_mcp::db::tasks_store::recovery::read_checkpoint(&root.0, &keeper_ref)
+            .unwrap();
+    let keeper = contextunity_forge_mcp::core::git::git_stdout(
+        &root.0,
+        &["rev-parse", &keeper_ref],
+        "FIXTURE_KEEPER",
+    )
+    .unwrap();
+    for (gate_stage, case) in ["contract", "review"].into_iter().flat_map(|stage| {
+        [
+            "stage",
+            "null",
+            "empty",
+            "unknown",
+            "contract",
+            "raw-contract",
+            "worker",
+            "worktree",
+            "claim",
+            "duplicate-claim",
+            "action",
+            "result",
+        ]
+        .into_iter()
+        .map(move |case| (stage, case))
+    }) {
+        let mut state = serde_json::to_value(&checkpoint).unwrap();
+        let gate = state["gates"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|row| {
+                row[0] == gate_stage && matches!(row[2].as_str(), Some("passed" | "rejected"))
+            })
+            .unwrap();
+        let revision = gate[1].clone();
+        let mut submitted_evidence: Value =
+            serde_json::from_str(gate[3].as_str().unwrap()).unwrap();
+        match case {
+            "stage" => submitted_evidence["stage"] = json!("deliver"),
+            "null" => submitted_evidence["proof"] = Value::Null,
+            "empty" => submitted_evidence["proof"] = json!({}),
+            "unknown" => submitted_evidence["proof"] = json!({"unknown_proof":{}}),
+            "contract" | "raw-contract" => submitted_evidence["contract_revision"] = json!(999),
+            "worker" => submitted_evidence["worker_id"] = json!("foreign"),
+            "worktree" => submitted_evidence["worktree"] = json!("/tmp/foreign"),
+            "claim" => submitted_evidence["claim_revision"] = json!(999),
+            _ => (),
+        }
+        gate[3] = json!(serde_json::to_string(&submitted_evidence).unwrap());
+        let submission = state["submissions"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|row| row[0] == revision)
+            .unwrap();
+        let mut value: Value = serde_json::from_str(submission[1].as_str().unwrap()).unwrap();
+        value["evidence"] = submitted_evidence;
+        if case == "action" {
+            value["action"] = json!(if gate_stage == "contract" {
+                "reject"
+            } else {
+                "pass"
+            });
+        }
+        if case == "raw-contract" {
+            value["task"]["contract_revision"] = json!(999);
+        }
+        if case == "result" {
+            value["task"]["status"] = json!("in_progress");
+        }
+        submission[1] = json!(serde_json::to_string(&value).unwrap());
+        if case == "duplicate-claim" {
+            let duplicate = state["claims"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|claim| claim[0] == revision)
+                .unwrap()
+                .clone();
+            state["claims"].as_array_mut().unwrap().push(duplicate);
+        }
+        contextunity_forge_mcp::core::git::git_checkpoint(
+            &root.0,
+            &keeper_ref,
+            &serde_json::to_vec(&state).unwrap(),
+            std::slice::from_ref(&keeper),
+        )
+        .unwrap();
+        let database = root.0.join(".forge/tasks.sqlite");
+        let files = [
+            database.clone(),
+            database.with_file_name("tasks.sqlite-wal"),
+            database.with_file_name("tasks.sqlite-shm"),
+        ];
+        let original = files.each_ref().map(|path| std::fs::read(path).ok());
+        for path in &files {
+            if path.exists() {
+                std::fs::remove_file(path).unwrap();
+            }
+        }
+        let refused = std::process::Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+            .args([
+                "--root",
+                root.0.to_str().unwrap(),
+                "--format",
+                "json",
+                "milestone",
+                "db-recover",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            !refused.status.success(),
+            "checkpoint {case} must refuse: {}",
+            String::from_utf8_lossy(&refused.stdout)
+        );
+        assert!(!database.exists());
+        for (path, bytes) in files.iter().zip(original) {
+            if let Some(bytes) = bytes {
+                std::fs::write(path, bytes).unwrap();
+            }
+        }
+        assert!(std::process::Command::new("git")
+            .args(["update-ref", &keeper_ref, &keeper])
+            .current_dir(&root.0)
+            .status()
+            .unwrap()
+            .success());
+    }
+    std::fs::remove_file(root.0.join(".forge/tasks.sqlite")).unwrap();
+    let recovery = std::process::Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+        .args([
+            "--root",
+            root.0.to_str().unwrap(),
+            "--format",
+            "json",
+            "milestone",
+            "db-recover",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        recovery.status.success(),
+        "{}",
+        String::from_utf8_lossy(&recovery.stderr)
+    );
+    let mut store = tasks::store(&root.0).unwrap();
+    assert_eq!(store.inspect_details(&id).unwrap(), before);
+    let restored_maximum: u64 = store
+        .connection
+        .query_row(
+            "SELECT revision FROM task_revisions WHERE task_id=?1",
+            [&id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(restored_maximum >= maximum);
     store
         .submit(&id, "build", &evidence(&rebuilt), "pass", None)
         .unwrap();
@@ -4160,6 +4349,32 @@ fn dedicated_store_rejects_index_and_unknown_schema_without_ddl() {
             .collect::<rusqlite::Result<_>>()
             .unwrap();
         assert_eq!(tables, ["sentinel", "task_store_metadata"]);
+        drop(conn);
+        root.write(
+            "forge-mcp.yaml",
+            &format!("tasks_db: schema-{version}.sqlite\n"),
+        );
+        let wal = std::path::PathBuf::from(format!("{}-wal", old.display()));
+        let shm = std::path::PathBuf::from(format!("{}-shm", old.display()));
+        std::fs::write(&wal, b"preserve refused WAL bytes").unwrap();
+        std::fs::write(&shm, b"preserve refused SHM bytes").unwrap();
+        let before = std::fs::read(&old).unwrap();
+        let refused = std::process::Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+            .args([
+                "--root",
+                root.0.to_str().unwrap(),
+                "milestone",
+                "db-recover",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            !refused.status.success(),
+            "unsupported schema {version} must not be recovered"
+        );
+        assert_eq!(std::fs::read(&old).unwrap(), before);
+        assert_eq!(std::fs::read(wal).unwrap(), b"preserve refused WAL bytes");
+        assert_eq!(std::fs::read(shm).unwrap(), b"preserve refused SHM bytes");
     }
 
     let unversioned = root.0.join("unversioned.sqlite");
@@ -5310,6 +5525,202 @@ fn task_list_filters_milestone_status_and_controls_subtask_details() {
 
 #[test]
 fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_handoff() {
+    for pending in [false, true] {
+        use std::os::unix::fs::PermissionsExt;
+        let isolated = ScopedWorkspace::new("forge_provisional_gc");
+        isolated.write(
+            "forge-mcp.yaml",
+            "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+        );
+        isolated.write("src/lib.rs", "pub fn before() {}\n");
+        isolated.write("docs/milestones/010-gc.md", "---\nid: m-gc\nstatus: active\n---\n```yaml\ntask_ref: candidate\ntarget: Preserve provisional candidate\nproof_policy: direct-proof\nscope: [src/]\n```\n");
+        tasks::manage(
+            &isolated.0,
+            serde_json::from_value(
+                json!({"action":"sync","milestone_ref":"docs/milestones/010-gc.md"}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let id = "forge-mcp/m-gc:candidate";
+        tasks::claim(
+            &isolated.0,
+            tasks::Claim {
+                task_id: id.into(),
+                stage: "contract".into(),
+                worker_id: "builder".into(),
+                worktree: isolated.0.to_string_lossy().into_owned(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let claimed = tasks::store(&isolated.0).unwrap().inspect(id).unwrap();
+        tasks::submit(&isolated.0,serde_json::from_value(json!({"task_id":id,"stage":"contract","action":"pass","evidence":evidence(&claimed)})).unwrap()).unwrap();
+        tasks::claim(
+            &isolated.0,
+            tasks::Claim {
+                task_id: id.into(),
+                stage: "build".into(),
+                worker_id: "builder".into(),
+                worktree: isolated.0.to_string_lossy().into_owned(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        isolated.write("src/lib.rs", "pub fn unique_provisional_candidate() {}\n");
+        let shim = isolated.0.join("fixture-bin/git");
+        if pending {
+            isolated.write(
+                "fixture-publication-fault",
+                "isolate post-SQL keeper failure\n",
+            );
+        }
+        isolated.write("fixture-bin/git", r#"#!/usr/bin/python
+import subprocess,sys,pathlib,json
+r=subprocess.run(['/usr/bin/git',*sys.argv[1:]],capture_output=True)
+if r.returncode==0 and 'commit-tree' in sys.argv and pathlib.Path('fixture-publication-fault').exists() and '-m' not in sys.argv:
+ state=subprocess.run(['/usr/bin/git','show',r.stdout.decode().strip()+':checkpoint.json'],capture_output=True)
+ if state.returncode==0:
+  state=json.loads(state.stdout)
+  if state.get('intent') is None and any(row[0]=='build' and row[2]=='passed' for row in state.get('gates',[])):
+   lock=pathlib.Path('.git/refs/forge/state/forge-mcp/forge-mcp/m-gc/candidate.lock')
+   lock.parent.mkdir(parents=True,exist_ok=True);lock.write_text('isolated publication lock')
+if r.returncode==0 and len(sys.argv)>1 and sys.argv[1]=='-c' and 'hash-object' in sys.argv and '-t' in sys.argv and 'commit' in sys.argv:
+ gc=subprocess.run(['/usr/bin/git','gc','--prune=now'],capture_output=True)
+ pathlib.Path('fixture-gc-construction.json').write_text(json.dumps({'gc_attempted':True,'exit':gc.returncode}))
+if r.returncode==0 and len(sys.argv)>1 and sys.argv[1]=='commit-tree' and '-m' in sys.argv and any(a.startswith('forge-snapshot:') for a in sys.argv):
+ sha=r.stdout.decode().strip()
+ subprocess.run(['/usr/bin/git','reflog','expire','--expire=now','--all'],check=True,capture_output=True)
+ subprocess.run(['/usr/bin/git','gc','--prune=now'],check=True,capture_output=True)
+ check=subprocess.run(['/usr/bin/git','cat-file','-e',sha],capture_output=True)
+ pathlib.Path('fixture-gc-window.json').write_text(json.dumps({'candidate':sha,'exists_after_gc':check.returncode==0,'gc_attempted':True}))
+sys.stdout.buffer.write(r.stdout);sys.stderr.buffer.write(r.stderr);sys.exit(r.returncode)
+"#);
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let claimed = tasks::store(&isolated.0).unwrap().inspect(id).unwrap();
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+            .args([
+                "--root",
+                isolated.0.to_str().unwrap(),
+                "--format",
+                "json",
+                "task",
+                "submit",
+                id,
+                "--stage",
+                "build",
+                "--action",
+                "pass",
+                "--evidence",
+                &serde_json::to_string(&evidence(&claimed)).unwrap(),
+            ])
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    shim.parent().unwrap().display(),
+                    std::env::var("PATH").unwrap()
+                ),
+            )
+            .current_dir(&isolated.0)
+            .output()
+            .unwrap();
+        let gc: Value = serde_json::from_slice(
+            &std::fs::read(isolated.0.join("fixture-gc-window.json")).unwrap(),
+        )
+        .unwrap();
+        let construction: Value = serde_json::from_slice(
+            &std::fs::read(isolated.0.join("fixture-gc-construction.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(construction["gc_attempted"], true);
+        assert_eq!(
+            construction["exit"], 128,
+            "Git GC must honor construction exclusion before kept-pack publication"
+        );
+        assert_eq!(gc["gc_attempted"], true);
+        assert_eq!(
+            gc["exists_after_gc"], true,
+            "actual new parentless candidate must survive real GC before commit-tree stdout"
+        );
+        if pending {
+            assert!(!output.status.success());
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains("TASK_CHECKPOINT_PENDING"),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                std::fs::read_dir(isolated.0.join(".git/objects/pack"))
+                    .unwrap()
+                    .any(|entry| entry
+                        .unwrap()
+                        .path()
+                        .extension()
+                        .is_some_and(|ext| ext == "keep")),
+                "post-SQL failure retains actual provisional object home"
+            );
+            std::fs::remove_file(
+                isolated
+                    .0
+                    .join(".git/refs/forge/state/forge-mcp/forge-mcp/m-gc/candidate.lock"),
+            )
+            .unwrap();
+            let resumed = std::process::Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+                .args([
+                    "--root",
+                    isolated.0.to_str().unwrap(),
+                    "--format",
+                    "json",
+                    "milestone",
+                    "db-recover",
+                ])
+                .output()
+                .unwrap();
+            assert!(
+                resumed.status.success(),
+                "{}",
+                String::from_utf8_lossy(&resumed.stderr)
+            );
+            let stored = tasks::store(&isolated.0).unwrap().inspect(id).unwrap();
+            assert_eq!(stored.stage, "review");
+            assert_eq!(stored.status, "ready");
+        } else {
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        assert!(
+            !std::fs::read_dir(isolated.0.join(".git/objects/pack"))
+                .unwrap()
+                .any(|entry| entry
+                    .unwrap()
+                    .path()
+                    .extension()
+                    .is_some_and(|ext| ext == "keep")),
+            "keeper durability releases only this task's temporary pack protection"
+        );
+        let candidate = gc["candidate"].as_str().unwrap();
+        assert!(contextunity_forge_mcp::core::git::git_ancestor(
+            &isolated.0,
+            candidate,
+            "refs/forge/state/forge-mcp/forge-mcp/m-gc/candidate"
+        )
+        .unwrap());
+        let parents = contextunity_forge_mcp::core::git::git_stdout(
+            &isolated.0,
+            &["rev-list", "--parents", "-n", "1", candidate],
+            "FIXTURE_PARENTS",
+        )
+        .unwrap();
+        assert_eq!(
+            parents.split_whitespace().count(),
+            1,
+            "candidate remains parentless"
+        );
+    }
     let root = ScopedWorkspace::new("forge_snapshot_test");
     root.write("src/lib.rs", "pub fn example() {}\n");
     root.write(
@@ -5438,6 +5849,40 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
     assert_eq!(still_claimed.gate, 0);
     std::fs::remove_file(ref_blocker).unwrap();
 
+    // Healthy-first enrollment retains the actual active claim, not a manifest reconstruction.
+    let recovery = db_recover(&root.0);
+    assert!(
+        recovery.is_ok(),
+        "active claim checkpoint enrollment: {recovery:?}"
+    );
+    let enrolled = tasks::store(&root.0).unwrap().inspect(task_id).unwrap();
+    assert_eq!(enrolled.claim_revision, still_claimed.claim_revision);
+    assert_eq!(enrolled.worker_id, still_claimed.worker_id);
+
+    // A receipt writer owns the physical fence before its SQL commit. File-backed
+    // readers must refuse even while the old SQL snapshot is still observable.
+    let database = root.0.join(".forge/tasks.sqlite");
+    let writer =
+        contextunity_forge_mcp::db::tasks_store::recovery::lock_database(&database).unwrap();
+    let manifest_path = root.0.join("docs/milestones/010-test.md");
+    let original = std::fs::read_to_string(&manifest_path).unwrap();
+    std::fs::write(
+        &manifest_path,
+        format!("{original}\n<!-- provisional delivery receipt -->\n"),
+    )
+    .unwrap();
+    let composed = contextunity_forge_mcp::engine::milestones::show(&root.0, "m-test", true);
+    std::fs::write(&manifest_path, original).unwrap();
+    drop(writer);
+    assert!(
+        composed.is_err(),
+        "precommit document must not be acknowledged: {composed:?}"
+    );
+    assert!(composed
+        .unwrap_err()
+        .to_string()
+        .contains("TASK_CHECKPOINT_PENDING"));
+
     let contract_res = tasks::submit(
         &root.0,
         tasks::Submit {
@@ -5486,6 +5931,459 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
 
     // Submit build with commit: None -> captures snapshot with the untracked file!
     let stored = tasks::store(&root.0).unwrap().inspect(task_id).unwrap();
+    let checkpoint_ref = format!("refs/forge/state/forge-mcp/{}", task_id.replace(':', "/"));
+    let checkpoint = contextunity_forge_mcp::db::tasks_store::recovery::read_checkpoint(
+        &root.0,
+        &checkpoint_ref,
+    )
+    .unwrap();
+    let permanent_pins = std::process::Command::new("git")
+        .args([
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/forge/evidence/",
+        ])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    assert!(permanent_pins.status.success());
+    assert!(
+        permanent_pins.stdout.is_empty(),
+        "new task gates must not create global evidence pins"
+    );
+    assert_eq!(checkpoint.workspace, root.0.canonicalize().unwrap());
+    assert_eq!(
+        checkpoint.task.as_ref().unwrap().claim_revision,
+        stored.claim_revision
+    );
+    // Only the real keeper retains the parentless contract candidate during isolated GC.
+    let old_snapshot_ref = format!("refs/forge/snapshots/{}", task_id.replace(':', "/"));
+    for args in [
+        vec!["update-ref", "-d", old_snapshot_ref.as_str()],
+        vec!["reflog", "expire", "--expire=now", "--all"],
+        vec!["gc", "--prune=now"],
+    ] {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(&root.0)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+    }
+    assert!(std::process::Command::new("git")
+        .args(["cat-file", "-e", &contract_snap])
+        .current_dir(&root.0)
+        .status()
+        .unwrap()
+        .success());
+    let before = tasks::store(&root.0)
+        .unwrap()
+        .inspect_details(task_id)
+        .unwrap();
+    let recover = || {
+        std::process::Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+            .args([
+                "--root",
+                root.0.to_str().unwrap(),
+                "--format",
+                "json",
+                "milestone",
+                "db-recover",
+            ])
+            .output()
+            .unwrap()
+    };
+    // Persisted crash/corruption boundaries: recovery must not promote an old
+    // claim from an unresolved intent, an incomplete cohort or a foreign owner.
+    let keeper_commit = std::process::Command::new("git")
+        .args(["rev-parse", &checkpoint_ref])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    let keeper_commit = String::from_utf8(keeper_commit.stdout)
+        .unwrap()
+        .trim()
+        .to_owned();
+    for (field, replacement, diagnostic) in [
+        (
+            "intent",
+            json!("unacknowledged isolated process intent"),
+            "TASK_RECOVERY_AMBIGUOUS",
+        ),
+        (
+            "cohort_id",
+            json!("incomplete isolated publication"),
+            "TASK_RECOVERY_AMBIGUOUS",
+        ),
+        (
+            "project",
+            json!("foreign"),
+            "TASK_RECOVERY_CHECKPOINT_INVALID",
+        ),
+        ("version", json!(99), "TASK_RECOVERY_AMBIGUOUS"),
+    ] {
+        let mut state = serde_json::to_value(&checkpoint).unwrap();
+        state[field] = replacement;
+        let mut mutation = contextunity_forge_mcp::core::git::git_checkpoint(
+            &root.0,
+            &checkpoint_ref,
+            &serde_json::to_vec(&state).unwrap(),
+            std::slice::from_ref(&contract_snap),
+        )
+        .unwrap();
+        if field == "intent" {
+            assert!(
+                contextunity_forge_mcp::engine::milestones::show(&root.0, "m-test", true)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("TASK_CHECKPOINT_PENDING")
+            );
+            let recovered = recover();
+            assert!(
+                !recovered.status.success(),
+                "an arbitrary intent is not authority to revoke a claim"
+            );
+            assert_eq!(
+                tasks::store(&root.0)
+                    .unwrap()
+                    .inspect_details(task_id)
+                    .unwrap(),
+                before
+            );
+            let mut genuine = serde_json::to_value(&checkpoint).unwrap();
+            genuine["intent"] = json!("1-1");
+            genuine["max_revision"] = json!(checkpoint.max_revision + 1);
+            genuine["cohort"] = json!([]);
+            genuine["cohort_id"] = json!("");
+            for corrupt in [
+                "reservation",
+                "worker",
+                "claim",
+                "claims",
+                "gates",
+                "cohort",
+                "cohort_id",
+                "token",
+            ] {
+                assert!(std::process::Command::new("git")
+                    .args(["update-ref", &checkpoint_ref, &keeper_commit])
+                    .current_dir(&root.0)
+                    .status()
+                    .unwrap()
+                    .success());
+                let mut value = genuine.clone();
+                match corrupt {
+                    "reservation" => value["max_revision"] = json!(checkpoint.max_revision + 100),
+                    "worker" => value["task"]["worker_id"] = json!("foreign-worker"),
+                    "claim" => {
+                        value["task"]["claim_revision"] = json!(checkpoint.max_revision + 10)
+                    }
+                    "claims" => value["claims"] = json!([]),
+                    "gates" => value["gates"] = json!([]),
+                    "cohort" => {
+                        value["cohort"] = json!([[root.0.to_string_lossy(), checkpoint_ref]])
+                    }
+                    "cohort_id" => value["cohort_id"] = json!("foreign-cohort"),
+                    "token" => value["intent"] = json!("invalid-token"),
+                    _ => unreachable!(),
+                }
+                let corrupt_tip = contextunity_forge_mcp::core::git::git_checkpoint(
+                    &root.0,
+                    &checkpoint_ref,
+                    &serde_json::to_vec(&value).unwrap(),
+                    std::slice::from_ref(&contract_snap),
+                )
+                .unwrap();
+                let refused = recover();
+                assert!(!refused.status.success(), "must reject {corrupt}");
+                assert_eq!(
+                    tasks::store(&root.0)
+                        .unwrap()
+                        .inspect_details(task_id)
+                        .unwrap(),
+                    before,
+                    "SQL changed after rejected {corrupt}"
+                );
+                assert_eq!(
+                    contextunity_forge_mcp::core::git::git_stdout(
+                        &root.0,
+                        &["rev-parse", &checkpoint_ref],
+                        "FIXTURE_REF"
+                    )
+                    .unwrap(),
+                    corrupt_tip,
+                    "ref changed after rejected {corrupt}"
+                );
+            }
+            let peer_ref = format!("{}/second", checkpoint_ref.rsplit_once('/').unwrap().0);
+            let peer_keeper = contextunity_forge_mcp::core::git::git_stdout(
+                &root.0,
+                &["rev-parse", &peer_ref],
+                "FIXTURE_REF",
+            )
+            .unwrap();
+            let peer = contextunity_forge_mcp::db::tasks_store::recovery::read_checkpoint(
+                &root.0, &peer_ref,
+            )
+            .unwrap();
+            for corrupt in ["token", "acknowledged_cohort"] {
+                assert!(std::process::Command::new("git")
+                    .args(["update-ref", &checkpoint_ref, &keeper_commit])
+                    .current_dir(&root.0)
+                    .status()
+                    .unwrap()
+                    .success());
+                let first_tip = contextunity_forge_mcp::core::git::git_checkpoint(
+                    &root.0,
+                    &checkpoint_ref,
+                    &serde_json::to_vec(&genuine).unwrap(),
+                    std::slice::from_ref(&contract_snap),
+                )
+                .unwrap();
+                let mut value = serde_json::to_value(&peer).unwrap();
+                if corrupt == "token" {
+                    value["intent"] = json!("2-2");
+                    value["cohort"] = json!([]);
+                    value["cohort_id"] = json!("");
+                } else {
+                    value["cohort_id"] = json!("foreign-cohort");
+                }
+                let peer_tip = contextunity_forge_mcp::core::git::git_checkpoint(
+                    &root.0,
+                    &peer_ref,
+                    &serde_json::to_vec(&value).unwrap(),
+                    &[],
+                )
+                .unwrap();
+                assert!(
+                    !recover().status.success(),
+                    "must reject conflicting {corrupt}"
+                );
+                assert_eq!(
+                    tasks::store(&root.0)
+                        .unwrap()
+                        .inspect_details(task_id)
+                        .unwrap(),
+                    before
+                );
+                for (reference, tip) in [(&checkpoint_ref, first_tip), (&peer_ref, peer_tip)] {
+                    assert_eq!(
+                        contextunity_forge_mcp::core::git::git_stdout(
+                            &root.0,
+                            &["rev-parse", reference],
+                            "FIXTURE_REF"
+                        )
+                        .unwrap(),
+                        tip
+                    );
+                }
+                assert!(std::process::Command::new("git")
+                    .args(["update-ref", &peer_ref, &peer_keeper])
+                    .current_dir(&root.0)
+                    .status()
+                    .unwrap()
+                    .success());
+            }
+            assert!(std::process::Command::new("git")
+                .args(["update-ref", &checkpoint_ref, &keeper_commit])
+                .current_dir(&root.0)
+                .status()
+                .unwrap()
+                .success());
+            mutation = contextunity_forge_mcp::core::git::git_checkpoint(
+                &root.0,
+                &checkpoint_ref,
+                &serde_json::to_vec(&state).unwrap(),
+                std::slice::from_ref(&contract_snap),
+            )
+            .unwrap();
+        }
+        let database = root.0.join(".forge/tasks.sqlite");
+        let paths = [
+            database.clone(),
+            std::path::PathBuf::from(format!("{}-wal", database.display())),
+            std::path::PathBuf::from(format!("{}-shm", database.display())),
+        ];
+        let originals = paths.each_ref().map(|path| std::fs::read(path).ok());
+        for path in &paths {
+            if path.exists() {
+                std::fs::remove_file(path).unwrap();
+            }
+        }
+        let refused = recover();
+        assert!(
+            !refused.status.success(),
+            "{field}: {}",
+            String::from_utf8_lossy(&refused.stdout)
+        );
+        assert!(
+            String::from_utf8_lossy(&refused.stderr).contains(diagnostic),
+            "{field}: {}",
+            String::from_utf8_lossy(&refused.stderr)
+        );
+        assert!(
+            !database.exists(),
+            "refusal must not install a partial database"
+        );
+        for (path, bytes) in paths.iter().zip(originals) {
+            if let Some(bytes) = bytes {
+                std::fs::write(path, bytes).unwrap();
+            }
+        }
+        let restored = std::process::Command::new("git")
+            .args(["update-ref", &checkpoint_ref, &keeper_commit, &mutation])
+            .current_dir(&root.0)
+            .output()
+            .unwrap();
+        assert!(restored.status.success());
+    }
+    let obsolete_archive = "docs/milestones/archive/009-obsolete.md";
+    root.write(
+        obsolete_archive,
+        "---\nid: m-obsolete\nstatus: completed\nhandoff:\n  proof_shas: null\n---\n",
+    );
+    assert!(
+        !recover().status.success(),
+        "present malformed proof lists must not be treated as obsolete"
+    );
+    root.write(obsolete_archive, "---\nid: m-obsolete\nstatus: completed\n---\n```yaml\ntask_ref: obsolete\nunsupported_old_field: true\n```\n");
+    let obsolete_active = "docs/milestones/009-obsolete.md";
+    root.write(obsolete_active, "---\nid: m-obsolete\nstatus: active\n---\n```yaml\ntask_ref: obsolete\nunsupported_old_field: true\n```\n");
+    let obsolete_ref = format!(
+        "refs/forge/state/{}/{}/m-obsolete/obsolete",
+        checkpoint.repository, checkpoint.project
+    );
+    let mut obsolete = serde_json::to_value(&checkpoint).unwrap();
+    obsolete["milestone_id"] = json!("m-obsolete");
+    obsolete["task_id"] = json!("forge-mcp/m-obsolete:obsolete");
+    obsolete["task"] = Value::Null;
+    for field in [
+        "claims",
+        "gates",
+        "findings",
+        "scopes",
+        "dependencies",
+        "submissions",
+        "prepared_proofs",
+        "cohort",
+    ] {
+        obsolete[field] = json!([]);
+    }
+    obsolete["cohort_id"] = json!("");
+    contextunity_forge_mcp::core::git::git_checkpoint(
+        &root.0,
+        &obsolete_ref,
+        &serde_json::to_vec(&obsolete).unwrap(),
+        &[],
+    )
+    .unwrap();
+    obsolete["intent"] = json!("2-2");
+    let ignored_tip = contextunity_forge_mcp::core::git::git_checkpoint(
+        &root.0,
+        &obsolete_ref,
+        &serde_json::to_vec(&obsolete).unwrap(),
+        &[],
+    )
+    .unwrap();
+    assert!(recover().status.success());
+    assert_eq!(
+        contextunity_forge_mcp::core::git::git_stdout(
+            &root.0,
+            &["rev-parse", &obsolete_ref],
+            "FIXTURE_REF"
+        )
+        .unwrap(),
+        ignored_tip,
+        "obsolete intent must not be rewound"
+    );
+    let ignored_tip = contextunity_forge_mcp::core::git::git_checkpoint(
+        &root.0,
+        &obsolete_ref,
+        b"unsupported obsolete keeper bytes",
+        &[],
+    )
+    .unwrap();
+    assert!(
+        recover().status.success(),
+        "obsolete keeper payload must not be parsed"
+    );
+    assert_eq!(
+        contextunity_forge_mcp::core::git::git_stdout(
+            &root.0,
+            &["rev-parse", &obsolete_ref],
+            "FIXTURE_REF"
+        )
+        .unwrap(),
+        ignored_tip
+    );
+    assert!(
+        std::process::Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+            .args([
+                "--root",
+                root.0.to_str().unwrap(),
+                "task",
+                "inspect",
+                task_id,
+                "--format",
+                "json"
+            ])
+            .output()
+            .unwrap()
+            .status
+            .success(),
+        "obsolete keeper must not fence managed reads"
+    );
+    for corrupt in [false, true] {
+        let database = root.0.join(".forge/tasks.sqlite");
+        if corrupt {
+            std::fs::write(&database, b"confirmed corrupt isolated task database").unwrap();
+        } else {
+            std::fs::remove_file(&database).unwrap();
+        }
+        let restored = recover();
+        assert!(
+            restored.status.success(),
+            "{}",
+            String::from_utf8_lossy(&restored.stderr)
+        );
+        let result: Value = serde_json::from_slice(&restored.stdout).unwrap();
+        assert_eq!(result["status"], "recovered");
+        assert_eq!(
+            tasks::store(&root.0)
+                .unwrap()
+                .inspect_details(task_id)
+                .unwrap(),
+            before
+        );
+        if corrupt {
+            let backup = std::path::PathBuf::from(result["original_backup"].as_str().unwrap());
+            assert_eq!(
+                std::fs::read(backup.join("0")).unwrap(),
+                b"confirmed corrupt isolated task database"
+            );
+        }
+        let repeated = recover();
+        assert!(
+            repeated.status.success(),
+            "{}",
+            String::from_utf8_lossy(&repeated.stderr)
+        );
+        assert_eq!(
+            tasks::store(&root.0)
+                .unwrap()
+                .inspect_details(task_id)
+                .unwrap(),
+            before
+        );
+    }
+    std::fs::remove_file(root.0.join(obsolete_archive)).unwrap();
+    std::fs::remove_file(root.0.join(obsolete_active)).unwrap();
+    assert!(std::process::Command::new("git")
+        .args(["update-ref", "-d", &obsolete_ref])
+        .current_dir(&root.0)
+        .status()
+        .unwrap()
+        .success());
     let mut ev = evidence(&stored);
     ev.commit = None;
     ev.commit = Some("caller-selected-commit".into());
@@ -5655,6 +6553,57 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
 
     // Restore worktree to match candidate
     root.write("src/new_feature.rs", "pub fn new_feature() -> i32 { 42 }\n");
+    drop(review_store);
+    // A real ref lock acquired after gate validation forces publication to fail
+    // AFTER SQL commits. Recovery may publish, but must not replay the gate.
+    let keeper_lock = root.0.join(".git").join(format!("{checkpoint_ref}.lock"));
+    let mut committed = ev.clone();
+    committed.commit = Some(build_snap.clone());
+    committed.candidate_baseline_head = Some(git_head(&root.0));
+    let mut pending_store = tasks::store(&root.0).unwrap();
+    let error = pending_store
+        .submit_with_pre_persist(task_id, "review", &mut committed, "pass", None, |_| {
+            std::fs::write(&keeper_lock, b"isolated publication rendezvous")?;
+            Ok(None)
+        })
+        .unwrap_err();
+    assert!(
+        contextunity_forge_mcp::db::tasks_store::recovery::is_pending(&error),
+        "{error:#}"
+    );
+    assert!(pending_store
+        .inspect(task_id)
+        .unwrap_err()
+        .to_string()
+        .contains("TASK_CHECKPOINT_PENDING"));
+    let counts = |store: &TasksStore| -> (u64, u64, u64) {
+        store.connection.query_row("SELECT (SELECT COUNT(*) FROM task_gates WHERE task_id=?1),(SELECT COUNT(*) FROM task_submissions WHERE task_id=?1),(SELECT revision FROM task_revisions WHERE task_id=?1)",[task_id],|row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))).unwrap()
+    };
+    let committed_counts = counts(&pending_store);
+    let failed_retry = recover();
+    assert!(!failed_retry.status.success());
+    assert!(String::from_utf8_lossy(&failed_retry.stderr).contains("TASK_CHECKPOINT_PENDING"));
+    assert_eq!(counts(&pending_store), committed_counts);
+    std::fs::remove_file(&keeper_lock).unwrap();
+    drop(pending_store);
+    let reconciled = recover();
+    assert!(
+        reconciled.status.success(),
+        "{}",
+        String::from_utf8_lossy(&reconciled.stderr)
+    );
+    let reconciled: Value = serde_json::from_slice(&reconciled.stdout).unwrap();
+    assert_eq!(reconciled["checkpoint_reconciled"], true);
+    let mut published = tasks::store(&root.0).unwrap();
+    assert_eq!(published.inspect(task_id).unwrap().stage, "deliver");
+    assert_eq!(counts(&published), committed_counts);
+    published
+        .submit_with_pre_persist(task_id, "review", &mut committed, "pass", None, |_| {
+            panic!("accepted submission retry must not replay pre-persist side effects")
+        })
+        .unwrap();
+    assert_eq!(counts(&published), committed_counts);
+    drop(published);
     let review_res = tasks::submit(
         &root.0,
         tasks::Submit {
@@ -5700,6 +6649,9 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
         )
     );
 
+    let review_evidence_before: String = delivery_store.connection.query_row(
+        "SELECT evidence FROM task_gates WHERE task_id=?1 AND gate='review' AND state='passed' ORDER BY revision DESC LIMIT 1",
+        [task_id], |row| row.get(0)).unwrap();
     delivery_store
         .connection
         .execute(
@@ -5729,12 +6681,26 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
     delivery_store
         .connection
         .execute(
-            "UPDATE task_gates SET evidence=json_set(evidence, '$.commit', ?1) \
+            "UPDATE task_gates SET evidence=?1 \
              WHERE task_id=?2 AND gate='review' AND state='passed'",
-            rusqlite::params![candidate_snapshot, task_id],
+            rusqlite::params![review_evidence_before, task_id],
         )
         .unwrap();
+    delivery_store
+        .release_failed_claim(task_id, delivery_task.claim_revision)
+        .unwrap();
     drop(delivery_store);
+    tasks::claim(
+        &root.0,
+        tasks::Claim {
+            task_id: task_id.into(),
+            stage: "deliver".into(),
+            worker_id: "delivery".into(),
+            worktree: root.0.to_string_lossy().into_owned(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
 
     // Verify: If worktree diverges after review, delivery fails!
     root.write(
@@ -5817,6 +6783,196 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
         .status()
         .unwrap()
         .success());
+
+    // Stop a real delivery process after its provisional receipt is written,
+    // inside Git's pre-commit hook and before SQL COMMIT. FIFO rendezvous avoids
+    // timing assumptions; the entire isolated child process group is terminated.
+    let ready = root.0.join(".forge/crash-ready");
+    let resume = root.0.join(".forge/crash-resume");
+    assert!(std::process::Command::new("mkfifo")
+        .args([&ready, &resume])
+        .status()
+        .unwrap()
+        .success());
+    let gates_before = tasks::store(&root.0)
+        .unwrap()
+        .inspect_details(task_id)
+        .unwrap()["gates"]
+        .clone();
+    std::fs::write(
+        &hook,
+        "#!/bin/sh\nprintf ready > \"$FORGE_CRASH_READY\"\nread answer < \"$FORGE_CRASH_RESUME\"\n",
+    )
+    .unwrap();
+    let mut child = std::process::Command::new("setsid")
+        .arg(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+        .args([
+            "--root",
+            root.0.to_str().unwrap(),
+            "task",
+            "submit",
+            task_id,
+            "--stage",
+            "deliver",
+            "--action",
+            "pass",
+            "--evidence",
+            &serde_json::to_string(&ev).unwrap(),
+        ])
+        .env("FORGE_CRASH_READY", &ready)
+        .env("FORGE_CRASH_RESUME", &resume)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let (sent, received) = std::sync::mpsc::channel();
+    let ready_reader = ready.clone();
+    let rendezvous = std::thread::spawn(move || {
+        sent.send(std::fs::read_to_string(ready_reader)).unwrap();
+    });
+    let signal = received.recv_timeout(std::time::Duration::from_secs(30));
+    assert!(std::process::Command::new("kill")
+        .args(["-KILL", "--", &format!("-{}", child.id())])
+        .status()
+        .unwrap()
+        .success());
+    let terminated = child.wait().unwrap();
+    use std::os::unix::process::ExitStatusExt;
+    assert_eq!(terminated.signal(), Some(9));
+    assert_eq!(signal.unwrap().unwrap(), "ready");
+    rendezvous.join().unwrap();
+    assert_ne!(
+        std::fs::read_to_string(&milestone_path).unwrap(),
+        milestone_before_delivery
+    );
+    assert_eq!(git_head(&root.0), delivery_baseline);
+    assert_eq!(
+        tasks::store(&root.0)
+            .unwrap()
+            .inspect(task_id)
+            .unwrap()
+            .status,
+        "in_progress"
+    );
+    assert!(
+        contextunity_forge_mcp::engine::milestones::show(&root.0, "m-test", true)
+            .unwrap_err()
+            .to_string()
+            .contains("TASK_CHECKPOINT_PENDING")
+    );
+    #[cfg(unix)]
+    let released_before_rewind = {
+        use std::os::unix::fs::PermissionsExt;
+        let real_git = std::process::Command::new("sh")
+            .args(["-c", "command -v git"])
+            .output()
+            .unwrap();
+        assert!(real_git.status.success());
+        let real_git = String::from_utf8(real_git.stdout)
+            .unwrap()
+            .trim()
+            .to_owned();
+        root.write(".forge/rewind-fault-bin/git", "#!/bin/sh\nif [ \"$1\" = update-ref ] && [ \"$2\" = \"$RECOVERY_REF\" ]; then exit 73; fi\nexec \"$RECOVERY_REAL_GIT\" \"$@\"\n");
+        let wrapper = root.0.join(".forge/rewind-fault-bin/git");
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let failed_rewind =
+            std::process::Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+                .args([
+                    "--root",
+                    root.0.to_str().unwrap(),
+                    "milestone",
+                    "db-recover",
+                    "--format",
+                    "json",
+                ])
+                .env(
+                    "PATH",
+                    format!(
+                        "{}:{}",
+                        wrapper.parent().unwrap().display(),
+                        std::env::var("PATH").unwrap()
+                    ),
+                )
+                .env("RECOVERY_REAL_GIT", real_git)
+                .env("RECOVERY_REF", &checkpoint_ref)
+                .output()
+                .unwrap();
+        assert!(!failed_rewind.status.success());
+        assert!(
+            String::from_utf8_lossy(&failed_rewind.stderr).contains("cannot rewind"),
+            "{}",
+            String::from_utf8_lossy(&failed_rewind.stderr)
+        );
+        let sql = rusqlite::Connection::open_with_flags(
+            root.0.join(".forge/tasks.sqlite"),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+        let descriptor: String = sql
+            .query_row(
+                "SELECT descriptor FROM tasks WHERE task_id=?1",
+                [task_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let descriptor: Value = serde_json::from_str(&descriptor).unwrap();
+        assert_eq!(descriptor["status"], "ready");
+        assert!(descriptor["worker_id"].is_null() && descriptor["worktree"].is_null());
+        descriptor["claim_revision"].as_u64()
+    };
+    #[cfg(not(unix))]
+    let released_before_rewind: Option<u64> = None;
+    let recovered = recover();
+    assert!(
+        recovered.status.success(),
+        "{}",
+        String::from_utf8_lossy(&recovered.stderr)
+    );
+    let released = tasks::store(&root.0).unwrap().inspect(task_id).unwrap();
+    assert_eq!(released.status, "ready");
+    assert_eq!(released.stage, "deliver");
+    assert!(released.worker_id.is_none() && released.worktree.is_none());
+    assert!(released.claim_revision > ev.claim_revision);
+    if let Some(revision) = released_before_rewind {
+        assert_eq!(
+            released.claim_revision, revision,
+            "retry must not release the same claim twice"
+        );
+    }
+    assert!(
+        released.receipt.is_none(),
+        "recovery must not accept the provisional receipt"
+    );
+    assert_eq!(
+        tasks::store(&root.0)
+            .unwrap()
+            .inspect_details(task_id)
+            .unwrap()["gates"],
+        gates_before
+    );
+    assert!(recover().status.success());
+    assert_eq!(
+        tasks::store(&root.0)
+            .unwrap()
+            .inspect(task_id)
+            .unwrap()
+            .claim_revision,
+        released.claim_revision
+    );
+    std::fs::write(&milestone_path, &milestone_before_delivery).unwrap();
+    tasks::claim(
+        &root.0,
+        tasks::Claim {
+            task_id: task_id.into(),
+            stage: "deliver".into(),
+            worker_id: ev.worker_id.clone(),
+            worktree: root.0.to_string_lossy().into_owned(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    ev = evidence(&tasks::store(&root.0).unwrap().inspect(task_id).unwrap());
+    std::fs::write(&hook, "#!/bin/sh\nexit 47\n").unwrap();
     let hook_error = tasks::submit(
         &root.0,
         tasks::Submit {
@@ -6230,6 +7386,244 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
         delivery_commit,
         "the merge landing's first parent is the fast-forwarded first delivery"
     );
+
+    // A shared physical store is not an enrollment owner. Preserve unrelated
+    // legacy provenance and an independent claimed milestone while updating the
+    // current active task beside its two genuinely delivered predecessors.
+    {
+        let reference = "docs/milestones/010-test.md";
+        let original = std::fs::read_to_string(root.0.join(reference)).unwrap();
+        let extended = format!("{original}\n```yaml\ntask_ref: third\ntarget: Resume current work\nproof_policy: seam-test-first\nscope: [src/]\ndepends_on: [first, second]\n```\n");
+        root.write(reference, &extended);
+        let mut store = tasks::store(&root.0).unwrap();
+        let current = Milestone::parse(&extended, "forge-mcp").unwrap();
+        store.sync(&current, reference, &root.0).unwrap();
+        let third = current.task_id(&current.tasks[2]);
+        store
+            .claim(
+                &third,
+                "contract",
+                "current-owner",
+                root.0.to_str().unwrap(),
+            )
+            .unwrap();
+        let foreign_reference = "docs/milestones/020-independent.md";
+        let foreign_text = "---\nid: m-independent\nstatus: active\ntitle: Independent\n---\n```yaml\ntask_ref: foreign\ntarget: Independent owner\nproof_policy: seam-test-first\nscope: [src/]\n```\n";
+        root.write(foreign_reference, foreign_text);
+        let foreign = Milestone::parse(foreign_text, "forge-mcp").unwrap();
+        store.sync(&foreign, foreign_reference, &root.0).unwrap();
+        let foreign_id = foreign.task_id(&foreign.tasks[0]);
+        store
+            .claim(
+                &foreign_id,
+                "contract",
+                "foreign-owner",
+                root.0.to_str().unwrap(),
+            )
+            .unwrap();
+        let raw_state = |store: &TasksStore, id: &str| {
+            [
+                "tasks",
+                "task_revisions",
+                "task_claims",
+                "task_gates",
+                "task_findings",
+                "task_scope_paths",
+                "task_dependencies",
+                "task_subtasks",
+                "task_submissions",
+            ]
+            .into_iter()
+            .map(|table| {
+                let mut statement = store
+                    .connection
+                    .prepare(&format!(
+                        "SELECT * FROM {table} WHERE task_id=?1 ORDER BY rowid"
+                    ))
+                    .unwrap();
+                let columns = statement.column_count();
+                statement
+                    .query_map([id], |row| {
+                        (0..columns)
+                            .map(|index| row.get::<_, rusqlite::types::Value>(index))
+                            .collect::<rusqlite::Result<Vec<_>>>()
+                    })
+                    .unwrap()
+                    .map(|row| format!("{table}:{:?}", row.unwrap()))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>()
+        };
+        let foreign_before = raw_state(&store, &foreign_id);
+        let foreign_ref = format!(
+            "refs/forge/state/forge-mcp/{}",
+            foreign_id.replace(':', "/")
+        );
+        let foreign_keeper = || {
+            let output = std::process::Command::new("git")
+                .args(["rev-parse", &foreign_ref])
+                .current_dir(&root.0)
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            output.stdout
+        };
+        let keeper_before = foreign_keeper();
+        // Raw malformed history is confined to this isolated TempDir fixture.
+        let legacy_id = "forge-mcp/m-retired:legacy";
+        let mut legacy = serde_json::to_value(store.inspect(&third).unwrap()).unwrap();
+        legacy["task_id"] = json!(legacy_id);
+        legacy["milestone_ref"] = json!("docs/milestones/099-retired.md");
+        legacy["authority_snapshot"] = Value::Null;
+        store
+            .connection
+            .execute(
+                "INSERT INTO tasks(task_id,milestone_ref,descriptor) VALUES(?1,?2,?3)",
+                rusqlite::params![
+                    legacy_id,
+                    "docs/milestones/099-retired.md",
+                    legacy.to_string()
+                ],
+            )
+            .unwrap();
+        store
+            .connection
+            .execute("INSERT INTO task_revisions VALUES(?1,901)", [legacy_id])
+            .unwrap();
+        store
+            .connection
+            .execute(
+                "INSERT INTO task_findings VALUES(?1,900,'untouched legacy finding')",
+                [legacy_id],
+            )
+            .unwrap();
+        let legacy_before = raw_state(&store, legacy_id);
+        let legacy_details = tasks::manage(
+            &root.0,
+            serde_json::from_value(json!({"action":"inspect","task_id":legacy_id})).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(legacy_details["checkpoint_status"], "UNENROLLED");
+        let mutation = store.subtask_add(&third, "owner-isolation", "Owned checkpoint only");
+        assert!(
+            mutation.is_ok(),
+            "current mutation must not enroll unrelated legacy state: {mutation:?}"
+        );
+        assert_eq!(raw_state(&store, legacy_id), legacy_before);
+        assert_eq!(raw_state(&store, &foreign_id), foreign_before);
+        assert_eq!(foreign_keeper(), keeper_before);
+        for invalid in ["missing-authority", "stale-authority"] {
+            if invalid == "stale-authority" {
+                legacy["authority_snapshot"] =
+                    serde_json::to_value(store.inspect(&third).unwrap().authority_snapshot)
+                        .unwrap();
+                store
+                    .connection
+                    .execute(
+                        "UPDATE tasks SET descriptor=?2 WHERE task_id=?1",
+                        rusqlite::params![legacy_id, legacy.to_string()],
+                    )
+                    .unwrap();
+            }
+            let unchanged = raw_state(&store, legacy_id);
+            let error = store
+                .subtask_add(legacy_id, "refuse", "Never admit stale authority")
+                .unwrap_err();
+            assert!(
+                format!("{error:#}").contains("TASK_RECOVERY_"),
+                "{invalid}: {error:#}"
+            );
+            assert_eq!(raw_state(&store, legacy_id), unchanged);
+            store
+                .subtask_update(&third, "owner-isolation", "in_progress", Some(invalid))
+                .unwrap();
+            assert_eq!(raw_state(&store, legacy_id), unchanged);
+            assert_eq!(raw_state(&store, &foreign_id), foreign_before);
+            assert_eq!(foreign_keeper(), keeper_before);
+            store
+                .connection
+                .execute(
+                    "INSERT INTO task_dependencies VALUES(?1,?2,1)",
+                    rusqlite::params![legacy_id, third],
+                )
+                .unwrap();
+            let unchanged = raw_state(&store, legacy_id);
+            let owned_before = raw_state(&store, &third);
+            let mut cancelled = current.clone();
+            cancelled.tasks[2].status = Some("cancelled".into());
+            let error = store.sync(&cancelled, reference, &root.0).unwrap_err();
+            assert!(
+                format!("{error:#}").contains("TASK_RECOVERY_"),
+                "affected {invalid}: {error:#}"
+            );
+            assert_eq!(raw_state(&store, legacy_id), unchanged);
+            assert_eq!(raw_state(&store, &third), owned_before);
+            store
+                .connection
+                .execute(
+                    "DELETE FROM task_dependencies WHERE task_id=?1",
+                    [legacy_id],
+                )
+                .unwrap();
+        }
+        let coverage = recover();
+        assert!(
+            coverage.status.success(),
+            "{}",
+            String::from_utf8_lossy(&coverage.stderr)
+        );
+        let coverage: Value = serde_json::from_slice(&coverage.stdout).unwrap();
+        assert!(coverage["unenrolled_tasks"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(legacy_id)));
+        assert_eq!(coverage["legacy_cleanup_complete"], false);
+        assert_eq!(raw_state(&store, &foreign_id), foreign_before);
+        assert_eq!(foreign_keeper(), keeper_before);
+        // A new/forgotten propagation path cannot commit outside the declared
+        // owner cohort, even when introduced by a real SQLite trigger.
+        store.connection.execute_batch(&format!("CREATE TRIGGER undeclared_owner_delta AFTER INSERT ON task_subtasks WHEN NEW.task_id='{third}' AND NEW.subtask_ref='unexpected-delta' BEGIN UPDATE task_revisions SET revision=revision+1 WHERE task_id='{foreign_id}'; END;")).unwrap();
+        let unchanged = raw_state(&store, &third);
+        let error = store
+            .subtask_add(&third, "unexpected-delta", "Reject an uncovered writer")
+            .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("TASK_CHECKPOINT_COHORT_UNDECLARED"),
+            "{error:#}"
+        );
+        assert_eq!(raw_state(&store, &third), unchanged);
+        assert_eq!(raw_state(&store, &foreign_id), foreign_before);
+        assert_eq!(foreign_keeper(), keeper_before);
+        store
+            .connection
+            .execute_batch("DROP TRIGGER undeclared_owner_delta")
+            .unwrap();
+        let members = [task_id.as_str(), task_id_2.as_str(), third.as_str()];
+        let before = members.map(|id| store.inspect_details(id).unwrap());
+        drop(store);
+        std::fs::remove_file(root.0.join(".forge/tasks.sqlite")).unwrap();
+        let restored = recover();
+        assert!(
+            restored.status.success(),
+            "{}",
+            String::from_utf8_lossy(&restored.stderr)
+        );
+        let mut store = tasks::store(&root.0).unwrap();
+        for (id, expected) in members.into_iter().zip(before) {
+            assert_eq!(store.inspect_details(id).unwrap(), expected, "{id}");
+        }
+        assert_eq!(raw_state(&store, &foreign_id), foreign_before);
+        assert!(
+            store.inspect(legacy_id).is_err(),
+            "unenrolled legacy history is not claimed as recoverable"
+        );
+        store.delete(Some(&third), None, true, i64::MAX).unwrap();
+        store
+            .delete(Some(&foreign_id), None, true, i64::MAX)
+            .unwrap();
+        root.write(reference, &original);
+        std::fs::remove_file(root.0.join(foreign_reference)).unwrap();
+    }
 
     // Now handoff milestone
     handoff_with_fixture_evidence(&root.0, "m-test", None, "cargo test", 2, 0).unwrap();

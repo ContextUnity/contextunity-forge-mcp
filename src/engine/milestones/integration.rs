@@ -234,6 +234,53 @@ pub(super) fn write_handoff_owner(
     )
 }
 
+pub(super) fn enroll_preparation(
+    store: &mut crate::db::tasks_store::TasksStore,
+    root: &Path,
+    owner: &HandoffProofOwner,
+) -> Result<()> {
+    // Real task keepers, including the actual arbitrary target base, precede acknowledgment.
+    let mut owners = handoff_owners(root)?
+        .into_iter()
+        .map(|owner| crate::db::tasks_store::recovery::PreparationOwner {
+            identity: owner.identity,
+            worktree: owner.worktree,
+            proofs: owner.proof_shas,
+        })
+        .collect::<Vec<_>>();
+    owners.push(crate::db::tasks_store::recovery::PreparationOwner {
+        identity: owner.identity.clone(),
+        worktree: owner.worktree.clone(),
+        proofs: owner.proof_shas.clone(),
+    });
+    store.set_preparation_owners(owners);
+    store.enroll_checkpoints()?;
+    Ok(())
+}
+
+pub(crate) fn configure_checkpoint_owners(
+    store: &mut crate::db::tasks_store::TasksStore,
+    root: &Path,
+) -> Result<()> {
+    if !crate::core::git::git_command(root, &["rev-parse", "--git-dir"])?
+        .status
+        .success()
+    {
+        return Ok(());
+    }
+    store.set_preparation_owners(
+        handoff_owners(root)?
+            .into_iter()
+            .map(|owner| crate::db::tasks_store::recovery::PreparationOwner {
+                identity: owner.identity,
+                worktree: owner.worktree,
+                proofs: owner.proof_shas,
+            })
+            .collect(),
+    );
+    Ok(())
+}
+
 pub(super) fn handoff_owners(root: &Path) -> Result<Vec<HandoffProofOwner>> {
     let output = crate::core::git::git_command(
         root,

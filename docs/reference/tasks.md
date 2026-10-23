@@ -654,7 +654,7 @@ Task `receipt.commit` is navigation metadata: handoff retains known accepted
 ancestor pointers or refreshes a unique scope-equivalent rewritten landing;
 unresolved pointers are omitted. `record_task_commits: false` and `commit_tracking:
 off|milestone_only` omit individual navigation pointers in both SQLite and Markdown.
-Preparing context pins available historical proofs until archive publication.
+Preparing context retains available historical proofs and actual target bases in task keepers until archive publication. New operations create no global `refs/forge/evidence/<sha>` pins.
 Initial handoff still requires accepted immutable proof objects. Before pruning,
 handoff records every gate commit/baseline, receipt commit, integration commit and
 target base in `handoff.proof_shas`. After durable publication it deletes those
@@ -667,6 +667,10 @@ publication. Terminal foreign milestones without recorded ownership fail cleanup
 closed; refresh their handoff contexts with their actual target bases before
 retrying. Task ownership is captured before the pruning decision, so recovery
 cleanup does not query SQLite.
+For historical cleanup, an absent `handoff.proof_shas` permits text fallback.
+A present list is authoritative, including an empty list. Every member must be a
+full 40-character hexadecimal SHA; null, other types and mixed invalid members
+reject cleanup before deletion. Historical objects need not still exist.
 The archive retains proof identities;
 identities alone do not keep Git objects reachable after garbage collection.
 
@@ -687,28 +691,39 @@ claim timestamp. Commit the archive afterward, staging its addition and the
 working manifest's removal; this later commit SHA is not part of its own receipt.
 Historical archived receipts remain readable without rewriting them.
 
-Handoff evaluates active document, archive and namespaced tombstone before checking
-live task readiness. An existing pre-prune archive is backed up as `.md.bak` and
-restored if the SQLite transaction fails. A valid post-prune archive permits direct
-active-file removal and repeat cleanup without gate rows or reverse relocation.
-A torn post-prune archive is repaired only from matching terminal active authority,
-the re-invoked evidence and the durable Git-note passport. Exact terminal task IDs,
-completed/cancelled outcomes, source receipts and landed receipts must agree;
-missing or contradictory terminal metadata rejects repair. Invalid or foreign
+Handoff stages the rendered archive, expected terminal tasks and landed receipts in
+a private, atomically written `.forge/handoff-<owner-digest>.json` journal. The owner
+digest includes repository, project and milestone identity. It then atomically
+replaces the archive, removes the active document, prunes or relocates SQLite tasks,
+cleans owned refs and removes the journal. A failed transition retains the journal
+for retry rather than reversing durable publication. Retry validates its integration
+binding, commit, target base and prepared digest before replaying the exact archive.
+Any surviving active document must match the prepared source bytes. Missing or torn
+archives are restored from the journal, never from Git-note task snapshots. Retry
+first completes committed checkpoint publication under the database fence.
+For rolled-back SQL, it restores the journal-bound source needed for validation and
+rewinds only structurally valid intents anchored by the journal's exact terminal
+tasks and their operation token. Reservations remain burned; dependent task claims
+remain unchanged. Direct handoff retry requires no separate `db-recover` step.
+A valid post-prune archive permits repeat cleanup without gate rows or reverse relocation.
+Malformed or altered journals reject recovery without changing files. Invalid or foreign
 authority leaves both files unchanged. A tombstone without a local archive returns
 `MILESTONE_ALREADY_HANDED_OFF` with merge/pull guidance. With neither local file,
 a matching valid archive in `HEAD` permits repeat cleanup; otherwise the same
 diagnostic applies. A completed archived handoff is an idempotent success, including
 project-level pruning opt-out after relocation.
 
-The milestone Engineering Telemetry Passport is persisted in `handoff.passport`
-and `refs/notes/forge` before SQLite pruning. It contains duration, task counts,
+The milestone Engineering Telemetry Passport is persisted in `handoff.passport`.
+It contains duration, task counts,
 claim-to-completion wall times (not CPU or agent-active time), observed review cycles,
 source/test/docs diff statistics, AST symbol deltas, supplied test results, selected
 command observations and resolved milestone topology. Unavailable cancelled-task
 completion time is null. Unknown lint status stays `unobserved`. The
-`verified_handoff_proof` digest binds the passport content, exact integration binding
-and landed receipts; separate milestone namespaces coexist in one commit note.
+Git notes contain only compact identity, binding digests, commit and target-base
+SHAs, timestamps, task status counts, test results and the journal digest. Git-note
+publication rejects a serialized note of 2048 bytes or more. Task snapshots, receipts,
+diffs and topology remain outside the note. The `verified_handoff_proof` digest binds
+the compact metadata; separate milestone namespaces coexist within the note budget.
 
 Archive dependency discovery uses the same confined concrete and wildcard milestone
 directories, owner mappings and aliases as milestone discovery. Cancelled tasks
@@ -743,6 +758,95 @@ require the baseline symbol to remain indexed. If it is missing, restore it,
 refresh the index, and accept the contract again before retirement. Previously
 captured nonempty caller sets continue to protect their caller paths.
 
+
+### Active task checkpoints and database recovery
+
+Git workspaces retain active state in canonical
+`refs/forge/state/{repository}/{project}/{milestone_id}/{task_ref}` keepers.
+Candidates remain parentless; keeper commit parents retain candidate, baseline,
+receipt and actual prepared target-base objects through garbage collection.
+Snapshot construction briefly excludes repository GC while it writes the objects
+and places them in a kept pack. That provisional pack protects the parentless
+candidate until a genuine task keeper retains it. Precommit failures release the
+protection; checkpoint-pending failures retain it until publication succeeds.
+Keepers move under the physical task database fence. SQLite COMMIT owns the
+decision; checkpoint publication follows COMMIT and precedes successful public
+acknowledgment. No persistent store-wide ref or Git-note SQL backup exists.
+
+Checkpoints carry active task/claim state, maximum allocated revisions, current
+scope and dependency state, pinned profile/manifest authority, gate provenance,
+rejected findings needed to resume, and exact idempotent submissions. A genuine
+deleted task may retain only its allocation fence until milestone handoff. This
+is not a backup of all SQL history, archived opt-out history, or milestone boards.
+The committed archive and implementation branch remain the permanent records.
+
+Managed mutations declare their affected task owners before file or SQL changes.
+Initial enrollment includes the validated live milestone's members; dependency
+propagation includes incoming owners whose cached state changes. Publication
+preserves the required task cohort, and undeclared task-row changes reject COMMIT.
+Unrelated physical rows receive no revision reservation or keeper publication.
+Missing or stale authority on a requested or affected owner rejects the operation.
+Inspection reports `checkpoint_status: UNENROLLED` for state without a current
+authoritative checkpoint. Healthy recovery reports `unenrolled_tasks` and leaves
+legacy cleanup incomplete while any physical rows lack that coverage; it preserves
+those rows rather than inventing claims or rewriting their authority.
+
+`TASK_CHECKPOINT_PENDING` means a managed operation or committed checkpoint
+publication is incomplete. Managed readers refuse it, including file-backed
+milestone/context views. They hold a nonblocking shared observation fence across
+the complete read; known-schema store opening remains lock-free and performs no
+DDL. Genuine precommit task intents authorize no gate and prevent stale revision
+reuse. They also prevent provisional receipts from becoming observable after a
+process crash. A committed publication failure leaves SQL committed and disarms
+ordinary receipt/HEAD rollback, reset and handoff. Release the underlying Git
+publication fault and run:
+
+```sh
+contextunity-forge-mcp milestone db-recover
+```
+
+With healthy SQL and a pending publication, this command publishes the exact
+committed checkpoint without replaying SQL, claims, receipts or submissions.
+Otherwise healthy SQL enrolls current validated owners before legacy cleanup.
+Orphaned precommit intents are recovered automatically: keeper refs return to
+their previous acknowledged checkpoint (`ref@{1}`, with no intent). Interrupted
+submit claims are ended, their reservations remain consumed, and claim revisions
+advance. Worker/worktree ownership is cleared; tasks return to `ready`, or
+`parked` when parked ownership exists. SQL commits before refs are rewound, so
+a retry after interruption does not release the claim twice. Recovery accepts no
+provisional gate proof or receipt and does not roll back committed SQL. A missing
+or unacknowledged reflog predecessor is refused rather than guessed.
+Automatic release requires the exact acknowledged/SQL preimage, a bounded
+reservation and matching live claim, with consistent operation tokens and prior
+cohorts. A corrupt tip cannot allocate arbitrary revisions or revoke another claim.
+
+For a missing/corrupt database, recovery discovers all linked worktrees and
+configured milestone roots. It creates schema6 staging, validates archives and
+preseeds canonical tombstones before admitting active checkpoints. A stale,
+unmerged active manifest cannot resurrect an archived milestone. Completed task
+IDs receive dependency credit; cancelled tasks do not. Active imports validate
+namespace, current manifest contract, scope, profile, claims, gate/submission
+provenance and publication cohort. Terminal gate rows must match their historical
+submitted stage, pinned gate proof requirements, ended claim and exact idempotent
+submission outcome. Unresolved intents, missing legacy checkpoints,
+incomplete cohorts or conflicting authority fail closed. Already-lost runtime
+state cannot be reconstructed from manifest receipts alone.
+
+Archives without `handoff.proof_shas` are obsolete and are skipped before task
+parsing, validation and tombstone seeding. They provide no new dependency credit.
+Their keeper namespaces are ignored without parsing or mutation during healthy
+recovery, composed reads and SQL restoration.
+Archives containing that field remain strictly validated, including malformed or
+null proof lists.
+
+Classification reads a private copy. Index, unknown and unsupported-schema stores
+are refused without changing main/WAL/SHM bytes. Before replacement, original bytes
+are retained in the returned `original_backup` directory (`0`: main, `1`: WAL,
+`2`: SHM, when present). Promotion is compensated on failure; it is not a
+cross-Git/SQLite atomic transaction. Verified restore/enrollment precedes cleanup
+of archived keepers and unowned legacy evidence refs. Active foreign task and
+prepared-handoff ownership remains protected. SQL committed but lost before its
+unacknowledged checkpoint is durable has no zero-loss guarantee.
 
 ### Deferred and out-of-scope defects
 

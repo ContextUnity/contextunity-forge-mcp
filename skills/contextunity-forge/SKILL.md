@@ -90,8 +90,9 @@ On budget errors, narrow the selector/path or reduce depth.
 ## ACDD authority and scope
 
 ACDD connects Git milestone contracts (`docs/milestones/*.md`) to `.forge/tasks.sqlite`; rebuilding the code index does not
-reset task state. In-flight task state and candidate trees are retained in `refs/forge/state/<milestone>/<task_slug>`.
-If `.forge/tasks.sqlite` is lost or deleted, run `contextunity-forge-mcp milestone db-recover` to reconstruct active tasks, claims, and proofs directly from active manifests and Git state refs.
+reset task state. In-flight task state is checkpointed in canonical `refs/forge/state/<repository>/<project>/<milestone>/<task_slug>` keepers whose parents retain actual candidate and prepared target-base objects. New operations create no global evidence pins. The committed archive and implementation branch are permanent records after handoff cleanup.
+SQLite COMMIT remains the logical authority. Keepers publish after COMMIT and before managed success/observation. On `TASK_CHECKPOINT_PENDING`, run plain `contextunity-forge-mcp milestone db-recover`: it retries committed publication without replaying the mutation. With healthy SQL it also rewinds orphaned precommit keepers to acknowledged `ref@{1}`, ends interrupted submit claims, clears worker/worktree ownership and advances revisions without accepting provisional proofs. Obtain a fresh claim before retrying the submit. Do not manually edit SQL or keeper refs. Composed readers refuse pending SQL and unresolved precommit intents until recovery finishes.
+Healthy-first enrollment preserves active runtime provenance. With missing/corrupt SQL, `milestone db-recover` validates task checkpoints against current manifests/profiles after archive-first tombstone discovery across linked worktrees. Archives without `handoff.proof_shas` are obsolete and skipped without legacy parsing or dependency credit; current-format proof lists remain strict. Recovery preserves original main/WAL/SHM bytes, refuses unknown/index/future stores and incomplete cohorts, and never reconstructs claims from receipts alone. Missing legacy checkpoints or unresolved precommit intent with lost SQL require authoritative repair; lost unacknowledged state has no zero-loss guarantee. See [task recovery](../../docs/reference/tasks.md#active-task-checkpoints-and-database-recovery). No task-level profile-v2 telemetry or all-history backup is implied.
 The [task reference](https://github.com/ContextUnity/contextunity-forge-mcp/blob/main/docs/reference/tasks.md) owns operation/evidence schemas. The active profile and claim's
 `workflow_guidance` own gates/order, proof policy, roles/models, review contours, and profile-specific
 behavior. Do not infer a fixed workflow from this skill. Use the
@@ -220,10 +221,11 @@ command in `verification.project_command`. Select a registered lint command expl
 in `verification.lint_command`; handoff executes selected commands and archives their
 observed results. Missing lint selection remains unobserved. Forge launches no agents.
 Preserve shared proof pins owned by active tasks or prepared handoffs in linked
-worktrees. Require exact durable terminal outcomes and source/landed receipts for
-torn archive repair; cancelled tasks receive no individual completion credit.
+worktrees. Recover interrupted archive publication from the prepared `.forge/`
+handoff journal; keep Git notes below 2 KiB and free of task/receipt snapshots.
+Preserve exact terminal outcomes; cancelled tasks receive no individual completion credit.
 Use the task reference for retry states, archive-authoritative dependencies and the
-pre-prune passport in the archive and Git notes. Commit the archive and working
+archive telemetry and compact Git-note metadata. Commit the archive and working
 manifest removal afterward under repository Git permissions.
 
 ## Adapters and framework packs

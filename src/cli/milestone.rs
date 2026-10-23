@@ -10,6 +10,8 @@ use std::{
 #[derive(Debug, Subcommand)]
 /// Commands for inspecting and completing repository milestones.
 pub enum MilestoneCommand {
+    /// Restores acknowledged active tasks from durable per-task checkpoints.
+    DbRecover,
     /// Lists milestone metadata and SQLite task progress.
     List {
         /// Includes documents in the milestone archive.
@@ -78,6 +80,7 @@ pub enum MilestoneCommand {
 /// Runs the selected milestone command within the repository root.
 pub fn run(root: &Path, command: MilestoneCommand) -> Result<Value> {
     match command {
+        MilestoneCommand::DbRecover => milestones::db_recover(root),
         MilestoneCommand::List { archive, status } => {
             milestones::list(root, archive, status.as_deref())
         }

@@ -6,6 +6,7 @@ fn symmetric_subtask_statuses_normalize_legacy_pending_through_storage() {
     root.write("src/lib.rs", "pub fn core() {}\n");
     let spec = "---\nid: m-statuses\nstatus: active\n---\n```yaml\ntask_ref: statuses\ntarget: Symmetric status lifecycle\nproof_policy: seam-test-first\nscope: [src/lib.rs]\nsubtasks:\n- subtask_ref: legacy\n  title: Legacy status\n  status: pending\n```\n";
     let milestone = Milestone::parse(spec, "forge-mcp").unwrap();
+    root.write("docs/statuses.md", spec);
     assert_eq!(milestone.tasks[0].subtasks[0].status, "ready");
     let mut store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
     let id = milestone.task_id(&milestone.tasks[0]);
@@ -79,11 +80,23 @@ fn symmetric_subtask_statuses_normalize_legacy_pending_through_storage() {
 
 #[test]
 fn cancelled_tasks_retain_history_and_do_not_unblock_dependencies() {
+    let write_manifest = |root: &ScopedWorkspace, path: &str, milestone: &Milestone| {
+        let tasks = milestone
+            .tasks
+            .iter()
+            .map(|task| format!("```yaml\n{}```\n", serde_yaml::to_string(task).unwrap()))
+            .collect::<String>();
+        root.write(
+            path,
+            &format!("---\nid: {}\nstatus: active\n---\n{tasks}", milestone.id),
+        );
+    };
     let root = ScopedWorkspace::new("forge_cancelled_tasks");
     root.write("src/lib.rs", "pub fn core() {}\n");
     root.write("src/consumer.rs", "pub fn consumer() {}\n");
     let source = "---\nid: m-cancelled-tasks\nstatus: active\n---\n```yaml\ntask_ref: producer\ntarget: Producer\nproof_policy: seam-test-first\nscope: [src/lib.rs]\nsubtasks:\n- subtask_ref: child\n  title: Child\n```\n```yaml\ntask_ref: consumer\ntarget: Consumer\nproof_policy: seam-test-first\nscope: [src/consumer.rs]\ndepends_on: [producer]\n```\n";
     let mut milestone = Milestone::parse(source, "forge-mcp").unwrap();
+    write_manifest(&root, "docs/cancelled.md", &milestone);
     let id = milestone.task_id(&milestone.tasks[0]);
     let mut store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
     store
@@ -96,6 +109,7 @@ fn cancelled_tasks_retain_history_and_do_not_unblock_dependencies() {
         .subtask_update(&id, "child", "blocked", Some("Waiting on input"))
         .unwrap();
     milestone.tasks[0].status = Some("cancelled".into());
+    write_manifest(&root, "docs/cancelled.md", &milestone);
     store
         .sync(&milestone, "docs/cancelled.md", &root.0)
         .unwrap();
@@ -139,6 +153,7 @@ fn cancelled_tasks_retain_history_and_do_not_unblock_dependencies() {
         .unwrap();
     assert_eq!(store.inspect(&id).unwrap().claim_revision, revision);
     milestone.tasks[0].status = Some("ready".into());
+    write_manifest(&root, "docs/cancelled.md", &milestone);
     store
         .sync(&milestone, "docs/cancelled.md", &root.0)
         .unwrap();
@@ -152,6 +167,7 @@ fn cancelled_tasks_retain_history_and_do_not_unblock_dependencies() {
     let fresh = ScopedWorkspace::new("forge_cancelled_import");
     let mut fresh_store = TasksStore::open(&fresh.0.join(".forge/tasks.sqlite")).unwrap();
     milestone.tasks[0].status = Some("cancelled".into());
+    write_manifest(&fresh, "docs/cancelled.md", &milestone);
     fresh_store
         .sync(&milestone, "docs/cancelled.md", &fresh.0)
         .unwrap();
@@ -163,15 +179,51 @@ fn cancelled_tasks_retain_history_and_do_not_unblock_dependencies() {
 
     for admission in ["same-digest", "higher-revision", "fresh-import"] {
         let completed = ScopedWorkspace::new("forge_completed_cancellation");
+        completed.write("src/lib.rs", "pub fn core() {}\n");
+        completed.write("src/consumer.rs", "pub fn consumer() {}\n");
+        completed.write("src/observer.rs", "pub fn observer() {}\n");
+        completed.write(
+            "forge-mcp.yaml",
+            "roots: [src]\ndocs: [docs]\nmilestones: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+        );
         let mut completed_store =
             TasksStore::open(&completed.0.join(".forge/tasks.sqlite")).unwrap();
-        milestone.tasks[0].status = Some("completed".into());
+        milestone.tasks[0].status = None;
+        milestone.tasks[0].receipt = None;
+        milestone.tasks[0].proof_policy = "direct-proof".into();
+        // This seam resets/re-admits retained task history, so it needs a live
+        // manifest rather than a handed-off archive that forbids resurrection.
+        write_manifest(&completed, "docs/cancelled.md", &milestone);
         completed_store
-            .sync(&milestone, "docs/archive/completed.md", &completed.0)
+            .sync(&milestone, "docs/cancelled.md", &completed.0)
             .unwrap();
+        for (index, stage) in GATES.iter().enumerate() {
+            tasks::claim(
+                &completed.0,
+                tasks::Claim {
+                    task_id: id.clone(),
+                    stage: (*stage).into(),
+                    worker_id: if index < 2 { "builder" } else { "reviewer" }.into(),
+                    worktree: completed.0.to_string_lossy().into_owned(),
+                    bundle: Some(false),
+                },
+            )
+            .unwrap();
+            let accepted = completed_store.inspect(&id).unwrap();
+            let submission = serde_json::from_value(json!({
+                "task_id": id,
+                "stage": stage,
+                "evidence": evidence(&accepted),
+                "action": "pass"
+            }))
+            .unwrap();
+            tasks::submit(&completed.0, submission).unwrap();
+        }
+        assert_eq!(completed_store.inspect(&id).unwrap().status, "completed");
         milestone.tasks[0].status = Some("cancelled".into());
+        write_manifest(&completed, "docs/cancelled.md", &milestone);
         assert!(completed_store
-            .sync(&milestone, "docs/archive/completed.md", &completed.0)
+            .sync(&milestone, "docs/cancelled.md", &completed.0)
             .unwrap_err()
             .to_string()
             .contains("TASK_TERMINAL"));
@@ -183,6 +235,7 @@ fn cancelled_tasks_retain_history_and_do_not_unblock_dependencies() {
     )
     .unwrap();
         let downstream_id = downstream.task_id(&downstream.tasks[0]);
+        write_manifest(&completed, "docs/downstream.md", &downstream);
         completed_store
             .sync(&downstream, "docs/downstream.md", &completed.0)
             .unwrap();
@@ -199,8 +252,9 @@ fn cancelled_tasks_retain_history_and_do_not_unblock_dependencies() {
         if admission == "higher-revision" {
             milestone.tasks[0].contract_revision += 1;
         }
+        write_manifest(&completed, "docs/cancelled.md", &milestone);
         completed_store
-            .sync(&milestone, "docs/archive/completed.md", &completed.0)
+            .sync(&milestone, "docs/cancelled.md", &completed.0)
             .unwrap();
         completed_store
             .sync(&downstream, "docs/downstream.md", &completed.0)

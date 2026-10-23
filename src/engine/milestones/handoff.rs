@@ -20,108 +20,189 @@ fn full_git_sha(value: &str) -> bool {
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct TerminalTask {
-    status: String,
-    #[serde(deserialize_with = "required_receipt")]
-    source_receipt: Option<crate::core::tasks::Receipt>,
-    #[serde(deserialize_with = "required_receipt")]
-    landed_receipt: Option<crate::core::tasks::Receipt>,
+struct HandoffJournal {
+    binding: HandoffBinding,
+    commit: String,
+    target_base: String,
+    active_ref: String,
+    archive_ref: String,
+    active_text: String,
+    archive_text: String,
+    tasks: Vec<Task>,
+    receipts: BTreeMap<String, crate::core::tasks::Receipt>,
 }
 
-fn required_receipt<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> std::result::Result<Option<crate::core::tasks::Receipt>, D::Error> {
-    serde::Deserialize::deserialize(deserializer)
+fn journal_path(root: &Path, binding: &HandoffBinding) -> Result<std::path::PathBuf> {
+    let owner = (&binding.repository, &binding.project, &binding.milestone);
+    Ok(crate::core::fs::checked_child(
+        root,
+        Path::new(&format!(
+            ".forge/handoff-{}.json",
+            integration::digest(&owner)?
+        )),
+    )?)
 }
 
-fn terminal_tasks(
-    milestone: &crate::core::tasks::Milestone,
-    landed: &BTreeMap<String, crate::core::tasks::Receipt>,
-) -> Result<BTreeMap<String, TerminalTask>> {
-    let mut terminal = BTreeMap::new();
-    for task in &milestone.tasks {
-        let id = milestone.task_id(task);
-        let status = task
-            .status
-            .as_deref()
-            .context("HANDOFF_ARCHIVE_INVALID: missing terminal status")?;
-        if !matches!(status, "completed" | "cancelled")
-            || (status == "completed") != landed.contains_key(&id)
-            || (status == "completed" && task.receipt.is_none())
+fn resume_journal(
+    root: &Path,
+    selector: &str,
+    commit: Option<&str>,
+    evidence: &IntegrationEvidence,
+    fence: &crate::db::tasks_store::recovery::DatabaseFence,
+) -> Result<Option<Value>> {
+    let path = journal_path(root, &evidence.binding)?;
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let journal: HandoffJournal = serde_json::from_slice(&bytes)
+        .context("HANDOFF_JOURNAL_INVALID: malformed handoff journal")?;
+    evidence.validate(&journal.binding)?;
+    let active = crate::core::fs::checked_child(root, Path::new(&journal.active_ref))?;
+    let archive = crate::core::fs::checked_child(root, Path::new(&journal.archive_ref))?;
+    let expected_archive = active
+        .parent()
+        .context("milestone parent missing")?
+        .join("archive")
+        .join(active.file_name().context("milestone filename missing")?);
+    if archive != expected_archive
+        || (selector != journal.binding.milestone
+            && !active
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(&format!("{selector}-"))))
+        || integration::resolve_commit(root, commit.unwrap_or("HEAD"))? != journal.commit
+        || integration::resolve_commit(root, &evidence.target_base)? != journal.target_base
+    {
+        bail!("HANDOFF_JOURNAL_INVALID: handoff identity, paths or commits differ");
+    }
+    let identity = format!(
+        "{}/{}/{}",
+        journal.binding.repository, journal.binding.project, journal.binding.milestone
+    );
+    let Some(note) = integration::read_passport(root, &journal.commit, &identity)? else {
+        // A crash before note publication has not changed the archive or SQL.
+        // Let the ordinary validated handoff prepare the transaction again.
+        return Ok(None);
+    };
+    if note["binding"] != serde_json::to_value(&journal.binding)?
+        || note["journal_digest"].as_str()
+            != Some(integration::digest(&serde_json::to_value(&journal)?)?.as_str())
+    {
+        bail!("HANDOFF_JOURNAL_INVALID: journal differs from its prepared digest");
+    }
+    if active.exists() && fs::read_to_string(&active)? != journal.active_text {
+        bail!("HANDOFF_ARCHIVE_INVALID: active authority changed during handoff");
+    }
+    let settings = tasks::TaskSettings::load(root)?;
+    let parsed = crate::db::tasks_store::configured_milestone_archive(
+        root,
+        &journal.archive_text,
+        &archive,
+        &journal.binding.repository,
+        &journal.binding.project,
+    )?
+    .context("HANDOFF_JOURNAL_INVALID: journal archive is not durable authority")?;
+    if parsed.id != journal.binding.milestone {
+        bail!("HANDOFF_JOURNAL_INVALID: archive milestone differs");
+    }
+    if archive.exists() {
+        let text = fs::read_to_string(&archive)?;
+        if let Some((header, _)) = text
+            .strip_prefix("---\n")
+            .and_then(|text| text.split_once("\n---\n"))
         {
-            bail!("HANDOFF_ARCHIVE_INVALID: terminal outcome/receipt mismatch for {id}");
+            if let Ok(header) = serde_yaml::from_str::<serde_yaml::Value>(header) {
+                let project = settings.resolve_project(
+                    archive.strip_prefix(root)?,
+                    header["project"].as_str(),
+                    settings
+                        .task_project
+                        .as_deref()
+                        .unwrap_or(&settings.task_repository),
+                )?;
+                if header["id"]
+                    .as_str()
+                    .is_some_and(|id| id != journal.binding.milestone)
+                    || header["repository"]
+                        .as_str()
+                        .unwrap_or(&settings.task_repository)
+                        != journal.binding.repository
+                    || project != journal.binding.project
+                {
+                    bail!("HANDOFF_ARCHIVE_ID_MISMATCH: existing archive belongs to another milestone");
+                }
+            }
         }
-        terminal.insert(
-            id.clone(),
-            TerminalTask {
-                status: status.into(),
-                source_receipt: task.receipt.clone(),
-                landed_receipt: landed.get(&id).cloned(),
+    }
+    let mut store = TasksStore::open_project(
+        &tasks::database_path(root)?,
+        &journal.binding.repository,
+        &journal.binding.project,
+    )?;
+    store.adopt_checkpoint_lock(fence.clone());
+    store.set_workspace_root(root);
+    store.set_handoff_pruning(settings.handoff_pruning);
+    store.reconcile_checkpoints()?;
+    let tombstoned = store.milestone_tombstoned(&journal.binding.milestone)?;
+    if !tombstoned && !active.exists() {
+        crate::core::fs::atomic_replace(&active, journal.active_text.as_bytes())?;
+    }
+    store.recover_handoff_intents(&[root.to_path_buf()], &journal.tasks)?;
+    integration::configure_checkpoint_owners(&mut store, root)?;
+    let owners = active_proof_owners(root, &store, &identity)?;
+    let prefix = format!("{}/{}:", journal.binding.project, journal.binding.milestone);
+    let stored = store.list(None, "all", None)?;
+    let relevant = stored
+        .iter()
+        .filter(|task| task.task_id.starts_with(&prefix))
+        .collect::<Vec<_>>();
+    let relocated = !settings.handoff_pruning
+        && relevant.len() == journal.tasks.len()
+        && relevant.iter().all(|task| {
+            task.milestone_ref == journal.archive_ref
+                && journal.tasks.iter().any(|expected| {
+                    expected.task_id == task.task_id && expected.status == task.status
+                })
+                && task.receipt.as_ref() == journal.receipts.get(&task.task_id)
+        });
+    fs::create_dir_all(archive.parent().context("archive parent missing")?)?;
+    crate::core::fs::atomic_replace(&archive, journal.archive_text.as_bytes())?;
+    if !tombstoned && !relocated {
+        // Checkpoint enrollment validates the original authority before the SQL
+        // transition. A post-unlink crash restores only that journal-bound input.
+        if !active.exists() {
+            crate::core::fs::atomic_replace(&active, journal.active_text.as_bytes())?;
+        }
+        store.handoff_milestone_with_unlink(
+            &prefix,
+            &journal.active_ref,
+            &journal.archive_ref,
+            &journal.tasks,
+            &journal.receipts,
+            || {
+                fs::remove_file(&active)?;
+                Ok(())
             },
-        );
+        )?;
+    } else if active.exists() {
+        fs::remove_file(&active)?;
     }
-    if landed.len()
-        != terminal
-            .values()
-            .filter(|task| task.status == "completed")
-            .count()
-    {
-        bail!("HANDOFF_ARCHIVE_INVALID: foreign landed receipts");
-    }
-    Ok(terminal)
+    cleanup_handoff_refs(
+        root,
+        &journal.binding.repository,
+        &journal.binding.project,
+        &journal.binding.milestone,
+        &journal.archive_text,
+        &owners,
+    )?;
+    fs::remove_file(path)?;
+    Ok(Some(
+        json!({"id":journal.binding.milestone,"status":"completed","path":journal.archive_ref}),
+    ))
 }
 
-fn reconcile_terminal_tasks(
-    note: &Value,
-    milestone: &crate::core::tasks::Milestone,
-) -> Result<BTreeMap<String, crate::core::tasks::Receipt>> {
-    let accepted: BTreeMap<String, TerminalTask> =
-        serde_json::from_value(note["terminal_tasks"].clone())
-            .context("HANDOFF_ARCHIVE_INVALID: durable terminal metadata missing or invalid")?;
-    let receipts: BTreeMap<String, crate::core::tasks::Receipt> =
-        serde_json::from_value(note["landed_receipts"].clone())?;
-    let observed = terminal_tasks(milestone, &receipts)?;
-    if observed.len() != accepted.len() {
-        bail!("HANDOFF_ARCHIVE_INVALID: terminal task identities differ");
-    }
-    for (id, task) in &observed {
-        let previous = accepted
-            .get(id)
-            .context("HANDOFF_ARCHIVE_INVALID: unknown terminal task")?;
-        if (previous.status == "completed"
-            && (previous.source_receipt.is_none() || previous.landed_receipt.is_none()))
-            || task.status != previous.status
-            || task.landed_receipt != previous.landed_receipt
-            || (task.source_receipt != previous.source_receipt
-                && task.source_receipt != previous.landed_receipt)
-        {
-            bail!("HANDOFF_ARCHIVE_INVALID: terminal task outcome or receipt changed for {id}");
-        }
-    }
-    let recorded = note["tasks"]
-        .as_array()
-        .context("HANDOFF_ARCHIVE_INVALID: missing task outcomes")?;
-    let mut outcomes = BTreeMap::new();
-    for task in recorded {
-        let id = task["task_id"]
-            .as_str()
-            .context("HANDOFF_ARCHIVE_INVALID: missing task identity")?;
-        let status = task["status"]
-            .as_str()
-            .context("HANDOFF_ARCHIVE_INVALID: missing task outcome")?;
-        if outcomes.insert(id, status).is_some() {
-            bail!("HANDOFF_ARCHIVE_INVALID: duplicate terminal metadata");
-        }
-    }
-    if outcomes.len() != accepted.len()
-        || accepted
-            .iter()
-            .any(|(id, task)| outcomes.get(id.as_str()).copied() != Some(task.status.as_str()))
-    {
-        bail!("HANDOFF_ARCHIVE_INVALID: passport terminal outcomes disagree");
-    }
-    Ok(receipts)
-}
 fn canonical_git_path(path: &str) -> String {
     path.replace('\\', "/").trim_start_matches("./").to_owned()
 }
@@ -706,7 +787,9 @@ fn binding(
 /// Prepare content identities for external integration review and verification.
 /// Accepted proof objects are retained independently of mutable branch history.
 pub fn handoff_context(root: &Path, selector: &str, target_base: &str) -> Result<Value> {
-    let (item, store, relevant) = ready_milestone(root, selector)?;
+    let fence = crate::db::tasks_store::recovery::lock_database(&tasks::database_path(root)?)?;
+    let (item, mut store, relevant) = ready_milestone(root, selector)?;
+    store.adopt_checkpoint_lock(fence.clone());
     validated_authority(root, &item, &store, &relevant)?;
     absorb_polish(root, &item, &relevant)?;
     let commit = integration::resolve_commit(root, "HEAD")?;
@@ -714,15 +797,13 @@ pub fn handoff_context(root: &Path, selector: &str, target_base: &str) -> Result
     let binding = binding(root, &item, &store, &relevant, &commit, &target)?;
     crate::core::git::retain_proof_commit(root, &commit)?;
     crate::core::git::retain_proof_commit(root, &target)?;
-    integration::write_handoff_owner(
-        root,
-        &commit,
-        &integration::HandoffProofOwner {
-            identity: format!("{}/{}/{}", item.repository, item.project, item.id),
-            worktree: root.canonicalize()?,
-            proof_shas: BTreeSet::from([commit.clone(), target.clone()]),
-        },
-    )?;
+    let owner = integration::HandoffProofOwner {
+        identity: format!("{}/{}/{}", item.repository, item.project, item.id),
+        worktree: root.canonicalize()?,
+        proof_shas: BTreeSet::from([commit.clone(), target.clone()]),
+    };
+    integration::enroll_preparation(&mut store, root, &owner)?;
+    integration::write_handoff_owner(root, &commit, &owner)?;
     Ok(
         json!({"binding":binding, "commit":commit, "target_base":target,
         "requires_project_verification":source_polish(root, &item)?}),
@@ -854,27 +935,36 @@ fn navigation_pointer(
     Ok(found)
 }
 
-fn proof_shas(text: &str) -> BTreeSet<String> {
+pub(super) fn proof_shas(text: &str) -> Result<BTreeSet<String>> {
     let normalized = text.replace("\r\n", "\n");
     let metadata = normalized
         .strip_prefix("---\n")
         .and_then(|body| body.split_once("\n---\n"))
         .and_then(|(yaml, _)| serde_yaml::from_str::<serde_yaml::Value>(yaml).ok());
-    if let Some(values) = metadata
-        .as_ref()
-        .and_then(|meta| meta["handoff"]["proof_shas"].as_sequence())
-    {
+    if let Some(values) = metadata.as_ref().and_then(|meta| {
+        meta.get("handoff")
+            .and_then(|handoff| handoff.get("proof_shas"))
+    }) {
         return values
+            .as_sequence()
+            .context("HANDOFF_PROOF_SHAS_INVALID: expected a list")?
             .iter()
-            .filter_map(|value| value.as_str())
-            .filter(|value| full_git_sha(value))
-            .map(str::to_owned)
+            .map(|value| {
+                let value = value
+                    .as_str()
+                    .filter(|value| {
+                        value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    })
+                    .context("HANDOFF_PROOF_SHAS_INVALID: expected full 40-hex member")?;
+                Ok(value.to_owned())
+            })
             .collect();
     }
-    text.split(|ch: char| !ch.is_ascii_hexdigit())
-        .filter(|value| full_git_sha(value))
+    Ok(text
+        .split(|ch: char| !ch.is_ascii_hexdigit())
+        .filter(|value| value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
         .map(str::to_owned)
-        .collect()
+        .collect())
 }
 
 #[derive(Default)]
@@ -890,6 +980,11 @@ fn active_proof_owners(
     store: &TasksStore,
     outgoing: &str,
 ) -> Result<ActiveProofOwners> {
+    let archived = store
+        .connection
+        .prepare("SELECT milestone_id FROM milestone_tombstones")?
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<BTreeSet<_>>>()?;
     let output = crate::core::git::git_command(root, &["worktree", "list", "--porcelain", "-z"])?;
     if !output.status.success() {
         bail!("HANDOFF_REF_CLEANUP_FAILED: cannot enumerate linked worktrees");
@@ -909,7 +1004,10 @@ fn active_proof_owners(
             }
             let item = super::contract::snapshot(&tree, path, &settings)?;
             let identity = format!("{}/{}/{}", item.repository, item.project, item.id);
-            if matches!(item.status.as_str(), "active" | "planned") && identity != outgoing {
+            if matches!(item.status.as_str(), "active" | "planned")
+                && identity != outgoing
+                && !archived.contains(&identity)
+            {
                 if !item.tasks.is_empty()
                     && item.tasks.iter().all(|task| {
                         matches!(task["status"].as_str(), Some("completed" | "cancelled"))
@@ -963,17 +1061,66 @@ fn active_proof_owners(
             continue;
         }
         owners.identities.insert(identity);
-        owners.proofs.extend(proof_shas(&descriptor));
+        owners.proofs.extend(proof_shas(&descriptor)?);
         let evidence: Vec<String> = store
             .connection
             .prepare("SELECT evidence FROM task_gates WHERE task_id=?1 AND evidence IS NOT NULL")?
             .query_map([&task.task_id], |row| row.get(0))?
             .collect::<rusqlite::Result<_>>()?;
         for proof in evidence {
-            owners.proofs.extend(proof_shas(&proof));
+            owners.proofs.extend(proof_shas(&proof)?);
         }
     }
     Ok(owners)
+}
+
+pub(super) fn cleanup_recovered_refs(
+    root: &Path,
+    store: &TasksStore,
+    archives: &[(String, String, String, String)],
+) -> Result<()> {
+    // Capture all ownership before cleanup. Recovery calls this only after
+    // committed active state has been verified and its keepers published.
+    let owners = archives
+        .iter()
+        .map(|(repository, project, id, _)| {
+            active_proof_owners(root, store, &format!("{repository}/{project}/{id}"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    for ((repository, project, id, text), owners) in archives.iter().zip(owners) {
+        cleanup_handoff_refs(root, repository, project, id, text, &owners)?;
+    }
+    Ok(())
+}
+
+pub(super) fn retire_unowned_evidence(root: &Path, store: &TasksStore) -> Result<()> {
+    let owners = active_proof_owners(root, store, "")?;
+    let refs = crate::core::git::git_command(
+        root,
+        &[
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/forge/evidence/",
+        ],
+    )?;
+    if !refs.status.success() {
+        bail!("HANDOFF_REF_CLEANUP_FAILED: cannot enumerate legacy pins");
+    }
+    for reference in String::from_utf8(refs.stdout)?.lines() {
+        if let Some(sha) = reference
+            .strip_prefix("refs/forge/evidence/")
+            .filter(|sha| full_git_sha(sha))
+        {
+            if !owners.proofs.contains(sha) {
+                integration::git_write(
+                    root,
+                    &["update-ref", "-d", reference],
+                    "HANDOFF_REF_CLEANUP_FAILED",
+                )?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn cleanup_handoff_refs(
@@ -984,7 +1131,7 @@ fn cleanup_handoff_refs(
     text: &str,
     owners: &ActiveProofOwners,
 ) -> Result<()> {
-    let mut proofs = proof_shas(text);
+    let mut proofs = proof_shas(text)?;
     proofs.extend(owners.outgoing_proofs.iter().cloned());
     for sha in proofs {
         if owners.proofs.contains(&sha) {
@@ -996,7 +1143,7 @@ fn cleanup_handoff_refs(
             "HANDOFF_REF_CLEANUP_FAILED",
         )?;
     }
-    // Keepers are namespace-qualified; the producer belongs to the next task.
+    // Delete only the outgoing namespace; active foreign owners remain protected.
     for prefix in [
         format!("refs/forge/state/{repository}/{project}/{id}/"),
         format!("refs/forge/state/{project}/{id}/"),
@@ -1116,10 +1263,10 @@ fn telemetry_passport(
             .query_map([&task.task_id], |row| row.get(0))?
             .collect::<rusqlite::Result<_>>()?;
         for gate in gates {
-            proofs.extend(proof_shas(&gate));
+            proofs.extend(proof_shas(&gate)?);
         }
         if let Some(receipt) = &task.receipt {
-            proofs.extend(proof_shas(&serde_json::to_string(receipt)?));
+            proofs.extend(proof_shas(&serde_json::to_string(receipt)?)?);
         }
         per_task.push(json!({"task_id":task.task_id,"status":task.status,"first_claimed_at":claimed_at,"completed_at":task.completed_at,
             "execution_wall_seconds":claimed_at.zip(task.completed_at).and_then(|(start,end)| end.checked_sub(start).filter(|duration| *duration >= 0)),
@@ -1259,7 +1406,11 @@ fn retry_handoff(
     selector: &str,
     commit: Option<&str>,
     evidence: &IntegrationEvidence,
+    fence: &crate::db::tasks_store::recovery::DatabaseFence,
 ) -> Result<Option<Value>> {
+    if let Some(result) = resume_journal(root, selector, commit, evidence, fence)? {
+        return Ok(Some(result));
+    }
     let settings = tasks::TaskSettings::load(root)?;
     let mut active = snapshots(root, false, Some(selector))?;
     if active.len() > 1 {
@@ -1295,7 +1446,10 @@ fn retry_handoff(
         crate::core::tasks::valid_identity(identity)?;
     }
     let db = tasks::database_path(root)?;
-    let store = TasksStore::open_project(&db, repository, project)?;
+    let mut store = TasksStore::open_project(&db, repository, project)?;
+    store.adopt_checkpoint_lock(fence.clone());
+    store.set_workspace_root(root);
+    integration::configure_checkpoint_owners(&mut store, root)?;
     let owners = active_proof_owners(root, &store, &format!("{repository}/{project}/{id}"))?;
     let tombstoned = store.milestone_tombstoned(id)?;
     let Some(item) = item else {
@@ -1423,77 +1577,11 @@ fn retry_handoff(
         cleanup_handoff_refs(root, &item.repository, &item.project, &item.id, "", &owners)?;
         return Err(already_handed_off(&item.id));
     }
-    let mut archive_text = fs::read_to_string(&archived)?;
+    let archive_text = fs::read_to_string(&archived)?;
+    proof_shas(&archive_text)?;
+    proof_shas(&item.text)?;
     if !valid {
-        if !active_present {
-            bail!("HANDOFF_ARCHIVE_INVALID: archive is not durable authority");
-        }
-        let sha = integration::resolve_commit(root, commit.unwrap_or("HEAD"))?;
-        let target = integration::resolve_commit(root, &evidence.target_base)?;
-        let mut proofs = proof_shas(&archive_text);
-        proofs.extend(proof_shas(&item.text));
-        proofs.extend([sha.clone(), target.clone()]);
-        let note = integration::read_passport(root, &sha, &format!("{}/{}/{}", item.repository, item.project, item.id))?
-            .context("HANDOFF_PASSPORT_UNAVAILABLE: durable pre-prune passport is required for torn archive repair")?;
-        if note["binding"] != serde_json::to_value(&evidence.binding)? {
-            bail!("HANDOFF_EVIDENCE_STALE: recovery evidence differs from durable passport");
-        }
-        evidence.validate(&serde_json::from_value(note["binding"].clone())?)?;
-        let mut meta = item.frontmatter.clone();
-        meta["status"] = "completed".into();
-        meta["repository"] = item.repository.clone().into();
-        meta["project"] = archive_project(root, &item, &settings)?.into();
-        meta["handoff"] = serde_yaml::to_value(
-            json!({"completed_at":note["completed_at"],"commit":sha,"target_base":target,"integration_evidence":evidence,"proof_shas":proofs,"passport":note}),
-        )?;
-        let mut restored = item.text.clone();
-        let parsed = crate::core::tasks::parse_milestone_manifest(
-            &restored,
-            item.path.strip_prefix(root)?,
-            &item.repository,
-            settings
-                .task_project
-                .as_deref()
-                .unwrap_or(&settings.task_repository),
-            &settings.owners,
-            &settings.aliases,
-        )?;
-        if note["active_authority_digest"].as_str()
-            != Some(
-                integration::digest(&integration::manifest_projection(item.text.as_bytes())?)?
-                    .as_str(),
-            )
-            || parsed
-                .tasks
-                .iter()
-                .any(|task| !matches!(task.status.as_deref(), Some("completed" | "cancelled")))
-        {
-            bail!("HANDOFF_ARCHIVE_INVALID: active authority changed or tasks are not terminal");
-        }
-        let receipts = reconcile_terminal_tasks(&note, &parsed)?;
-        for task in &parsed.tasks {
-            if let Some(receipt) = receipts.get(&parsed.task_id(task)) {
-                restored = render_task_receipt(&restored, &task.task_ref, receipt, &task.subtasks)?;
-            }
-        }
-        let (_, body) = restored
-            .strip_prefix("---\n")
-            .context("milestone frontmatter missing")?
-            .split_once("\n---\n")
-            .context("unterminated milestone frontmatter")?;
-        archive_text = format!("---\n{}---\n{body}", serde_yaml::to_string(&meta)?);
-        if crate::db::tasks_store::configured_milestone_archive(
-            root,
-            &archive_text,
-            &archived,
-            &item.repository,
-            &item.project,
-        )?
-        .is_none_or(|archive| archive.id != item.id)
-        {
-            bail!("HANDOFF_ARCHIVE_INVALID: active manifest cannot restore terminal archive");
-        }
-        crate::core::fs::atomic_replace(&archived, archive_text.as_bytes())?;
+        bail!("HANDOFF_ARCHIVE_INVALID: torn archive requires its prepared .forge handoff journal");
     }
     if active_present {
         fs::remove_file(&item.path)?;
@@ -1522,10 +1610,13 @@ pub fn handoff(
     commit: Option<&str>,
     evidence: &IntegrationEvidence,
 ) -> Result<Value> {
-    if let Some(result) = retry_handoff(root, selector, commit, evidence)? {
+    let fence = crate::db::tasks_store::recovery::lock_database(&tasks::database_path(root)?)?;
+    if let Some(result) = retry_handoff(root, selector, commit, evidence, &fence)? {
         return Ok(result);
     }
     let (item, mut store, relevant) = ready_milestone(root, selector)?;
+    proof_shas(&item.text)?;
+    store.adopt_checkpoint_lock(fence.clone());
     let owners = active_proof_owners(
         root,
         &store,
@@ -1604,7 +1695,7 @@ pub fn handoff(
         bail!("milestone started_at is in the future");
     }
     let minutes = (completed - started).num_minutes();
-    let (mut passport, mut proofs) = telemetry_passport(
+    let (passport, mut proofs) = telemetry_passport(
         root,
         &item,
         &store,
@@ -1613,36 +1704,10 @@ pub fn handoff(
         evidence,
         (started, completed),
     )?;
-    passport
-        .as_object_mut()
-        .context("passport mapping missing")?
-        .remove("verified_handoff_proof");
-    passport["landed_receipts"] = serde_json::to_value(&landed_receipts)?;
-    passport["terminal_tasks"] = serde_json::to_value(terminal_tasks(
-        &crate::core::tasks::parse_milestone_manifest(
-            &item.text,
-            item.path.strip_prefix(root)?,
-            &item.repository,
-            settings
-                .task_project
-                .as_deref()
-                .unwrap_or(&settings.task_repository),
-            &settings.owners,
-            &settings.aliases,
-        )?,
-        &landed_receipts,
-    )?)?;
-    passport["verified_handoff_proof"] = integration::digest(&passport)?.into();
-    proofs.extend(proof_shas(&item.text));
+    proofs.extend(proof_shas(&item.text)?);
     evidence.validate(&binding(root, &item, &store, &relevant, &sha, &target)?)?;
-    integration::write_passport(
-        root,
-        &sha,
-        &format!("{}/{}/{}", item.repository, item.project, item.id),
-        &passport,
-    )?;
     let declared_project = archive_project(root, &item, &settings)?;
-    let mut meta = item.frontmatter;
+    let mut meta = item.frontmatter.clone();
     let map = meta
         .as_mapping_mut()
         .context("milestone frontmatter must be a mapping")?;
@@ -1673,37 +1738,53 @@ pub fn handoff(
     if archived.exists() {
         let mut proof_list: BTreeSet<String> =
             serde_yaml::from_value(meta["handoff"]["proof_shas"].clone())?;
-        proof_list.extend(proof_shas(&fs::read_to_string(&archived)?));
+        proof_list.extend(proof_shas(&fs::read_to_string(&archived)?)?);
         meta["handoff"]["proof_shas"] = serde_yaml::to_value(proof_list)?;
     }
     let archive_text = format!("---\n{}---\n{body}", serde_yaml::to_string(&meta)?);
-    let backup = archived.with_extension("md.bak");
-    let had_archive = archived.exists();
-    if had_archive {
-        fs::copy(&archived, &backup)?;
-    }
+    let journal = HandoffJournal {
+        binding: evidence.binding.clone(),
+        commit: sha.clone(),
+        target_base: target.clone(),
+        active_ref: relative.clone(),
+        archive_ref: archive_ref.clone(),
+        active_text: item.text.clone(),
+        archive_text: archive_text.clone(),
+        tasks: relevant.clone(),
+        receipts: landed_receipts.clone(),
+    };
+    let journal_path = journal_path(root, &evidence.binding)?;
+    crate::core::fs::atomic_write(&journal_path, &serde_json::to_vec(&journal)?, false)?;
+    let mut note = json!({
+        "version": 1, "identity": passport["identity"], "binding": evidence.binding,
+        "commit": sha, "target_base": target, "started_at": passport["started_at"],
+        "completed_at": passport["completed_at"], "duration_seconds": passport["duration_seconds"],
+        "tasks_count": relevant.len(),
+        "task_statuses": {"completed": relevant.iter().filter(|task| task.status == "completed").count(),
+            "cancelled": relevant.iter().filter(|task| task.status == "cancelled").count()},
+        "verification": {"exit_code": evidence.verification.exit_code,
+            "tests_passed": evidence.verification.tests_passed, "tests_failed": evidence.verification.tests_failed},
+        "journal_digest": integration::digest(&serde_json::to_value(&journal)?)?
+    });
+    note["verified_handoff_proof"] = integration::digest(&note)?.into();
+    integration::write_passport(
+        root,
+        &sha,
+        &format!("{}/{}/{}", item.repository, item.project, item.id),
+        &note,
+    )?;
     crate::core::fs::atomic_replace(&archived, archive_text.as_bytes())?;
-    if let Err(error) = store.handoff_milestone(
+    store.handoff_milestone_with_unlink(
         &prefix,
         &relative,
         &archive_ref,
         &relevant,
         &landed_receipts,
-    ) {
-        if had_archive {
-            fs::rename(&backup, &archived)?;
-        } else {
-            fs::remove_file(&archived)?;
-        }
-        return Err(error);
-    }
-    if let Err(error) = fs::remove_file(&item.path) {
-        // The durable archive and committed pruning/relocation remain authoritative.
-        return Err(error.into());
-    }
-    if had_archive {
-        fs::remove_file(&backup)?;
-    }
+        || {
+            fs::remove_file(&item.path)?;
+            Ok(())
+        },
+    )?;
     cleanup_handoff_refs(
         root,
         &item.repository,
@@ -1712,6 +1793,7 @@ pub fn handoff(
         &archive_text,
         &owners,
     )?;
+    fs::remove_file(journal_path)?;
     Ok(
         json!({"id": item.id, "status": "completed", "path": archive_ref, "handoff": meta["handoff"]}),
     )

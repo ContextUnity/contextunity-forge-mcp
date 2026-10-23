@@ -1,8 +1,260 @@
 use anyhow::{bail, Result};
 use std::{
+    io::Write,
     path::Path,
     process::{Command, ExitStatus, Output},
 };
+
+/// Short, fail-closed participation in Git's own repository GC exclusion protocol.
+/// Held only while constructing a kept pack, never across a SQLite transaction.
+pub(crate) struct GitGcProtection {
+    path: std::path::PathBuf,
+    token: String,
+}
+
+impl GitGcProtection {
+    pub(crate) fn acquire(root: &Path) -> Result<Self> {
+        let common = git_stdout(
+            root,
+            &["rev-parse", "--git-common-dir"],
+            "TASK_OBJECT_PROTECTION_FAILED",
+        )?;
+        let common = root.join(common).canonicalize()?;
+        let path = common.join("gc.pid");
+        let lock = common.join("gc.pid.lock");
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock)?;
+        let acquired = (|| -> Result<String> {
+            if path.exists() {
+                bail!("TASK_OBJECT_PROTECTION_FAILED: Git GC already owns the repository");
+            }
+            let hostname = Command::new("hostname").output()?;
+            if !hostname.status.success() {
+                bail!("TASK_OBJECT_PROTECTION_FAILED: hostname unavailable");
+            }
+            let hostname = String::from_utf8(hostname.stdout)?;
+            let token = format!("{} {}", std::process::id(), hostname.trim());
+            file.write_all(token.as_bytes())?;
+            file.sync_all()?;
+            std::fs::rename(&lock, &path)?;
+            std::fs::File::open(&common)?.sync_all()?;
+            Ok(token)
+        })();
+        if acquired.is_err() {
+            let _ = std::fs::remove_file(lock);
+        }
+        Ok(Self {
+            path,
+            token: acquired?,
+        })
+    }
+}
+
+impl Drop for GitGcProtection {
+    fn drop(&mut self) {
+        if std::fs::read_to_string(&self.path).ok().as_ref() == Some(&self.token) {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProvisionalPackOwner {
+    kind: String,
+    task_id: String,
+    object: String,
+}
+
+/// A genuine task's provisional object home, independent of logical gate authority.
+pub(crate) struct KeptObjects {
+    path: std::path::PathBuf,
+    retain: bool,
+}
+impl KeptObjects {
+    /// A committed SQL pending publication must retain its object home across process exit.
+    pub(crate) fn retain_pending(&mut self) {
+        self.retain = true;
+    }
+}
+impl Drop for KeptObjects {
+    fn drop(&mut self) {
+        if !self.retain {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+/// GC exclusion must already cover object construction. Transfer protection to a
+/// unique kept pack before releasing exclusion or returning commit-tree stdout.
+pub(crate) fn keep_provisional(
+    root: &Path,
+    task_id: &str,
+    object: &str,
+    _gc: &GitGcProtection,
+) -> Result<KeptObjects> {
+    let objects = git_stdout(
+        root,
+        &["rev-parse", "--git-path", "objects"],
+        "TASK_OBJECT_PROTECTION_FAILED",
+    )?;
+    let directory = root.join(objects).canonicalize()?.join("pack");
+    std::fs::create_dir_all(&directory)?;
+    // A distinct, genuine ownership blob prevents two concurrent guards for an
+    // identical candidate from sharing (and prematurely releasing) a keep file.
+    let owner = ProvisionalPackOwner {
+        kind: "forge-provisional-v1".into(),
+        task_id: task_id.into(),
+        object: object.into(),
+    };
+    let bytes = serde_json::to_vec(&owner)?;
+    let nonce = format!(
+        "{}:{}:{}",
+        String::from_utf8(bytes.clone())?,
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos()
+    );
+    let blob = git_input(root, &["hash-object", "-w", "--stdin"], nonce.as_bytes())?;
+    let prefix = directory.join("pack");
+    let packed = git_input(
+        root,
+        &[
+            "pack-objects",
+            "--revs",
+            prefix
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("non-UTF8 object home"))?,
+        ],
+        format!("{object}\n{blob}\n").as_bytes(),
+    )?;
+    if !matches!(packed.len(), 40 | 64) || !packed.bytes().all(|b| b.is_ascii_hexdigit()) {
+        bail!("TASK_OBJECT_PROTECTION_FAILED: invalid pack identity");
+    }
+    let path = directory.join(format!("pack-{packed}.keep"));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)?;
+    file.write_all(&bytes)?;
+    file.sync_all()?;
+    std::fs::File::open(&directory)?.sync_all()?;
+    Ok(KeptObjects {
+        path,
+        retain: false,
+    })
+}
+
+/// Release only this task's provisional packs once their objects are actual
+/// ancestors of its durable keeper. Unrelated packs and owners are untouched.
+pub(crate) fn release_provisional(root: &Path, task_id: &str, keeper: &str) -> Result<()> {
+    let directory = root.join(git_stdout(
+        root,
+        &["rev-parse", "--git-path", "objects/pack"],
+        "TASK_OBJECT_PROTECTION_FAILED",
+    )?);
+    if !directory.exists() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(directory)? {
+        let path = entry?.path();
+        if path.extension().is_none_or(|ext| ext != "keep") {
+            continue;
+        }
+        let Ok(owner) = serde_json::from_slice::<ProvisionalPackOwner>(&std::fs::read(&path)?)
+        else {
+            continue;
+        };
+        if owner.kind == "forge-provisional-v1"
+            && owner.task_id == task_id
+            && git_ancestor(root, &owner.object, keeper)?
+        {
+            std::fs::remove_file(path)?;
+        }
+    }
+    Ok(())
+}
+
+/// Write a Git object using explicit bytes on stdin.
+pub fn git_input(worktree: &Path, args: &[&str], bytes: &[u8]) -> Result<String> {
+    use std::process::Stdio;
+    let mut child = Command::new("git")
+        .args(["-c", "core.fsync=committed"])
+        .args(args)
+        .current_dir(worktree)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    child.stdin.take().expect("piped stdin").write_all(bytes)?;
+    let output = child.wait_with_output()?;
+    if !output.status.success() {
+        bail!(
+            "TASK_CHECKPOINT_GIT_FAILED: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(String::from_utf8(output.stdout)?.trim().to_owned())
+}
+
+/// Publish a checkpoint blob as a commit whose parents retain the supplied objects.
+/// The caller owns the ref and its publication fence; this function never creates global pins.
+pub fn git_checkpoint(
+    root: &Path,
+    reference: &str,
+    bytes: &[u8],
+    parents: &[String],
+) -> Result<String> {
+    if !root.is_absolute() {
+        bail!("TASK_CHECKPOINT_HOME_INVALID: object home must be an absolute worktree");
+    }
+    let blob = git_input(root, &["hash-object", "-w", "--stdin"], bytes)?;
+    let tree = git_input(
+        root,
+        &["mktree"],
+        format!("100644 blob {blob}\tcheckpoint.json\n").as_bytes(),
+    )?;
+    let mut args = vec![
+        "-c",
+        "user.name=Forge checkpoint",
+        "-c",
+        "user.email=checkpoint@forge.invalid",
+        "commit-tree",
+        &tree,
+    ];
+    for parent in parents {
+        args.extend(["-p", parent]);
+    }
+    let commit = git_input(root, &args, b"Task checkpoint\n")?;
+    let previous = git_command(root, &["rev-parse", "--verify", reference])?;
+    let previous = if previous.status.success() {
+        String::from_utf8(previous.stdout)?.trim().to_owned()
+    } else {
+        "0".repeat(commit.len())
+    };
+    let output = git_command(
+        root,
+        &[
+            "-c",
+            "core.fsync=committed",
+            "update-ref",
+            "--create-reflog",
+            reference,
+            &commit,
+            &previous,
+        ],
+    )?;
+    if !output.status.success() {
+        bail!(
+            "TASK_CHECKPOINT_GIT_FAILED: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(commit)
+}
 
 /// Run a Git command in the given worktree and capture its output.
 pub fn git_command(worktree: &Path, args: &[&str]) -> Result<Output> {
@@ -36,18 +288,13 @@ pub fn git_commit_exists(worktree: &Path, commit: &str) -> Result<bool> {
     Ok(git_status(worktree, &["cat-file", "-e", &object])?.success())
 }
 
-/// Keep an immutable proof object reachable independently of branch history.
+/// Validate a resolved proof object. Retention belongs to its task keeper.
 pub fn retain_proof_commit(worktree: &Path, commit: &str) -> Result<()> {
     if !matches!(commit.len(), 40 | 64) || !commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         bail!("TASK_PROOF_INVALID: expected a resolved proof object ID");
     }
-    let reference = format!("refs/forge/evidence/{commit}");
-    let output = git_command(worktree, &["update-ref", &reference, commit])?;
-    if !output.status.success() {
-        bail!(
-            "TASK_PROOF_RETENTION_FAILED: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+    if !git_commit_exists(worktree, commit)? {
+        bail!("TASK_PROOF_RETENTION_FAILED: proof object {commit} is unavailable");
     }
     Ok(())
 }

@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 use sha2::Digest;
 use std::path::Path;
 mod workspaces;
-use workspaces::Registry;
+pub(crate) use workspaces::{numbered_manifests, Registry};
 mod context;
 use context::context_bundle;
 mod blackboard;
@@ -465,7 +465,35 @@ pub fn store(root: &Path) -> Result<TasksStore> {
     store.default_project = default_project.to_owned();
     store.project_owners = settings.owners;
     store.project_aliases = settings.aliases;
+    store.set_workspace_root(root);
+    crate::engine::milestones::configure_checkpoint_owners(&mut store, root)?;
+    let directories = crate::core::tasks::configured_milestone_dirs(root);
+    store.set_obsolete_checkpoint_owners(crate::engine::milestones::obsolete_checkpoint_owners(
+        root,
+        &directories,
+        &settings.task_repository,
+        default_project,
+        &store.project_owners,
+        &store.project_aliases,
+    )?);
     Ok(store)
+}
+
+pub(crate) fn read_checkpoint_fence(
+    root: &Path,
+) -> Result<Option<crate::db::tasks_store::recovery::DatabaseFence>> {
+    let fence =
+        crate::db::tasks_store::recovery::read_database(&TaskSettings::load(root)?.path(root)?)?;
+    let registry = Registry::load(root)?;
+    let mut roots = vec![root.to_owned()];
+    for workspace in registry.selected(Some("all"))? {
+        roots.push(workspace.root.clone());
+    }
+    let obsolete = registry.obsolete_checkpoint_owners()?;
+    for root in roots {
+        crate::db::tasks_store::recovery::ensure_no_intents_except(&root, &obsolete)?;
+    }
+    Ok(fence)
 }
 
 fn resolve_manifest_status(root: &Path, milestone_ref: &str) -> Result<String> {
@@ -482,6 +510,26 @@ fn resolve_manifest_status(root: &Path, milestone_ref: &str) -> Result<String> {
 /// Performs list.
 pub fn list(root: &Path, mut p: List) -> Result<Value> {
     let registry = Registry::load(root)?;
+    // Retention cleanup is a distinct write phase. Resolve its owners under a
+    // short observation fence, then recompute the returned view under a new one.
+    let cleanup_owners = {
+        let _observation = read_checkpoint_fence(root)?;
+        if let Some(reference) = p.milestone_ref.as_deref() {
+            vec![
+                registry
+                    .resolve_milestone_or_task_parent(p.repository.as_deref(), reference)?
+                    .workspace,
+            ]
+        } else {
+            registry.selected(p.repository.as_deref())?
+        }
+    };
+    for workspace in cleanup_owners {
+        workspace
+            .open(&registry.database)?
+            .cleanup(crate::db::tasks_store::now())?;
+    }
+    let _observation = read_checkpoint_fence(root)?;
     let mut resolved_workspace = None;
     let mut task_parent_resolution = None;
     if let Some(m) = p.milestone_ref.as_deref() {
@@ -534,8 +582,7 @@ pub fn list(root: &Path, mut p: List) -> Result<Value> {
         }
         if active_candidates.is_empty() {
             for workspace in &selected {
-                let mut store = workspace.open(&registry.database)?;
-                store.cleanup(crate::db::tasks_store::now())?;
+                let store = workspace.open(&registry.database)?;
                 for task in store.list(None, "all", None)? {
                     if resolve_manifest_status(&workspace.root, &task.milestone_ref)? != "active" {
                         continue;
@@ -573,8 +620,7 @@ pub fn list(root: &Path, mut p: List) -> Result<Value> {
     let mut all_tasks = Vec::new();
     let mut task_state = Vec::new();
     for workspace in &selected {
-        let mut store = workspace.open(&registry.database)?;
-        store.cleanup(crate::db::tasks_store::now())?;
+        let store = workspace.open(&registry.database)?;
         let mut milestone_status_cache: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
         for mut task in store.list(p.milestone_ref.as_deref(), "all", p.stage.as_deref())? {
@@ -857,6 +903,11 @@ pub fn submit(root: &Path, p: Submit) -> Result<Value> {
 }
 
 fn lifecycle_error(id: &str, error: anyhow::Error) -> anyhow::Error {
+    if crate::db::tasks_store::recovery::is_pending(&error) {
+        // A Git cause must not normalize a committed publication failure into
+        // an ordinary retry/rollback diagnostic or erase its typed identity.
+        return error.context(crate::db::tasks_store::recovery::CheckpointPending.to_string());
+    }
     let message = error.to_string();
     let normalized = crate::core::tasks::task_lifecycle_diagnostic(id, &message);
     if normalized == message {
@@ -886,11 +937,7 @@ fn submit_inner(root: &Path, p: Submit) -> Result<Value> {
     })?;
     let gate = &profile.gates[gate_index];
     let is_delivery = gate.proof.kind() == Some(crate::core::tasks::profile::ProofKind::Delivery);
-    let _receipt_lock = if is_delivery {
-        Some(lifecycle::lock_receipts(&registry.database)?)
-    } else {
-        None
-    };
+    store.lock_checkpoint()?;
     let task = store.inspect(&p.task_id)?;
     if task.stage != observed_task.stage || task.profile_pin != observed_task.profile_pin {
         bail!(
@@ -925,11 +972,13 @@ fn submit_inner(root: &Path, p: Submit) -> Result<Value> {
         .find(|prior| prior.sha_snapshot);
     let needs_candidate = !gate.sha_snapshot && prior_snapshot.is_some();
     let mut candidate_commit = None;
+    let mut provisional_objects = None;
     let mut delivery_rollback = None;
     if gate.sha_snapshot && p.action.name() == "pass" {
-        let (snapshot, baseline) =
+        let (snapshot, baseline, objects) =
             git_snapshot::capture_scoped_snapshot(worktree, &p.task_id, &task.spec.scope)?
                 .context("TASK_SNAPSHOT_FAILED: snapshot capture requires a Git worktree")?;
+        provisional_objects = Some(objects);
         if let Some(supplied) = explicit_commit.as_deref() {
             if let Some(canonical) = canonical_commit_from_prefix(supplied, &snapshot) {
                 evidence.commit = Some(canonical);
@@ -976,7 +1025,7 @@ fn submit_inner(root: &Path, p: Submit) -> Result<Value> {
                         "TASK_CANDIDATE_BASELINE_MISMATCH: HEAD '{head}' does not match candidate baseline '{candidate_baseline}'"
                     );
                 }
-                let (current, _) =
+                let (current, _, _objects) =
                     git_snapshot::capture_scoped_snapshot(worktree, &p.task_id, &task.spec.scope)?
                         .context(
                             "TASK_SNAPSHOT_FAILED: snapshot capture requires a Git worktree",
@@ -1011,7 +1060,7 @@ fn submit_inner(root: &Path, p: Submit) -> Result<Value> {
                         | crate::core::tasks::profile::ProofKind::Delivery
                 )
             ) {
-                let (current, _) =
+                let (current, _, _objects) =
                     git_snapshot::capture_scoped_snapshot(worktree, &p.task_id, &task.spec.scope)?
                         .context(
                             "TASK_SNAPSHOT_FAILED: snapshot capture requires a Git worktree",
@@ -1117,7 +1166,16 @@ fn submit_inner(root: &Path, p: Submit) -> Result<Value> {
             task
         }
         Err(error) => {
+            if crate::db::tasks_store::recovery::is_pending(&error) {
+                if let Some(objects) = provisional_objects.as_mut() {
+                    objects.retain_pending();
+                }
+            }
             if let Some(rollback) = delivery_rollback.as_mut() {
+                if crate::db::tasks_store::recovery::is_pending(&error) {
+                    rollback.disarm();
+                    return Err(error);
+                }
                 rollback
                     .rollback()
                     .context("TASK_DELIVERY_ROLLBACK_FAILED")?;
