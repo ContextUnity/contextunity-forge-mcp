@@ -3,6 +3,7 @@
 pub use crate::core::fs::{checked_child, safe_relative};
 use crate::core::response::ResponsePolicy;
 use crate::core::sys::memory_budget_bytes;
+use crate::core::tasks::catalog::{SubsystemPreset, SubsystemRegistry};
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -156,6 +157,13 @@ pub struct AdapterFile {
     /// The response policy.
     pub response: ResponsePolicy,
     #[serde(default)]
+    /// Optional MCP subsystem selection.
+    #[serde(deserialize_with = "deserialize_subsystem_registry")]
+    pub modules: SubsystemRegistry,
+    /// Optional top-level module preset used by the workspace adapter format.
+    #[serde(default)]
+    pub profile: Option<SubsystemPreset>,
+    #[serde(default)]
     /// Optional scanner limits.
     pub limits: Option<ScannerLimits>,
     /// Optional adapter version.
@@ -188,6 +196,35 @@ pub struct AdapterFile {
     #[serde(default, rename = "DEBUG", alias = "debug")]
     /// Debug mode flag.
     pub debug: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum SubsystemRegistryFile {
+    Registry(SubsystemRegistry),
+    Toggles(BTreeMap<String, bool>),
+}
+
+fn deserialize_subsystem_registry<'de, D>(
+    deserializer: D,
+) -> std::result::Result<SubsystemRegistry, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    match SubsystemRegistryFile::deserialize(deserializer)? {
+        SubsystemRegistryFile::Registry(registry) => Ok(registry),
+        SubsystemRegistryFile::Toggles(toggles) => {
+            let mut registry = SubsystemRegistry::default();
+            for (name, enabled) in toggles {
+                if enabled {
+                    registry.enabled.insert(name);
+                } else {
+                    registry.disabled.insert(name);
+                }
+            }
+            Ok(registry)
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Default, Serialize, PartialEq, Eq)]
@@ -231,6 +268,8 @@ pub struct Adapter {
     pub adapter_path: Option<PathBuf>,
     /// The response value.
     pub response: ResponsePolicy,
+    /// Enabled Forge MCP subsystems.
+    pub modules: SubsystemRegistry,
     /// The limits value.
     pub limits: ScannerLimits,
     /// The roots value.
@@ -282,6 +321,8 @@ pub fn load_adapter(root: &Path, adapter_path: Option<&Path>) -> std::io::Result
                 mapping.remove(serde_yaml::Value::String("response".into()));
                 mapping.remove(serde_yaml::Value::String("DEBUG".into()));
                 mapping.remove(serde_yaml::Value::String("debug".into()));
+                mapping.remove(serde_yaml::Value::String("modules".into()));
+                mapping.remove(serde_yaml::Value::String("profile".into()));
             }
             let hash = if identity
                 .as_mapping()
@@ -304,6 +345,11 @@ pub fn load_adapter(root: &Path, adapter_path: Option<&Path>) -> std::io::Result
         }
     };
     raw.response.validate().map_err(|e| error(e.to_string()))?;
+    let mut modules = raw.modules.clone();
+    if let Some(profile) = raw.profile {
+        modules.profile = profile;
+    }
+    modules.validate().map_err(|e| error(e.to_string()))?;
     let roots = raw
         .roots
         .or(raw.eligible_roots)
@@ -426,6 +472,7 @@ pub fn load_adapter(root: &Path, adapter_path: Option<&Path>) -> std::io::Result
     Ok(Adapter {
         adapter_path: explicit_adapter_path,
         response: raw.response,
+        modules,
         limits: raw.limits.unwrap_or_default(),
         roots,
         ignored_names: raw
@@ -612,6 +659,7 @@ pub fn read_policy(root: &Path, conn: &Connection) -> Result<Adapter> {
     Ok(Adapter {
         adapter_path,
         response: ResponsePolicy::default(),
+        modules: SubsystemRegistry::default(),
         limits,
         roots,
         ignored_names,

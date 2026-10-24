@@ -1126,6 +1126,20 @@ fn stdio_tool_catalog_uses_object_schemas_for_every_property() {
         let schema = &tools.iter().find(|t| t["name"] == name).unwrap()["inputSchema"];
         assert_eq!(schema["additionalProperties"], false);
     }
+    let task_manage_schema = &tools
+        .iter()
+        .find(|tool| tool["name"] == "task_manage")
+        .unwrap()["inputSchema"];
+    let manage_schema = task_manage_schema.to_string();
+    assert!(
+        manage_schema.contains("\"snapshot\""),
+        "task_manage schema does not advertise snapshot: {manage_schema}"
+    );
+    assert!(
+        manage_schema.contains("\"rollback\""),
+        "task_manage schema does not advertise rollback: {manage_schema}"
+    );
+    assert!(task_manage_schema["properties"]["name"].is_object());
     let content = &tools
         .iter()
         .find(|tool| tool["name"] == "session_checkpoint")
@@ -1228,6 +1242,245 @@ fn mcp_task_claim_guidance_includes_rules_without_schema_bloat() {
             "runtime claim guidance must not be duplicated in tool schema metadata: {rule_prefix}"
         );
     }
+
+    workspace.write("forge-mcp.yaml", "profile: minimal\n");
+    let (_, minimal_catalog) = client.request("tools/list", json!({}));
+    let minimal_tools = minimal_catalog["result"]["tools"]
+        .as_array()
+        .expect("minimal profile should return its active tool catalog");
+    assert_eq!(minimal_tools.len(), 1);
+    assert_eq!(minimal_tools[0]["name"], "forge_guide");
+    let minimal_guide = client.payload("forge_guide", json!({"topic":"query"}));
+    assert_eq!(minimal_guide, json!({}));
+    let mut preflight_failures = Vec::new();
+    for topic in ["ast", "docs", "acdd"] {
+        let guide = client.payload("forge_guide", json!({"topic":topic}));
+        if guide != json!({}) {
+            preflight_failures.push(format!(
+                "minimal profile still advertises disabled {topic} capabilities: {guide}"
+            ));
+        }
+    }
+
+    workspace.write(
+        "forge-mcp.yaml",
+        "profile: minimal\nmodules:\n  acdd: true\n",
+    );
+    let acdd_without_blackboard = client.payload("forge_guide", json!({"topic":"acdd"}));
+    if !acdd_without_blackboard["gates"].is_array() {
+        preflight_failures.push(format!(
+            "enabled ACDD guide lost its task guidance: {acdd_without_blackboard}"
+        ));
+    }
+    for field in [
+        "blackboard_topics",
+        "blackboard_gate_targeting",
+        "blackboard_schema_version",
+    ] {
+        if acdd_without_blackboard.get(field).is_some() {
+            preflight_failures.push(format!(
+                "disabled blackboard guidance leaked through forge_guide ({field}): {acdd_without_blackboard}"
+            ));
+        }
+    }
+
+    workspace.write(
+        "forge-mcp.yaml",
+        "profile: minimal\nmodules:\n  docs: true\n",
+    );
+    let docs_only_query = client.payload("forge_guide", json!({"topic":"query"}));
+    if docs_only_query.get("recovery").is_some() {
+        preflight_failures.push(format!(
+            "docs-only query guide retained disabled codemap recovery advice: {docs_only_query}"
+        ));
+    }
+    if docs_only_query.get("pages").is_none() || docs_only_query.get("documents").is_none() {
+        preflight_failures.push(format!(
+            "docs-only query guide lost enabled documentation guidance: {docs_only_query}"
+        ));
+    }
+
+    let preflight = Workspace::new();
+    preflight.write(
+        "forge-mcp.yaml",
+        "profile: minimal\nmodules:\n  acdd: true\nroots: []\ndocs: []\nmilestones: [docs/milestones]\ntasks_db: .forge/tasks.sqlite\n",
+    );
+    fs::create_dir_all(preflight.0.join("docs/milestones")).unwrap();
+    let mut preflight_client = Client::new(&preflight);
+    let planned_tasks = [
+        (
+            "010-bundle-false.md",
+            "m-bundle-false",
+            "bundle_false",
+            "src/preflight-bundle-false.rs",
+        ),
+        (
+            "020-bundle-true.md",
+            "m-bundle-true",
+            "bundle_true",
+            "src/preflight-bundle-true.rs",
+        ),
+        (
+            "030-next.md",
+            "m-next",
+            "next_task",
+            "src/preflight-next.rs",
+        ),
+    ];
+    let mut task_ids = Vec::new();
+    for (path, milestone_id, task_ref, scope) in planned_tasks {
+        let manifest = format!(
+            "---\nid: {milestone_id}\ntitle: Planned preflight fixture\ndoc_type: contract\nstatus: planned\n---\n```yaml\ntask_ref: {task_ref}\ntarget: Check module requirements before claim\nproof_policy: seam-test-first\nscope: [{scope}]\n```\n"
+        );
+        let milestone_path = format!("docs/milestones/{path}");
+        preflight.write(&milestone_path, &manifest);
+        let synced = preflight_client.payload(
+            "task_manage",
+            json!({"action":"sync","milestone_ref":milestone_path}),
+        );
+        task_ids.push(
+            synced["tasks"][0]["task_id"]
+                .as_str()
+                .expect("planned task should be indexed")
+                .to_owned(),
+        );
+    }
+    let before = task_ids
+        .iter()
+        .map(|task_id| {
+            preflight_client.payload("task_manage", json!({"action":"inspect","task_id":task_id}))
+        })
+        .collect::<Vec<_>>();
+    let worktree = preflight.0.to_str().unwrap();
+    let claim_attempts = [
+        (
+            "task_manage",
+            json!({"action":"next","worker_id":"next-builder","worktree":worktree}),
+            "task_manage next",
+        ),
+        (
+            "task_claim",
+            json!({"task_id":task_ids[1],"stage":"contract","worker_id":"minimal-builder","worktree":worktree,"bundle":false}),
+            "minimal task_claim",
+        ),
+        (
+            "task_claim",
+            json!({"task_id":task_ids[2],"stage":"contract","worker_id":"bundle-builder","worktree":worktree,"bundle":true}),
+            "bundled task_claim",
+        ),
+    ];
+    for (tool, arguments, label) in claim_attempts {
+        let (_, response) = preflight_client.call(tool, arguments);
+        let is_error = response["result"]["isError"] == true || response.get("error").is_some();
+        let response_text = serde_json::to_string(&response).unwrap_or_default();
+        if !is_error || !response_text.contains("FEATURE_REQUIRED_BY_PROFILE") {
+            preflight_failures.push(format!(
+                "{label} did not fail with FEATURE_REQUIRED_BY_PROFILE: {response_text}"
+            ));
+        }
+    }
+    for (index, task_id) in task_ids.iter().enumerate() {
+        let after =
+            preflight_client.payload("task_manage", json!({"action":"inspect","task_id":task_id}));
+        if after["status"] != "ready"
+            || !after["worker_id"].is_null()
+            || after["claim_revision"] != before[index]["claim_revision"]
+        {
+            preflight_failures.push(format!(
+                "claim preflight changed planned task state: before={}, after={after}",
+                before[index]
+            ));
+        }
+    }
+    for (path, _, _, _) in planned_tasks {
+        let manifest = fs::read_to_string(preflight.0.join("docs/milestones").join(path)).unwrap();
+        if !manifest.contains("\nstatus: planned\n") || manifest.contains("started_at:") {
+            preflight_failures.push(format!(
+                "claim preflight activated planned milestone {path}: {manifest}"
+            ));
+        }
+    }
+
+    let no_blackboard = Workspace::new();
+    no_blackboard.write(
+        "forge-mcp.yaml",
+        "profile: minimal\nmodules:\n  acdd: true\n  codemap: true\n  docs: true\nroots: []\ndocs: []\nmilestones: [docs/milestones]\ntasks_db: .forge/tasks.sqlite\n",
+    );
+    fs::create_dir_all(no_blackboard.0.join("docs/milestones")).unwrap();
+    no_blackboard.write(
+        "docs/milestones/010-guidance.md",
+        "---\nid: m-no-blackboard\ntitle: No Blackboard\ndoc_type: contract\nstatus: active\n---\n```yaml\ntask_ref: claim\ntarget: Check nonbundled module guidance\nproof_policy: seam-test-first\nscope: [src/]\n```\n",
+    );
+    let mut no_blackboard_client = Client::new(&no_blackboard);
+    let no_blackboard_sync = no_blackboard_client.payload(
+        "task_manage",
+        json!({"action":"sync","milestone_ref":"docs/milestones/010-guidance.md"}),
+    );
+    let no_blackboard_task = no_blackboard_sync["tasks"][0]["task_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let no_blackboard_worktree = no_blackboard.0.to_string_lossy();
+    let unbundled_claim = no_blackboard_client.payload(
+        "task_claim",
+        json!({"task_id":no_blackboard_task,"stage":"contract","worker_id":"no-blackboard-builder","worktree":no_blackboard_worktree,"bundle":false}),
+    );
+    let inspected_claim = no_blackboard_client.payload(
+        "task_manage",
+        json!({"action":"inspect","task_id":no_blackboard_task}),
+    );
+    for (surface, response) in [
+        ("task_claim bundle:false", &unbundled_claim),
+        ("task_manage inspect", &inspected_claim),
+    ] {
+        let guidance = serde_json::to_string(&response["workflow_guidance"]).unwrap();
+        if guidance.contains("task_blackboard") {
+            preflight_failures.push(format!(
+                "{surface} guidance mentioned disabled task_blackboard: {guidance}"
+            ));
+        }
+    }
+
+    let full_primary = Workspace::new();
+    full_primary.write("forge-mcp.yaml", "profile: full\nroots: []\ndocs: []\n");
+    let minimal_target = full_primary.0.join(".worktrees/selected-minimal");
+    fs::create_dir_all(&minimal_target).unwrap();
+    fs::write(minimal_target.join("forge-mcp.yaml"), "profile: minimal\n").unwrap();
+    let mut full_primary_client = Client::new(&full_primary);
+    let (_, selected_minimal) = full_primary_client.call(
+        "task_list",
+        json!({"worktree":minimal_target.to_string_lossy()}),
+    );
+    let selected_minimal_text = serde_json::to_string(&selected_minimal).unwrap();
+    if selected_minimal["result"]["isError"] != true
+        || !selected_minimal_text.contains("FEATURE_DISABLED")
+    {
+        preflight_failures.push(format!(
+            "selected minimal worktree accepted an ACDD task tool: {selected_minimal_text}"
+        ));
+    }
+
+    let minimal_primary = Workspace::new();
+    minimal_primary.write("forge-mcp.yaml", "profile: minimal\n");
+    let full_target = minimal_primary.0.join(".worktrees/selected-full");
+    fs::create_dir_all(&full_target).unwrap();
+    fs::write(full_target.join("forge-mcp.yaml"), "profile: full\n").unwrap();
+    let mut minimal_primary_client = Client::new(&minimal_primary);
+    let (_, selected_full) = minimal_primary_client.call(
+        "task_list",
+        json!({"worktree":full_target.to_string_lossy()}),
+    );
+    let selected_full_text = serde_json::to_string(&selected_full).unwrap();
+    if selected_full["result"]["isError"] == true || selected_full_text.contains("FEATURE_DISABLED")
+    {
+        preflight_failures.push(format!(
+            "primary minimal profile blocked an ACDD tool enabled in selected full worktree: {selected_full_text}"
+        ));
+    }
+    assert!(
+        preflight_failures.is_empty(),
+        "module-aware preflight and guidance must follow the selected workspace: {preflight_failures:#?}"
+    );
 }
 
 #[test]

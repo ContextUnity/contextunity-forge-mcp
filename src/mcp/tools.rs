@@ -321,7 +321,7 @@ impl Server {
         })
     }
     #[tool(
-        description = "Run one task-store action: next, create, sync, inspect, delete, extend_scope, subtask_add, subtask_update, subtask_list, reset, reopen, or context. next atomically claims eligible work and returns its context bundle; sync without milestone_ref imports the workspace milestone directory."
+        description = "Run one task-store action: next, create, sync, inspect, delete, snapshot, rollback, extend_scope, subtask_add, subtask_update, subtask_list, reset, reopen, or context. snapshot creates a named Git worktree snapshot; rollback restores it. Both require name. next atomically claims eligible work and returns its context bundle; sync without milestone_ref imports the workspace milestone directory."
     )]
     fn task_manage(&self, Parameters(p): Parameters<TaskManageInput>) -> CallToolResult {
         let format = p.format.unwrap_or_default();
@@ -841,8 +841,54 @@ impl Server {
                 None,
             );
         }
-        self.responding(format, OperationKind::Guide, "forge_guide", |_, _| {
-            cli::guide::run(&self.root, topic, p.force)
+        self.responding(format, OperationKind::Guide, "forge_guide", |adapter, _| {
+            let mut guide = cli::guide::run(&self.root, topic, p.force)?;
+            if topic == "query" {
+                if let Some(sitemap) = guide.as_object_mut() {
+                    let codemap_enabled = adapter.modules.is_enabled("codemap");
+                    let docs_enabled = adapter.modules.is_enabled("docs");
+                    if !codemap_enabled {
+                        for key in [
+                            "start",
+                            "symbols",
+                            "snippets",
+                            "tests",
+                            "queries",
+                            "diagnostics",
+                        ] {
+                            sitemap.remove(key);
+                        }
+                    }
+                    if !docs_enabled {
+                        sitemap.remove("documents");
+                    }
+                    if !codemap_enabled && !docs_enabled {
+                        sitemap.remove("pages");
+                    }
+                    if !codemap_enabled {
+                        sitemap.remove("recovery");
+                    }
+                }
+            } else if (topic == "ast" && !adapter.modules.is_enabled("codemap"))
+                || (topic == "docs" && !adapter.modules.is_enabled("docs"))
+            {
+                guide = Value::Object(serde_json::Map::new());
+            } else if topic == "acdd" {
+                if !adapter.modules.is_enabled("acdd") {
+                    guide = Value::Object(serde_json::Map::new());
+                } else if !adapter.modules.is_enabled("blackboard") {
+                    if let Some(guidance) = guide.as_object_mut() {
+                        for key in [
+                            "blackboard_topics",
+                            "blackboard_gate_targeting",
+                            "blackboard_schema_version",
+                        ] {
+                            guidance.remove(key);
+                        }
+                    }
+                }
+            }
+            Ok(guide)
         })
     }
     #[tool(
@@ -941,6 +987,39 @@ fn looks_like_sql(value: &str) -> bool {
     instructions = "Workspace code graph and task coordination, 20 tools. Responses have a 96 KiB maximum; lower configured byte limits remain authoritative. SQLite budget is 2 seconds. Start with code_map_overview and check coverage before an absence claim. Continue a page with offset and generation. Prefer detail=compact. Selector rules and gate proofs: forge_guide topic=query or acdd."
 )]
 impl ServerHandler for Server {
+    async fn list_tools(
+        &self,
+        _request: Option<rmcp::model::PaginatedRequestParams>,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::ListToolsResult, rmcp::ErrorData> {
+        let adapter = scanner::load_adapter(&self.root, None).map_err(|error| {
+            rmcp::ErrorData::internal_error(
+                format!("workspace module configuration is invalid: {error}"),
+                None,
+            )
+        })?;
+        let mut tools = Self::tool_router().list_all();
+        let enabled = crate::core::tasks::catalog::filter_subsystem_tools(
+            tools.iter().map(|tool| tool.name.as_ref()),
+            &adapter.modules,
+        )
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<std::collections::BTreeSet<_>>();
+        tools.retain(|tool| enabled.contains(tool.name.as_ref()));
+        let supports_cache_hints = context
+            .protocol_version()
+            .is_some_and(|version| version >= rmcp::model::ProtocolVersion::V_2026_07_28);
+        Ok(rmcp::model::ListToolsResult {
+            result_type: Some(rmcp::model::ResultType::COMPLETE),
+            tools,
+            meta: None,
+            next_cursor: None,
+            ttl_ms: supports_cache_hints.then_some(0),
+            cache_scope: supports_cache_hints.then_some(rmcp::model::CacheScope::Public),
+        })
+    }
+
     async fn call_tool(
         &self,
         request: rmcp::model::CallToolRequestParams,
@@ -994,6 +1073,21 @@ impl ServerHandler for Server {
         } else {
             scanner::load_adapter(&target_root, None)
         };
+        if let Ok(adapter) = &adapter_result {
+            if let Some(message) =
+                crate::core::tasks::catalog::disabled_tool_error(&request.name, &adapter.modules)
+            {
+                return Ok(response::result_for(
+                    Err(anyhow::anyhow!(message)),
+                    &adapter.response,
+                    output_format,
+                    operation,
+                    &request.name,
+                    None,
+                )
+                .into());
+            }
+        }
         let adapter = match adapter_result {
             Ok(adapter) => super::server::RequestAdapter::Loaded(std::sync::Arc::new(adapter)),
             Err(error) => super::server::RequestAdapter::Failed {

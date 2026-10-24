@@ -91,6 +91,7 @@ fn claim_inner(root: &Path, p: Claim) -> Result<Value> {
     let task = store.inspect(&p.task_id)?;
     validate_authority(&task, &worktree, workspace, &registry)?;
     registry.check_scope(workspace, &task.spec.scope, Some(&worktree))?;
+    context::validate_claim_gate_requirements(workspace, &task)?;
     let claimed = store.claim(&p.task_id, &p.stage, &p.worker_id, &p.worktree)?;
     finish_claim(root, workspace, &mut store, claimed, p.bundle)
 }
@@ -130,6 +131,7 @@ fn finish_claim(
     }
     let response = (|| {
         let details = workspace.guidance_envelope(store.inspect_details(id)?)?;
+        let details = context::adapt_workspace_guidance(workspace, details)?;
         if bundle.unwrap_or(true) {
             context_bundle(root, workspace, id, details)
         } else {
@@ -220,6 +222,8 @@ fn manage_action_name(action: &ManageAction) -> &'static str {
         ManageAction::Sync => "sync",
         ManageAction::Inspect => "inspect",
         ManageAction::Delete => "delete",
+        ManageAction::Snapshot => "snapshot",
+        ManageAction::Rollback => "rollback",
         ManageAction::ExtendScope => "extend_scope",
         ManageAction::SubtaskAdd => "subtask_add",
         ManageAction::SubtaskUpdate => "subtask_update",
@@ -261,6 +265,9 @@ fn selector_invalid_fields(p: &Manage) -> Vec<&'static str> {
         if p.worktree.is_some() {
             invalid("worktree");
         }
+    }
+    if !matches!(p.action, ManageAction::Snapshot | ManageAction::Rollback) && p.name.is_some() {
+        invalid("name");
     }
     {
         match &p.action {
@@ -374,6 +381,32 @@ fn selector_invalid_fields(p: &Manage) -> Vec<&'static str> {
                 }
                 if p.task_id.is_some() && p.workspace.is_some() {
                     invalid("workspace");
+                }
+                if p.workspace.is_some() && !has_workspace {
+                    invalid("workspace");
+                }
+            }
+            ManageAction::Snapshot | ManageAction::Rollback => {
+                if p.name
+                    .as_deref()
+                    .is_none_or(|name| crate::core::tasks::valid_identity(name).is_err())
+                {
+                    invalid("name");
+                }
+                for (field, supplied) in [
+                    ("task_id", p.task_id.is_some()),
+                    ("milestone_ref", p.milestone_ref.is_some()),
+                    ("task_ref", p.task_ref.is_some()),
+                    ("paths", p.paths.is_some()),
+                    ("force", p.force),
+                    ("subtask_ref", p.subtask_ref.is_some()),
+                    ("title", p.title.is_some()),
+                    ("subtask_status", p.subtask_status.is_some()),
+                    ("evidence", p.evidence.is_some()),
+                ] {
+                    if supplied {
+                        invalid(field);
+                    }
                 }
                 if p.workspace.is_some() && !has_workspace {
                     invalid("workspace");
@@ -517,7 +550,8 @@ fn manage_inner(root: &Path, p: &mut Manage) -> Result<Value> {
             let claimed = store.next(worker, worktree, |task, selected| {
                 registry.check_worktree(workspace, selected)?;
                 validate_authority(task, selected, workspace, &registry)?;
-                registry.check_scope(workspace, &task.spec.scope, Some(selected))
+                registry.check_scope(workspace, &task.spec.scope, Some(selected))?;
+                context::validate_claim_gate_requirements(workspace, task)
             })?;
             match claimed {
                 Some(claimed) => finish_claim(root, workspace, &mut store, claimed, Some(true)),
@@ -622,8 +656,11 @@ fn manage_inner(root: &Path, p: &mut Manage) -> Result<Value> {
                 "byte_limited":returned < total,
                 "retrieval_hint":"All selected tasks were synchronized. Use task_list or CLI task list for task summaries and CLI task inspect <task_id> for full details."}))
         }
-        ManageAction::Inspect => workspace
-            .guidance_envelope(checkpoint_details(&store, id.context("task_id required")?)?),
+        ManageAction::Inspect => {
+            let details = workspace
+                .guidance_envelope(checkpoint_details(&store, id.context("task_id required")?)?)?;
+            context::adapt_workspace_guidance(workspace, details)
+        }
         ManageAction::Context => {
             let task_id = id.context("task_id required")?;
             let details = workspace.guidance_envelope(checkpoint_details(&store, task_id)?)?;
@@ -635,6 +672,24 @@ fn manage_inner(root: &Path, p: &mut Manage) -> Result<Value> {
             p.force,
             crate::db::tasks_store::now(),
         )?)?),
+        ManageAction::Snapshot => {
+            drop(store);
+            let value = super::git_snapshot::create_named_snapshot(
+                &workspace.root,
+                &registry.database,
+                p.name.as_deref().context("name required")?,
+            )?;
+            workspace.envelope(value)
+        }
+        ManageAction::Rollback => {
+            drop(store);
+            let value = super::git_snapshot::rollback_named_snapshot(
+                &workspace.root,
+                &registry.database,
+                p.name.as_deref().context("name required")?,
+            )?;
+            workspace.envelope(value)
+        }
         ManageAction::ExtendScope => {
             let task = store.inspect(id.context("task_id required")?)?;
             registry.check_scope(

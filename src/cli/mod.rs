@@ -568,6 +568,8 @@ pub mod milestone;
 pub mod reload;
 /// Implements task support.
 pub mod task;
+/// Fail-fast ACDD profile and milestone manifest validation.
+pub mod validate;
 use crate::{
     core::format::{self, OperationKind, OutputFormat},
     core::response::{
@@ -623,6 +625,11 @@ impl From<CliOutputFormat> for OutputFormat {
 #[derive(Subcommand, Debug)]
 /// Enumerates the supported command values.
 pub enum Command {
+    /// Validates one ACDD profile or milestone manifest.
+    Validate {
+        /// Optional workspace-relative file; without it the active profile and open milestones are scanned.
+        path: Option<PathBuf>,
+    },
     /// Represents the migrate case.
     Migrate {
         #[command(subcommand)]
@@ -954,6 +961,7 @@ fn command_presentation(command: &Command) -> (OperationKind, &'static str, Opti
         Command::Scan { .. } => (OperationKind::General, "scan result", None),
         Command::Delta { .. } => (OperationKind::General, "delta result", None),
         Command::Migrate { .. } => (OperationKind::General, "migrate result", None),
+        Command::Validate { .. } => (OperationKind::Task, "validate result", None),
         Command::Reload => (OperationKind::General, "reload result", None),
         Command::Serve => (OperationKind::General, "server", None),
     }
@@ -1038,6 +1046,7 @@ impl Cli {
         let root = command_root(self.root.as_deref(), None)?;
         let db = self.db.clone().unwrap_or_else(|| default_db(&root));
         let command = self.command.unwrap_or(Command::Serve);
+        let validation_command = matches!(&command, Command::Validate { .. });
         let (operation, title, explain) = command_presentation(&command);
         let discovery = command_discovery(&command);
         let checkpoint_action = match &command {
@@ -1045,6 +1054,7 @@ impl Cli {
             _ => None,
         };
         let result: Value = match command {
+            Command::Validate { path } => validate::run(&root, path.as_deref())?,
             Command::Migrate { command } => migrate::run(&root, command)?,
             Command::Task { command } => task::run(&root, command)?,
             Command::Milestone { command } => milestone::run(&root, command)?,
@@ -1338,6 +1348,8 @@ impl Cli {
             }
         };
         let mut result = result;
+        let validation_failed =
+            validation_command && result.get("valid").and_then(Value::as_bool) == Some(false);
         if output_format == OutputFormat::Markdown {
             if let Ok(adapter) = crate::engine::scanner::load_adapter(&root, None) {
                 if let Some(kind) = discovery {
@@ -1418,6 +1430,9 @@ impl Cli {
                 return Ok(());
             }
             return Err(e.into());
+        }
+        if validation_failed {
+            bail!("VALIDATION_FAILED: one or more documents failed validation");
         }
         Ok(())
     }

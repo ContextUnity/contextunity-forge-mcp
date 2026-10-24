@@ -13,6 +13,48 @@ contract_zero_exit_policies:
   - "direct-proof"
   - "deferred-final-test"
 
+error_codes:
+  CONTRACT_MATRIX_MISMATCH:
+    description: "A dependency or matrix entry does not match the milestone contract."
+  DEPENDENCY_MUTATED:
+    description: "An upstream dependency changed after the task contract was admitted."
+  FEATURE_DISABLED:
+    description: "A requested Forge subsystem is disabled."
+  FEATURE_REQUIRED_BY_PROFILE:
+    description: "The active profile requires a disabled subsystem."
+  GATE_INVALID_CONFIGURATION:
+    description: "A gate has missing, conflicting, or invalid driver fields."
+  MILESTONE_DAG_CYCLE:
+    description: "The task dependency graph contains a cycle."
+  MILESTONE_PREFLIGHT_FAILED:
+    description: "Manifest, skill, repository, or worktree preflight failed."
+  TASK_CANDIDATE_MISMATCH:
+    description: "The delivery tree differs from the reviewed immutable candidate."
+  TASK_CANDIDATE_OUT_OF_SCOPE:
+    description: "The task candidate changes a path outside admitted scope."
+  TASK_SCOPE_INVALID:
+    description: "A scope path is malformed or outside declared roots."
+  TASK_SCOPE_PROTECTED:
+    description: "A protected path cannot be added to task scope."
+  TASK_SEAM_DISCONNECTED:
+    description: "No current, proven test-to-production path reaches the target."
+  TASK_SEAM_STALE:
+    description: "Source drift invalidated indexed seam evidence; refresh the index."
+  UNADMITTED_SYMBOL_EXPANSION:
+    description: "A public symbol change was not admitted at the contract gate."
+
+guidance_slots:
+  hitl: hitl.pro
+
+guidance:
+  task.contract: "Define a production-seam proof and keep the task contract inside admitted scope and symbols."
+  task.code: "Implement the accepted seam with the smallest change that satisfies the task contract."
+  task.review: "Review the complete candidate against scope, contract, concurrency, isolation, and administration evidence."
+  hitl.careless: "HITL level CARELESS: allow autonomous contract and implementation changes; escalate only for unrecoverable infrastructure or circular milestone dependencies."
+  hitl.curious: "HITL level CURIOUS: report interface evolution as telemetry; escalate breaking public APIs, irreversible storage changes, or new external dependencies."
+  hitl.pro: "HITL level PRO: allow internal helpers and non-breaking implementation changes; escalate public APIs, CLI/MCP surfaces, storage schemas, and cross-milestone contracts."
+  hitl.paranoic: "HITL level PARANOIC: require explicit human approval for every new symbol or signature before contract admission."
+
 roles:
   contract_author:
     mode: subagent
@@ -35,10 +77,12 @@ roles:
 
 commands:
   rust-check-and-test:
-    command: "cargo clippy --all-targets --all-features -- -D warnings && cargo test"
+    by_pattern:
+      "**/*.rs": "cargo clippy --all-targets --all-features -- -D warnings && cargo test"
     description: "Run strict Rust checks followed by the repository's test suite. Append --test <target> to focus the test command."
   test:
-    command: "cargo test"
+    by_pattern:
+      "**/*.rs": "cargo test"
     description: "Compatibility command for legacy task evidence; workflow guidance selects rust-check-and-test."
 
 policies:
@@ -88,6 +132,7 @@ contours:
 gates:
   - id: "contract"
     role: "contract_author"
+    guidance: [task.contract, hitl]
     proof: "contract"
     sha_snapshot: true
     tools:
@@ -102,6 +147,7 @@ gates:
 
   - id: "build"
     role: "builder"
+    guidance: [task.code, hitl]
     proof: "command"
     sha_snapshot: true
     tools:
@@ -116,6 +162,7 @@ gates:
 
   - id: "review"
     role: "independent_reviewer"
+    guidance: [task.review, hitl]
     proof: "review"
     sha_snapshot: false
     independent_from: "build"
@@ -133,6 +180,7 @@ gates:
 
   - id: "deliver"
     role: "independent_reviewer"
+    guidance: [hitl]
     proof: "delivery"
     sha_snapshot: false
     auto_commit: true

@@ -5,6 +5,8 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Component, Path, PathBuf},
 };
+/// Typed ACDD and MCP subsystem registries.
+pub mod catalog;
 /// Implements gates support.
 pub mod gates;
 /// Declarative ACDD profile module.
@@ -553,6 +555,64 @@ fn default_defect_disposition() -> String {
     "deferred".into()
 }
 
+/// A repository participating in one multi-repository milestone.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum RepositorySpec {
+    /// Repository name resolved through workspace configuration.
+    Name(String),
+    /// Explicit repository checkout declaration.
+    Detailed(RepositoryDef),
+}
+
+/// Explicit path and identity for a milestone participant repository.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RepositoryDef {
+    /// Stable repository name used by task dependencies.
+    pub name: String,
+    /// Relative or configured repository path.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// Optional canonical task repository identity.
+    #[serde(default)]
+    pub repository: Option<String>,
+    /// Optional task project identity within the repository.
+    #[serde(default)]
+    pub project: Option<String>,
+}
+
+/// Parallelism policy attached to a task or milestone.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ConcurrencyPolicy {
+    /// Selected scheduling mode.
+    pub mode: ConcurrencyMode,
+    /// Durable synchronization point used by speculative execution.
+    #[serde(default)]
+    pub sync_on: Option<ConcurrencySync>,
+}
+
+/// Supported task and milestone scheduling modes.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ConcurrencyMode {
+    /// Execute only after all hard dependencies complete.
+    Sequential,
+    /// Run independent tasks concurrently.
+    Parallel,
+    /// Start eligible tasks early and reconcile them at a snapshot boundary.
+    Speculative,
+}
+
+/// Supported synchronization boundaries for speculative work.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ConcurrencySync {
+    /// Reconcile speculative work against an immutable Git tree snapshot.
+    Snapshot,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 /// Represents task spec data.
@@ -571,6 +631,15 @@ pub struct TaskSpec {
     pub proof_policy: String,
     /// The scope value.
     pub scope: Vec<String>,
+    /// Files admitted later by the task's two-tier scope process.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extended_scope: Vec<String>,
+    /// Public symbols admitted at the contract boundary (`kind:identifier`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub symbols: Vec<String>,
+    /// Public symbols admitted through architect arbitration.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extended_symbols: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     /// The pre-admitted boundary roots within which scope may be extended.
     pub scope_roots: Vec<String>,
@@ -579,7 +648,11 @@ pub struct TaskSpec {
     pub contract_revision: u64,
     #[serde(default)]
     /// The depends on value.
+    #[serde(alias = "task_depends_on")]
     pub depends_on: Vec<String>,
+    /// Optional speculative or parallel execution policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub concurrency: Option<ConcurrencyPolicy>,
     #[serde(default)]
     /// The invariants value.
     pub invariants: Vec<String>,
@@ -615,6 +688,21 @@ pub struct Milestone {
     pub owners: Vec<String>,
     /// The depends on value.
     pub depends_on: Vec<String>,
+    /// Skills that must be installed before milestone work can be dispatched.
+    #[serde(default)]
+    pub required_skills: Vec<String>,
+    /// Repository participants coordinated by this milestone.
+    #[serde(default)]
+    pub repositories: Vec<RepositorySpec>,
+    /// Related milestones whose task states can inform this workflow.
+    #[serde(default)]
+    pub linked_to: Vec<String>,
+    /// Manifest bindings for profile guidance slots.
+    #[serde(default)]
+    pub guidance: BTreeMap<String, String>,
+    /// Optional task scheduling policy.
+    #[serde(default)]
+    pub concurrency: Option<ConcurrencyPolicy>,
     /// The tasks value.
     pub tasks: Vec<TaskSpec>,
     /// Optional milestone status (active, planned, completed, cancelled).
@@ -645,6 +733,21 @@ pub struct AuthoritySnapshot {
     pub milestone_owners: Vec<String>,
     /// The milestone dependencies frontmatter value.
     pub milestone_depends_on: Vec<String>,
+    /// Required skill identities declared by the milestone.
+    #[serde(default)]
+    pub milestone_required_skills: Vec<String>,
+    /// Repository participants declared by the milestone.
+    #[serde(default)]
+    pub milestone_repositories: Vec<RepositorySpec>,
+    /// Linked milestone references.
+    #[serde(default)]
+    pub milestone_linked_to: Vec<String>,
+    /// Milestone guidance slot bindings.
+    #[serde(default)]
+    pub milestone_guidance: BTreeMap<String, String>,
+    /// Milestone concurrency policy.
+    #[serde(default)]
+    pub milestone_concurrency: Option<ConcurrencyPolicy>,
     /// The optional milestone ACDD profile frontmatter value.
     pub milestone_acdd_profile: Option<String>,
     /// The task reference field.
@@ -659,10 +762,22 @@ pub struct AuthoritySnapshot {
     pub task_proof_policy: String,
     /// The task scope field.
     pub task_scope: Vec<String>,
+    /// Task scope extensions admitted after contract acceptance.
+    #[serde(default)]
+    pub task_extended_scope: Vec<String>,
+    /// Public symbols admitted by the task contract.
+    #[serde(default)]
+    pub task_symbols: Vec<String>,
+    /// Public symbols admitted after architect arbitration.
+    #[serde(default)]
+    pub task_extended_symbols: Vec<String>,
     /// The task scope roots field.
     pub task_scope_roots: Vec<String>,
     /// The task dependencies field.
     pub task_depends_on: Vec<String>,
+    /// Task-level scheduling policy.
+    #[serde(default)]
+    pub task_concurrency: Option<ConcurrencyPolicy>,
     /// The task invariants field.
     pub task_invariants: Vec<String>,
 }
@@ -677,6 +792,11 @@ impl AuthoritySnapshot {
             milestone_invariants: milestone.invariants.clone(),
             milestone_owners: milestone.owners.clone(),
             milestone_depends_on: milestone.depends_on.clone(),
+            milestone_required_skills: milestone.required_skills.clone(),
+            milestone_repositories: milestone.repositories.clone(),
+            milestone_linked_to: milestone.linked_to.clone(),
+            milestone_guidance: milestone.guidance.clone(),
+            milestone_concurrency: milestone.concurrency.clone(),
             milestone_acdd_profile: milestone.acdd_profile.clone(),
             task_ref: task.task_ref.clone(),
             task_target: task.target.clone(),
@@ -684,8 +804,12 @@ impl AuthoritySnapshot {
             task_acdd_profile: task.acdd_profile.clone(),
             task_proof_policy: task.proof_policy.clone(),
             task_scope: task.scope.clone(),
+            task_extended_scope: task.extended_scope.clone(),
+            task_symbols: task.symbols.clone(),
+            task_extended_symbols: task.extended_symbols.clone(),
             task_scope_roots: task.scope_roots.clone(),
             task_depends_on: task.depends_on.clone(),
+            task_concurrency: task.concurrency.clone(),
             task_invariants: task.invariants.clone(),
         }
     }
@@ -937,6 +1061,71 @@ impl Milestone {
             .map(|v| serde_yaml::from_value(v.clone()))
             .transpose()?
             .unwrap_or_default();
+        let required_skills: Vec<String> = meta
+            .get("required_skills")
+            .map(|value| serde_yaml::from_value(value.clone()))
+            .transpose()?
+            .unwrap_or_default();
+        let repositories: Vec<RepositorySpec> = meta
+            .get("repositories")
+            .map(|value| serde_yaml::from_value(value.clone()))
+            .transpose()?
+            .unwrap_or_default();
+        let linked_to: Vec<String> = meta
+            .get("linked_to")
+            .map(|value| serde_yaml::from_value(value.clone()))
+            .transpose()?
+            .unwrap_or_default();
+        let guidance: BTreeMap<String, String> = meta
+            .get("guidance")
+            .map(|value| serde_yaml::from_value(value.clone()))
+            .transpose()?
+            .unwrap_or_default();
+        let concurrency: Option<ConcurrencyPolicy> = meta
+            .get("concurrency")
+            .map(|value| serde_yaml::from_value(value.clone()))
+            .transpose()?;
+        validate_concurrency(concurrency.as_ref(), "milestone")?;
+        let mut skill_names = BTreeSet::new();
+        for skill in &required_skills {
+            if skill.trim().is_empty() || !skill_names.insert(skill) {
+                bail!("MILESTONE_PREFLIGHT_FAILED: required_skills must be non-empty and unique");
+            }
+        }
+        for repository in &repositories {
+            match repository {
+                RepositorySpec::Name(name) => valid_identity(name)?,
+                RepositorySpec::Detailed(repository) => {
+                    valid_identity(&repository.name)?;
+                    if let Some(path) = &repository.path {
+                        relative_path(path)?;
+                    }
+                    if let Some(name) = &repository.repository {
+                        valid_identity(name)?;
+                    }
+                    if let Some(project) = &repository.project {
+                        valid_identity(project)?;
+                    }
+                }
+            }
+        }
+        let mut linked_ids = BTreeSet::new();
+        for linked in &linked_to {
+            if linked.trim().is_empty()
+                || !linked
+                    .split('/')
+                    .all(|segment| valid_identity(segment).is_ok())
+                || !linked_ids.insert(linked)
+            {
+                bail!("MILESTONE_PREFLIGHT_FAILED: linked_to entries must be valid and unique milestone references");
+            }
+        }
+        if guidance
+            .iter()
+            .any(|(slot, value)| slot.trim().is_empty() || value.trim().is_empty())
+        {
+            bail!("MILESTONE_PREFLIGHT_FAILED: guidance slot names and values must be non-empty");
+        }
         let mut deferred_defects: Vec<DeferredDefect> = meta
             .get("deferred_defects")
             .map(|v| serde_yaml::from_value(v.clone()))
@@ -1006,11 +1195,21 @@ impl Milestone {
             for path in &task.scope {
                 relative_path(path)?;
             }
+            for path in &task.extended_scope {
+                relative_path(path)?;
+            }
+            for symbol in task.symbols.iter().chain(&task.extended_symbols) {
+                validate_symbol_ref(symbol)?;
+            }
+            validate_concurrency(
+                task.concurrency.as_ref(),
+                &format!("task '{}'", task.task_ref),
+            )?;
             for root in &task.scope_roots {
                 relative_path(root)?;
             }
             if !task.scope_roots.is_empty() {
-                for path in &task.scope {
+                for path in task.scope.iter().chain(&task.extended_scope) {
                     let rel = relative_path(path)?;
                     let inside = task.scope_roots.iter().any(|r| {
                         if let Ok(rel_root) = relative_path(r) {
@@ -1101,6 +1300,11 @@ impl Milestone {
             invariants,
             owners,
             depends_on,
+            required_skills,
+            repositories,
+            linked_to,
+            guidance,
+            concurrency,
             tasks,
             deferred_defects,
         })
@@ -1200,6 +1404,35 @@ pub fn relative_path(value: &str) -> Result<PathBuf> {
         bail!("TASK_SCOPE_INVALID: empty normalized path");
     }
     Ok(normalized)
+}
+
+/// Validate a public API coordinate in the universal `kind:identifier` form.
+pub fn validate_symbol_ref(value: &str) -> Result<()> {
+    let Some((kind, identifier)) = value.split_once(':') else {
+        bail!("TASK_SYMBOL_INVALID: expected kind:identifier, got '{value}'");
+    };
+    if kind.is_empty()
+        || identifier.is_empty()
+        || !kind
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+        || identifier.chars().any(char::is_whitespace)
+        || identifier.contains(':')
+    {
+        bail!("TASK_SYMBOL_INVALID: expected kind:identifier, got '{value}'");
+    }
+    Ok(())
+}
+
+fn validate_concurrency(policy: Option<&ConcurrencyPolicy>, owner: &str) -> Result<()> {
+    if let Some(policy) = policy {
+        if policy.mode == ConcurrencyMode::Speculative
+            && policy.sync_on != Some(ConcurrencySync::Snapshot)
+        {
+            bail!("MILESTONE_PREFLIGHT_FAILED: {owner} speculative concurrency requires sync_on: snapshot");
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn claim_worktree(value: &str) -> Result<PathBuf> {

@@ -651,11 +651,7 @@ pub fn bounded_error(message: &str, budget: usize) -> CallToolResult {
     }
 }
 
-fn trim_page_tails(
-    value: &mut Value,
-    allow_tasks: bool,
-    allow_items: bool,
-) -> bool {
+fn trim_page_tails(value: &mut Value, allow_tasks: bool, allow_items: bool) -> bool {
     let Some(object) = value.as_object_mut() else {
         return false;
     };

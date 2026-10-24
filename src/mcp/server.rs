@@ -14,6 +14,7 @@ const INVENTORY_FRESHNESS_TTL: std::time::Duration = std::time::Duration::from_s
 fn same_request_adapter(left: &scanner::Adapter, right: &scanner::Adapter) -> bool {
     left.digest == right.digest
         && left.response == right.response
+        && left.modules == right.modules
         && left.debug == right.debug
         && left.roots == right.roots
         && left.linked_workspaces == right.linked_workspaces

@@ -251,79 +251,186 @@ receipt:
 
 ```yaml
 task_ref: universal-gate-ast-and-modular-catalog-spec
-target: "Define AST data structures, serde schemas, and field access validators for universal polymorphic gates, policies catalog, reject_routing (scope -> build, symbols -> contract), symmetrical scope and universal symbols boundaries (kind:identifier), guidance slot binding schema (guidance: { slot: key }), manifest-to-gate slot validation with unbound warnings, detailed hitl guidance catalog (hitl.careless, hitl.curious, hitl.pro, hitl.paranoic), by_pattern command dispatch, two-tier scopes, modular subsystem registry with dynamic tool filtering, 96 KiB response budget compliance for modular tools, manifest linked_to milestone metadata, task-level cross-milestone dependencies (task_depends_on), speculative concurrency schema (mode: speculative, sync_on: snapshot), linked milestone task status context injection, composable persistence policies (pre/post/immutable/git_commit_note), on-demand snapshot and rollback safety-net tools, payload overflow limits (git_commit_note.limits.max_bytes: 2048), and architect DAG wave optimization"
+target: 'Define AST data structures, serde schemas, and field access validators for universal polymorphic gates, policies catalog, reject_routing (scope -> build, symbols -> contract), symmetrical scope and universal symbols boundaries (kind:identifier), guidance slot binding schema (guidance: { slot: key }), manifest-to-gate slot validation with unbound warnings, detailed hitl guidance catalog (hitl.careless, hitl.curious, hitl.pro, hitl.paranoic), by_pattern command dispatch, two-tier scopes, modular subsystem registry with dynamic tool filtering, 96 KiB response budget compliance for modular tools, manifest linked_to milestone metadata, task-level cross-milestone dependencies (task_depends_on), speculative concurrency schema (mode: speculative, sync_on: snapshot), linked milestone task status context injection, composable persistence policies (pre/post/immutable/git_commit_note), on-demand snapshot and rollback safety-net tools, payload overflow limits (git_commit_note.limits.max_bytes: 2048), and architect DAG wave optimization'
 proof_policy: seam-test-first
 contract_revision: 1
 depends_on:
-  - upfront-contract-synthesis-and-dag-prioritization
+- upfront-contract-synthesis-and-dag-prioritization
 scope:
-  - src/core/config.rs
-  - src/core/response.rs
-  - src/core/tasks/mod.rs
-  - src/core/tasks/profile.rs
-  - src/core/tasks/gates.rs
-  - src/core/tasks/catalog.rs
-  - src/core/tasks/manifest.rs
-  - src/core/tasks/acdd.default.yaml
-  - src/cli/mod.rs
-  - src/cli/validate.rs
-  - src/mcp/server.rs
-  - src/mcp/response.rs
-  - src/mcp/tools.rs
-  - src/engine/tasks/mod.rs
-  - src/engine/tasks/context.rs
-  - tests/acdd/gates_ast.rs
-  - docs/future/references/acdd_profile.v2.yaml.example
-  - skills/contextunity-forge/references/acdd_profile.yaml.example
-  - docs/future/adr/0020-hierarchical-acdd-gates-and-milestone-orchestration.md
-status: planned
+- src/core/config.rs
+- src/core/response.rs
+- src/core/tasks/mod.rs
+- src/core/tasks/profile.rs
+- src/core/tasks/gates.rs
+- src/core/tasks/catalog.rs
+- src/core/tasks/manifest.rs
+- src/core/tasks/acdd.default.yaml
+- src/cli/mod.rs
+- src/cli/validate.rs
+- src/mcp/server.rs
+- src/mcp/response.rs
+- src/mcp/tools.rs
+- src/engine/tasks/mod.rs
+- src/engine/tasks/context.rs
+- tests/acdd/gates_ast.rs
+- docs/future/references/acdd_profile.v2.yaml.example
+- skills/contextunity-forge/references/acdd_profile.yaml.example
+- docs/future/adr/0020-hierarchical-acdd-gates-and-milestone-orchestration.md
+status: completed
 subtasks:
-  - subtask_ref: universal-gate-ast-serde
-    title: "Implement universal polymorphic GateDef AST data structures with Serde serialization"
-  - subtask_ref: zero-language-hardcode-profile-invariant
-    title: "Enforce INV-UNIVERSAL-PROFILE-ZERO-LANGUAGE-HARDCODE in embedded default profile"
-  - subtask_ref: fail-fast-document-validator-cli
-    title: "Implement fail-fast CLI document and manifest schema validator command"
-  - subtask_ref: command-catalog-by-pattern-schema
-    title: "Define declarative command catalog schema with by_pattern polyglot dispatch"
-  - subtask_ref: policies-catalog-schema-and-enforcement-validator
-    title: "Define policies catalog schema and machine-level gate enforcement validators"
-  - subtask_ref: two-tier-scope-governance-schema
-    title: "Define two-tier scope governance schema (scope and extended_scope) in TaskSpec"
-  - subtask_ref: reject-routing-and-symbols-confinement-schema
-    title: "Implement reject_routing and universal symbols (kind:identifier) schema in gate definitions"
-  - subtask_ref: guidance-slot-binding-and-hitl-catalog
-    title: "Implement guidance slot binding schema and detailed 4-tier HITL guidance catalog"
-  - subtask_ref: gate-field-access-matrix-validator
-    title: "Implement gate driver field validation matrix enforcing mutually exclusive gate kinds"
-  - subtask_ref: unified-guidance-catalog-schema
-    title: "Define modular guidance catalog schema and dynamic prompt compilation rules"
-  - subtask_ref: required-skills-manifest-serde-and-validator
-    title: "Add required_skills frontmatter serde schema and validator to MilestoneManifest"
-  - subtask_ref: multi-repo-manifest-repositories-serde
-    title: "Implement multi-repository coordination schema and repositories manifest field"
-  - subtask_ref: speculative-concurrency-depends-on-schema
-    title: "Define speculative concurrency mode and snapshot-sync dependencies schema"
-  - subtask_ref: modular-subsystem-registry-and-dynamic-tool-filter
-    title: "Implement modular subsystem registry with dynamic MCP tool registration and filtering"
-  - subtask_ref: context-aware-guidance-adapter
-    title: "Implement context-aware workflow guidance adapter dynamically adapting to enabled subsystems"
-  - subtask_ref: modular-subsystem-response-adaptation
-    title: "Ensure modular tool responses strictly comply with 96 KiB response budget"
-  - subtask_ref: manifest-linked-milestones-and-task-dependencies-schema
-    title: "Define linked_to milestones and cross-milestone task_depends_on schema"
-  - subtask_ref: linked-milestones-context-and-guidance-injection
-    title: "Implement context injection for linked milestone task status and blockers"
-  - subtask_ref: composable-persistence-policy-schema
-    title: "Implement composable persistence policy schema (pre/post/immutable/git_commit_note)"
-  - subtask_ref: payload-overflow-limits-and-git-commit-note-schema
-    title: "Implement 2 KiB payload overflow guard and git commit note schema"
-  - subtask_ref: ondemand-snapshot-and-rollback-tools
-    title: "Implement on-demand task snapshot and rollback tool schemas and safety nets"
-  - subtask_ref: architect-synthesis-dag-optimizer
-    title: "Implement topological wave optimization schema"
-  - subtask_ref: promote-future-profile-v2-example
-    title: "Promote docs/future/references/acdd_profile.v2.yaml.example to skills/contextunity-forge/references/acdd_profile.yaml.example after gate AST validation passes"
+- subtask_ref: universal-gate-ast-serde
+  title: Implement universal polymorphic GateDef AST data structures with Serde serialization
+  status: ready
+  evidence: null
+- subtask_ref: zero-language-hardcode-profile-invariant
+  title: Enforce INV-UNIVERSAL-PROFILE-ZERO-LANGUAGE-HARDCODE in embedded default profile
+  status: ready
+  evidence: null
+- subtask_ref: fail-fast-document-validator-cli
+  title: Implement fail-fast CLI document and manifest schema validator command
+  status: ready
+  evidence: null
+- subtask_ref: command-catalog-by-pattern-schema
+  title: Define declarative command catalog schema with by_pattern polyglot dispatch
+  status: ready
+  evidence: null
+- subtask_ref: policies-catalog-schema-and-enforcement-validator
+  title: Define policies catalog schema and machine-level gate enforcement validators
+  status: ready
+  evidence: null
+- subtask_ref: two-tier-scope-governance-schema
+  title: Define two-tier scope governance schema (scope and extended_scope) in TaskSpec
+  status: ready
+  evidence: null
+- subtask_ref: reject-routing-and-symbols-confinement-schema
+  title: Implement reject_routing and universal symbols (kind:identifier) schema in gate definitions
+  status: ready
+  evidence: null
+- subtask_ref: guidance-slot-binding-and-hitl-catalog
+  title: Implement guidance slot binding schema and detailed 4-tier HITL guidance catalog
+  status: ready
+  evidence: null
+- subtask_ref: gate-field-access-matrix-validator
+  title: Implement gate driver field validation matrix enforcing mutually exclusive gate kinds
+  status: ready
+  evidence: null
+- subtask_ref: unified-guidance-catalog-schema
+  title: Define modular guidance catalog schema and dynamic prompt compilation rules
+  status: ready
+  evidence: null
+- subtask_ref: required-skills-manifest-serde-and-validator
+  title: Add required_skills frontmatter serde schema and validator to MilestoneManifest
+  status: ready
+  evidence: null
+- subtask_ref: multi-repo-manifest-repositories-serde
+  title: Implement multi-repository coordination schema and repositories manifest field
+  status: ready
+  evidence: null
+- subtask_ref: speculative-concurrency-depends-on-schema
+  title: Define speculative concurrency mode and snapshot-sync dependencies schema
+  status: ready
+  evidence: null
+- subtask_ref: modular-subsystem-registry-and-dynamic-tool-filter
+  title: Implement modular subsystem registry with dynamic MCP tool registration and filtering
+  status: ready
+  evidence: null
+- subtask_ref: context-aware-guidance-adapter
+  title: Implement context-aware workflow guidance adapter dynamically adapting to enabled subsystems
+  status: ready
+  evidence: null
+- subtask_ref: modular-subsystem-response-adaptation
+  title: Ensure modular tool responses strictly comply with 96 KiB response budget
+  status: ready
+  evidence: null
+- subtask_ref: manifest-linked-milestones-and-task-dependencies-schema
+  title: Define linked_to milestones and cross-milestone task_depends_on schema
+  status: ready
+  evidence: null
+- subtask_ref: linked-milestones-context-and-guidance-injection
+  title: Implement context injection for linked milestone task status and blockers
+  status: ready
+  evidence: null
+- subtask_ref: composable-persistence-policy-schema
+  title: Implement composable persistence policy schema (pre/post/immutable/git_commit_note)
+  status: ready
+  evidence: null
+- subtask_ref: payload-overflow-limits-and-git-commit-note-schema
+  title: Implement 2 KiB payload overflow guard and git commit note schema
+  status: ready
+  evidence: null
+- subtask_ref: ondemand-snapshot-and-rollback-tools
+  title: Implement on-demand task snapshot and rollback tool schemas and safety nets
+  status: ready
+  evidence: null
+- subtask_ref: architect-synthesis-dag-optimizer
+  title: Implement topological wave optimization schema
+  status: ready
+  evidence: null
+- subtask_ref: promote-future-profile-v2-example
+  title: Promote docs/future/references/acdd_profile.v2.yaml.example to skills/contextunity-forge/references/acdd_profile.yaml.example after gate AST validation passes
+  status: ready
+  evidence: null
+receipt:
+  contract_revision: 1
+  passed_at: 2026-10-24T06:53:11.028570505+00:00
+  evidence:
+    command_proof:
+      command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --test acdd
+      exit_code: 0
+      tests_passed: 120
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: Candidate 25e77d96c4703fbec0c71722d53322fb015e3348 matches the current worktree; all 21 snapshot blobs are in the admitted Task1 scope/extensions; git diff --check is clean.
+        claims:
+          applicable: true
+          evidence: 'The candidate closes all historical implementation findings. The latest three paths are covered by production MCP seams: target adapter governs calls in both configuration directions; nonbundled task_claim and task_manage inspect prune disabled blackboard guidance; docs-only query removes codemap recovery advice while retaining docs pages. Earlier validator, modular registry, universal profile, named snapshot/rollback, and context preflight findings remain covered by source and existing tests.'
+        concurrency:
+          applicable: true
+          evidence: Direct task_claim and task_manage(next) preflight disabled requirements before store mutation; production seam verifies task claim state and planned milestone state remain unchanged. Named rollback retains per-worktree locking and HEAD/index/worktree fencing.
+        project_isolation:
+          applicable: true
+          evidence: call_tool resolves and loads the selected worktree adapter before disabled-tool checks; MCP seam proves primary full/selected minimal rejects and primary minimal/selected full succeeds. Task context uses owning workspace module settings.
+        administration:
+          applicable: true
+          evidence: Profile and CLI validators, named task_manage snapshot/rollback, and receipt delivery boundaries remain intact. No receipt, migration, hook, credential, or protected milestone changes are present. Two reference-page findings are deferred to the milestone documentation scan.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-UNIVERSAL-GATE-POLYMORPHISM: Every workflow node is a Gate; execution mode is determined by driver fields: Agent Gate (role), Command Gate (command), or Container Gate (gates).'
+    - 'INV-ZERO-ARGUMENT-SUBMISSION: Automated gate submissions (any gate configured with proof: command, contract, or delivery) require zero manual JSON arguments; Forge autonomously compiles proof from gate execution traces and Git tree state. Cognitive review gates (proof: review) strictly require typed review judgments (verdict, reviewer, contours_reviewed, extended_scope_review).'
+    - 'INV-IN-PLACE-LIFECYCLE: Task and milestone execution supports in-place operation (--in-place / worktree: ".") without mandatory worktree or branch isolation.'
+    - 'INV-SILENT-ENGINE-TELEMETRY: Gate transitions and command execution traces are automatically recorded in SQLite; automated engine progress logging to task_blackboard is suppressed, preserving blackboard bandwidth for RFCs, synthesized contract matrices, and human escalations.'
+    - 'INV-SEAM-ENGINE-RED-GREEN: Seam Engine automatically tracks contract runtime failure (matching configured expected_failure.exit_codes) to implementation pass (exit 0) via gate execution traces.'
+    - 'INV-SEAM-REACHABILITY-RESILIENCE: Static seam verification proves the current test-to-production connection through imports, re-exports, and bounded test-helper paths; stale source/index evidence produces an actionable stale-index diagnostic. An unresolved expression alone does not prove reachability.'
+    - 'INV-REQUIRED-SKILLS-GOVERNANCE: Manifests declare required_skills in frontmatter; milestone init fails closed (MILESTONE_PREFLIGHT_FAILED) before agent launch if any declared skill is absent.'
+    - 'INV-PREFLIGHT-MILESTONE-INIT: milestone init validates manifest syntax, checks required_skills on host, and pre-scaffolds base worktrees across declared repositories upfront before agent dispatch.'
+    - 'INV-MULTI-REPO-MANIFEST-DECLARATION: Multi-repository workflows declare participant repositories in manifest frontmatter; the engine coordinates cross-repo worktree initialization and compound breadcrumbs.'
+    - 'INV-EXTENDED-SCOPE-MANIFEST-SYNC: task extend-scope writes atomically to both SQLite and the milestone markdown manifest; review proof strictly requires extended_scope_review approval before deliver.'
+    - 'INV-BREADCRUMB-CHECKPOINT-UNIFICATION: Checkpoints are stored in SQLite gate_checkpoints keyed directly by turn breadcrumb locators; legacy .forge/checkpoints.json is eliminated.'
+    - 'INV-TRANSITION-TRACE-PERSISTENCE: Upon milestone handoff (INV-HANDOFF-SQLITE-PRUNING), completed milestone tasks, claims, revisions, gate transitions, execution traces, checkpoints, and task blackboard rows are purged from SQLite; milestone_tombstones is retained to keep archived dependencies satisfiable; canonical durable records reside permanently in docs/milestones/archive/*.md and Git history.'
+    - 'INV-PRE-DOC-AUTONOMOUS-VERIFICATION: Milestone verification executes as a container gate with automated checks, review, fallback repair subgraph, and autonomous delivery before documentation.'
+    - 'INV-MARKDOWN-FIRST-ERGONOMICS: Agent messages, guidance, and status reports follow Milestone 054 Markdown-first principles: clickable coordinates, callout blockers, compact status tables, zero dead metadata.'
+    - 'INV-MODULAR-SUBSYSTEM-DECOUPLING: Forge MCP decomposes functionality into 5 independent subsystems (codemap, acdd, blackboard, docs, checkpoints) configurable via forge-mcp.yaml modules/profile, with dynamic MCP tool registration and zero initialization cost for disabled subsystems.'
+    - 'INV-CONTEXT-AWARE-GUIDANCE-ADAPTATION: workflow_guidance, prompts, and gate verification dynamically adapt to enabled subsystems, suppressing dead tool references, omitting unused guidance structures, and falling back gracefully when graph or blackboard features are disabled.'
+    - 'INV-PAYLOAD-OVERFLOW-GUARD: Custom metadata, git_commit_note payloads (rendered as Markdown by default, or JSON), and in-database trace snippets attached to tasks are bounded by a 2 KiB limit (configurable via git_commit_note.limits.max_bytes / limits.max_metadata_bytes) with complete command outputs written to disk logs, protecting the 96 KiB MCP response budget and preventing Git note bloat.'
+    - 'INV-UNIVERSAL-PROFILE-ZERO-LANGUAGE-HARDCODE: The embedded default profile (acdd.default.yaml) and profile templates must remain strictly language-agnostic. Gates and commands must not hardcode Rust-specific binaries (such as cargo clippy or cargo test); all verification commands must use pattern-based dispatch (by_pattern) matching project file extensions or generic command identifiers. Guidance texts must not mention specific languages or compilers.'
+    - 'INV-TWO-LOOP-ACDD-GOVERNANCE: Task execution strictly distinguishes between scope: (files on disk, extensible by builder) and symbols: (admitted public interface deltas, strictly governed by architect). Review failures route via reject_routing (scope -> build, symbols -> contract). Unadmitted public interface mutations are prohibited from bypassing the Long Outer Loop (architect arbitration -> seam contract test -> builder).'
+    - 'INV-GUIDANCE-SLOT-BINDING: Gates declare parameterized guidance slots (e.g. guidance: [task.contract, hitl]), and milestones bind them in manifest frontmatter (guidance: { hitl: pro }). The engine resolves slot hitl with value pro via format!("{}.{}", slot, value) -> hitl.pro (or literal dotted keys). The validator verifies slot matching on milestone init/check, emitting warnings for unbound slots and falling back to profile defaults.'
+    architectural_notes:
+    - 'deferred: {"candidate_baseline_head":"ad339da22a33bf1feb7e5ee479ec5940e048fa8c","finding":"CLI task actions are modeled separately in src/cli/task.rs; adding snapshot/rollback there would expose the same API from CLI.","evidence":"Forge task_manage(action=extend_scope, paths=[src/cli/task.rs]) returned TASK_SCOPE_CONFLICT because that path belongs to scope-extension-manifest-sync-and-review-audit.","deferred_work":"Keep Task1''s admitted MCP task_manage snapshot/rollback surface complete. Route CLI task snapshot/rollback through the owning scope-extension-manifest-sync-and-review-audit task when it becomes eligible, or reconcile during milestone docs/integration if its contract includes that surface.","next_owner":"scope-extension-manifest-sync-and-review-audit","next_action":"Confirm CLI task command surface when that task claims its CLI scope."}'
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Admitted Symbols (Wave 1)

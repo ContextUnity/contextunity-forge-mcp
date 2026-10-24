@@ -209,6 +209,10 @@ pub enum ManageAction {
     Inspect,
     /// Delete a task from SQLite.
     Delete,
+    /// Save a named snapshot of the current worktree.
+    Snapshot,
+    /// Restore the current worktree from a named snapshot.
+    Rollback,
     /// Extend the allowed file scope paths for a task.
     ExtendScope,
     /// Add an iterative subtask with subtask_ref and title to an existing task.
@@ -237,10 +241,12 @@ pub struct Manage {
     pub worktree: Option<String>,
     /// Workspace or repository name (defaults to primary configured workspace).
     pub workspace: Option<String>,
-    /// Administrative action to perform: next, inspect, sync, create, delete, extend_scope, subtask_add, subtask_update, subtask_list, reset, reopen, context.
+    /// Administrative action to perform: next, inspect, sync, create, delete, snapshot, rollback, extend_scope, subtask_add, subtask_update, subtask_list, reset, reopen, context.
     pub action: ManageAction,
     /// Task identifier for inspect, delete, subtask operations, reset, or reopen.
     pub task_id: Option<String>,
+    /// Name for a snapshot or rollback operation.
+    pub name: Option<String>,
     /// Milestone reference for sync, create, or milestone-scoped delete: relative file path (e.g. 'docs/milestones/030-*.md'), numeric prefix ('030'), milestone ID ('m-...'), or slug.
     pub milestone_ref: Option<String>,
     /// Task reference slug for task creation.

@@ -46,6 +46,12 @@
 
 version: 2
 
+dag_optimization:
+  enabled: true
+  strategy: topological
+  prioritize_contracts: true
+  shared_helpers_first: true
+
 # =============================================================================
 # SHARED DIAGNOSTIC ERROR CATALOG
 # Keys must match AcddErrorCode identifiers exactly across CLI, MCP, and profile

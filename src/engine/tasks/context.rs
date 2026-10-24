@@ -1,3 +1,4 @@
+use crate::db::tasks_store::Task;
 use crate::engine::tasks::workspaces::Workspace;
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
@@ -408,28 +409,238 @@ fn scoped_commands(
     targets
         .into_iter()
         .flat_map(|(path, source)| {
-            selected_commands.iter().map(move |(name, definition)| {
-                let command = definition.command();
-                let suffix = if command.contains("cargo") {
-                    cargo_test_target(root, &json!(path))
-                        .map(|(_, target)| target)
-                        .unwrap_or_else(|| path.clone())
-                } else {
-                    path.clone()
-                };
-                json!({
-                    "name": name,
-                    "source": source,
-                    "test_path": path.clone(),
-                    "command": format!("{command} {suffix}"),
+            selected_commands
+                .iter()
+                .filter_map(move |(name, definition)| {
+                    let command = definition.command_for_path(&path)?;
+                    let suffix = if command.contains("{scope_target}") {
+                        path.clone()
+                    } else if command.contains("cargo")
+                        && Path::new(&path).extension().and_then(|ext| ext.to_str()) == Some("rs")
+                    {
+                        cargo_test_target(root, &json!(path))
+                            .map(|(_, target)| target)
+                            .unwrap_or_else(|| path.clone())
+                    } else {
+                        path.clone()
+                    };
+                    let command = if command.contains("{scope_target}") {
+                        command.replace("{scope_target}", &suffix)
+                    } else {
+                        format!("{command} {suffix}")
+                    };
+                    Some(json!({
+                        "name": name,
+                        "source": source,
+                        "test_path": path.clone(),
+                        "command": command,
+                    }))
                 })
-            })
         })
         .take(30)
         .collect()
 }
 
+fn linked_milestone_context(
+    root: &Path,
+    details: &Value,
+    dependencies: &[String],
+) -> Result<Vec<Value>> {
+    let authority = details.get("authority_snapshot");
+    let mut references = authority
+        .and_then(|snapshot| snapshot.get("milestone_linked_to"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>();
+    for dependency in dependencies {
+        if let Some((parent, _)) = dependency.rsplit_once(':') {
+            if let Some(milestone) = parent.rsplit('/').next() {
+                if milestone.starts_with("m-") {
+                    references.insert(milestone.to_owned());
+                }
+            }
+        }
+    }
+    if references.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let registry = super::workspaces::Registry::load(root)?;
+    let mut linked = Vec::new();
+    for reference in references {
+        let (workspace, manifest_ref) = match registry.resolve_milestone(Some("all"), &reference) {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                linked.push(json!({
+                    "reference": reference,
+                    "available": false,
+                    "error": truncate_chars(&error.to_string(), 240),
+                }));
+                continue;
+            }
+        };
+        let manifest_path = crate::core::tasks::confined_path(&workspace.root, &manifest_ref)?;
+        let manifest_text = std::fs::read_to_string(&manifest_path)?;
+        let archived = manifest_path
+            .components()
+            .any(|component| component.as_os_str() == "archive");
+        let status =
+            crate::core::tasks::Milestone::status_from_frontmatter(&manifest_text, archived)?;
+        let milestone_id = manifest_text
+            .strip_prefix("---\n")
+            .and_then(|frontmatter| frontmatter.split_once("\n---\n"))
+            .and_then(|(frontmatter, _)| {
+                serde_yaml::from_str::<serde_yaml::Value>(frontmatter).ok()
+            })
+            .and_then(|frontmatter| {
+                frontmatter
+                    .get("id")
+                    .and_then(serde_yaml::Value::as_str)
+                    .map(str::to_owned)
+            })
+            .unwrap_or_else(|| reference.clone());
+        let store = registry.open(workspace)?;
+        let tasks = store.list(Some(&manifest_ref), "all", None)?;
+        let task_states = tasks
+            .iter()
+            .take(100)
+            .map(|task| {
+                json!({
+                    "task_id": task.task_id,
+                    "task_ref": task.spec.task_ref,
+                    "status": task.status,
+                    "stage": task.stage,
+                })
+            })
+            .collect::<Vec<_>>();
+        let dependency_states = dependencies
+            .iter()
+            .filter_map(|dependency| {
+                let requested_ref = dependency.rsplit_once(':').map(|(_, task_ref)| task_ref)?;
+                let task = tasks.iter().find(|task| {
+                    task.task_id == *dependency || task.spec.task_ref == requested_ref
+                })?;
+                Some(json!({
+                    "dependency": dependency,
+                    "task_id": task.task_id,
+                    "task_ref": task.spec.task_ref,
+                    "status": task.status,
+                    "stage": task.stage,
+                    "blocking": task.status != "completed",
+                }))
+            })
+            .collect::<Vec<_>>();
+        linked.push(json!({
+            "reference": reference,
+            "milestone_id": milestone_id,
+            "status": status,
+            "workspace": workspace.name,
+            "manifest_ref": manifest_ref,
+            "available": true,
+            "task_count": tasks.len(),
+            "tasks": task_states,
+            "dependency_states": dependency_states,
+        }));
+    }
+    Ok(linked)
+}
+
 /// Builds the comprehensive, zero-shot task context bundle.
+fn active_gate_index(
+    profile: &crate::core::tasks::profile::GateProfile,
+    stage: &str,
+) -> Result<usize> {
+    if stage == "completed" {
+        return Ok(profile.gates.len());
+    }
+    profile.index_of(stage).with_context(|| {
+        format!(
+            "TASK_STAGE_UNKNOWN: '{stage}' is not in the active profile; choose one of: {}",
+            profile
+                .gates
+                .iter()
+                .map(|gate| gate.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    })
+}
+
+fn validate_gate_requirements(
+    profile: &crate::core::tasks::profile::GateProfile,
+    active_index: usize,
+    modules: &crate::core::tasks::catalog::SubsystemRegistry,
+) -> Result<()> {
+    for required in &profile.modules.required {
+        if !modules.is_enabled(required) {
+            anyhow::bail!(
+                "FEATURE_REQUIRED_BY_PROFILE: the active task profile requires disabled Forge subsystem '{required}'"
+            );
+        }
+    }
+    if let Some(gate) = profile.gates.get(active_index) {
+        for tool in &gate.tools {
+            if let Some(subsystem) =
+                crate::core::tasks::catalog::SubsystemRegistry::subsystem_for_tool(tool)
+            {
+                if !modules.is_enabled(subsystem) {
+                    anyhow::bail!(
+                        "FEATURE_REQUIRED_BY_PROFILE: active gate '{}' requires tool '{}' from disabled Forge subsystem '{subsystem}'",
+                        gate.id,
+                        tool
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Reject a claim whose active profile gate depends on a disabled workspace subsystem.
+pub(super) fn validate_claim_gate_requirements(workspace: &Workspace, task: &Task) -> Result<()> {
+    let details = serde_json::to_value(task)?;
+    let profile = workspace.profile_for_details(&details)?;
+    let adapter = crate::engine::scanner::load_adapter(&workspace.root, None)
+        .context("failed to resolve workspace subsystem configuration")?;
+    let stage = if task.status == "completed" {
+        "completed"
+    } else {
+        task.stage.as_str()
+    };
+    let active_index = active_gate_index(&profile, stage)?;
+    validate_gate_requirements(&profile, active_index, &adapter.modules)
+}
+
+fn prune_blackboard_guidance(guidance: &mut Value) {
+    let Some(guidance_map) = guidance.as_object_mut() else {
+        return;
+    };
+    for field in ["steps", "rules", "subtask_dod"] {
+        if let Some(items) = guidance_map.get_mut(field).and_then(Value::as_array_mut) {
+            items.retain(|item| {
+                !item
+                    .as_str()
+                    .is_some_and(|instruction| instruction.contains("task_blackboard"))
+            });
+        }
+    }
+}
+
+/// Remove blackboard instructions from task details when the owning workspace disables it.
+pub(super) fn adapt_workspace_guidance(workspace: &Workspace, mut details: Value) -> Result<Value> {
+    let adapter = crate::engine::scanner::load_adapter(&workspace.root, None)
+        .context("failed to resolve workspace subsystem configuration")?;
+    if !adapter.modules.is_enabled("blackboard") {
+        if let Some(guidance) = details.get_mut("workflow_guidance") {
+            prune_blackboard_guidance(guidance);
+        }
+    }
+    Ok(details)
+}
+
 pub(super) fn context_bundle(
     root: &Path,
     workspace: &Workspace,
@@ -437,6 +648,9 @@ pub(super) fn context_bundle(
     mut details: Value,
 ) -> Result<Value> {
     let profile = workspace.profile_for_details(&details)?;
+    let adapter = crate::engine::scanner::load_adapter(&workspace.root, None)
+        .context("failed to resolve workspace subsystem configuration")?;
+    let modules = adapter.modules;
     let stage = if details.get("status").and_then(Value::as_str) == Some("completed") {
         "completed"
     } else {
@@ -445,22 +659,11 @@ pub(super) fn context_bundle(
             .and_then(Value::as_str)
             .context("task stage missing")?
     };
-    let active_index = if stage == "completed" {
-        profile.gates.len()
-    } else {
-        profile.index_of(stage).with_context(|| {
-            format!(
-                "TASK_STAGE_UNKNOWN: '{stage}' is not in the active profile; choose one of: {}",
-                profile
-                    .gates
-                    .iter()
-                    .map(|gate| gate.id.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-        })?
-    };
+    let active_index = active_gate_index(&profile, stage)?;
     let active_gate = profile.gates.get(active_index);
+    validate_gate_requirements(&profile, active_index, &modules)?;
+    let codemap_enabled = modules.is_enabled("codemap");
+    let blackboard_enabled = modules.is_enabled("blackboard");
     let proof_kind = active_gate.and_then(|gate| gate.proof.kind());
     let gate_history = details
         .get("gates")
@@ -506,14 +709,28 @@ pub(super) fn context_bundle(
         .unwrap_or_default();
 
     // 1. Scope-linked document context is grounded in current indexed graph edges.
-    let (adrs, governing_invariants) = query_indexed_context(&workspace.root, root, &scope);
+    let (adrs, governing_invariants) = if codemap_enabled {
+        query_indexed_context(&workspace.root, root, &scope)
+    } else {
+        (Vec::new(), empty_governing_invariants())
+    };
 
     // 2. Scope symbols skeleton from code map
-    let scope_symbols = query_scope_symbols(&workspace.root, root, &scope);
+    let scope_symbols = if codemap_enabled {
+        query_scope_symbols(&workspace.root, root, &scope)
+    } else {
+        Vec::new()
+    };
 
     // 3. Covering test seams
-    let covering_tests = find_covering_tests(&workspace.root, root, &scope);
-    let external_callers = find_external_callers(&workspace.root, root, &scope);
+    let (covering_tests, external_callers) = if codemap_enabled {
+        (
+            find_covering_tests(&workspace.root, root, &scope),
+            find_external_callers(&workspace.root, root, &scope),
+        )
+    } else {
+        (Vec::new(), Vec::new())
+    };
 
     // Select proof context by configured gate taxonomy and references.
     let contract_seam_test = profile
@@ -585,18 +802,27 @@ pub(super) fn context_bundle(
         .and_then(|s| s.get("depends_on"))
         .cloned()
         .unwrap_or_else(|| json!([]));
+    let dependency_refs = depends_on
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let linked_milestones = linked_milestone_context(root, &details, &dependency_refs)?;
     let receipt = details.get("receipt").cloned();
 
     // 4. Active blackboard messages (bounded to 15 recent messages, with max 500-char payload and source tags)
-    let blackboard_messages: Vec<Value> = {
-        let registry = super::workspaces::Registry::load(root)?;
-        let store = workspace.open(&registry.database)?;
-        let milestone_ref_str = details
-            .get("milestone_ref")
-            .and_then(|v| v.as_str())
-            .and_then(|m| store.milestone_scope_ref(m).ok());
-        let milestone_prefix = task_id.split_once(':').map(|(p, _)| format!("{p}:"));
-        let mut stmt = store.connection.prepare(
+    let blackboard_messages: Option<Vec<Value>> = if blackboard_enabled {
+        Some({
+            let registry = super::workspaces::Registry::load(root)?;
+            let store = workspace.open(&registry.database)?;
+            let milestone_ref_str = details
+                .get("milestone_ref")
+                .and_then(|v| v.as_str())
+                .and_then(|m| store.milestone_scope_ref(m).ok());
+            let milestone_prefix = task_id.split_once(':').map(|(p, _)| format!("{p}:"));
+            let mut stmt = store.connection.prepare(
             "SELECT id, task_id, subtask_ref, gate, author, topic, payload, created_at FROM task_blackboard \
              WHERE (task_id = ?1 \
                 OR (?2 IS NOT NULL AND milestone_ref = ?2 AND task_id IS NULL) \
@@ -604,56 +830,80 @@ pub(super) fn context_bundle(
              AND (gate IS NULL OR gate = ?4) \
              ORDER BY created_at DESC, id DESC LIMIT 15",
         )?;
-        let mut msgs = stmt
-            .query_map(
-                rusqlite::params![task_id, milestone_ref_str, milestone_prefix, stage],
-                |row| {
-                    let id = row.get::<_, u64>(0)?;
-                    let msg_task_id = row.get::<_, Option<String>>(1)?;
-                    let msg_subtask_ref = row.get::<_, Option<String>>(2)?;
-                    let gate = row.get::<_, Option<String>>(3)?;
-                    let author = row.get::<_, String>(4)?;
-                    let topic = row.get::<_, String>(5)?;
-                    let raw_payload: String = row.get(6)?;
-                    let created_at = row.get::<_, i64>(7)?;
-                    let payload = truncate_chars(&raw_payload, 500);
+            let mut msgs = stmt
+                .query_map(
+                    rusqlite::params![task_id, milestone_ref_str, milestone_prefix, stage],
+                    |row| {
+                        let id = row.get::<_, u64>(0)?;
+                        let msg_task_id = row.get::<_, Option<String>>(1)?;
+                        let msg_subtask_ref = row.get::<_, Option<String>>(2)?;
+                        let gate = row.get::<_, Option<String>>(3)?;
+                        let author = row.get::<_, String>(4)?;
+                        let topic = row.get::<_, String>(5)?;
+                        let raw_payload: String = row.get(6)?;
+                        let created_at = row.get::<_, i64>(7)?;
+                        let payload = truncate_chars(&raw_payload, 500);
 
-                    let scope = match msg_task_id.as_deref() {
-                        None => "milestone",
-                        Some(t) if t == task_id => {
-                            if msg_subtask_ref.is_some() {
-                                "subtask"
-                            } else {
-                                "task"
+                        let scope = match msg_task_id.as_deref() {
+                            None => "milestone",
+                            Some(t) if t == task_id => {
+                                if msg_subtask_ref.is_some() {
+                                    "subtask"
+                                } else {
+                                    "task"
+                                }
                             }
-                        }
-                        Some(_) => "sibling",
-                    };
+                            Some(_) => "sibling",
+                        };
 
-                    Ok(json!({
-                        "id": id,
-                        "scope": scope,
-                        "task_id": msg_task_id,
-                        "subtask_ref": msg_subtask_ref,
-                        "gate": gate,
-                        "author": author,
-                        "topic": topic,
-                        "payload": payload,
-                        "created_at": created_at,
-                    }))
-                },
-            )?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        msgs.reverse();
-        msgs
+                        Ok(json!({
+                            "id": id,
+                            "scope": scope,
+                            "task_id": msg_task_id,
+                            "subtask_ref": msg_subtask_ref,
+                            "gate": gate,
+                            "author": author,
+                            "topic": topic,
+                            "payload": payload,
+                            "created_at": created_at,
+                        }))
+                    },
+                )?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            msgs.reverse();
+            msgs
+        })
+    } else {
+        None
     };
 
     // 5. Gate-aware workflow guidance and subtask DoD
-    let recommended_tools = profile
+    let requested_tools = profile
         .by_stage(stage)
         .map(|gate| gate.tools.clone())
         .unwrap_or_else(|| profile.completed.tools.clone());
+    let recommended_tools = crate::core::tasks::catalog::filter_subsystem_tools(
+        requested_tools.iter().map(String::as_str),
+        &modules,
+    )
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    let guidance_bindings: BTreeMap<String, String> = details
+        .get("authority_snapshot")
+        .and_then(|snapshot| snapshot.get("milestone_guidance"))
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()?
+        .unwrap_or_default();
+    let guidance_slot_warnings = profile.validate_guidance_bindings(&guidance_bindings)?;
+    let resolved_guidance = active_gate
+        .map(|gate| profile.resolve_gate_guidance(gate, &guidance_bindings))
+        .unwrap_or_default();
     let mut guidance = details["workflow_guidance"].clone();
+    if !blackboard_enabled {
+        prune_blackboard_guidance(&mut guidance);
+    }
     if let Some(guidance_map) = guidance.as_object_mut() {
         let steps = guidance_map
             .get("steps")
@@ -662,29 +912,45 @@ pub(super) fn context_bundle(
         guidance_map.insert("stage".into(), json!(stage));
         guidance_map.insert("recommended_tools".into(), json!(recommended_tools));
         guidance_map.insert("actionable_steps".into(), steps);
-        guidance_map.insert(
-            "subtask_dod".into(),
-            json!(workspace.gates.subtask_dod.clone()),
-        );
-        let targeted_messages = blackboard_messages
+        let subtask_dod = workspace
+            .gates
+            .subtask_dod
             .iter()
-            .filter(|message| message.get("gate").and_then(Value::as_str) == Some(stage))
+            .filter(|criterion| blackboard_enabled || !criterion.contains("task_blackboard"))
             .cloned()
             .collect::<Vec<_>>();
+        guidance_map.insert("subtask_dod".into(), json!(subtask_dod));
+        let targeted_messages = blackboard_messages.as_ref().map(|messages| {
+            messages
+                .iter()
+                .filter(|message| message.get("gate").and_then(Value::as_str) == Some(stage))
+                .cloned()
+                .collect::<Vec<_>>()
+        });
         guidance_map.insert("blackboard_messages".into(), json!(targeted_messages));
         guidance_map.insert(
             "scoped_commands".into(),
-            json!(scoped_commands(
-                details
-                    .get("worktree")
-                    .and_then(Value::as_str)
-                    .map(Path::new)
-                    .unwrap_or(&workspace.root),
-                &profile.commands,
-                contract_seam_test.as_ref(),
-                &covering_tests,
-            )),
+            json!(if codemap_enabled {
+                scoped_commands(
+                    details
+                        .get("worktree")
+                        .and_then(Value::as_str)
+                        .map(Path::new)
+                        .unwrap_or(&workspace.root),
+                    &profile.commands,
+                    contract_seam_test.as_ref(),
+                    &covering_tests,
+                )
+            } else {
+                Vec::new()
+            }),
         );
+        guidance_map.insert("resolved_guidance".into(), json!(resolved_guidance));
+        guidance_map.insert(
+            "guidance_slot_warnings".into(),
+            json!(guidance_slot_warnings),
+        );
+        guidance_map.insert("linked_milestones".into(), json!(linked_milestones));
         let proof_template = match proof_kind {
             Some(crate::core::tasks::profile::ProofKind::Contract) => json!({
                 "contract_proof": {
@@ -721,25 +987,27 @@ pub(super) fn context_bundle(
             }),
         );
     }
-    let mut topic_counts = serde_json::Map::new();
-    let mut targeted_count = 0usize;
-    for message in &blackboard_messages {
-        if message.get("gate").and_then(Value::as_str) == Some(stage) {
-            targeted_count += 1;
+    let blackboard_info = blackboard_messages.as_ref().map(|messages| {
+        let mut topic_counts = serde_json::Map::new();
+        let mut targeted_count = 0usize;
+        for message in messages {
+            if message.get("gate").and_then(Value::as_str) == Some(stage) {
+                targeted_count += 1;
+            }
+            if let Some(topic) = message.get("topic").and_then(Value::as_str) {
+                let count = topic_counts
+                    .entry(topic.to_owned())
+                    .or_insert_with(|| json!(0));
+                *count = json!(count.as_u64().unwrap_or(0) + 1);
+            }
         }
-        if let Some(topic) = message.get("topic").and_then(Value::as_str) {
-            let count = topic_counts
-                .entry(topic.to_owned())
-                .or_insert_with(|| json!(0));
-            *count = json!(count.as_u64().unwrap_or(0) + 1);
-        }
-    }
-    let blackboard_info = json!({
-        "active_gate": stage,
-        "message_count": blackboard_messages.len(),
-        "targeted_count": targeted_count,
-        "topic_counts": topic_counts,
-        "message_ids": blackboard_messages.iter().filter_map(|message| message.get("id").cloned()).collect::<Vec<_>>(),
+        json!({
+            "active_gate": stage,
+            "message_count": messages.len(),
+            "targeted_count": targeted_count,
+            "topic_counts": topic_counts,
+            "message_ids": messages.iter().filter_map(|message| message.get("id").cloned()).collect::<Vec<_>>(),
+        })
     });
     let mut bundle_map = serde_json::Map::new();
     bundle_map.insert(
@@ -768,24 +1036,28 @@ pub(super) fn context_bundle(
         bundle_map.insert("proof_schema".into(), serde_json::to_value(scheme)?);
     }
 
-    if matches!(
-        proof_kind,
-        Some(
-            crate::core::tasks::profile::ProofKind::Contract
-                | crate::core::tasks::profile::ProofKind::Command
-                | crate::core::tasks::profile::ProofKind::Review
+    if codemap_enabled
+        && matches!(
+            proof_kind,
+            Some(
+                crate::core::tasks::profile::ProofKind::Contract
+                    | crate::core::tasks::profile::ProofKind::Command
+                    | crate::core::tasks::profile::ProofKind::Review
+            )
         )
-    ) {
+    {
         bundle_map.insert("adrs".into(), json!(adrs));
         bundle_map.insert("governing_invariants".into(), governing_invariants);
     }
-    if matches!(
-        proof_kind,
-        Some(
-            crate::core::tasks::profile::ProofKind::Contract
-                | crate::core::tasks::profile::ProofKind::Command
+    if codemap_enabled
+        && matches!(
+            proof_kind,
+            Some(
+                crate::core::tasks::profile::ProofKind::Contract
+                    | crate::core::tasks::profile::ProofKind::Command
+            )
         )
-    ) {
+    {
         bundle_map.insert("scope_symbols".into(), json!(scope_symbols));
         bundle_map.insert("covering_tests".into(), json!(covering_tests));
         bundle_map.insert("external_callers".into(), json!(external_callers));
@@ -819,7 +1091,11 @@ pub(super) fn context_bundle(
         }
     }
     bundle_map.insert("blackboard".into(), json!(blackboard_messages));
-    bundle_map.insert("blackboard_info".into(), blackboard_info.clone());
+    bundle_map.insert(
+        "blackboard_info".into(),
+        blackboard_info.clone().unwrap_or(Value::Null),
+    );
+    bundle_map.insert("linked_milestones".into(), json!(linked_milestones));
 
     let bundle = Value::Object(bundle_map);
 
@@ -840,7 +1116,11 @@ pub(super) fn context_bundle(
     // Retain bounded blackboard and contract essentials at root
     obj.insert("depends_on".into(), depends_on);
     obj.insert("blackboard".into(), json!(blackboard_messages));
-    obj.insert("blackboard_info".into(), blackboard_info.clone());
+    obj.insert(
+        "blackboard_info".into(),
+        blackboard_info.unwrap_or(Value::Null),
+    );
+    obj.insert("linked_milestones".into(), json!(linked_milestones));
     obj.insert("workflow_guidance".into(), guidance.clone());
     obj.insert("context_bundle".into(), bundle);
 

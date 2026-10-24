@@ -48,6 +48,15 @@ struct ContractProof {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct SeamTestProof {
+    exit_code: i32,
+    seam_test_refs: Vec<String>,
+    tests_passed: Option<u64>,
+    tests_failed: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ReviewProof {
     decision: String,
     contours: std::collections::BTreeMap<String, ContourProof>,
@@ -146,6 +155,32 @@ fn validate_command(
     Ok(())
 }
 
+fn validate_seam_test(value: &serde_json::Value, passed: bool) -> Result<()> {
+    let proof: SeamTestProof =
+        serde_json::from_value(proof_payload(value, "seam_test_proof")?.clone())
+            .context("TASK_EVIDENCE_INVALID: typed seam test proof required")?;
+    if passed {
+        if proof.exit_code != 0 {
+            bail!("TASK_EVIDENCE_INVALID: seam test command must pass");
+        }
+        if proof.seam_test_refs.is_empty()
+            || proof
+                .seam_test_refs
+                .iter()
+                .any(|reference| reference.trim().is_empty())
+        {
+            bail!("TASK_EVIDENCE_INVALID: at least one seam_test_ref is required");
+        }
+        if proof.tests_failed.unwrap_or_default() != 0 {
+            bail!("TASK_EVIDENCE_INVALID: seam test proof reports failures");
+        }
+        if proof.tests_passed.unwrap_or_default() == 0 {
+            bail!("TASK_EVIDENCE_INVALID: seam test proof requires a passing test");
+        }
+    }
+    Ok(())
+}
+
 fn validate_review(
     value: &serde_json::Value,
     passed: bool,
@@ -209,6 +244,7 @@ pub(crate) fn validate_gate_proof(
             &profile.contract_zero_exit_policies,
         ),
         ProofDef::Kind(ProofKind::Command) => validate_command(evidence, passed, &profile.commands),
+        ProofDef::Kind(ProofKind::SeamTest) => validate_seam_test(evidence, passed),
         ProofDef::Kind(ProofKind::Review) => {
             let contour_set = profile
                 .contour_set(gate.contours.as_deref())

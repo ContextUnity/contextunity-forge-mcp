@@ -1,6 +1,6 @@
 use super::*;
 use std::{
-    fs::OpenOptions,
+    fs::{File, OpenOptions},
     io::Write,
     path::PathBuf,
     process::Stdio,
@@ -640,6 +640,15 @@ pub(super) fn capture_scoped_snapshot(
     task_id: &str,
     scope: &[String],
 ) -> Result<Option<(String, String, crate::core::git::KeptObjects)>> {
+    capture_scoped_snapshot_excluding(worktree, task_id, scope, &[])
+}
+
+fn capture_scoped_snapshot_excluding(
+    worktree: &Path,
+    task_id: &str,
+    scope: &[String],
+    excluded_paths: &[String],
+) -> Result<Option<(String, String, crate::core::git::KeptObjects)>> {
     let head_out = crate::core::git::git_command(worktree, &["rev-parse", "HEAD"]);
     let head = match head_out {
         Ok(out) if out.status.success() => {
@@ -699,17 +708,7 @@ pub(super) fn capture_scoped_snapshot(
             );
         }
     } else if scope.is_empty() {
-        let out = std::process::Command::new("git")
-            .args(["add", "-A"])
-            .env("GIT_INDEX_FILE", &temp_index_str)
-            .current_dir(worktree)
-            .output()?;
-        if !out.status.success() {
-            bail!(
-                "TASK_SNAPSHOT_FAILED: git add -A failed: {}",
-                String::from_utf8_lossy(&out.stderr)
-            );
-        }
+        add_unscoped_snapshot_entries(worktree, temp_index.path(), excluded_paths)?;
     }
 
     let write_tree_out = std::process::Command::new("git")
@@ -771,4 +770,584 @@ pub(super) fn capture_scoped_snapshot(
     }
 
     Ok(Some((commit_sha, head, objects)))
+}
+
+fn add_unscoped_snapshot_entries(
+    worktree: &Path,
+    index: &Path,
+    excluded_paths: &[String],
+) -> Result<()> {
+    let listed = crate::core::git::git_command(
+        worktree,
+        &[
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ],
+    )?;
+    if !listed.status.success() {
+        bail!(
+            "TASK_SNAPSHOT_FAILED: could not enumerate worktree paths: {}",
+            String::from_utf8_lossy(&listed.stderr)
+        );
+    }
+    let mut paths = Vec::new();
+    for path in listed
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+    {
+        if excluded_paths.iter().any(|excluded| {
+            path == excluded.as_bytes() || (excluded == ".forge" && path.starts_with(b".forge/"))
+        }) {
+            continue;
+        }
+        #[cfg(unix)]
+        let exists = {
+            use std::os::unix::ffi::OsStrExt;
+            std::fs::symlink_metadata(worktree.join(std::ffi::OsStr::from_bytes(path)))
+        };
+        #[cfg(not(unix))]
+        let exists =
+            { std::fs::symlink_metadata(worktree.join(String::from_utf8_lossy(path).as_ref())) };
+        match exists {
+            Ok(_) => paths.push(path),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).context("TASK_SNAPSHOT_FAILED: could not inspect worktree path")
+            }
+        }
+    }
+
+    for batch in paths.chunks(256) {
+        let mut add = std::process::Command::new("git");
+        add.args(["add", "-A", "--"]);
+        for path in batch {
+            #[cfg(unix)]
+            {
+                use std::os::unix::ffi::OsStringExt;
+                let mut pathspec = b":(literal)".to_vec();
+                pathspec.extend_from_slice(path);
+                add.arg(std::ffi::OsString::from_vec(pathspec));
+            }
+            #[cfg(not(unix))]
+            {
+                let path = String::from_utf8(path.to_vec())
+                    .context("TASK_SNAPSHOT_FAILED: non-UTF-8 path on this platform")?;
+                add.arg(format!(":(literal){path}"));
+            }
+        }
+        let output = add
+            .env("GIT_INDEX_FILE", index.to_string_lossy().as_ref())
+            .current_dir(worktree)
+            .output()?;
+        if !output.status.success() {
+            bail!(
+                "TASK_SNAPSHOT_FAILED: git add -A failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+    Ok(())
+}
+
+struct NamedSnapshotContext {
+    worktree: PathBuf,
+    namespace: String,
+    reference: String,
+}
+
+struct NamedSnapshotLock {
+    _file: File,
+    #[cfg(not(unix))]
+    path: PathBuf,
+}
+
+impl Drop for NamedSnapshotLock {
+    fn drop(&mut self) {
+        #[cfg(not(unix))]
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+fn lock_named_snapshot_operation(worktree: &Path) -> Result<NamedSnapshotLock> {
+    let git_dir = crate::core::git::git_stdout(
+        worktree,
+        &["rev-parse", "--absolute-git-dir"],
+        "TASK_SNAPSHOT_LOCK_FAILED",
+    )?;
+    let lock_path = PathBuf::from(git_dir).join("forge-task-manage-snapshot.lock");
+
+    #[cfg(unix)]
+    {
+        use std::{os::fd::AsRawFd, os::unix::fs::OpenOptionsExt};
+
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&lock_path)
+            .with_context(|| {
+                format!(
+                    "TASK_SNAPSHOT_LOCK_FAILED: could not open per-worktree lock {}",
+                    lock_path.display()
+                )
+            })?;
+        if !file.metadata()?.is_file() {
+            bail!("TASK_SNAPSHOT_LOCK_FAILED: per-worktree lock is not a regular file");
+        }
+        // The open file description holds the cross-process lock until this guard drops.
+        let locked = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        if locked != 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::WouldBlock {
+                bail!(
+                    "TASK_SNAPSHOT_BUSY: another snapshot or rollback is active in this worktree"
+                );
+            }
+            bail!("TASK_SNAPSHOT_LOCK_FAILED: could not lock worktree snapshot state: {error}");
+        }
+        Ok(NamedSnapshotLock { _file: file })
+    }
+
+    #[cfg(not(unix))]
+    {
+        let file = match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                bail!(
+                    "TASK_SNAPSHOT_BUSY: another snapshot or rollback is active in this worktree"
+                );
+            }
+            Err(error) => {
+                bail!(
+                    "TASK_SNAPSHOT_LOCK_FAILED: could not create worktree snapshot lock: {error}"
+                );
+            }
+        };
+        Ok(NamedSnapshotLock {
+            _file: file,
+            path: lock_path,
+        })
+    }
+}
+
+fn snapshot_tree(worktree: &Path, commit: &str) -> Result<String> {
+    let treeish = format!("{commit}^{{tree}}");
+    crate::core::git::git_stdout(
+        worktree,
+        &["rev-parse", "--verify", treeish.as_str()],
+        "TASK_SNAPSHOT_STATE_CHANGED",
+    )
+}
+
+fn ensure_named_snapshot_state(
+    worktree: &Path,
+    expected_head: &str,
+    expected_index_tree: &str,
+    expected_worktree_tree: &str,
+    excluded_paths: &[String],
+    name: &str,
+) -> Result<()> {
+    let head = crate::core::git::git_stdout(
+        worktree,
+        &["rev-parse", "--verify", "HEAD"],
+        "TASK_SNAPSHOT_STATE_CHANGED",
+    )?;
+    if head != expected_head {
+        bail!("TASK_SNAPSHOT_STATE_CHANGED: Git HEAD changed before rollback was applied");
+    }
+    let index_tree =
+        crate::core::git::git_stdout(worktree, &["write-tree"], "TASK_SNAPSHOT_STATE_CHANGED")?;
+    if index_tree != expected_index_tree {
+        bail!("TASK_SNAPSHOT_STATE_CHANGED: Git index changed before rollback was applied");
+    }
+    let guard_id = format!(
+        "task-manage-fence:{}:{}:{}:{}:{}",
+        name,
+        expected_head,
+        std::process::id(),
+        crate::db::tasks_store::now(),
+        SNAPSHOT_INDEX_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    );
+    let (guard_commit, captured_head, kept) =
+        capture_named_snapshot(worktree, &guard_id, excluded_paths)?;
+    let current_head = crate::core::git::git_stdout(
+        worktree,
+        &["rev-parse", "--verify", "HEAD"],
+        "TASK_SNAPSHOT_STATE_CHANGED",
+    )?;
+    if captured_head != expected_head || current_head != expected_head {
+        bail!("TASK_SNAPSHOT_STATE_CHANGED: Git HEAD changed while fencing rollback state");
+    }
+    let current_index_tree =
+        crate::core::git::git_stdout(worktree, &["write-tree"], "TASK_SNAPSHOT_STATE_CHANGED")?;
+    if current_index_tree != expected_index_tree {
+        bail!("TASK_SNAPSHOT_STATE_CHANGED: Git index changed while fencing rollback state");
+    }
+    if snapshot_tree(worktree, &guard_commit)? != expected_worktree_tree {
+        bail!("TASK_SNAPSHOT_STATE_CHANGED: working tree changed after recovery snapshot capture");
+    }
+    drop(kept);
+    Ok(())
+}
+
+fn named_snapshot_context(worktree: &Path, name: &str) -> Result<NamedSnapshotContext> {
+    if crate::core::tasks::valid_identity(name).is_err() {
+        bail!("TASK_SNAPSHOT_INVALID_NAME: snapshot name must be a Git-safe identity");
+    }
+    let selected_root = worktree.canonicalize()?;
+    let top_level = crate::core::git::git_stdout(
+        &selected_root,
+        &["rev-parse", "--show-toplevel"],
+        "TASK_SNAPSHOT_FAILED",
+    )?;
+    let worktree = PathBuf::from(top_level).canonicalize()?;
+    let namespace = format!(
+        "{:x}",
+        <sha2::Sha256 as sha2::Digest>::digest(worktree.to_string_lossy().as_bytes())
+    );
+    let reference = format!("refs/forge/snapshots/{namespace}/{name}");
+    let check =
+        crate::core::git::git_command(&worktree, &["check-ref-format", reference.as_str()])?;
+    if !check.status.success() {
+        bail!("TASK_SNAPSHOT_INVALID_NAME: snapshot name is not valid in a Git reference");
+    }
+    Ok(NamedSnapshotContext {
+        worktree,
+        namespace,
+        reference,
+    })
+}
+
+fn named_snapshot_exclusions(worktree: &Path, database: &Path) -> Vec<String> {
+    let mut paths = vec![".forge".to_owned()];
+    if let Ok(relative) = database.strip_prefix(worktree) {
+        let database = relative.to_string_lossy().replace('\\', "/");
+        if !database.is_empty() && database != ".forge" && !database.starts_with(".forge/") {
+            paths.extend([
+                database.clone(),
+                format!("{database}-journal"),
+                format!("{database}-wal"),
+                format!("{database}-shm"),
+                format!("{database}.lock"),
+            ]);
+        }
+    }
+    paths
+}
+
+fn ensure_snapshot_exclusions_untracked(worktree: &Path, excluded_paths: &[String]) -> Result<()> {
+    let output = crate::core::git::git_command(worktree, &["ls-files", "-z"])?;
+    if !output.status.success() {
+        bail!(
+            "TASK_SNAPSHOT_FAILED: could not inspect tracked runtime paths: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let tracked_runtime_path = output.stdout.split(|byte| *byte == 0).find(|tracked| {
+        excluded_paths.iter().any(|excluded| {
+            *tracked == excluded.as_bytes()
+                || (excluded == ".forge" && (*tracked).starts_with(b".forge/"))
+        })
+    });
+    if let Some(path) = tracked_runtime_path {
+        bail!(
+            "TASK_SNAPSHOT_RUNTIME_PATH_TRACKED: refusing to snapshot or rollback while runtime path '{}' is tracked",
+            String::from_utf8_lossy(path)
+        );
+    }
+    Ok(())
+}
+
+fn named_snapshot_ref_exists(worktree: &Path, reference: &str) -> Result<bool> {
+    let output =
+        crate::core::git::git_command(worktree, &["show-ref", "--verify", "--quiet", reference])?;
+    match output.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => bail!(
+            "TASK_SNAPSHOT_FAILED: could not inspect snapshot ref '{}': {}",
+            reference,
+            String::from_utf8_lossy(&output.stderr)
+        ),
+    }
+}
+
+fn capture_named_snapshot(
+    worktree: &Path,
+    snapshot_id: &str,
+    excluded_paths: &[String],
+) -> Result<(String, String, crate::core::git::KeptObjects)> {
+    capture_scoped_snapshot_excluding(worktree, snapshot_id, &[], excluded_paths)?
+        .context("TASK_SNAPSHOT_FAILED: no Git HEAD is available for a named snapshot")
+}
+
+fn clean_exclude_pattern(path: &str) -> String {
+    let mut escaped = String::with_capacity(path.len() + 1);
+    for character in path.chars() {
+        if "\\*?[]".contains(character) {
+            escaped.push('\\');
+        }
+        escaped.push(character);
+    }
+    if path == ".forge" {
+        format!("/{escaped}/")
+    } else {
+        format!("/{escaped}")
+    }
+}
+
+fn restore_named_snapshot_tree(
+    worktree: &Path,
+    commit: &str,
+    excluded_paths: &[String],
+) -> Result<()> {
+    let mut clean_args = vec!["clean".to_owned(), "-d".to_owned(), "-f".to_owned()];
+    for path in excluded_paths {
+        clean_args.push("-e".to_owned());
+        clean_args.push(clean_exclude_pattern(path));
+    }
+    clean_args.extend(["--".to_owned(), ".".to_owned()]);
+    let clean_args = clean_args.iter().map(String::as_str).collect::<Vec<_>>();
+    let clean = crate::core::git::git_command(worktree, &clean_args)?;
+    if !clean.status.success() {
+        bail!(
+            "TASK_SNAPSHOT_ROLLBACK_FAILED: could not remove later untracked files: {}",
+            String::from_utf8_lossy(&clean.stderr)
+        );
+    }
+    let read_tree =
+        crate::core::git::git_command(worktree, &["read-tree", "--reset", "-u", commit])?;
+    if !read_tree.status.success() {
+        bail!(
+            "TASK_SNAPSHOT_ROLLBACK_FAILED: could not restore the snapshot tree: {}",
+            String::from_utf8_lossy(&read_tree.stderr)
+        );
+    }
+    Ok(())
+}
+
+pub(super) fn create_named_snapshot(worktree: &Path, database: &Path, name: &str) -> Result<Value> {
+    let context = named_snapshot_context(worktree, name)?;
+    let _snapshot_lock = lock_named_snapshot_operation(&context.worktree)?;
+    let excluded_paths = named_snapshot_exclusions(&context.worktree, database);
+    ensure_snapshot_exclusions_untracked(&context.worktree, &excluded_paths)?;
+    if named_snapshot_ref_exists(&context.worktree, &context.reference)? {
+        bail!("TASK_SNAPSHOT_ALREADY_EXISTS: snapshot '{name}' already exists in this worktree");
+    }
+    let baseline = crate::core::git::git_stdout(
+        &context.worktree,
+        &["rev-parse", "--verify", "HEAD"],
+        "TASK_SNAPSHOT_FAILED",
+    )?;
+    let snapshot_id = format!("task-manage:{}:{}:{}", context.namespace, name, baseline);
+    let (commit, captured_head, kept) =
+        capture_named_snapshot(&context.worktree, &snapshot_id, &excluded_paths)?;
+    let current_head = crate::core::git::git_stdout(
+        &context.worktree,
+        &["rev-parse", "--verify", "HEAD"],
+        "TASK_SNAPSHOT_FAILED",
+    )?;
+    if captured_head != baseline || current_head != baseline {
+        bail!("TASK_SNAPSHOT_HEAD_CHANGED: Git HEAD changed while creating the named snapshot");
+    }
+    let object_format = crate::core::git::git_stdout(
+        &context.worktree,
+        &["rev-parse", "--show-object-format"],
+        "TASK_SNAPSHOT_FAILED",
+    )?;
+    let empty_object = match object_format.as_str() {
+        "sha1" => "0000000000000000000000000000000000000000",
+        "sha256" => "0000000000000000000000000000000000000000000000000000000000000000",
+        _ => bail!("TASK_SNAPSHOT_FAILED: unsupported Git object format '{object_format}'"),
+    };
+    let update = crate::core::git::git_command(
+        &context.worktree,
+        &[
+            "update-ref",
+            context.reference.as_str(),
+            commit.as_str(),
+            empty_object,
+        ],
+    )?;
+    if !update.status.success() {
+        if named_snapshot_ref_exists(&context.worktree, &context.reference)? {
+            bail!(
+                "TASK_SNAPSHOT_ALREADY_EXISTS: snapshot '{name}' already exists in this worktree"
+            );
+        }
+        bail!(
+            "TASK_SNAPSHOT_CREATE_FAILED: could not publish named snapshot: {}",
+            String::from_utf8_lossy(&update.stderr)
+        );
+    }
+    drop(kept);
+    Ok(json!({
+        "action":"snapshot",
+        "snapshot_name":name,
+        "snapshot_ref":context.reference,
+        "snapshot_commit":commit,
+        "head":baseline,
+    }))
+}
+
+pub(super) fn rollback_named_snapshot(
+    worktree: &Path,
+    database: &Path,
+    name: &str,
+) -> Result<Value> {
+    let context = named_snapshot_context(worktree, name)?;
+    let _snapshot_lock = lock_named_snapshot_operation(&context.worktree)?;
+    let excluded_paths = named_snapshot_exclusions(&context.worktree, database);
+    ensure_snapshot_exclusions_untracked(&context.worktree, &excluded_paths)?;
+    if !named_snapshot_ref_exists(&context.worktree, &context.reference)? {
+        bail!("TASK_SNAPSHOT_NOT_FOUND: named snapshot '{name}' does not exist in this worktree");
+    }
+    let commitish = format!("{}^{{commit}}", context.reference);
+    let commit = crate::core::git::git_stdout(
+        &context.worktree,
+        &["rev-parse", "--verify", commitish.as_str()],
+        "TASK_SNAPSHOT_INVALID",
+    )?;
+    let object_type = crate::core::git::git_stdout(
+        &context.worktree,
+        &["cat-file", "-t", commit.as_str()],
+        "TASK_SNAPSHOT_INVALID",
+    )?;
+    if object_type != "commit" {
+        bail!("TASK_SNAPSHOT_INVALID: named snapshot ref does not point to a commit");
+    }
+    let parents = crate::core::git::git_stdout(
+        &context.worktree,
+        &["rev-list", "--parents", "-n", "1", commit.as_str()],
+        "TASK_SNAPSHOT_INVALID",
+    )?;
+    if parents.split_whitespace().count() != 1 {
+        bail!("TASK_SNAPSHOT_INVALID: named snapshot commit must be parentless");
+    }
+    let message = crate::core::git::git_stdout(
+        &context.worktree,
+        &["show", "-s", "--format=%B", commit.as_str()],
+        "TASK_SNAPSHOT_INVALID",
+    )?;
+    let marker_prefix = format!(
+        "forge-snapshot: task-manage:{}:{}:",
+        context.namespace, name
+    );
+    let Some(snapshot_head) = message.strip_prefix(&marker_prefix) else {
+        bail!("TASK_SNAPSHOT_INVALID: snapshot commit does not match this name and worktree");
+    };
+    let head_len = match crate::core::git::git_stdout(
+        &context.worktree,
+        &["rev-parse", "--show-object-format"],
+        "TASK_SNAPSHOT_INVALID",
+    )?
+    .as_str()
+    {
+        "sha1" => 40,
+        "sha256" => 64,
+        format => bail!("TASK_SNAPSHOT_INVALID: unsupported Git object format '{format}'"),
+    };
+    if snapshot_head.len() != head_len
+        || !snapshot_head.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        bail!("TASK_SNAPSHOT_INVALID: snapshot commit has an invalid baseline head");
+    }
+    let baseline = crate::core::git::git_stdout(
+        &context.worktree,
+        &["rev-parse", "--verify", "HEAD"],
+        "TASK_SNAPSHOT_FAILED",
+    )?;
+    if baseline != snapshot_head {
+        bail!(
+            "TASK_SNAPSHOT_HEAD_CHANGED: snapshot '{name}' belongs to HEAD '{}', current HEAD is '{}'; rollback was not applied",
+            snapshot_head,
+            baseline
+        );
+    }
+    let index_tree = crate::core::git::git_stdout(
+        &context.worktree,
+        &["write-tree"],
+        "TASK_SNAPSHOT_STATE_CHANGED",
+    )?;
+    let recovery_id = format!(
+        "task-manage-recovery:{}:{}:{}:{}:{}",
+        context.namespace,
+        name,
+        baseline,
+        std::process::id(),
+        crate::db::tasks_store::now()
+    );
+    let (recovery_commit, captured_head, recovery_kept) =
+        capture_named_snapshot(&context.worktree, &recovery_id, &excluded_paths)?;
+    let current_head = crate::core::git::git_stdout(
+        &context.worktree,
+        &["rev-parse", "--verify", "HEAD"],
+        "TASK_SNAPSHOT_FAILED",
+    )?;
+    if captured_head != baseline || current_head != baseline {
+        bail!(
+            "TASK_SNAPSHOT_HEAD_CHANGED: Git HEAD changed before rollback; no snapshot was applied"
+        );
+    }
+    let recovery_tree = snapshot_tree(&context.worktree, &recovery_commit)?;
+    ensure_named_snapshot_state(
+        &context.worktree,
+        &baseline,
+        &index_tree,
+        &recovery_tree,
+        &excluded_paths,
+        name,
+    )?;
+    if let Err(restore_error) =
+        restore_named_snapshot_tree(&context.worktree, &commit, &excluded_paths)
+    {
+        return match restore_named_snapshot_tree(
+            &context.worktree,
+            &recovery_commit,
+            &excluded_paths,
+        ) {
+            Ok(()) => Err(anyhow::anyhow!(
+                "TASK_SNAPSHOT_ROLLBACK_FAILED: named snapshot could not be applied; the original worktree was restored: {restore_error:#}"
+            )),
+            Err(recovery_error) => Err(anyhow::anyhow!(
+                "TASK_SNAPSHOT_ROLLBACK_FAILED: named snapshot failed: {restore_error:#}; recovery failed: {recovery_error:#}"
+            )),
+        };
+    }
+    let final_head = crate::core::git::git_stdout(
+        &context.worktree,
+        &["rev-parse", "--verify", "HEAD"],
+        "TASK_SNAPSHOT_FAILED",
+    )?;
+    if final_head != baseline {
+        let recovery =
+            restore_named_snapshot_tree(&context.worktree, &recovery_commit, &excluded_paths);
+        return match recovery {
+            Ok(()) => Err(anyhow::anyhow!(
+                "TASK_SNAPSHOT_HEAD_CHANGED: Git HEAD changed during rollback; the original worktree was restored"
+            )),
+            Err(recovery_error) => Err(anyhow::anyhow!(
+                "TASK_SNAPSHOT_ROLLBACK_FAILED: Git HEAD changed during rollback and worktree recovery failed: {recovery_error:#}"
+            )),
+        };
+    }
+    drop(recovery_kept);
+    Ok(json!({
+        "action":"rollback",
+        "snapshot_name":name,
+        "snapshot_ref":context.reference,
+        "snapshot_commit":commit,
+        "head":baseline,
+        "restored":true,
+    }))
 }
