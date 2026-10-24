@@ -18,6 +18,7 @@ use std::{
 mod contract;
 mod handoff;
 mod integration;
+mod synthesis;
 pub(crate) use integration::configure_checkpoint_owners;
 pub mod recovery;
 use contract::{snapshot, Snapshot};
@@ -27,6 +28,37 @@ pub use integration::{
 };
 pub use recovery::db_recover;
 pub(crate) use recovery::obsolete_checkpoint_owners;
+
+/// Validate task dependencies and return stable topological execution waves.
+pub fn validate_wave_dag(
+    milestone: &Milestone,
+) -> std::result::Result<Vec<Vec<String>>, AcddError> {
+    synthesis::validate_wave_dag(milestone)
+}
+
+/// Return the shared helper and type relationships admitted by a milestone.
+pub fn extract_shared_helpers(
+    milestone: &Milestone,
+) -> Vec<crate::core::tasks::MilestoneContractEntry> {
+    synthesis::extract_shared_helpers(milestone)
+}
+
+/// Build and validate the cross-task contract matrix for one milestone.
+pub fn synthesize_milestone_contracts(
+    milestone: &Milestone,
+) -> std::result::Result<MilestoneContractMatrix, AcddError> {
+    synthesis::synthesize_milestone_contracts(milestone)
+}
+
+/// Validate a milestone manifest and pre-scaffold its declared repositories.
+pub fn init_from_manifest(root: &Path, manifest: &Path, in_place: bool) -> Result<Value> {
+    synthesis::preflight_milestone_init(root, manifest, in_place)
+}
+
+/// Create a numbered draft using the legacy template-scaffolding options.
+pub fn draft(root: &Path, options: Init) -> Result<Value> {
+    init(root, options)
+}
 
 /// Verify that every in-milestone task dependency has a synthesized matrix contract.
 pub fn verify_contract_matrix_parity(

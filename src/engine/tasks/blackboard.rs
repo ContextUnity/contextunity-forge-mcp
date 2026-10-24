@@ -38,6 +38,9 @@ pub struct BlackboardRequest {
     pub milestone_ref: Option<String>,
     /// Task identifier used by task and subtask scopes.
     pub task_id: Option<String>,
+    /// Optional target task owner for a posted message, independent of its source task scope.
+    #[serde(default)]
+    pub recipient_task_id: Option<String>,
     /// Subtask reference used by subtask scope.
     pub subtask_ref: Option<String>,
     /// Message identifier for payload inspection; when omitted, inspect returns a scoped read page.
@@ -512,9 +515,8 @@ pub fn blackboard(root: &Path, request: BlackboardRequest, transport: &str) -> R
                 .as_deref()
                 .or(task_author.as_deref())
                 .unwrap_or(transport);
-            let id = context
-                .store
-                .blackboard_post_scoped_with_gate(BlackboardPostInput {
+            let id = context.store.blackboard_post_scoped_with_recipient(
+                BlackboardPostInput {
                     milestone_ref: &context.milestone_ref,
                     task_id: context.task_id.as_deref(),
                     subtask_ref: context.subtask_ref.as_deref(),
@@ -528,7 +530,9 @@ pub fn blackboard(root: &Path, request: BlackboardRequest, transport: &str) -> R
                         .payload
                         .as_deref()
                         .context("TASK_BLACKBOARD_INVALID: post requires payload")?,
-                })?;
+                },
+                request.recipient_task_id.as_deref(),
+            )?;
             Ok(with_resolution(json!({"id":id}), &context))
         }
         BlackboardAction::Read | BlackboardAction::Inspect => {

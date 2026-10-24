@@ -1,7 +1,7 @@
 use super::TasksStore;
-use anyhow::{bail, Context, Result};
-use rusqlite::{params, Connection, TransactionBehavior};
-use serde::{de::DeserializeOwned, Serialize};
+use anyhow::{Context, Result, bail};
+use rusqlite::{Connection, Transaction, TransactionBehavior, params};
+use serde::{Serialize, de::DeserializeOwned};
 
 /// Create or upgrade the milestone contract matrix schema.
 pub(super) fn migrate(connection: &Connection) -> Result<()> {
@@ -27,34 +27,10 @@ impl TasksStore {
         &mut self,
         matrix: &crate::core::tasks::MilestoneContractMatrix,
     ) -> Result<()> {
-        validate_matrix(matrix)?;
-
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        transaction.execute(
-            "DELETE FROM milestone_contract_matrix WHERE milestone_id=?1",
-            [&matrix.milestone_id],
-        )?;
-        for entry in &matrix.entries {
-            let revision = i64::try_from(entry.revision)
-                .context("contract matrix revision exceeds SQLite integer range")?;
-            transaction.execute(
-                "INSERT INTO milestone_contract_matrix (
-                    milestone_id, source_task, target_task, contract_type,
-                    contract_ref, revision, status
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![
-                    entry.milestone_id,
-                    entry.source_task,
-                    entry.target_task,
-                    enum_text(&entry.contract_type)?,
-                    entry.contract_ref,
-                    revision,
-                    enum_text(&entry.status)?,
-                ],
-            )?;
-        }
+        replace_contract_matrix_in_transaction(&transaction, matrix)?;
         transaction.commit()?;
         Ok(())
     }
@@ -114,6 +90,38 @@ impl TasksStore {
             entries,
         })
     }
+}
+
+/// Replace contract rows using a transaction owned by the caller.
+pub(super) fn replace_contract_matrix_in_transaction(
+    transaction: &Transaction<'_>,
+    matrix: &crate::core::tasks::MilestoneContractMatrix,
+) -> Result<()> {
+    validate_matrix(matrix)?;
+    transaction.execute(
+        "DELETE FROM milestone_contract_matrix WHERE milestone_id=?1",
+        [&matrix.milestone_id],
+    )?;
+    for entry in &matrix.entries {
+        let revision = i64::try_from(entry.revision)
+            .context("contract matrix revision exceeds SQLite integer range")?;
+        transaction.execute(
+            "INSERT INTO milestone_contract_matrix (
+                    milestone_id, source_task, target_task, contract_type,
+                    contract_ref, revision, status
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                entry.milestone_id,
+                entry.source_task,
+                entry.target_task,
+                enum_text(&entry.contract_type)?,
+                entry.contract_ref,
+                revision,
+                enum_text(&entry.status)?,
+            ],
+        )?;
+    }
+    Ok(())
 }
 
 fn validate_matrix(matrix: &crate::core::tasks::MilestoneContractMatrix) -> Result<()> {

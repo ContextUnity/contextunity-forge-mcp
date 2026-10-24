@@ -153,13 +153,15 @@ These commands deliver one task. `milestone handoff` below closes the whole
 milestone. Exchange temporary task context with:
 
 ```sh
-contextunity-forge-mcp task blackboard post [TASK_ID] [--scope milestone|task|subtask] [--milestone-ref REF] [--subtask-ref REF] --topic TOPIC --payload TEXT [--author WORKER]
+contextunity-forge-mcp task blackboard post [TASK_ID] [--scope milestone|task|subtask] [--milestone-ref REF] [--recipient-task-id TASK_ID] [--subtask-ref REF] --topic TOPIC --payload TEXT [--author WORKER]
 contextunity-forge-mcp task blackboard read [TASK_ID] [--scope milestone|task|subtask] [--milestone-ref REF] [--subtask-ref REF] [--topic TOPIC] [--limit N] [--offset N]
 contextunity-forge-mcp task blackboard inspect MESSAGE_ID
 ```
 
-Post accepts a task ID as a positional argument or resolves context from
-`--scope`, `--milestone-ref`, and `--subtask-ref`; it returns a message ID. An
+Post accepts a task ID as a positional source scope or resolves context from
+`--scope`, `--milestone-ref`, and `--subtask-ref`; `--recipient-task-id` independently
+addresses a target task in that milestone. The stored message keeps the source
+`task_id` and target `recipient_task_id` separate. Post returns a message ID. An
 omitted author uses the resolved task owner or `cli`. Read resolves the same
 three levels and returns newest-first, payload-free summaries with pagination
 metadata. The default page contains 10 messages and the maximum is 50.
@@ -201,13 +203,14 @@ SQLite and milestone Markdown, resets the task to the first gate in its active p
 
 ## Repository milestones
 
-`milestone init`, `list`, `show`, `handoff-context`, `handoff`, and `db-recover` are CLI-only. The MCP interface
+`milestone init`, `draft`, `list`, `show`, `handoff-context`, `handoff`, and `db-recover` are CLI-only. The MCP interface
 provides task operations and has no milestone lifecycle tools.
 
 ```sh
 contextunity-forge-mcp milestone list [--archive] [--limit N] [--status planned|active|completed|cancelled|all]
 contextunity-forge-mcp milestone show <id-or-number> [--full]
-contextunity-forge-mcp milestone init [--num 011] [--slug short-name] [--title "Title"] [--plan docs/plans/proposal.md] [--dir docs/milestones] [--desc "Purpose"] [--depends-on m-prior] [--active]
+contextunity-forge-mcp milestone init <manifest.md> [--in-place]
+contextunity-forge-mcp milestone draft [--num 011] [--slug short-name] [--title "Title"] [--plan docs/plans/proposal.md] [--dir docs/milestones] [--desc "Purpose"] [--depends-on m-prior] [--active]
 contextunity-forge-mcp milestone handoff-context <id-or-number> --target-base <git-selector>
 contextunity-forge-mcp milestone handoff <id-or-number> [--commit <git-selector>] --evidence-file <external-review.json>
 contextunity-forge-mcp milestone db-recover
@@ -233,7 +236,18 @@ archive/status filters. Status values are `planned`, `active`, `completed`,
 resolves a full ID, tagged prefix (e.g. `P-001`, `EC-001`), or numeric file prefix and returns frontmatter, outcomes, and task metadata. `--full` includes
 the complete Markdown document.
 
-`milestone init` creates a numbered file in a configured milestone directory.
+`milestone init <manifest.md>` validates the existing milestone manifest and
+repository declarations before creating task state or worktrees. It checks every
+`required_skills` entry against repository and host skill installations and
+rejects same-wave task scopes that overlap. On success it synchronizes tasks,
+stores the synthesized contract matrix, and posts a bounded summary to the
+milestone blackboard. Without `--in-place`, it prepares a
+`milestone/<id>` branch and `.worktrees/<id>` checkout in each declared
+repository. `--in-place` keeps the current checkout and still runs every
+validation and persistence step. Preflight errors use the stable
+`MILESTONE_PREFLIGHT_FAILED` diagnostic.
+
+`milestone draft` creates a numbered file in a configured milestone directory.
 `--dir` selects the destination; without it, a plan beside a `milestones` directory
 selects that directory, and other invocations use the first resolved configured directory
 in path order.
@@ -242,6 +256,8 @@ plus ten, padded to at least three digits. `--plan` imports plan metadata and no
 supplies a description and task blocks. Planned milestones omit `started_at`;
 `--active` records the current time. The command returns the file path and
 task sync and claim guidance.
+For compatibility, `milestone init` without a manifest path continues to accept
+the former numbered-draft options; new draft workflows use `milestone draft`.
 
 `milestone handoff-context` prepares canonical content and accepted-task proof
 identities for external review and verification against an explicit target base.

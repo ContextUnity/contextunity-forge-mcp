@@ -1,4 +1,5 @@
 use super::*;
+use rusqlite::Transaction;
 
 /// Return whether a topic is one of the canonical runtime categories.
 pub fn is_canonical_blackboard_topic(topic: &str) -> bool {
@@ -18,6 +19,47 @@ fn validate_blackboard_topic(topic: &str) -> Result<()> {
             .join(", ");
         bail!("TASK_BLACKBOARD_TOPIC_INVALID: use one of the canonical topics: {allowed}");
     }
+}
+
+pub(super) fn validate_milestone_broadcast(
+    store: &TasksStore,
+    post: BlackboardPostInput<'_>,
+) -> Result<()> {
+    store.assert_milestone_scope_ref(post.milestone_ref)?;
+    validate_milestone_broadcast_fields(post)
+}
+
+fn validate_milestone_broadcast_fields(post: BlackboardPostInput<'_>) -> Result<()> {
+    if post.task_id.is_some() || post.subtask_ref.is_some() {
+        bail!("TASK_BLACKBOARD_SCOPE_MISMATCH");
+    }
+    if post.author.trim().is_empty() {
+        bail!("TASK_BLACKBOARD_INVALID: author is required");
+    }
+    validate_blackboard_topic(post.topic)
+}
+
+pub(super) fn insert_milestone_broadcast_in_transaction(
+    transaction: &Transaction<'_>,
+    post: BlackboardPostInput<'_>,
+) -> Result<u64> {
+    validate_milestone_broadcast_fields(post)?;
+    let inserted = transaction.execute(
+        "INSERT INTO task_blackboard(milestone_ref,task_id,recipient_task_id,subtask_ref,gate,author,topic,payload,created_at) \
+         VALUES(?1,NULL,NULL,NULL,?2,?3,?4,?5,?6)",
+        params![
+            post.milestone_ref,
+            post.gate,
+            post.author,
+            post.topic,
+            post.payload,
+            now()
+        ],
+    )?;
+    if inserted != 1 {
+        bail!("TASK_BLACKBOARD_STATE_CHANGED");
+    }
+    Ok(u64::try_from(transaction.last_insert_rowid())?)
 }
 
 pub(crate) fn clear_blackboard(connection: &Connection, task_id: &str) -> Result<usize> {
@@ -314,6 +356,7 @@ impl TasksStore {
     }
 
     /// Read one bounded page, optionally selecting messages for one workflow gate.
+    /// Task scope includes messages posted by the task and messages addressed to it.
     pub fn blackboard_page_for_gate(
         &self,
         request: BlackboardPageRequest<'_>,
@@ -365,9 +408,11 @@ impl TasksStore {
             "SELECT id,milestone_ref,task_id,recipient_task_id,subtask_ref,gate,author,topic,created_at \
              FROM task_blackboard \
              WHERE milestone_ref=?1 \
-               AND ((?2 IS NULL AND task_id IS NULL) OR \
-                    (?2 IS NOT NULL AND task_id=?2 AND \
-                     ((?3 IS NULL AND subtask_ref IS NULL) OR (?3 IS NOT NULL AND subtask_ref=?3)))) \
+               AND ((?2 IS NULL AND task_id IS NULL AND recipient_task_id IS NULL) OR \
+                    (?2 IS NOT NULL AND ( \
+                     (task_id=?2 AND \
+                      ((?3 IS NULL AND subtask_ref IS NULL) OR (?3 IS NOT NULL AND subtask_ref=?3))) OR \
+                     (?3 IS NULL AND recipient_task_id=?2)))) \
                AND (?4 IS NULL OR topic=?4) \
                AND (?5 IS NULL OR gate=?5) \
              ORDER BY created_at DESC,id DESC LIMIT ?6 OFFSET ?7",
@@ -452,7 +497,9 @@ impl TasksStore {
         Ok(Some(message))
     }
 
-    /// Read messages in insertion order with an optional topic and result limit.
+    /// Read messages posted by or addressed to a task in insertion order.
+    ///
+    /// Results can be filtered by topic and bounded by an optional limit.
     pub fn blackboard_read(
         &self,
         task_id: &str,
@@ -466,7 +513,8 @@ impl TasksStore {
         let limit = limit.map(i64::try_from).transpose()?.unwrap_or(i64::MAX);
         let mut statement = self.connection.prepare(
             "SELECT id,milestone_ref,task_id,recipient_task_id,subtask_ref,gate,author,topic,payload,created_at FROM task_blackboard \
-             WHERE task_id=?1 AND (?2 IS NULL OR topic=?2) ORDER BY created_at,id LIMIT ?3",
+             WHERE (task_id=?1 OR recipient_task_id=?1) \
+               AND (?2 IS NULL OR topic=?2) ORDER BY created_at,id LIMIT ?3",
         )?;
         let messages = statement
             .query_map(params![task_id, topic, limit], |row| {

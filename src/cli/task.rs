@@ -20,6 +20,9 @@ pub enum BlackboardCommand {
         milestone_ref: Option<String>,
         /// Task receiving the message.
         task_id: Option<String>,
+        /// Optional target task that receives the message, independent of its source scope.
+        #[arg(long)]
+        recipient_task_id: Option<String>,
         /// Subtask receiving the message.
         #[arg(long)]
         subtask_ref: Option<String>,
@@ -310,6 +313,7 @@ pub fn run(root: &Path, command: TaskCommand) -> Result<Value> {
                     scope,
                     milestone_ref,
                     task_id,
+                    recipient_task_id,
                     subtask_ref,
                     gate,
                     topic,
@@ -322,6 +326,7 @@ pub fn run(root: &Path, command: TaskCommand) -> Result<Value> {
                         scope,
                         milestone_ref,
                         task_id,
+                        recipient_task_id,
                         subtask_ref,
                         message_id: None,
                         author,
@@ -349,6 +354,7 @@ pub fn run(root: &Path, command: TaskCommand) -> Result<Value> {
                         scope,
                         milestone_ref,
                         task_id,
+                        recipient_task_id: None,
                         subtask_ref,
                         message_id: None,
                         author: None,
@@ -367,6 +373,7 @@ pub fn run(root: &Path, command: TaskCommand) -> Result<Value> {
                         scope: None,
                         milestone_ref: None,
                         task_id: None,
+                        recipient_task_id: None,
                         subtask_ref: None,
                         message_id: Some(message_id),
                         author: None,

@@ -1,9 +1,9 @@
 use crate::core::tasks::{
-    authority_gap_diagnostic, milestone_id_change_diagnostic, shorten_task_response_commits,
-    snapshot_inspect_cmd, AuthoritySnapshot, Milestone, Receipt, SubtaskSpec, TaskSpec,
+    AuthoritySnapshot, Milestone, Receipt, SubtaskSpec, TaskSpec, authority_gap_diagnostic,
+    milestone_id_change_diagnostic, shorten_task_response_commits, snapshot_inspect_cmd,
 };
-use anyhow::{bail, Context, Result};
-use rusqlite::{params, Connection, OptionalExtension};
+use anyhow::{Context, Result, bail};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -14,6 +14,11 @@ pub mod recovery;
 mod schema;
 mod subtasks;
 mod trace;
+
+use self::blackboard::{
+    insert_milestone_broadcast_in_transaction, validate_milestone_broadcast,
+};
+use self::matrix::replace_contract_matrix_in_transaction;
 
 pub(crate) use blackboard::clear_blackboard;
 pub use blackboard::is_canonical_blackboard_topic;
@@ -268,7 +273,9 @@ impl std::fmt::Display for TaskAlreadyClaimed {
 impl std::error::Error for TaskAlreadyClaimed {}
 
 pub(crate) fn task_not_found_message(id: &str) -> String {
-    format!("TASK_NOT_FOUND: task '{id}' not found in tasks database. Do: verify task id and sync milestone.")
+    format!(
+        "TASK_NOT_FOUND: task '{id}' not found in tasks database. Do: verify task id and sync milestone."
+    )
 }
 
 fn stored_task_id_for_milestone(
@@ -350,7 +357,9 @@ fn verify_dirty_acdd_scope(root: &Path, initial_scope: &[String]) -> Result<()> 
                 .iter()
                 .any(|scope| dirty.starts_with(Path::new(scope)))
         {
-            bail!("TASK_SCOPE_VIOLATION: dirty protected path '{path}' must be present in the task's initial contract scope");
+            bail!(
+                "TASK_SCOPE_VIOLATION: dirty protected path '{path}' must be present in the task's initial contract scope"
+            );
         }
     }
     Ok(())
@@ -592,15 +601,19 @@ impl TasksStore {
         task: &mut Task,
         profile: &crate::core::tasks::profile::GateProfile,
     ) -> Result<()> {
-        task.gate =
-            profile.index_of(&task.stage).with_context(|| {
-                format!(
-            "TASK_STAGE_UNKNOWN: task '{}' is stored at unknown stage '{}'; active gates: {}",
-            task.task_id,
-            task.stage,
-            profile.gates.iter().map(|gate| gate.id.as_str()).collect::<Vec<_>>().join(", ")
-        )
-            })?;
+        task.gate = profile.index_of(&task.stage).with_context(|| {
+            format!(
+                "TASK_STAGE_UNKNOWN: task '{}' is stored at unknown stage '{}'; active gates: {}",
+                task.task_id,
+                task.stage,
+                profile
+                    .gates
+                    .iter()
+                    .map(|gate| gate.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })?;
         Ok(())
     }
     pub(crate) fn assert_id(&self, id: &str) -> Result<()> {
@@ -752,7 +765,7 @@ impl TasksStore {
         reference: &str,
         root: &Path,
     ) -> Result<Vec<Task>> {
-        self.sync_selected(milestone, reference, root, None)
+        self.sync_selected(milestone, reference, root, None, None)
     }
     /// Performs create.
     pub fn create(
@@ -762,7 +775,31 @@ impl TasksStore {
         root: &Path,
         task_ref: &str,
     ) -> Result<Vec<Task>> {
-        self.sync_selected(milestone, reference, root, Some(task_ref))
+        self.sync_selected(milestone, reference, root, Some(task_ref), None)
+    }
+
+    /// Synchronize a milestone and publish its contract matrix and first message atomically.
+    pub(crate) fn sync_with_contract_matrix_and_initial_message(
+        &mut self,
+        milestone: &Milestone,
+        reference: &str,
+        root: &Path,
+        matrix: &crate::core::tasks::MilestoneContractMatrix,
+        initial_message: BlackboardPostInput<'_>,
+    ) -> Result<Vec<Task>> {
+        let milestone_scope_ref = self.milestone_scope_ref(initial_message.milestone_ref)?;
+        let initial_message = BlackboardPostInput {
+            milestone_ref: &milestone_scope_ref,
+            ..initial_message
+        };
+        validate_milestone_broadcast(self, initial_message)?;
+        self.sync_selected(
+            milestone,
+            reference,
+            root,
+            None,
+            Some((matrix, initial_message)),
+        )
     }
     /// Remove all persisted state for a cancelled milestone while retaining incoming blockers.
     pub fn prune_cancelled(&mut self, reference: &str) -> Result<usize> {
@@ -833,12 +870,16 @@ impl TasksStore {
         .is_ok())
     }
 
-    fn sync_selected(
+    fn sync_selected<'matrix, 'message>(
         &mut self,
         milestone: &Milestone,
         reference: &str,
         root: &Path,
         task_ref: Option<&str>,
+        publication: Option<(
+            &'matrix crate::core::tasks::MilestoneContractMatrix,
+            BlackboardPostInput<'message>,
+        )>,
     ) -> Result<Vec<Task>> {
         self.set_workspace_root(root);
         if format!("{}/{}/", milestone.repository, milestone.project) != self.namespace {
@@ -851,6 +892,9 @@ impl TasksStore {
             )
         }) {
             bail!("MILESTONE_STATUS_INVALID: expected active, planned, completed, or cancelled");
+        }
+        if publication.is_some() && milestone.status.as_deref() == Some("cancelled") {
+            bail!("MILESTONE_INIT_CANCELLED: cannot initialize a cancelled milestone");
         }
         let milestone_identity = self.milestone_identity(&milestone.id);
         let dependency_settings = ArchiveSettings::load(root)?;
@@ -958,7 +1002,9 @@ impl TasksStore {
                     }
                     if spec.status.as_deref() == Some("completed") {
                         if existing.status != "completed" {
-                            bail!("TASK_RECEIPT_INVALID: imported receipt differs from accepted completion");
+                            bail!(
+                                "TASK_RECEIPT_INVALID: imported receipt differs from accepted completion"
+                            );
                         }
                         if existing.receipt != spec.receipt {
                             let matches_proofs = existing
@@ -985,7 +1031,9 @@ impl TasksStore {
                                     &existing.milestone_ref,
                                     baseline.as_deref(),
                                 )? {
-                                    bail!("TASK_RECEIPT_INVALID: imported receipt differs from accepted completion");
+                                    bail!(
+                                        "TASK_RECEIPT_INVALID: imported receipt differs from accepted completion"
+                                    );
                                 }
                                 existing.receipt = spec.receipt.clone();
                                 existing.spec.receipt = spec.receipt.clone();
@@ -1322,6 +1370,10 @@ impl TasksStore {
             if load(&tx, &task.task_id)?.is_some() {
                 save(&tx, task)?;
             }
+        }
+        if let Some((matrix, initial_message)) = publication {
+            replace_contract_matrix_in_transaction(&tx, matrix)?;
+            insert_milestone_broadcast_in_transaction(&tx, initial_message)?;
         }
         tx.commit()?;
         Ok(result)
@@ -1661,7 +1713,9 @@ fn dependency_wave(
         return Ok(*wave);
     }
     if visiting.iter().any(|ancestor| ancestor == id) {
-        bail!("TASK_DEPENDENCY_CYCLE: {id}. Derived scope dependencies form a cycle. Do: order overlapping owners before their consumers.");
+        bail!(
+            "TASK_DEPENDENCY_CYCLE: {id}. Derived scope dependencies form a cycle. Do: order overlapping owners before their consumers."
+        );
     }
     visiting.push(id.to_owned());
     let dependencies: Vec<String> = conn
@@ -1688,7 +1742,9 @@ pub(crate) fn end_claim(conn: &Connection, id: &str) -> Result<()> {
 }
 pub(crate) fn check_stage(task_id: &str, active_gate: &str, stage: &str) -> Result<()> {
     if active_gate != stage {
-        bail!("TASK_STAGE_INVALID: task '{task_id}'. submitted stage '{stage}' does not match active stage '{active_gate}'. Do: submit for active stage '{active_gate}'.");
+        bail!(
+            "TASK_STAGE_INVALID: task '{task_id}'. submitted stage '{stage}' does not match active stage '{active_gate}'. Do: submit for active stage '{active_gate}'."
+        );
     }
     Ok(())
 }
