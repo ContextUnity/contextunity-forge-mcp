@@ -145,6 +145,80 @@ fn task_store_migrates_the_ac001_gate_persistence_contract() {
         "AC-001 requires recipient-addressed blackboard lookup"
     );
 
+    let tasks = store
+        .list(None, "all", None)
+        .expect("the fixture tasks should be available for recipient validation");
+    let sender_id = tasks[0].task_id.clone();
+    let recipient_id = tasks[1].task_id.clone();
+    let milestone_ref = "forge-mcp/forge-mcp/docs/010-test.md";
+    let message_id = store
+        .blackboard_post_scoped_with_recipient(
+            contextunity_forge_mcp::db::tasks_store::BlackboardPostInput {
+                milestone_ref,
+                task_id: Some(&sender_id),
+                subtask_ref: None,
+                gate: Some("build"),
+                author: "sender",
+                topic: "notes",
+                payload: "shared-helper RFC",
+            },
+            Some(&recipient_id),
+        )
+        .expect("the task store should persist a recipient-addressed message");
+    let message = store
+        .blackboard_inspect(message_id)
+        .expect("the posted message should be inspectable")
+        .expect("the posted message should exist");
+    assert_eq!(message.task_id.as_deref(), Some(sender_id.as_str()));
+    assert_eq!(
+        message.recipient_task_id.as_deref(),
+        Some(recipient_id.as_str())
+    );
+    assert_eq!(message.payload.as_deref(), Some("shared-helper RFC"));
+    let message_json = serde_json::to_value(&message).unwrap();
+    assert_eq!(message_json["task_id"].as_str(), Some(sender_id.as_str()));
+    assert_eq!(
+        message_json["recipient_task_id"].as_str(),
+        Some(recipient_id.as_str())
+    );
+    let inbox = store
+        .blackboard_page_for_recipient(milestone_ref, &recipient_id, Some("notes"), Some(10), None)
+        .expect("the task store should list unread messages for their recipient");
+    assert_eq!(inbox.messages.len(), 1);
+    assert_eq!(inbox.messages[0].id, message_id);
+    assert_eq!(
+        inbox.messages[0].recipient_task_id.as_deref(),
+        Some(recipient_id.as_str())
+    );
+    assert!(inbox.messages[0].payload.is_none());
+    assert!(!store
+        .blackboard_mark_read(message_id, &sender_id)
+        .expect("a different task must not acknowledge this recipient's message"));
+    assert!(store
+        .blackboard_mark_read(message_id, &recipient_id)
+        .expect("the intended recipient should be able to mark its message read"));
+    let read_inbox = store
+        .blackboard_page_for_recipient(milestone_ref, &recipient_id, Some("notes"), Some(10), None)
+        .expect("read messages should leave the unread recipient page");
+    assert!(read_inbox.messages.is_empty());
+    assert!(!store
+        .blackboard_mark_read(message_id, &recipient_id)
+        .expect("a message already read should not be acknowledged twice"));
+    assert!(store
+        .blackboard_post_scoped_with_recipient(
+            contextunity_forge_mcp::db::tasks_store::BlackboardPostInput {
+                milestone_ref,
+                task_id: None,
+                subtask_ref: None,
+                gate: None,
+                author: "sender",
+                topic: "notes",
+                payload: "foreign recipient must be rejected",
+            },
+            Some("other-project/m-test:foreign"),
+        )
+        .is_err());
+
     let transition = contextunity_forge_mcp::db::tasks_store::GateTransition {
         milestone_id: "m-test".into(),
         subject: "task:first".into(),

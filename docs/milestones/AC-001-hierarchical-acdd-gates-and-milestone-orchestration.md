@@ -465,7 +465,6 @@ scope:
 - src/db/tasks_store/matrix.rs
 - src/db/tasks_store/trace.rs
 - tests/acdd/persistence.rs
-status: completed
 subtasks:
 - subtask_ref: gate-transitions-table-migration
   title: Implement SQLite migration and store APIs for durable gate_transitions audit table
@@ -487,14 +486,15 @@ subtasks:
   title: Add recipient_task_id column and status indexing to task_blackboard table
   status: ready
   evidence: null
+status: completed
 receipt:
   contract_revision: 1
-  passed_at: 2026-10-24T04:35:20.914257191+00:00
+  passed_at: 2026-10-24T08:44:07.263926214+00:00
   evidence:
     command_proof:
       command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --test acdd
       exit_code: 0
-      tests_passed: 118
+      tests_passed: 121
       tests_failed: 0
   review:
     review_proof:
@@ -502,19 +502,19 @@ receipt:
       contours:
         paths:
           applicable: true
-          evidence: Diff from target base 205fe8b to candidate 60418b2 changes exactly the six original paths plus the two successfully Forge-admitted sibling files tests/acdd/tasks.rs and src/db/tasks_store/recovery.rs; no configuration, receipt, generated, credential, or neighboring project paths changed.
+          evidence: 'The reopened repair changes only src/db/tasks_store/mod.rs, src/db/tasks_store/blackboard.rs, and tests/acdd/persistence.rs against baseline 5dbbcbec22848d936b0d6af2217a40055cfafcea. All nine paths in scoped candidate 6047fabd10626ad3b40802fb28da05346a3522b5 belong to Forge allowed_write_scope, and the complete allowed scope is unchanged from that candidate in the worktree. extended_scope_review: APPROVED for the Forge-authorized extension src/db/tasks_store/blackboard.rs, the canonical persistence owner for recipient posting, inbox paging, and acknowledgement. Other task paths retain accepted content; concurrent coordinator documentation edits are outside this scoped candidate. No protected configuration, credentials, generated receipt, or neighboring project file belongs to this repair.'
         claims:
           applicable: true
-          evidence: The v6-to-v7 migration creates the four contract tables, their required keys and trace uniqueness/2 KiB CHECK, adds recipient/status defaults and the exact composite index, and commits DDL plus version update in one IMMEDIATE transaction. Typed store APIs round-trip transition, trace, checkpoint, and contract matrix data. The seam test reaches production TasksStore::open through fixture and exercises each API.
+          evidence: Contract draft blackboard message 1146 requires recipient_task_id independently of task_id, store posting/inspection round-trip, and same-project/same-milestone validation. BlackboardMessage adds an optional backward-compatible serialized field, and all row decoders return it. Posting preserves owning hierarchy scope. Recipient pages select active messages for the validated milestone/task with bounded payload-free summaries in insertion order. Acknowledgement matches recipient, milestone, status, and message id. The additive real TasksStore seam at tests/acdd/persistence.rs:148-220 proves persistence, serialization, unread summaries, intended-recipient acknowledgement, repeated/wrong-recipient rejection, and foreign-project rejection.
         concurrency:
           applicable: true
-          evidence: Migration and contract-matrix replacement use IMMEDIATE transactions; the migration checks the schema-version update row count before commit, matrix failures roll back atomically, trace inserts rely on the declared uniqueness constraint, and checkpoint save is one SQLite upsert. No shared task state is mutated outside these SQLite operations.
+          evidence: Posting uses one conditional INSERT SELECT that rechecks owner, optional subtask, recipient milestone, and non-completed owner/recipient states within the SQLite write, including recipient-only milestone posts. This preserves the existing completion-race fence. Acknowledgement is a single conditional UPDATE from active to read, so competing acknowledgements cannot both succeed. The repair adds no filesystem/Git mutation, lock order, receipt publication, or task revision change.
         project_isolation:
           applicable: true
-          evidence: All new persistence methods operate on the owning TasksStore connection; matrix replacement validates matching milestone ids and reads/deletes by milestone id. The recovery change only admits schema version 7 in the existing read-only copy probe. No workspace paths or Git operations were added.
+          evidence: Posting, recipient paging, and acknowledgement use TasksStore::assert_id/inspect, the repository/project task namespace, and milestone_scope_ref. Posting and inbox reads reject recipient/milestone mismatch; insert SQL independently checks persisted milestone identity. Acknowledgement matches the namespace-qualified milestone and recipient. SQL values are parameter bound. Existing inspect/read/page APIs retain their project/owner scope while decoding recipient_task_id. No workspace, symlink, profile, or path authority behavior changes.
         administration:
           applicable: true
-          evidence: 'The schema preserves the existing v5-to-v6 path and upgrades v6 to v7 atomically; the recovery probe now recognizes 5, 6, and 7 without modifying the original database. No profile, protected configuration, receipt, or hook was changed. Forge accepted strict Clippy and ACDD evidence: 118 passed, 0 failed.'
+          evidence: 'The repair leaves accepted version-7 migration, recipient/status columns and index, profile pins, hooks, receipts, task authority, and gate lifecycle untouched. Existing posts retain recipient None. Legacy messages remain decodable via serde(default), and absent recipients remain omitted. Accepted builder proof: cargo clippy --all-targets --all-features -- -D warnings && cargo test --test acdd; exit 0, 121 passed, 0 failed. Independent review verification: cargo test --test acdd; exit 0, 121 passed, 0 failed (352.01 s).'
   decision: pass
   rollup:
     verified_invariants:

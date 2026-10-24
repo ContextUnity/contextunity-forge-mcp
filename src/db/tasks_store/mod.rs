@@ -101,6 +101,9 @@ pub struct BlackboardMessage {
     pub milestone_ref: String,
     /// Owning task identifier, or null for milestone-level messages.
     pub task_id: Option<String>,
+    /// Task that should receive the message, independent of its owning task scope.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipient_task_id: Option<String>,
     /// Subtask identifier, or null for milestone- and task-level messages.
     pub subtask_ref: Option<String>,
     /// Optional workflow gate that should receive this message.
