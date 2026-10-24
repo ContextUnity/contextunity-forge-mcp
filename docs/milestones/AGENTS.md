@@ -70,6 +70,10 @@ subtasks:
 
 ### Task Specification Rules:
 - **`target`**: Must state what is built, what invariants are proved, and what tools/budgets are respected.
+- **`proof_policy` (Contract Proof Admission)**:
+  - **`seam-test-first` (Greenfield / TDD / Defect Fixes)**: Default policy for greenfield features and bug fixes. Requires authoring a sensitive failing test on the production seam at `contract` stage (`red_exit_code: 101` in Rust, runtime assertion/panic failure) proving the absence of the capability or presence of the defect, followed by a passing run at `build` stage (`exit_code: 0`).
+  - **`direct-proof` (Refactoring / Decomposition / Optimization)**: Mandatory policy for god-file decomposition, architectural refactoring, performance optimization, and module restructuring where external contracts remain invariant. Accepts `red_exit_code: 0` at `contract` stage by binding to an existing characterization seam test (`seam_test_ref`), proving that 100% of baseline behavior is captured before code changes and preserved after `build`. Prohibits authoring artificial panic stubs solely to produce a red exit code.
+  - **`deferred-final-test` (Scaffolding / Upfront Synthesis / Manifests)**: Admitted for contract synthesis, workspace scaffolding, and documentation sync tasks where isolated unit tests do not apply. Accepts `red_exit_code: 0` at task level; full verification is deferred to the repository-wide gate matrix prior to milestone handoff.
 - **`depends_on:` (Topological Waves DAG)**:
   - Waves are strictly formed by topological dependencies in `depends_on: [...]`. Do not declare a bespoke `wave:` field inside YAML.
   - Tasks with empty `depends_on: []` run in Wave 0 (Bootstrap).
@@ -84,9 +88,10 @@ subtasks:
 
 ### 3. Test Harness Pre-Registration Invariant (Task 0 Pattern)
 
-When milestone tasks allocate dedicated, disjoint seam test files (e.g. `tests/<subsystem>/<task_seam>.rs`):
-- **Bootstrap Registration**: Task 0 (bootstrap task) creates the stub test files upfront and registers them in the subsystem's parent `mod.rs` (e.g. `tests/<subsystem>/mod.rs`).
-- **Zero Scope Collisions**: Concurrent wave tasks (Waves 1..N) own strictly their individual seam test files, never touching the shared parent `mod.rs`. This ensures that parallel worktrees avoid merge conflicts on test registration and that `cargo check` / `cargo test` compiles cleanly from turn 0.
+When milestone tasks allocate dedicated, disjoint seam test files:
+- **Bootstrap Registration**: Task 0 (bootstrap task) creates the stub test files upfront and registers them in the shared test suite root or registry index (`<path/to/test_suite_index>`).
+- **Zero Scope Collisions**: Concurrent wave tasks (Waves 1..N) own strictly their individual seam test files, never touching the shared parent test suite index. This ensures that parallel worktrees avoid merge conflicts on test registration and that type-checkers, compilers, and test runners execute cleanly from turn 0.
+- **Bootstrap Template & Quality Checklist**: For the universal Wave 0 (Task 0) YAML contract template and the 5 universal bootstrap verification gates, see [Wave 0 Bootstrap Task Template in docs/future/milestones/AGENTS.md](../future/milestones/AGENTS.md#3-wave-0-bootstrap-task-template--contract-quality-checklist-task-0-pattern).
 
 ---
 
