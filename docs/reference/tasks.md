@@ -179,6 +179,13 @@ and the two detail flags are mutually exclusive within one invocation. See the
 | `task_manage` | Required `action`; optional `workspace`, `task_id`, `milestone_ref`, `task_ref`, `paths`, `force` (default false), `subtask_ref`, `title`, `subtask_status`, and `evidence`. `next` additionally requires `worker_id` and a `worktree` path in CLI/engine action input. MCP accepts `worktree` as a routing selector for every action and requires it for `next`. See the action table below. |
 | `task_blackboard` | `action` is `post`, `read`, or `inspect`. Optional `scope` selects `milestone`, `task`, or `subtask`; `milestone_ref`, `task_id`, and `subtask_ref` identify or constrain that context. Post requires canonical `topic` and `payload`, accepts `author` and optional active-profile `gate`, and returns an ID. Read accepts `topic`, optional active-profile `gate`, `limit` (default 10, maximum 50), and `offset`; it returns newest-first summaries and pagination metadata without payload. Inspect with `message_id` returns that message including payload and gate, ignoring optional `scope`, `task_id`, and `milestone_ref`; without `message_id`, inspect returns the scoped read page. |
 
+Direct engine callers may use `engine::tasks::submit_zero_arg` for Contract and
+Command proof gates. It compiles claim-bound evidence from persisted execution
+traces and the claimed worktree's Git HEAD, then uses the regular submit
+validation path. Review, seam-test, delivery, and schema-defined proof gates
+still require typed evidence. The flat MCP `task_submit` tool continues to
+require an evidence object.
+
 For MCP calls, every task tool accepts `worktree` as a routing selector;
 `task_claim` and `task_manage(action="next")` require it, while `task_submit`
 accepts it optionally. Canonicalize claim and next selectors before engine

@@ -1,8 +1,9 @@
 use crate::{
     core::tasks::{
-        AcddError, AcddErrorCode, ContractType, Milestone, MilestoneContractMatrix, Receipt,
+        profile::CommandDef, AcddError, AcddErrorCode, ContractType, Milestone,
+        MilestoneContractMatrix, Receipt,
     },
-    db::tasks_store::{Task, TasksStore},
+    db::tasks_store::{GateExecutionTrace, Task, TasksStore},
     engine::tasks,
 };
 use anyhow::{bail, Context, Result};
@@ -15,6 +16,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+mod command_gate;
 mod contract;
 mod handoff;
 mod integration;
@@ -28,6 +30,17 @@ pub use integration::{
 };
 pub use recovery::db_recover;
 pub(crate) use recovery::obsolete_checkpoint_owners;
+
+/// Execute registered gate commands in order and persist a trace for each process.
+pub fn execute_command_gate(
+    root: &Path,
+    task_id: &str,
+    gate_path: &str,
+    commands: &CommandDef,
+    paths: &[String],
+) -> Result<Vec<GateExecutionTrace>> {
+    command_gate::execute_command_gate(root, task_id, gate_path, commands, paths)
+}
 
 /// Validate task dependencies and return stable topological execution waves.
 pub fn validate_wave_dag(
@@ -326,7 +339,10 @@ pub fn init(root: &Path, options: Init) -> Result<Value> {
             crate::engine::scanner::matches_path_pattern(&rel_target, &rel_c)
         });
         if !matches {
-            bail!("target directory '{}' does not match any configured milestone directory in forge-mcp.yaml", rel_target);
+            bail!(
+                "target directory '{}' does not match any configured milestone directory in forge-mcp.yaml",
+                rel_target
+            );
         }
         path
     } else if let Some(plan) = &options.plan {
@@ -511,7 +527,10 @@ pub fn init(root: &Path, options: Init) -> Result<Value> {
         )
     };
     let tasks = if stdin_tasks.is_empty() {
-        format!("### task: {slug}\n\n```yaml\ntask_ref: {slug}\ntarget: {}\nproof_policy: seam-test-first\ncontract_revision: 1\nscope:\n  - src/\nstatus: planned\n```\n", quote(&title)?)
+        format!(
+            "### task: {slug}\n\n```yaml\ntask_ref: {slug}\ntarget: {}\nproof_policy: seam-test-first\ncontract_revision: 1\nscope:\n  - src/\nstatus: planned\n```\n",
+            quote(&title)?
+        )
     } else {
         stdin_tasks.to_string()
     };

@@ -1,9 +1,9 @@
 use crate::core::tasks::{
-    AuthoritySnapshot, Milestone, Receipt, SubtaskSpec, TaskSpec, authority_gap_diagnostic,
-    milestone_id_change_diagnostic, shorten_task_response_commits, snapshot_inspect_cmd,
+    authority_gap_diagnostic, milestone_id_change_diagnostic, shorten_task_response_commits,
+    snapshot_inspect_cmd, AuthoritySnapshot, Milestone, Receipt, SubtaskSpec, TaskSpec,
 };
-use anyhow::{Context, Result, bail};
-use rusqlite::{Connection, OptionalExtension, params};
+use anyhow::{bail, Context, Result};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -15,13 +15,12 @@ mod schema;
 mod subtasks;
 mod trace;
 
-use self::blackboard::{
-    insert_milestone_broadcast_in_transaction, validate_milestone_broadcast,
-};
+use self::blackboard::{insert_milestone_broadcast_in_transaction, validate_milestone_broadcast};
 use self::matrix::replace_contract_matrix_in_transaction;
 
 pub(crate) use blackboard::clear_blackboard;
 pub use blackboard::is_canonical_blackboard_topic;
+pub use lifecycle::{ClaimBoundExecutionRun, ClaimBoundExecutionTrace};
 pub use trace::{GateCheckpoint, GateExecutionTrace, GateTransition, MAX_OUTPUT_SNIPPET_BYTES};
 
 /// The retention seconds value.
@@ -553,6 +552,7 @@ impl TasksStore {
             COMMIT;")?;
         }
         schema::migrate(&mut connection)?;
+        ensure_execution_provenance_schema(&connection)?;
         let version: String = connection.query_row(
             "SELECT value FROM task_store_metadata WHERE key='schema_version'",
             [],
@@ -1667,6 +1667,52 @@ impl TasksStore {
         let _snapshot = recovery::read_snapshot(&self.connection)?;
         milestone_tombstoned(&self.connection, &self.milestone_identity(milestone_id))
     }
+}
+
+fn ensure_execution_provenance_schema(connection: &Connection) -> Result<()> {
+    let present: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='gate_execution_runs')",
+        [],
+        |row| row.get(0),
+    )?;
+    if present {
+        return Ok(());
+    }
+    connection.execute_batch(
+        "BEGIN IMMEDIATE;
+        CREATE TABLE IF NOT EXISTS gate_execution_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            milestone_id TEXT NOT NULL,
+            subject TEXT NOT NULL,
+            gate_path TEXT NOT NULL,
+            claim_revision INTEGER NOT NULL,
+            contract_revision INTEGER NOT NULL,
+            worker_id TEXT NOT NULL,
+            worktree TEXT NOT NULL,
+            candidate_fingerprint TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('running', 'completed'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_gate_execution_runs_current
+            ON gate_execution_runs(subject, gate_path, claim_revision, contract_revision, id DESC);
+        CREATE TABLE IF NOT EXISTS gate_execution_attempts (
+            run_id INTEGER NOT NULL REFERENCES gate_execution_runs(id) ON DELETE CASCADE,
+            milestone_id TEXT NOT NULL,
+            subject TEXT NOT NULL,
+            gate_path TEXT NOT NULL,
+            command_id TEXT NOT NULL,
+            attempt_id INTEGER NOT NULL,
+            state TEXT NOT NULL CHECK(state IN ('reserved', 'completed')),
+            trace_id INTEGER,
+            trace_status TEXT,
+            exit_code INTEGER,
+            PRIMARY KEY(run_id, command_id),
+            UNIQUE(milestone_id, subject, gate_path, command_id, attempt_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_gate_execution_attempts_run
+            ON gate_execution_attempts(run_id, attempt_id);
+        COMMIT;",
+    )?;
+    Ok(())
 }
 
 fn milestone_tombstoned(connection: &Connection, milestone_identity: &str) -> Result<bool> {

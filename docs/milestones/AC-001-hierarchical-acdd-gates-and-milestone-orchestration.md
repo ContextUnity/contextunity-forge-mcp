@@ -70,10 +70,10 @@ Evolve ContextUnity Forge MCP into a **Universal Hierarchical Gate Platform** wh
 | **Wave 0** | **Bootstrap** | **`upfront-contract-synthesis-and-dag-prioritization`** (Task 0) | Cross-task contract matrix, waves, error taxonomy, and disjoint scope freeze | None |
 | **Wave 1** | **Foundation** | `universal-gate-ast-and-modular-catalog-spec` | Polymorphic AST serde, modular subsystem filtering, and guidance schemas | Task 0 |
 | **Wave 1** | **Foundation** | `sqlite-gate-transitions-and-trace-persistence` | SQLite schema migrations (`gate_transitions`, `gate_execution_traces`, `gate_checkpoints`) | Task 0 |
-| **Wave 2** | **Core Engine** | `zero-arg-transition-engine-and-command-runner` | Auto-proof compiler, Seam Engine Red-Green verifier, by_pattern command runner | Wave 1 |
-| **Wave 2** | **Automation** | `upfront-contract-synthesis-and-shared-helper-extraction` | Automated synthesis gate, helper extraction, and preflight milestone init | Wave 1 |
-| **Wave 3** | **Runtime** | `container-gate-and-claim-engine` | In-place execution (`--in-place`), silent telemetry, state-driven claims | Wave 2 |
-| **Wave 3** | **Tooling** | `scope-extension-manifest-sync-and-review-audit` | Atomic `task extend-scope`, manifest sync, SQLite checkpoints tool migration | Wave 2 |
+| **Wave 2** | **Core Engine** | `zero-arg-transition-engine-and-command-runner` | Zero-argument submission engine, auto-proof compiler, Seam Engine Red-Green verifier, and by_pattern command runner | Wave 1 |
+| **Wave 3** | **Automation** | `upfront-contract-synthesis-and-shared-helper-extraction` | Automated synthesis gate, helper extraction, and preflight milestone init | Wave 1; scope-ordered after Task 3 |
+| **Wave 4** | **Runtime** | `container-gate-and-claim-engine` | In-place execution (`--in-place`), silent telemetry, state-driven claims, and unread RFC guidance injection | Wave 2 and 3 |
+| **Wave 4** | **Tooling** | `scope-extension-manifest-sync-and-review-audit` | CLI zero-argument submission, atomic `task extend-scope`, manifest sync, and SQLite checkpoints tool migration | Wave 2 and 3 |
 
 ---
 
@@ -118,8 +118,9 @@ all earlier-wave dependencies pass.
 | :--- | :--- | :--- |
 | 0 | Task 0 | Owns the bootstrap contract, tests/acdd/mod.rs, and reserved seam files before later waves start. |
 | 1 | Tasks 1 and 2 | Task 1 owns core/profile/CLI/MCP/engine sources and gates_ast.rs; Task 2 owns src/db/tasks_store/ and persistence.rs. |
-| 2 | Tasks 3 and 4 | Task 3 owns transition/command-runner sources and runner.rs; Task 4 owns synthesis/milestone sources and synthesis.rs. |
-| 3 | Tasks 5 and 6 | Task 5 owns claim/container and reader sources plus seam_reachability.rs; Task 6 owns scope-sync, handoff, CLI/MCP and governance documents plus scope_sync.rs. |
+| 2 | Task 3 | Owns transition/command-runner, task-store lifecycle, module registration seams, runner.rs, and task reference updates. |
+| 3 | Task 4 | Owns synthesis sources and synthesis.rs; shared store/module files are serialized after Task 3 by the scope dependency. |
+| 4 | Tasks 5 and 6 | Task 5 owns claim/container, reader, context guidance, and seam_reachability.rs; Task 6 owns scope-sync, handoff, CLI/MCP, governance documents, and scope_sync.rs. |
 
 Same-wave tasks have no shared write path. Cross-wave path reuse is intentional
 and serialized by the dependency graph.
@@ -572,36 +573,114 @@ receipt:
 
 ```yaml
 task_ref: zero-arg-transition-engine-and-command-runner
-target: "Implement zero-argument task submit, auto-proof compiler from gate execution traces, Seam Engine Red-to-Green automated transition verifier, autonomous command runner with by_pattern multi-language dispatch, speculative dependency runner with upstream snapshot auto-rebase, automated task telemetry passport git commit note generator adhering to INV-PAYLOAD-OVERFLOW-GUARD (2 KiB note limit, compact Markdown diff/metrics, complete traces to disk logs), and unread blackboard RFC guidance injection"
+target: Implement the zero-argument task submission engine and auto-proof compiler from gate execution traces, Seam Engine Red-to-Green automated transition verifier, autonomous command runner with by_pattern multi-language dispatch, speculative dependency runner with upstream snapshot auto-rebase, and automated task telemetry passport git commit note generator adhering to INV-PAYLOAD-OVERFLOW-GUARD (2 KiB note limit, compact Markdown diff/metrics, complete traces to disk logs)
 proof_policy: seam-test-first
-contract_revision: 1
+contract_revision: 2
 depends_on:
-  - universal-gate-ast-and-modular-catalog-spec
-  - sqlite-gate-transitions-and-trace-persistence
+- universal-gate-ast-and-modular-catalog-spec
+- sqlite-gate-transitions-and-trace-persistence
 scope:
-  - src/engine/tasks/submit.rs
-  - src/engine/milestones/command_gate.rs
-  - src/engine/tasks/scheduler.rs
-  - tests/acdd/runner.rs
-  - docs/reference/tasks.md
-status: planned
+- src/engine/tasks/submit.rs
+- src/engine/milestones/command_gate.rs
+- src/engine/tasks/scheduler.rs
+- src/db/tasks_store/lifecycle.rs
+- src/db/tasks_store/mod.rs
+- src/engine/tasks/mod.rs
+- src/engine/milestones/mod.rs
+- tests/acdd/runner.rs
+- docs/reference/tasks.md
+status: completed
 subtasks:
-  - subtask_ref: zero-arg-proof-compiler
-    title: "Implement zero-argument proof payload compiler assembling traces and candidate trees"
-  - subtask_ref: seam-engine-red-green-verifier
-    title: "Implement Seam Engine transition verifier proving red baseline before green admission"
-  - subtask_ref: autonomous-command-executor-daemon
-    title: "Implement autonomous command runner daemon executing shell commands with 0 LLM tokens"
-  - subtask_ref: multi-language-by-pattern-command-evaluator
-    title: "Implement by_pattern polyglot scope matcher evaluating commands sequentially"
-  - subtask_ref: failure-back-routing-evaluator
-    title: "Implement reject_routing evaluator routing scope to build gate and symbols to contract gate"
-  - subtask_ref: automated-telemetry-passport-note-writer-and-overflow-guard
-    title: "Implement automated git commit note writer enforcing 2 KiB bounded Markdown payload"
-  - subtask_ref: speculative-dependency-snapshot-rebase-runner
-    title: "Implement speculative dependency runner auto-rebasing branches on snapshot updates"
-  - subtask_ref: workflow-guidance-blackboard-rfc-injector
-    title: "Implement unread blackboard RFC message injector during task claim guidance assembly"
+- subtask_ref: zero-arg-proof-compiler
+  title: Implement zero-argument proof payload compiler assembling traces and candidate trees
+  status: completed
+  evidence: 'Claim-bound proof compilation verifies latest complete run, candidate, claim, and registered command identity. Cross-project isolation regression rejects foreign run IDs through all four store APIs. Focused runner seam: 1 passed, 0 failed. `cargo clippy --all-targets --all-features -- -D warnings && cargo test --test acdd`: exit 0; Clippy passed; ACDD 124 passed, 0 failed, 0 ignored in 497.61s. Scan succeeded and fresh code_map_explain proves runner-to-production edges (13 symbols, 35 call occurrences, no analysis gaps).'
+- subtask_ref: seam-engine-red-green-verifier
+  title: Implement Seam Engine transition verifier proving red baseline before green admission
+  status: completed
+  evidence: 'Red-to-green acceptance requires same verified seam, claim/run provenance, distinct gate labels, and red-before-green chronology; focused seam covers mismatched seam and reversed order. Focused runner seam: 1 passed, 0 failed. `cargo clippy --all-targets --all-features -- -D warnings && cargo test --test acdd`: exit 0; Clippy passed; ACDD 124 passed, 0 failed, 0 ignored in 497.61s. Scan succeeded and fresh code_map_explain proves runner-to-production edges (13 symbols, 35 call occurrences, no analysis gaps).'
+- subtask_ref: autonomous-command-executor-daemon
+  title: Implement autonomous command runner daemon executing shell commands with 0 LLM tokens
+  status: completed
+  evidence: 'Command runner persists reserved attempts and full logs, terminates process groups, and bounds pipe reader completion. R5 regression rejects a .forge symlink without creating the outside task-traces directory. R7 fixed cfg imports: fs/OpenOptions are cfg(not(unix)); File is cfg(unix). Only x86_64-unknown-linux-gnu is installed, so a non-Unix target compile was unavailable; source branch/import pairing was verified structurally after scan. Focused runner seam: 1 passed, 0 failed. `cargo clippy --all-targets --all-features -- -D warnings && cargo test --test acdd`: exit 0; Clippy passed; ACDD 124 passed, 0 failed, 0 ignored in 497.61s. Scan succeeded and fresh code_map_explain proves runner-to-production edges (13 symbols, 35 call occurrences, no analysis gaps).'
+- subtask_ref: multi-language-by-pattern-command-evaluator
+  title: Implement by_pattern polyglot scope matcher evaluating commands sequentially
+  status: completed
+  evidence: 'Sequential by_pattern dispatch evaluates matching paths using language-neutral profile types and preserves command order. Focused runner seam: 1 passed, 0 failed. `cargo clippy --all-targets --all-features -- -D warnings && cargo test --test acdd`: exit 0; Clippy passed; ACDD 124 passed, 0 failed, 0 ignored in 497.61s. Scan succeeded and fresh code_map_explain proves runner-to-production edges (13 symbols, 35 call occurrences, no analysis gaps).'
+- subtask_ref: failure-back-routing-evaluator
+  title: Implement reject_routing evaluator routing scope to build gate and symbols to contract gate
+  status: completed
+  evidence: 'Pure reject-routing resolver proves scope -> build and symbol -> contract; persisted routing stays assigned to Task5 because gates.rs is outside Task3 scope. Focused runner seam: 1 passed, 0 failed. `cargo clippy --all-targets --all-features -- -D warnings && cargo test --test acdd`: exit 0; Clippy passed; ACDD 124 passed, 0 failed, 0 ignored in 497.61s. Scan succeeded and fresh code_map_explain proves runner-to-production edges (13 symbols, 35 call occurrences, no analysis gaps).'
+- subtask_ref: automated-telemetry-passport-note-writer-and-overflow-guard
+  title: Implement automated git commit note writer enforcing 2 KiB bounded Markdown payload
+  status: completed
+  evidence: 'Git telemetry passport note stays <=2 KiB while complete execution logs remain persisted. Focused runner seam: 1 passed, 0 failed. `cargo clippy --all-targets --all-features -- -D warnings && cargo test --test acdd`: exit 0; Clippy passed; ACDD 124 passed, 0 failed, 0 ignored in 497.61s. Scan succeeded and fresh code_map_explain proves runner-to-production edges (13 symbols, 35 call occurrences, no analysis gaps).'
+- subtask_ref: speculative-dependency-snapshot-rebase-runner
+  title: Implement speculative dependency runner auto-rebasing branches on snapshot updates
+  status: completed
+  evidence: 'Speculative snapshot rebase validates a clean worktree and safely restores branch/worktree on failure. Focused runner seam: 1 passed, 0 failed. `cargo clippy --all-targets --all-features -- -D warnings && cargo test --test acdd`: exit 0; Clippy passed; ACDD 124 passed, 0 failed, 0 ignored in 497.61s. Scan succeeded and fresh code_map_explain proves runner-to-production edges (13 symbols, 35 call occurrences, no analysis gaps).'
+receipt:
+  contract_revision: 2
+  passed_at: 2026-10-24T16:35:04.039804165+00:00
+  evidence:
+    command_proof:
+      command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --test acdd
+      exit_code: 0
+      tests_passed: 124
+      tests_failed: 0
+      log: 'R7 fix is limited to cfg imports in command_gate.rs: File is imported only under cfg(unix); std::fs::{self, OpenOptions} is imported under cfg(not(unix)), matching the non-Unix create_confined_log branch''s fs::symlink_metadata, fs::create_dir, and OpenOptions uses. rustup target list --installed reported only x86_64-unknown-linux-gnu, so a non-Unix cross-target compile was unavailable; the conditional import/branch pairing was checked structurally after scan. Focused Task3 seam passed: 1 passed, 0 failed, 123 filtered out. Strict lane exited 0: cargo clippy --all-targets --all-features -- -D warnings passed, then cargo test --test acdd reported 124 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 497.61s. Refreshed scan completed successfully. Fresh code_map_explain shows runner outbound edges to 13 production symbols (35 call occurrences), including execute_command_gate, compile_evidence_envelope, submit_zero_arg, verify_red_to_green, and evaluate_reject_routing, with no analysis gaps; create_confined_log source is indexed with no analysis gaps. R5/R6 behavior remains covered by the focused seam: outside .forge symlink creates no task-traces child, and all four foreign project run-ID APIs reject with TASK_PROJECT_MISMATCH. rustfmt --edition 2024 --check src/engine/milestones/command_gate.rs and git diff --check passed.'
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: All nine admitted snapshot blobs match the worktree; authorized manifest adjustment unchanged; no protected source or receipt changes.
+        claims:
+          applicable: true
+          evidence: R1-R6 remain closed; R7 cfg(not(unix)) std::fs imports are now correctly scoped.
+        concurrency:
+          applicable: true
+          evidence: Atomic attempts, exclusive logs, process-group timeout and bounded readers remain; regression evidence verified.
+        project_isolation:
+          applicable: true
+          evidence: Guarded traversal precedes mutation; all four run-ID paths enforce project ownership and two-project tests cover them.
+        administration:
+          applicable: true
+          evidence: 'No administration issues. Task6 pruning of both provenance tables is recorded in handoff #1171; wrapper graph-edge limitation is non-blocking.'
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-UNIVERSAL-GATE-POLYMORPHISM: Every workflow node is a Gate; execution mode is determined by driver fields: Agent Gate (role), Command Gate (command), or Container Gate (gates).'
+    - 'INV-ZERO-ARGUMENT-SUBMISSION: Automated gate submissions (any gate configured with proof: command, contract, or delivery) require zero manual JSON arguments; Forge autonomously compiles proof from gate execution traces and Git tree state. Cognitive review gates (proof: review) strictly require typed review judgments (verdict, reviewer, contours_reviewed, extended_scope_review).'
+    - 'INV-IN-PLACE-LIFECYCLE: Task and milestone execution supports in-place operation (--in-place / worktree: ".") without mandatory worktree or branch isolation.'
+    - 'INV-SILENT-ENGINE-TELEMETRY: Gate transitions and command execution traces are automatically recorded in SQLite; automated engine progress logging to task_blackboard is suppressed, preserving blackboard bandwidth for RFCs, synthesized contract matrices, and human escalations.'
+    - 'INV-SEAM-ENGINE-RED-GREEN: Seam Engine automatically tracks contract runtime failure (matching configured expected_failure.exit_codes) to implementation pass (exit 0) via gate execution traces.'
+    - 'INV-SEAM-REACHABILITY-RESILIENCE: Static seam verification proves the current test-to-production connection through imports, re-exports, and bounded test-helper paths; stale source/index evidence produces an actionable stale-index diagnostic. An unresolved expression alone does not prove reachability.'
+    - 'INV-REQUIRED-SKILLS-GOVERNANCE: Manifests declare required_skills in frontmatter; milestone init fails closed (MILESTONE_PREFLIGHT_FAILED) before agent launch if any declared skill is absent.'
+    - 'INV-PREFLIGHT-MILESTONE-INIT: milestone init validates manifest syntax, checks required_skills on host, and pre-scaffolds base worktrees across declared repositories upfront before agent dispatch.'
+    - 'INV-MULTI-REPO-MANIFEST-DECLARATION: Multi-repository workflows declare participant repositories in manifest frontmatter; the engine coordinates cross-repo worktree initialization and compound breadcrumbs.'
+    - 'INV-EXTENDED-SCOPE-MANIFEST-SYNC: task extend-scope writes atomically to both SQLite and the milestone markdown manifest; review proof strictly requires extended_scope_review approval before deliver.'
+    - 'INV-BREADCRUMB-CHECKPOINT-UNIFICATION: Checkpoints are stored in SQLite gate_checkpoints keyed directly by turn breadcrumb locators; legacy .forge/checkpoints.json is eliminated.'
+    - 'INV-TRANSITION-TRACE-PERSISTENCE: Upon milestone handoff (INV-HANDOFF-SQLITE-PRUNING), completed milestone tasks, claims, revisions, gate transitions, execution traces, checkpoints, and task blackboard rows are purged from SQLite; milestone_tombstones is retained to keep archived dependencies satisfiable; canonical durable records reside permanently in docs/milestones/archive/*.md and Git history.'
+    - 'INV-PRE-DOC-AUTONOMOUS-VERIFICATION: Milestone verification executes as a container gate with automated checks, review, fallback repair subgraph, and autonomous delivery before documentation.'
+    - 'INV-MARKDOWN-FIRST-ERGONOMICS: Agent messages, guidance, and status reports follow Milestone 054 Markdown-first principles: clickable coordinates, callout blockers, compact status tables, zero dead metadata.'
+    - 'INV-MODULAR-SUBSYSTEM-DECOUPLING: Forge MCP decomposes functionality into 5 independent subsystems (codemap, acdd, blackboard, docs, checkpoints) configurable via forge-mcp.yaml modules/profile, with dynamic MCP tool registration and zero initialization cost for disabled subsystems.'
+    - 'INV-CONTEXT-AWARE-GUIDANCE-ADAPTATION: workflow_guidance, prompts, and gate verification dynamically adapt to enabled subsystems, suppressing dead tool references, omitting unused guidance structures, and falling back gracefully when graph or blackboard features are disabled.'
+    - 'INV-PAYLOAD-OVERFLOW-GUARD: Custom metadata, git_commit_note payloads (rendered as Markdown by default, or JSON), and in-database trace snippets attached to tasks are bounded by a 2 KiB limit (configurable via git_commit_note.limits.max_bytes / limits.max_metadata_bytes) with complete command outputs written to disk logs, protecting the 96 KiB MCP response budget and preventing Git note bloat.'
+    - 'INV-UNIVERSAL-PROFILE-ZERO-LANGUAGE-HARDCODE: The embedded default profile (acdd.default.yaml) and profile templates must remain strictly language-agnostic. Gates and commands must not hardcode Rust-specific binaries (such as cargo clippy or cargo test); all verification commands must use pattern-based dispatch (by_pattern) matching project file extensions or generic command identifiers. Guidance texts must not mention specific languages or compilers.'
+    - 'INV-TWO-LOOP-ACDD-GOVERNANCE: Task execution strictly distinguishes between scope: (files on disk, extensible by builder) and symbols: (admitted public interface deltas, strictly governed by architect). Review failures route via reject_routing (scope -> build, symbols -> contract). Unadmitted public interface mutations are prohibited from bypassing the Long Outer Loop (architect arbitration -> seam contract test -> builder).'
+    - 'INV-GUIDANCE-SLOT-BINDING: Gates declare parameterized guidance slots (e.g. guidance: [task.contract, hitl]), and milestones bind them in manifest frontmatter (guidance: { hitl: pro }). The engine resolves slot hitl with value pro via format!("{}.{}", slot, value) -> hitl.pro (or literal dotted keys). The validator verifies slot matching on milestone init/check, emitting warnings for unbound slots and falling back to profile defaults.'
+    architectural_notes:
+    - 'deferred: Task 6 handoff: when implementing the CLI zero-argument task lifecycle / milestone handoff cleanup, prune the Task 3 provenance rows in gate_execution_runs and gate_execution_attempts together with their associated execution traces. These tables are created by the Task 3 task-store schema; this cleanup remains intentionally deferred to Task 6 ownership.'
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Admitted Symbols (Wave 2)
@@ -742,9 +821,9 @@ receipt:
 
 ```yaml
 task_ref: container-gate-and-claim-engine
-target: "Implement hierarchical container gate state machine advancing through child gates, with in-place execution (--in-place), silent engine telemetry, state-driven zero-flag claims and breadcrumbs, and precise static seam reachability with stale-index and test-helper diagnostics"
+target: "Implement hierarchical container gate state machine advancing through child gates, with in-place execution (--in-place), silent engine telemetry, state-driven zero-flag claims and breadcrumbs, unread blackboard RFC guidance injection into task claim guidance, and precise static seam reachability with stale-index and test-helper diagnostics"
 proof_policy: seam-test-first
-contract_revision: 1
+contract_revision: 2
 depends_on:
   - zero-arg-transition-engine-and-command-runner
   - upfront-contract-synthesis-and-shared-helper-extraction
@@ -763,6 +842,8 @@ subtasks:
     title: "Implement in-place task execution (--in-place) bypassing worktree cloning for single-task runs"
   - subtask_ref: silent-telemetry-blackboard-filter
     title: "Filter automated engine telemetry from task_blackboard, preserving human blockers and RFCs"
+  - subtask_ref: workflow-guidance-blackboard-rfc-injector
+    title: "Inject unread task-targeted and RFC blackboard messages into task claim guidance"
   - subtask_ref: automated-scoped-verification-runner
     title: "Implement scoped verification runner executing matching commands on task build submission"
   - subtask_ref: agent-breadcrumb-formatter
@@ -803,9 +884,9 @@ subtasks:
 
 ```yaml
 task_ref: scope-extension-manifest-sync-and-review-audit
-target: "Implement atomic task extend-scope manifest synchronization, extended_scope_review verification gate, extending milestone handoff SQLite pruning to trace, transition, and checkpoint tables, and session-checkpoint tool migration to gate_checkpoints"
+target: "Wire zero-argument task submission into the CLI, implement atomic task extend-scope manifest synchronization, extended_scope_review verification gate, extend milestone handoff SQLite pruning to trace, transition, and checkpoint tables, and migrate the session-checkpoint tool to gate_checkpoints"
 proof_policy: seam-test-first
-contract_revision: 1
+contract_revision: 2
 depends_on:
   - zero-arg-transition-engine-and-command-runner
   - upfront-contract-synthesis-and-shared-helper-extraction
@@ -839,6 +920,8 @@ subtasks:
     title: "Extend milestone handoff pruning to purge gate_transitions, traces, and checkpoints tables"
   - subtask_ref: milestone-verification-container-and-autonomous-deliver
     title: "Implement milestone verification container gate with full repo check, review, fallback subgraph, and autonomous delivery"
+  - subtask_ref: zero-argument-task-submit-cli-wiring
+    title: "Wire the CLI task submit command to Task 3's zero-argument submission engine"
   - subtask_ref: promote-future-adr-and-milestone-governance
     title: "Promote docs/future/adr/0020-*.md to docs/adr/ and docs/future/milestones/AGENTS.md to docs/milestones/AGENTS.md, registering ADR 0020 in docs/adr/README.md and pruning docs/future/"
 ```

@@ -3,7 +3,10 @@ use crate::{
         canonical_commit_from_prefix, confined_path, gates::Evidence,
         shorten_task_response_commits, snapshot_inspect_cmd, Milestone,
     },
-    db::tasks_store::{BlackboardPageRequest, BlackboardPostInput, Task, TasksStore},
+    db::tasks_store::{
+        BlackboardPageRequest, BlackboardPostInput, ClaimBoundExecutionTrace, GateExecutionTrace,
+        Task, TasksStore,
+    },
 };
 use anyhow::{bail, Context, Result};
 use schemars::JsonSchema;
@@ -19,9 +22,66 @@ mod blackboard;
 mod gates;
 mod git_snapshot;
 mod lifecycle;
+mod scheduler;
+mod submit;
 
 pub use blackboard::{blackboard, BlackboardAction, BlackboardRequest, BlackboardScope};
 pub use lifecycle::{claim, manage, reopen, reset};
+
+/// Compile an automated gate proof from its persisted traces and current Git state.
+pub fn compile_evidence_envelope(root: &Path, task_id: &str, stage: &str) -> Result<Value> {
+    submit::compile_evidence_envelope(root, task_id, stage)
+}
+
+pub(crate) fn candidate_fingerprint(root: &Path) -> Result<String> {
+    submit::candidate_fingerprint(root)
+}
+
+/// Submit an automated gate without caller-supplied proof fields.
+pub fn submit_zero_arg(
+    root: &Path,
+    task_id: &str,
+    stage: &str,
+    action: Action,
+    findings: Option<Value>,
+) -> Result<Value> {
+    submit::submit_zero_arg(root, task_id, stage, action, findings)
+}
+
+/// Check that a configured red result is followed by a successful result.
+pub fn verify_red_to_green(
+    red: &ClaimBoundExecutionTrace,
+    green: &ClaimBoundExecutionTrace,
+    expected_failure: &crate::core::tasks::profile::ExpectedFailure,
+) -> Result<Value> {
+    submit::verify_red_to_green(red, green, expected_failure)
+}
+
+/// Resolve the configured destination for scope or public-symbol findings.
+pub fn evaluate_reject_routing(
+    routing: &crate::core::tasks::profile::RejectRouting,
+    finding_kind: &str,
+) -> Result<String> {
+    submit::evaluate_reject_routing(routing, finding_kind)
+}
+
+/// Render a compact Git telemetry note while keeping full logs in their log files.
+pub fn telemetry_passport_note(
+    task_id: &str,
+    traces: &[GateExecutionTrace],
+    diff_summary: &str,
+) -> Result<String> {
+    submit::telemetry_passport_note(task_id, traces, diff_summary)
+}
+
+/// Rebase a speculative task branch after its upstream snapshot advances.
+pub fn rebase_speculative_dependency(
+    root: &Path,
+    task_branch: &str,
+    upstream_snapshot: &str,
+) -> Result<()> {
+    scheduler::rebase_speculative_dependency(root, task_branch, upstream_snapshot)
+}
 
 /// Returns the registered workspace names for the repository at `root`.
 pub fn list_workspaces(root: &Path) -> Result<Vec<String>> {
@@ -743,7 +803,9 @@ pub fn list(root: &Path, mut p: List) -> Result<Value> {
         .as_deref()
         .is_some_and(|previous| previous != generation)
     {
-        bail!("TASK_LIST_STALE_GENERATION: task or subtask state, workspace, milestone, or filters changed. Do: restart task_list at offset=0 and use the current generation.");
+        bail!(
+            "TASK_LIST_STALE_GENERATION: task or subtask state, workspace, milestone, or filters changed. Do: restart task_list at offset=0 and use the current generation."
+        );
     }
     let total = all_tasks.len();
     let start = offset.min(total);
