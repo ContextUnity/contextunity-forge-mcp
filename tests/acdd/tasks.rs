@@ -255,12 +255,12 @@ fn prepare_indexed_boundary_workspace(
     } else {
         let seam_depth: Option<i64> = connection
             .query_row(
-                "WITH RECURSIVE reachable(node_hash,depth) AS (SELECT node_hash,0 FROM nodes WHERE name='test_connected' AND is_test=1 UNION SELECT edge.dst_hash,reachable.depth+1 FROM reachable JOIN edges edge ON edge.src_hash=reachable.node_hash WHERE reachable.depth<3 AND edge.kind IN ('calls','possible_calls')) SELECT MIN(reachable.depth) FROM reachable JOIN nodes target ON target.node_hash=reachable.node_hash JOIN path_dictionary path ON path.path_id=target.path_id WHERE path.path='src/api.rs' AND target.is_test=0 AND target.kind='function' AND target.name=?1",
+                "WITH RECURSIVE reachable(node_hash,depth) AS (SELECT node_hash,0 FROM nodes WHERE name='test_connected' AND is_test=1 UNION SELECT edge.dst_hash,reachable.depth+1 FROM reachable JOIN edges edge ON edge.src_hash=reachable.node_hash WHERE reachable.depth<4 AND edge.kind IN ('calls','imports')) SELECT MIN(reachable.depth) FROM reachable JOIN nodes target ON target.node_hash=reachable.node_hash JOIN path_dictionary path ON path.path_id=target.path_id WHERE path.path='src/api.rs' AND target.is_test=0 AND target.kind='function' AND target.name=?1",
                 [expected_target],
                 |row| row.get(0),
             )
             .unwrap();
-        seam_depth.is_some_and(|depth| (1..=3).contains(&depth))
+        seam_depth.is_some_and(|depth| (1..=4).contains(&depth))
     };
     assert!(
         has_expected_witness,
@@ -597,7 +597,8 @@ fn contract_seam_requires_current_indexed_paths_at_every_hop() {
             false,
             false,
         ),
-        ("three_hops", "src/seam.rs::test_connected", false, true),
+        ("three_hops", "src/seam.rs::test_connected", false, false),
+        ("four_hops", "src/seam.rs::test_connected", false, false),
         (
             "removed_direct_call",
             "src/seam.rs::test_connected",
@@ -665,14 +666,20 @@ fn contract_seam_requires_current_indexed_paths_at_every_hop() {
             indirect.to_owned()
         } else if case == "retargeted_local_alias" {
             local_alias.to_owned()
-        } else if case == "three_hops" {
+        } else if matches!(case, "three_hops" | "four_hops") {
+            let helper = if case == "four_hops" { "wrapper" } else { "outer" };
             direct
-                .replace("api::route", "caller::outer")
-                .replace("route()", "outer()")
+                .replace("api::route", &format!("caller::{helper}"))
+                .replace("route()", &format!("{helper}()"))
         } else {
             direct.to_owned()
         };
-        let root = indexed_boundary_workspace(api, caller, &initial, "route");
+        let caller_source = if case == "four_hops" {
+            "use crate::api::route;\npub fn helper() -> usize { route() }\npub fn outer() -> usize { helper() }\npub fn wrapper() -> usize { outer() }\n"
+        } else {
+            caller
+        };
+        let root = indexed_boundary_workspace(api, caller_source, &initial, "route");
         match case {
             "removed_direct_call" | "removed_direct_call_file" | "refreshed_disconnected" => root
                 .write(
@@ -724,10 +731,29 @@ fn contract_seam_requires_current_indexed_paths_at_every_hop() {
         let result = submit_indexed_boundary(&root, "contract", seam);
         match (reject, result) {
             (true, Err(error)) => {
-                if !error.to_string().contains("TASK_SEAM_DISCONNECTED") {
+                let error = error.to_string();
+                let expected = if case == "refreshed_disconnected" {
+                    "TASK_SEAM_DISCONNECTED"
+                } else {
+                    "TASK_SEAM_STALE"
+                };
+                if !error.contains(expected) {
                     failures.push(format!(
-                        "{case}: stale seam reached a later boundary: {error}"
+                        "{case}: expected {expected}, got: {error}"
                     ));
+                }
+                for diagnostic in [
+                    "Calls discovered:",
+                    "Coverage statuses:",
+                    "Reached targets:",
+                    "Stop reason:",
+                ] {
+                    if !error.contains(diagnostic) {
+                        failures.push(format!("{case}: missing '{diagnostic}' diagnostic: {error}"));
+                    }
+                }
+                if expected == "TASK_SEAM_STALE" && !error.contains("contextunity-forge-mcp scan") {
+                    failures.push(format!("{case}: stale diagnostic omits refresh action: {error}"));
                 }
                 assert_eq!(
                     tasks::store_for_task(&root.0, "forge-mcp/m-current-boundary:routing")
@@ -739,7 +765,7 @@ fn contract_seam_requires_current_indexed_paths_at_every_hop() {
                 );
             }
             (true, Ok(_)) => failures.push(format!(
-                "{case}: accepted a seam without a current indexed one- or two-hop production path"
+                "{case}: accepted a seam without a current indexed production path"
             )),
             (false, Err(error)) => failures.push(format!(
                 "{case}: valid current indexed seam rejected: {error}"
@@ -771,7 +797,11 @@ fn contract_seam_accepts_test_path_helpers_and_rejects_stale_hops() {
         ),
     );
     match submit_indexed_boundary(&stale, "contract", "src/seam.rs::test_connected") {
-        Err(error) if error.to_string().contains("TASK_SEAM_DISCONNECTED") => {}
+        Err(error) if error.to_string().contains("TASK_SEAM_STALE") => {
+            let error = error.to_string();
+            assert!(error.contains("contextunity-forge-mcp scan"), "{error}");
+            assert!(error.contains("Reached targets:"), "{error}");
+        }
         Err(error) => failures.push(format!(
             "stale helper failed at the wrong boundary: {error}"
         )),
@@ -8188,16 +8218,57 @@ fn claim_returns_bundle_by_default_with_task_and_milestone_blackboard_messages()
         .blackboard_post(task_2_id, "agent_2", "decisions", "Milestone level finding")
         .unwrap();
 
-    // Claim without specifying bundle (bundle defaults to true)
+    let milestone_ref = store
+        .milestone_scope_ref(&store.inspect(task_id).unwrap().milestone_ref)
+        .unwrap();
+    store
+        .blackboard_post_scoped(
+            &milestone_ref,
+            None,
+            None,
+            "architect",
+            "draft",
+            "RFC: share the task claim breadcrumb with the receiving worker",
+        )
+        .unwrap();
+    store
+        .blackboard_post_scoped_with_recipient(
+            contextunity_forge_mcp::db::tasks_store::BlackboardPostInput {
+                milestone_ref: &milestone_ref,
+                task_id: Some(task_2_id),
+                subtask_ref: None,
+                gate: None,
+                author: "architect",
+                topic: "draft",
+                payload: "RFC addressed to the first task",
+            },
+            Some(task_id),
+        )
+        .unwrap();
+    store
+        .blackboard_post_scoped_with_recipient(
+            contextunity_forge_mcp::db::tasks_store::BlackboardPostInput {
+                milestone_ref: &milestone_ref,
+                task_id: Some(task_2_id),
+                subtask_ref: None,
+                gate: None,
+                author: "architect",
+                topic: "draft",
+                payload: "RFC addressed to the second task",
+            },
+            Some(task_2_id),
+        )
+        .unwrap();
+
+    // The persisted task stage supplies the claim gate when stage is omitted.
     let claim_res = tasks::claim(
         &root.0,
-        tasks::Claim {
-            task_id: task_id.into(),
-            stage: "contract".into(),
-            worker_id: "builder".into(),
-            worktree: root.0.to_string_lossy().into_owned(),
-            ..Default::default()
-        },
+        serde_json::from_value(json!({
+            "task_id": task_id,
+            "worker_id": "builder",
+            "worktree": root.0
+        }))
+        .unwrap(),
     )
     .unwrap();
 
@@ -8213,10 +8284,43 @@ fn claim_returns_bundle_by_default_with_task_and_milestone_blackboard_messages()
         .expect("blackboard array in bundle");
     assert_eq!(
         bb.len(),
-        2,
-        "Expected both task and milestone sibling blackboard messages"
+        4,
+        "the claim sees broadcast and explicitly addressed messages"
     );
     assert!(claim_res["workflow_guidance"].is_object());
+    assert_eq!(claim_res["breadcrumb"], "m-test/tasks/first/contract");
+    assert_eq!(claim_res["workflow_guidance"]["breadcrumb"], claim_res["breadcrumb"]);
+    assert_eq!(claim_res["workflow_guidance"]["gate_cursor"]["gate_path"], "tasks");
+    assert_eq!(claim_res["workflow_guidance"]["gate_cursor"]["stage_id"], "contract");
+    let guidance_messages = claim_res["workflow_guidance"]["blackboard_messages"]
+        .as_array()
+        .unwrap();
+    assert_eq!(guidance_messages.len(), 2);
+    assert!(guidance_messages.iter().any(|message| {
+        message["payload"]
+            .as_str()
+            .is_some_and(|payload| payload.contains("RFC: share the task claim breadcrumb"))
+    }));
+    assert!(guidance_messages.iter().any(|message| {
+        message["recipient_task_id"] == task_id
+            && message["payload"] == "RFC addressed to the first task"
+    }));
+    assert!(!guidance_messages.iter().any(|message| {
+        message["payload"] == "RFC addressed to the second task"
+    }));
+
+    let checkpoint: (String, String) = store
+        .connection
+        .query_row(
+            "SELECT breadcrumb, state_payload FROM gate_checkpoints WHERE subject=?1",
+            [task_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(checkpoint.0, claim_res["breadcrumb"]);
+    let state: Value = serde_json::from_str(&checkpoint.1).unwrap();
+    assert_eq!(state["task_id"], task_id);
+    assert_eq!(state["stage"], "contract");
 }
 
 #[test]

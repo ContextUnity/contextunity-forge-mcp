@@ -548,30 +548,9 @@ fn linked_milestone_context(
     Ok(linked)
 }
 
-/// Builds the comprehensive, zero-shot task context bundle.
-fn active_gate_index(
-    profile: &crate::core::tasks::profile::GateProfile,
-    stage: &str,
-) -> Result<usize> {
-    if stage == "completed" {
-        return Ok(profile.gates.len());
-    }
-    profile.index_of(stage).with_context(|| {
-        format!(
-            "TASK_STAGE_UNKNOWN: '{stage}' is not in the active profile; choose one of: {}",
-            profile
-                .gates
-                .iter()
-                .map(|gate| gate.id.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
-    })
-}
-
 fn validate_gate_requirements(
     profile: &crate::core::tasks::profile::GateProfile,
-    active_index: usize,
+    active_gate: Option<&crate::core::tasks::profile::GateDef>,
     modules: &crate::core::tasks::catalog::SubsystemRegistry,
 ) -> Result<()> {
     for required in &profile.modules.required {
@@ -581,7 +560,7 @@ fn validate_gate_requirements(
             );
         }
     }
-    if let Some(gate) = profile.gates.get(active_index) {
+    if let Some(gate) = active_gate {
         for tool in &gate.tools {
             if let Some(subsystem) =
                 crate::core::tasks::catalog::SubsystemRegistry::subsystem_for_tool(tool)
@@ -610,8 +589,19 @@ pub(super) fn validate_claim_gate_requirements(workspace: &Workspace, task: &Tas
     } else {
         task.stage.as_str()
     };
-    let active_index = active_gate_index(&profile, stage)?;
-    validate_gate_requirements(&profile, active_index, &adapter.modules)
+    let active_gate = if stage == "completed" {
+        None
+    } else {
+        Some(super::claim::cursor_for_stage(&profile, stage)?.gate)
+    };
+    validate_gate_requirements(&profile, active_gate.as_ref(), &adapter.modules)
+}
+
+fn is_rfc_message(message: &Value) -> bool {
+    message
+        .get("payload")
+        .and_then(Value::as_str)
+        .is_some_and(|payload| payload.trim_start().starts_with("RFC:"))
 }
 
 fn prune_blackboard_guidance(guidance: &mut Value) {
@@ -659,9 +649,18 @@ pub(super) fn context_bundle(
             .and_then(Value::as_str)
             .context("task stage missing")?
     };
-    let active_index = active_gate_index(&profile, stage)?;
-    let active_gate = profile.gates.get(active_index);
-    validate_gate_requirements(&profile, active_index, &modules)?;
+    let gate_sequence = super::claim::gate_sequence(&profile)?;
+    let active_cursor = if stage == "completed" {
+        None
+    } else {
+        Some(super::claim::cursor_for_stage(&profile, stage)?)
+    };
+    let active_index = active_cursor
+        .as_ref()
+        .map(|cursor| cursor.flat_index)
+        .unwrap_or(gate_sequence.len());
+    let active_gate = active_cursor.as_ref().map(|cursor| &cursor.gate);
+    validate_gate_requirements(&profile, active_gate, &modules)?;
     let codemap_enabled = modules.is_enabled("codemap");
     let blackboard_enabled = modules.is_enabled("blackboard");
     let proof_kind = active_gate.and_then(|gate| gate.proof.kind());
@@ -670,29 +669,34 @@ pub(super) fn context_bundle(
         .and_then(Value::as_array)
         .map(Vec::as_slice)
         .unwrap_or(&[]);
-    let evidence_for = |gate_id: &str, expected_state: &str| -> Option<Value> {
-        gate_history.iter().rev().find_map(|entry| {
-            (entry.get("stage").and_then(Value::as_str) == Some(gate_id)
-                && entry.get("state").and_then(Value::as_str) == Some(expected_state))
-            .then(|| entry.get("evidence").and_then(Value::as_str))
-            .flatten()
-            .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
-        })
-    };
+    let evidence_for_cursor =
+        |cursor: &super::claim::GateCursor, expected_state: &str| -> Option<Value> {
+            gate_history.iter().rev().find_map(|entry| {
+                if entry.get("state").and_then(Value::as_str) != Some(expected_state) {
+                    return None;
+                }
+                let stage = entry.get("stage").and_then(Value::as_str)?;
+                let historical_cursor = super::claim::cursor_for_stage(&profile, stage).ok()?;
+                (historical_cursor.canonical_stage_id == cursor.canonical_stage_id)
+                    .then(|| entry.get("evidence").and_then(Value::as_str))
+                    .flatten()
+                    .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+            })
+        };
     let snapshot_for = |before_index: usize| -> Option<Value> {
-        profile
-            .gates
+        gate_sequence
             .iter()
             .take(before_index)
             .rev()
-            .find_map(|gate| {
+            .find_map(|cursor| {
+                let gate = &cursor.gate;
                 if !gate.sha_snapshot {
                     return None;
                 }
-                let evidence = evidence_for(&gate.id, "passed")?;
+                let evidence = evidence_for_cursor(cursor, "passed")?;
                 let commit = evidence.get("commit")?.as_str()?;
                 Some(json!({
-                    "stage": gate.id,
+                    "stage": cursor.canonical_stage_id,
                     "commit": commit,
                     "candidate_baseline_head": evidence.get("candidate_baseline_head"),
                     "inspect_cmd": crate::core::tasks::snapshot_inspect_cmd(commit),
@@ -733,16 +737,16 @@ pub(super) fn context_bundle(
     };
 
     // Select proof context by configured gate taxonomy and references.
-    let contract_seam_test = profile
-        .gates
+    let contract_seam_test = gate_sequence
         .iter()
         .take(active_index)
         .rev()
-        .find_map(|gate| {
+        .find_map(|cursor| {
+            let gate = &cursor.gate;
             if gate.proof.kind() != Some(crate::core::tasks::profile::ProofKind::Contract) {
                 return None;
             }
-            let evidence = evidence_for(&gate.id, "passed")?;
+            let evidence = evidence_for_cursor(cursor, "passed")?;
             evidence
                 .get("proof")
                 .and_then(|proof| proof.get("contract_proof"))
@@ -751,15 +755,17 @@ pub(super) fn context_bundle(
                 .cloned()
         });
 
-    let unresolved_review_findings = active_gate.and_then(|_| {
-        let active_id = stage;
+    let unresolved_review_findings = active_cursor.as_ref().and_then(|active_cursor| {
         gate_history.iter().rev().find_map(|rejected| {
             if rejected.get("state").and_then(Value::as_str) != Some("rejected") {
                 return None;
             }
             let rejected_stage = rejected.get("stage").and_then(Value::as_str)?;
-            let gate = profile.by_stage(rejected_stage)?;
-            if gate.reject_to.as_deref() != Some(active_id)
+            let rejected_cursor = super::claim::cursor_for_stage(&profile, rejected_stage).ok()?;
+            let gate = &rejected_cursor.gate;
+            let reject_target = gate.reject_to.as_deref()?;
+            let target_cursor = super::claim::cursor_for_stage(&profile, reject_target).ok()?;
+            if target_cursor.canonical_stage_id != active_cursor.canonical_stage_id
                 || !matches!(
                     gate.proof.kind(),
                     Some(
@@ -794,7 +800,7 @@ pub(super) fn context_bundle(
     });
 
     let candidate_snapshot = snapshot_for(active_index);
-    let latest_delivery_snapshot = snapshot_for(profile.gates.len());
+    let latest_delivery_snapshot = snapshot_for(gate_sequence.len());
 
     let milestone_ref = details.get("milestone_ref").cloned();
     let depends_on = details
@@ -817,31 +823,35 @@ pub(super) fn context_bundle(
         Some({
             let registry = super::workspaces::Registry::load(root)?;
             let store = workspace.open(&registry.database)?;
+            let task_namespace = task_id
+                .rsplit_once(':')
+                .map(|(namespace, _)| format!("{namespace}:"));
             let milestone_ref_str = details
                 .get("milestone_ref")
                 .and_then(|v| v.as_str())
                 .and_then(|m| store.milestone_scope_ref(m).ok());
-            let milestone_prefix = task_id.split_once(':').map(|(p, _)| format!("{p}:"));
             let mut stmt = store.connection.prepare(
-            "SELECT id, task_id, subtask_ref, gate, author, topic, payload, created_at FROM task_blackboard \
-             WHERE (task_id = ?1 \
-                OR (?2 IS NOT NULL AND milestone_ref = ?2 AND task_id IS NULL) \
-                OR (?3 IS NOT NULL AND substr(task_id, 1, length(?3)) = ?3)) \
+            "SELECT id, task_id, recipient_task_id, subtask_ref, gate, author, topic, payload, created_at FROM task_blackboard \
+             WHERE status='active' AND (task_id = ?1 OR recipient_task_id = ?1 OR \
+               (?2 IS NOT NULL AND milestone_ref = ?2 AND task_id IS NULL) OR \
+               (?3 IS NOT NULL AND substr(task_id,1,length(?3)) = ?3)) \
+              AND (recipient_task_id IS NULL OR recipient_task_id = ?1) \
              AND (gate IS NULL OR gate = ?4) \
              ORDER BY created_at DESC, id DESC LIMIT 15",
         )?;
             let mut msgs = stmt
                 .query_map(
-                    rusqlite::params![task_id, milestone_ref_str, milestone_prefix, stage],
+                    rusqlite::params![task_id, milestone_ref_str, task_namespace, stage],
                     |row| {
                         let id = row.get::<_, u64>(0)?;
                         let msg_task_id = row.get::<_, Option<String>>(1)?;
-                        let msg_subtask_ref = row.get::<_, Option<String>>(2)?;
-                        let gate = row.get::<_, Option<String>>(3)?;
-                        let author = row.get::<_, String>(4)?;
-                        let topic = row.get::<_, String>(5)?;
-                        let raw_payload: String = row.get(6)?;
-                        let created_at = row.get::<_, i64>(7)?;
+                        let recipient_task_id = row.get::<_, Option<String>>(2)?;
+                        let msg_subtask_ref = row.get::<_, Option<String>>(3)?;
+                        let gate = row.get::<_, Option<String>>(4)?;
+                        let author = row.get::<_, String>(5)?;
+                        let topic = row.get::<_, String>(6)?;
+                        let raw_payload: String = row.get(7)?;
+                        let created_at = row.get::<_, i64>(8)?;
                         let payload = truncate_chars(&raw_payload, 500);
 
                         let scope = match msg_task_id.as_deref() {
@@ -860,6 +870,7 @@ pub(super) fn context_bundle(
                             "id": id,
                             "scope": scope,
                             "task_id": msg_task_id,
+                            "recipient_task_id": recipient_task_id,
                             "subtask_ref": msg_subtask_ref,
                             "gate": gate,
                             "author": author,
@@ -878,8 +889,7 @@ pub(super) fn context_bundle(
     };
 
     // 5. Gate-aware workflow guidance and subtask DoD
-    let requested_tools = profile
-        .by_stage(stage)
+    let requested_tools = active_gate
         .map(|gate| gate.tools.clone())
         .unwrap_or_else(|| profile.completed.tools.clone());
     let recommended_tools = crate::core::tasks::catalog::filter_subsystem_tools(
@@ -923,11 +933,27 @@ pub(super) fn context_bundle(
         let targeted_messages = blackboard_messages.as_ref().map(|messages| {
             messages
                 .iter()
-                .filter(|message| message.get("gate").and_then(Value::as_str) == Some(stage))
+                .filter(|message| {
+                    message.get("gate").and_then(Value::as_str) == Some(stage)
+                        || message.get("recipient_task_id").and_then(Value::as_str) == Some(task_id)
+                        || is_rfc_message(message)
+                })
                 .cloned()
                 .collect::<Vec<_>>()
         });
         guidance_map.insert("blackboard_messages".into(), json!(targeted_messages));
+        guidance_map.insert(
+            "breadcrumb".into(),
+            details.get("breadcrumb").cloned().unwrap_or(Value::Null),
+        );
+        guidance_map.insert(
+            "gate_cursor".into(),
+            json!({
+                "gate_path": details.get("active_gate_path"),
+                "stage_id": details.get("active_stage_id"),
+                "subagent_role": details.get("subagent_role"),
+            }),
+        );
         guidance_map.insert(
             "scoped_commands".into(),
             json!(if codemap_enabled {
@@ -991,7 +1017,9 @@ pub(super) fn context_bundle(
         let mut topic_counts = serde_json::Map::new();
         let mut targeted_count = 0usize;
         for message in messages {
-            if message.get("gate").and_then(Value::as_str) == Some(stage) {
+            if message.get("gate").and_then(Value::as_str) == Some(stage)
+                || message.get("recipient_task_id").and_then(Value::as_str) == Some(task_id)
+            {
                 targeted_count += 1;
             }
             if let Some(topic) = message.get("topic").and_then(Value::as_str) {

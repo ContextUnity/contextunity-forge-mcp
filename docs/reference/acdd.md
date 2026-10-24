@@ -19,6 +19,12 @@ recoverable caution callout. See the
 
 The embedded profile assigns contract author, builder, and independent reviewer roles. The contract author posts the draft as a blackboard `draft` targeted to `build`; the reviewer continues from review through delivery in the same worker session. Workflow guidance includes `NO_PREFLIGHT_SUBAGENTS`, the registered combined Rust command, and scoped test commands. Contract and build context includes indexed scope symbols, external callers, covering tests, ADR invariant summaries, and a task-bound expected evidence template. The task engine rejects disconnected contract seams and public signature changes whose indexed callers fall outside admitted scope.
 
+## Hierarchical gate cursors and seam proofs
+
+A profile gate can contain child gates. [`claim_nested_gate`](../../src/engine/tasks/claim.rs#L248) resolves the persisted stage to its active leaf gate, applies that leaf's role and proof requirements, and accepts qualified child stage IDs. Passing a child advances the cursor to the next child. Claims expose the active gate path and breadcrumb in `workflow_guidance`; task-specific RFCs and gate-targeted blackboard messages are injected there alongside current RFC broadcasts, while the general `blackboard` field retains task, sibling, and milestone context.
+
+[`validate_seam_reachability`](../../src/engine/tasks/gates.rs#L1152) checks the current test source against indexed call and import evidence, follows module imports and public re-exports, and permits up to four test-helper hops before requiring an admitted production target. When source drift invalidates an indexed route, the gate reports `TASK_SEAM_STALE` with an index-refresh action. A disconnected seam reports discovered calls, coverage, reached targets, and the reason traversal stopped.
+
 The shared [contextunity-forge skill](../../skills/contextunity-forge/SKILL.md#acdd-authority-and-scope) is what an agent loads for tool choice and delivery. The claim's `workflow_guidance` is what that agent follows for the current gate. [CLI commands](cli.md) lists the terminal forms, including milestone commands, which stay CLI-only.
 
 ## Documentation and instructions co-evolution

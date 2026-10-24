@@ -821,41 +821,125 @@ receipt:
 
 ```yaml
 task_ref: container-gate-and-claim-engine
-target: "Implement hierarchical container gate state machine advancing through child gates, with in-place execution (--in-place), silent engine telemetry, state-driven zero-flag claims and breadcrumbs, unread blackboard RFC guidance injection into task claim guidance, and precise static seam reachability with stale-index and test-helper diagnostics"
+target: Implement hierarchical container gate state machine advancing through child gates, with in-place execution (--in-place), silent engine telemetry, state-driven zero-flag claims and breadcrumbs, unread blackboard RFC guidance injection into task claim guidance, and precise static seam reachability with stale-index and test-helper diagnostics
 proof_policy: seam-test-first
-contract_revision: 2
+contract_revision: 3
 depends_on:
-  - zero-arg-transition-engine-and-command-runner
-  - upfront-contract-synthesis-and-shared-helper-extraction
+- zero-arg-transition-engine-and-command-runner
+- upfront-contract-synthesis-and-shared-helper-extraction
 scope:
-  - src/engine/tasks/context.rs
-  - src/engine/tasks/claim.rs
-  - src/engine/tasks/gates.rs
-  - src/db/reader.rs
-  - tests/acdd/seam_reachability.rs
-  - docs/reference/acdd.md
-status: planned
+- src/engine/tasks/context.rs
+- src/engine/tasks/claim.rs
+- src/engine/tasks/gates.rs
+- src/db/reader.rs
+- tests/acdd/seam_reachability.rs
+- docs/reference/acdd.md
+- src/engine/tasks/mod.rs
+- src/engine/tasks/lifecycle.rs
+- tests/acdd/tasks.rs
+status: completed
 subtasks:
-  - subtask_ref: nested-subgate-state-machine
-    title: "Implement hierarchical container gate state machine advancing through nested child gates"
-  - subtask_ref: in-place-lifecycle-executor
-    title: "Implement in-place task execution (--in-place) bypassing worktree cloning for single-task runs"
-  - subtask_ref: silent-telemetry-blackboard-filter
-    title: "Filter automated engine telemetry from task_blackboard, preserving human blockers and RFCs"
-  - subtask_ref: workflow-guidance-blackboard-rfc-injector
-    title: "Inject unread task-targeted and RFC blackboard messages into task claim guidance"
-  - subtask_ref: automated-scoped-verification-runner
-    title: "Implement scoped verification runner executing matching commands on task build submission"
-  - subtask_ref: agent-breadcrumb-formatter
-    title: "Format locator breadcrumbs ({milestone_id}/{gate_path}/{task_id}/{stage_id}) injected during task claim"
-  - subtask_ref: admit-candidate-seams-from-resolution-coverage
-    title: "Inspect indexed coverage and canonical import/re-export bindings when direct call edges are absent; require a proven in-scope production connection before admission"
-  - subtask_ref: distinguish-stale-index-drift-with-actionable-error
-    title: "Report TASK_SEAM_STALE with an index-refresh action when source drift invalidates the indexed seam instead of misreporting TASK_SEAM_DISCONNECTED"
-  - subtask_ref: support-multi-hop-test-fixture-harnesses
-    title: "Trace up to four hops through verified test helpers or fixtures to the in-scope production target without widening production scope to include test helpers"
-  - subtask_ref: provide-actionable-seam-diagnostics-in-gate-errors
-    title: "Report discovered test calls, coverage statuses, reached targets, and why static seam traversal stopped"
+- subtask_ref: nested-subgate-state-machine
+  title: Implement hierarchical container gate state machine advancing through nested child gates
+  status: ready
+  evidence: null
+- subtask_ref: in-place-lifecycle-executor
+  title: Implement in-place task execution (--in-place) bypassing worktree cloning for single-task runs
+  status: ready
+  evidence: null
+- subtask_ref: silent-telemetry-blackboard-filter
+  title: Filter automated engine telemetry from task_blackboard, preserving human blockers and RFCs
+  status: ready
+  evidence: null
+- subtask_ref: automated-scoped-verification-runner
+  title: Implement scoped verification runner executing matching commands on task build submission
+  status: ready
+  evidence: null
+- subtask_ref: agent-breadcrumb-formatter
+  title: Format locator breadcrumbs ({milestone_id}/{gate_path}/{task_id}/{stage_id}) injected during task claim
+  status: ready
+  evidence: null
+- subtask_ref: admit-candidate-seams-from-resolution-coverage
+  title: Inspect indexed coverage and canonical import/re-export bindings when direct call edges are absent; require a proven in-scope production connection before admission
+  status: ready
+  evidence: null
+- subtask_ref: distinguish-stale-index-drift-with-actionable-error
+  title: Report TASK_SEAM_STALE with an index-refresh action when source drift invalidates the indexed seam instead of misreporting TASK_SEAM_DISCONNECTED
+  status: ready
+  evidence: null
+- subtask_ref: support-multi-hop-test-fixture-harnesses
+  title: Trace up to four hops through verified test helpers or fixtures to the in-scope production target without widening production scope to include test helpers
+  status: ready
+  evidence: null
+- subtask_ref: provide-actionable-seam-diagnostics-in-gate-errors
+  title: Report discovered test calls, coverage statuses, reached targets, and why static seam traversal stopped
+  status: ready
+  evidence: null
+- subtask_ref: workflow-guidance-blackboard-rfc-injector
+  title: Inject unread task-targeted and RFC blackboard messages into task claim guidance
+  status: ready
+  evidence: null
+receipt:
+  contract_revision: 3
+  passed_at: 2026-10-24T20:36:49.277953074+00:00
+  evidence:
+    command_proof:
+      command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --test acdd
+      exit_code: 0
+      tests_passed: 125
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: 'Independent reviewer compared candidate 397468a10cfc149aec471d10940ea77e84535885 with the task record: all nine admitted paths are represented, including tests/acdd/tasks.rs and the approved module/lifecycle extensions. Scoped change analysis found only admitted task engine and ACDD test paths; no extra staged paths or post-snapshot edits were recorded.'
+        claims:
+          applicable: true
+          evidence: Independent reviewer traced nested leaf selection through claim_inner and cursor advancement on pass, recipient-targeted blackboard guidance, and four-hop current-source seam validation with stale-index diagnostics. ACDD tests exercise real task submission/storage paths and direct, multi-hop, and stale-source cases.
+        concurrency:
+          applicable: true
+          evidence: Independent reviewer checked transactional submission/recovery, reload and stage/profile validation, claim/contract revision fencing, worker/worktree checks, idempotency, and rollback of provisional manifest writes. No partial-write or stale-authority defect was found.
+        project_isolation:
+          applicable: true
+          evidence: Independent reviewer verified workspace ownership, worktree, authority, scope, and confined-path checks before claim, source reads, and submission mutations. No cross-project or path-escape defect was found.
+        administration:
+          applicable: true
+          evidence: 'Candidate does not alter schema migrations, profile configuration, or protected milestone authority. Build evidence is bound to candidate 397468a with strict Clippy success and ACDD 125/125. The independent review noted one non-blocking unresolved indexed call edge; it is durably recorded as deferred message #1184.'
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-UNIVERSAL-GATE-POLYMORPHISM: Every workflow node is a Gate; execution mode is determined by driver fields: Agent Gate (role), Command Gate (command), or Container Gate (gates).'
+    - 'INV-ZERO-ARGUMENT-SUBMISSION: Automated gate submissions (any gate configured with proof: command, contract, or delivery) require zero manual JSON arguments; Forge autonomously compiles proof from gate execution traces and Git tree state. Cognitive review gates (proof: review) strictly require typed review judgments (verdict, reviewer, contours_reviewed, extended_scope_review).'
+    - 'INV-IN-PLACE-LIFECYCLE: Task and milestone execution supports in-place operation (--in-place / worktree: ".") without mandatory worktree or branch isolation.'
+    - 'INV-SILENT-ENGINE-TELEMETRY: Gate transitions and command execution traces are automatically recorded in SQLite; automated engine progress logging to task_blackboard is suppressed, preserving blackboard bandwidth for RFCs, synthesized contract matrices, and human escalations.'
+    - 'INV-SEAM-ENGINE-RED-GREEN: Seam Engine automatically tracks contract runtime failure (matching configured expected_failure.exit_codes) to implementation pass (exit 0) via gate execution traces.'
+    - 'INV-SEAM-REACHABILITY-RESILIENCE: Static seam verification proves the current test-to-production connection through imports, re-exports, and bounded test-helper paths; stale source/index evidence produces an actionable stale-index diagnostic. An unresolved expression alone does not prove reachability.'
+    - 'INV-REQUIRED-SKILLS-GOVERNANCE: Manifests declare required_skills in frontmatter; milestone init fails closed (MILESTONE_PREFLIGHT_FAILED) before agent launch if any declared skill is absent.'
+    - 'INV-PREFLIGHT-MILESTONE-INIT: milestone init validates manifest syntax, checks required_skills on host, and pre-scaffolds base worktrees across declared repositories upfront before agent dispatch.'
+    - 'INV-MULTI-REPO-MANIFEST-DECLARATION: Multi-repository workflows declare participant repositories in manifest frontmatter; the engine coordinates cross-repo worktree initialization and compound breadcrumbs.'
+    - 'INV-EXTENDED-SCOPE-MANIFEST-SYNC: task extend-scope writes atomically to both SQLite and the milestone markdown manifest; review proof strictly requires extended_scope_review approval before deliver.'
+    - 'INV-BREADCRUMB-CHECKPOINT-UNIFICATION: Checkpoints are stored in SQLite gate_checkpoints keyed directly by turn breadcrumb locators; legacy .forge/checkpoints.json is eliminated.'
+    - 'INV-TRANSITION-TRACE-PERSISTENCE: Upon milestone handoff (INV-HANDOFF-SQLITE-PRUNING), completed milestone tasks, claims, revisions, gate transitions, execution traces, checkpoints, and task blackboard rows are purged from SQLite; milestone_tombstones is retained to keep archived dependencies satisfiable; canonical durable records reside permanently in docs/milestones/archive/*.md and Git history.'
+    - 'INV-PRE-DOC-AUTONOMOUS-VERIFICATION: Milestone verification executes as a container gate with automated checks, review, fallback repair subgraph, and autonomous delivery before documentation.'
+    - 'INV-MARKDOWN-FIRST-ERGONOMICS: Agent messages, guidance, and status reports follow Milestone 054 Markdown-first principles: clickable coordinates, callout blockers, compact status tables, zero dead metadata.'
+    - 'INV-MODULAR-SUBSYSTEM-DECOUPLING: Forge MCP decomposes functionality into 5 independent subsystems (codemap, acdd, blackboard, docs, checkpoints) configurable via forge-mcp.yaml modules/profile, with dynamic MCP tool registration and zero initialization cost for disabled subsystems.'
+    - 'INV-CONTEXT-AWARE-GUIDANCE-ADAPTATION: workflow_guidance, prompts, and gate verification dynamically adapt to enabled subsystems, suppressing dead tool references, omitting unused guidance structures, and falling back gracefully when graph or blackboard features are disabled.'
+    - 'INV-PAYLOAD-OVERFLOW-GUARD: Custom metadata, git_commit_note payloads (rendered as Markdown by default, or JSON), and in-database trace snippets attached to tasks are bounded by a 2 KiB limit (configurable via git_commit_note.limits.max_bytes / limits.max_metadata_bytes) with complete command outputs written to disk logs, protecting the 96 KiB MCP response budget and preventing Git note bloat.'
+    - 'INV-UNIVERSAL-PROFILE-ZERO-LANGUAGE-HARDCODE: The embedded default profile (acdd.default.yaml) and profile templates must remain strictly language-agnostic. Gates and commands must not hardcode Rust-specific binaries (such as cargo clippy or cargo test); all verification commands must use pattern-based dispatch (by_pattern) matching project file extensions or generic command identifiers. Guidance texts must not mention specific languages or compilers.'
+    - 'INV-TWO-LOOP-ACDD-GOVERNANCE: Task execution strictly distinguishes between scope: (files on disk, extensible by builder) and symbols: (admitted public interface deltas, strictly governed by architect). Review failures route via reject_routing (scope -> build, symbols -> contract). Unadmitted public interface mutations are prohibited from bypassing the Long Outer Loop (architect arbitration -> seam contract test -> builder).'
+    - 'INV-GUIDANCE-SLOT-BINDING: Gates declare parameterized guidance slots (e.g. guidance: [task.contract, hitl]), and milestones bind them in manifest frontmatter (guidance: { hitl: pro }). The engine resolves slot hitl with value pro via format!("{}.{}", slot, value) -> hitl.pro (or literal dotted keys). The validator verifies slot matching on milestone init/check, emitting warnings for unbound slots and falling back to profile defaults.'
+    architectural_notes:
+    - 'deferred: Non-blocking follow-up from independent Task 5 review: the refreshed code map still does not resolve the direct source call `lifecycle.rs::claim_inner -> claim_nested_gate` as an indexed call edge, though the source contains it and graph freshness is matched. The reviewer verified the direct source path and production-seam tests; all five review contours pass and the full ACDD target is green. Track as an index call-resolution coverage gap with its owning indexing work, not as a Task 5 blocker.'
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Admitted Symbols (Wave 3)

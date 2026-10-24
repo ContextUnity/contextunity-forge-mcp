@@ -13,7 +13,7 @@ use anyhow::{bail, Context, Result};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     path::{Path, PathBuf},
 };
 
@@ -176,27 +176,65 @@ fn accepted_boundary_callers(
     profile: &crate::core::tasks::profile::GateProfile,
     gate_index: usize,
 ) -> Result<Option<BaselineBoundaryCallers>> {
-    let Some(contract_gate) = profile.gates[..gate_index]
+    let gate_sequence = super::claim::gate_sequence(profile)?;
+    let Some(contract_gate) = gate_sequence[..gate_index]
         .iter()
         .rev()
-        .find(|gate| gate.proof.kind() == Some(ProofKind::Contract))
+        .find(|cursor| cursor.gate.proof.kind() == Some(ProofKind::Contract))
     else {
         return Ok(None);
     };
-    let submission: Option<String> = conn
-        .query_row(
-            "SELECT submission.result FROM task_gates gate \
-             JOIN task_submissions submission ON submission.task_id=gate.task_id AND submission.revision=gate.revision \
-             WHERE gate.task_id=?1 AND gate.gate=?2 AND gate.state='passed' \
-             ORDER BY gate.revision DESC LIMIT 1",
-            params![id, contract_gate.id],
-            |row| row.get(0),
-        )
-        .optional()?;
-    let Some(submission) = submission else {
+    let Some(submission) = accepted_submission_for_cursor(conn, id, profile, contract_gate)? else {
         return Ok(None);
     };
-    Ok(serde_json::from_str::<Submission>(&submission)?.boundary_callers)
+    Ok(submission.boundary_callers)
+}
+
+fn accepted_submission_for_cursor(
+    conn: &rusqlite::Connection,
+    id: &str,
+    profile: &crate::core::tasks::profile::GateProfile,
+    cursor: &super::claim::GateCursor,
+) -> Result<Option<Submission>> {
+    let mut stmt = conn.prepare(
+        "SELECT gate.gate, gate.evidence, submission.result FROM task_gates gate \
+         JOIN task_submissions submission ON submission.task_id=gate.task_id AND submission.revision=gate.revision \
+         WHERE gate.task_id=?1 AND gate.state='passed' \
+         ORDER BY gate.revision DESC",
+    )?;
+    let submissions = stmt
+        .query_map([id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (stage, accepted_evidence, result) in submissions {
+        if super::claim::cursor_for_stage(profile, &stage)
+            .is_ok_and(|accepted| accepted.canonical_stage_id == cursor.canonical_stage_id)
+        {
+            let mut submission: Submission = serde_json::from_str(&result)?;
+            let evidence: Evidence = serde_json::from_str(&accepted_evidence)?;
+            if evidence.stage != stage {
+                bail!("TASK_GATES_INVALID: accepted evidence stage '{}' does not match persisted gate '{stage}'", evidence.stage);
+            }
+            submission.evidence = evidence;
+            return Ok(Some(submission));
+        }
+    }
+    Ok(None)
+}
+
+fn accepted_evidence_for_cursor(
+    conn: &rusqlite::Connection,
+    id: &str,
+    profile: &crate::core::tasks::profile::GateProfile,
+    cursor: &super::claim::GateCursor,
+) -> Result<Option<Evidence>> {
+    Ok(accepted_submission_for_cursor(conn, id, profile, cursor)?
+        .map(|submission| submission.evidence))
 }
 
 fn baseline_scope_files(worktree: &Path, baseline: &str, scope: &[String]) -> Result<Vec<String>> {
@@ -423,6 +461,8 @@ impl From<&crate::core::models::Node> for SeamNodeIdentity {
 struct IndexedSeamEdge {
     dst_hash: i64,
     kind: String,
+    line: usize,
+    evidence: String,
     src_path: String,
     src: SeamNodeIdentity,
     dst_path: String,
@@ -436,6 +476,7 @@ const SEAM_EDGE_KINDS: [&str; 5] = [
     "implements",
     "overrides",
 ];
+const MAX_SEAM_HOPS: usize = 4;
 
 fn reference_source_identities(
     facts: &crate::core::typed_facts::TypedFacts,
@@ -634,34 +675,39 @@ fn indexed_seam_edges(
     source_hash: i64,
 ) -> Result<Vec<IndexedSeamEdge>> {
     let mut statement = connection.prepare(
-        "SELECT edge.dst_hash, edge.kind, source_path.path, source.kind, source.name, source.qualname, source.is_test, \
+        "SELECT edge.dst_hash, edge.kind, occurrence.line, evidence.evidence, source_path.path, source.kind, source.name, source.qualname, source.is_test, \
                 target_path.path, target.kind, target.name, target.qualname, target.is_test \
          FROM edges edge \
+         JOIN edge_occurrences occurrence ON occurrence.src_hash=edge.src_hash \
+           AND occurrence.dst_hash=edge.dst_hash AND occurrence.kind=edge.kind \
+         JOIN coverage_evidence evidence ON evidence.evidence_id=occurrence.evidence_id \
          JOIN nodes source ON source.node_hash=edge.src_hash \
          JOIN path_dictionary source_path ON source_path.path_id=source.path_id \
          JOIN nodes target ON target.node_hash=edge.dst_hash \
          JOIN path_dictionary target_path ON target_path.path_id=target.path_id \
-         WHERE edge.src_hash=?1 AND edge.kind IN ('calls','imports','possible_calls','implements','overrides') \
-         ORDER BY edge.kind, target_path.path, target.qualname",
+         WHERE edge.src_hash=?1 AND edge.kind IN ('calls','imports') \
+         ORDER BY edge.kind, target_path.path, target.qualname, occurrence.line, evidence.evidence",
     )?;
     let edges = statement
         .query_map([source_hash], |row| {
             Ok(IndexedSeamEdge {
                 dst_hash: row.get(0)?,
                 kind: row.get(1)?,
-                src_path: row.get(2)?,
+                line: row.get(2)?,
+                evidence: row.get(3)?,
+                src_path: row.get(4)?,
                 src: SeamNodeIdentity {
-                    kind: row.get(3)?,
-                    name: row.get(4)?,
-                    qualname: row.get(5)?,
-                    is_test: row.get(6)?,
+                    kind: row.get(5)?,
+                    name: row.get(6)?,
+                    qualname: row.get(7)?,
+                    is_test: row.get(8)?,
                 },
-                dst_path: row.get(7)?,
+                dst_path: row.get(9)?,
                 dst: SeamNodeIdentity {
-                    kind: row.get(8)?,
-                    name: row.get(9)?,
-                    qualname: row.get(10)?,
-                    is_test: row.get(11)?,
+                    kind: row.get(10)?,
+                    name: row.get(11)?,
+                    qualname: row.get(12)?,
+                    is_test: row.get(13)?,
                 },
             })
         })?
@@ -707,6 +753,22 @@ fn indexed_edge_is_current(
     {
         return Ok(false);
     }
+    if edge.kind == "imports" && edge.dst.kind == "module" {
+        let module = current_source
+            .facts
+            .nodes
+            .iter()
+            .find(|node| node.kind == "module" && SeamNodeIdentity::from(*node) == edge.src);
+        let Some(module) = module else {
+            return Ok(false);
+        };
+        return Ok(current_source.facts.references.iter().any(|reference| {
+            reference.source == module.id
+                && reference.kind == "imports"
+                && reference.line == edge.line
+                && reference.expression == edge.evidence
+        }));
+    }
     Ok(edge_is_named_by_current_facts(
         &current_source,
         &edge.src,
@@ -715,12 +777,363 @@ fn indexed_edge_is_current(
     ))
 }
 
+fn module_identity(facts: &crate::core::typed_facts::TypedFacts) -> Option<SeamNodeIdentity> {
+    facts
+        .facts
+        .nodes
+        .iter()
+        .find(|node| node.kind == "module")
+        .map(SeamNodeIdentity::from)
+}
+
+fn module_import_references<'a>(
+    facts: &'a crate::core::typed_facts::TypedFacts,
+    module: &SeamNodeIdentity,
+    binding: &str,
+) -> Vec<&'a crate::core::models::Reference> {
+    let sources = reference_source_identities(facts);
+    facts
+        .facts
+        .references
+        .iter()
+        .filter(|reference| reference.kind == "imports")
+        .filter(|reference| sources.get(&reference.source) == Some(module))
+        .filter(|reference| import_binding_name(reference).as_deref() == Some(binding))
+        .collect()
+}
+
+fn indexed_module_import_edge(
+    connection: &rusqlite::Connection,
+    module_path: &str,
+    reference: &crate::core::models::Reference,
+) -> Result<Option<IndexedSeamEdge>> {
+    let module_hash: Option<i64> = connection
+        .query_row(
+            "SELECT node.node_hash FROM nodes node \
+             JOIN path_dictionary path ON path.path_id=node.path_id \
+             WHERE path.path=?1 AND node.kind='module' ORDER BY node.qualname LIMIT 1",
+            [module_path],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(module_hash) = module_hash else {
+        return Ok(None);
+    };
+    let mut matches = indexed_seam_edges(connection, module_hash)?
+        .into_iter()
+        .filter(|edge| {
+            edge.kind == "imports"
+                && edge.dst.kind == "module"
+                && edge.line == reference.line
+                && edge.evidence == reference.expression
+        })
+        .collect::<Vec<_>>();
+    if matches.len() == 1 {
+        Ok(matches.pop())
+    } else {
+        Ok(None)
+    }
+}
+
+fn call_binding_names(
+    facts: &crate::core::typed_facts::TypedFacts,
+    function: &SeamNodeIdentity,
+) -> BTreeSet<String> {
+    let sources = reference_source_identities(facts);
+    facts
+        .facts
+        .references
+        .iter()
+        .filter(|reference| matches!(reference.kind.as_str(), "calls" | "unresolved"))
+        .filter(|reference| sources.get(&reference.source) == Some(function))
+        .filter_map(|reference| {
+            let expression = reference.expression.trim();
+            (!expression.is_empty()
+                && expression
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || character == '_'))
+            .then(|| expression.to_owned())
+        })
+        .collect()
+}
+
+fn imported_symbol_name(reference: &crate::core::models::Reference) -> Option<String> {
+    reference
+        .expression
+        .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+        .rfind(|token| !token.is_empty())
+        .map(str::to_owned)
+}
+
+fn unrestricted_public_use(worktree: &Path, path: &str, line: usize) -> bool {
+    if line == 0 {
+        return false;
+    }
+    let Ok(path) = super::confined_path(worktree, path) else {
+        return false;
+    };
+    let Ok(source) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    source
+        .lines()
+        .nth(line - 1)
+        .map(str::trim_start)
+        .and_then(|line| line.strip_prefix("pub"))
+        .and_then(|rest| rest.chars().next())
+        .is_some_and(char::is_whitespace)
+        && source
+            .lines()
+            .nth(line - 1)
+            .is_some_and(|line| line.trim_start().starts_with("pub use "))
+}
+
+fn current_public_callable(
+    worktree: &Path,
+    path: &str,
+    name: &str,
+) -> Result<Option<SeamNodeIdentity>> {
+    let Some(facts) = current_local_facts(worktree, path)? else {
+        return Ok(None);
+    };
+    let candidates = facts
+        .facts
+        .nodes
+        .iter()
+        .filter(|node| {
+            matches!(node.kind.as_str(), "function" | "method")
+                && !node.is_test
+                && node.name == name
+                && node.details["signature"]
+                    .as_str()
+                    .is_some_and(is_public_signature)
+        })
+        .map(SeamNodeIdentity::from)
+        .collect::<Vec<_>>();
+    if candidates.len() == 1 {
+        Ok(candidates.into_iter().next())
+    } else {
+        Ok(None)
+    }
+}
+
+fn current_import_call_path(
+    connection: &rusqlite::Connection,
+    worktree: &Path,
+    source_path: &str,
+    function: &SeamNodeIdentity,
+    max_hops: usize,
+    scope: &[String],
+) -> Result<Option<Vec<IndexedSeamEdge>>> {
+    let Some(indexed_source) = indexed_local_facts(connection, source_path)? else {
+        return Ok(None);
+    };
+    let Some(current_source) = current_local_facts(worktree, source_path)? else {
+        return Ok(None);
+    };
+    if !file_has_seam_node(&indexed_source, function)
+        || !file_has_seam_node(&current_source, function)
+    {
+        return Ok(None);
+    }
+    let indexed_calls = call_binding_names(&indexed_source, function);
+    let current_calls = call_binding_names(&current_source, function);
+    let Some(module) = module_identity(&current_source) else {
+        return Ok(None);
+    };
+    let Some(indexed_module) = module_identity(&indexed_source) else {
+        return Ok(None);
+    };
+    if module != indexed_module {
+        return Ok(None);
+    }
+    let mut routes = Vec::new();
+    for binding in current_calls.intersection(&indexed_calls) {
+        let current_imports = module_import_references(&current_source, &module, binding);
+        let indexed_imports = module_import_references(&indexed_source, &indexed_module, binding);
+        if current_imports.len() != 1
+            || indexed_imports.len() != 1
+            || seam_reference_key(current_imports[0], &module)
+                != seam_reference_key(indexed_imports[0], &indexed_module)
+        {
+            continue;
+        }
+        let Some(mut edge) =
+            indexed_module_import_edge(connection, source_path, current_imports[0])?
+        else {
+            continue;
+        };
+        if !indexed_edge_is_current(connection, worktree, &edge)? {
+            continue;
+        }
+        if edge.dst.is_test {
+            continue;
+        }
+        let Some(mut imported_name) = imported_symbol_name(current_imports[0]) else {
+            continue;
+        };
+        let mut path = Vec::new();
+        let mut visited = BTreeSet::new();
+        for hop in 0..max_hops {
+            if !visited.insert((edge.dst_path.clone(), imported_name.clone())) {
+                break;
+            }
+            let target_path = edge.dst_path.clone();
+            let target_module_facts = current_local_facts(worktree, &target_path)?;
+            let Some(target_module_facts) = target_module_facts else {
+                break;
+            };
+            if !target_module_facts
+                .facts
+                .nodes
+                .iter()
+                .any(|node| node.kind == "module")
+            {
+                break;
+            }
+            let indexed_target_facts = indexed_local_facts(connection, &target_path)?;
+            let Some(indexed_target_facts) = indexed_target_facts else {
+                break;
+            };
+            if module_identity(&target_module_facts) != module_identity(&indexed_target_facts) {
+                break;
+            }
+            path.push(edge.clone());
+
+            if path_is_in_scope(&target_path, scope) {
+                if let Some(target) =
+                    current_public_callable(worktree, &target_path, &imported_name)?
+                {
+                    if indexed_target_facts
+                        .facts
+                        .nodes
+                        .iter()
+                        .any(|node| SeamNodeIdentity::from(node) == target && !node.is_test)
+                    {
+                        routes.push(path);
+                        break;
+                    }
+                }
+            }
+
+            if hop + 1 >= max_hops {
+                break;
+            }
+            let Some(target_module) = module_identity(&target_module_facts) else {
+                break;
+            };
+            let current_reexports =
+                module_import_references(&target_module_facts, &target_module, &imported_name);
+            let indexed_reexports =
+                module_import_references(&indexed_target_facts, &target_module, &imported_name);
+            if current_reexports.len() != 1
+                || indexed_reexports.len() != 1
+                || seam_reference_key(current_reexports[0], &target_module)
+                    != seam_reference_key(indexed_reexports[0], &target_module)
+                || !unrestricted_public_use(worktree, &target_path, current_reexports[0].line)
+            {
+                break;
+            }
+            let Some(next_edge) =
+                indexed_module_import_edge(connection, &target_path, current_reexports[0])?
+            else {
+                break;
+            };
+            if !indexed_edge_is_current(connection, worktree, &next_edge)? || next_edge.dst.is_test
+            {
+                break;
+            }
+            imported_name = imported_symbol_name(current_reexports[0]).unwrap_or_default();
+            if imported_name.is_empty() {
+                break;
+            }
+            edge = next_edge;
+        }
+    }
+    if routes.len() == 1 {
+        Ok(routes.pop())
+    } else {
+        Ok(None)
+    }
+}
+
 fn missing_scope_files(worktree: &Path, scope: &[String]) -> Vec<String> {
     scope
         .iter()
         .filter(|relative| !worktree.join(relative).exists())
         .cloned()
         .collect()
+}
+
+fn seam_node_label(path: &str, node: &SeamNodeIdentity) -> String {
+    format!("{path}::{}", node.qualname)
+}
+
+fn seam_path_label(edges: &[IndexedSeamEdge]) -> String {
+    edges
+        .iter()
+        .map(|edge| {
+            format!(
+                "{} -{}-> {}",
+                seam_node_label(&edge.src_path, &edge.src),
+                edge.kind,
+                seam_node_label(&edge.dst_path, &edge.dst)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
+
+fn indexed_seam_node(
+    connection: &rusqlite::Connection,
+    node_hash: i64,
+) -> Result<Option<(String, SeamNodeIdentity)>> {
+    connection
+        .query_row(
+            "SELECT path.path, node.kind, node.name, node.qualname, node.is_test \
+             FROM nodes node JOIN path_dictionary path ON path.path_id=node.path_id \
+             WHERE node.node_hash=?1",
+            [node_hash],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    SeamNodeIdentity {
+                        kind: row.get(1)?,
+                        name: row.get(2)?,
+                        qualname: row.get(3)?,
+                        is_test: row.get(4)?,
+                    },
+                ))
+            },
+        )
+        .optional()
+        .map_err(anyhow::Error::from)
+}
+
+fn indexed_path_to_scope(
+    connection: &rusqlite::Connection,
+    source_hash: i64,
+    max_hops: usize,
+    scope: &[String],
+) -> Result<Option<Vec<IndexedSeamEdge>>> {
+    let mut queue = VecDeque::from([(source_hash, Vec::<IndexedSeamEdge>::new())]);
+    let mut visited = BTreeSet::from([source_hash]);
+    while let Some((node_hash, path)) = queue.pop_front() {
+        if path.len() >= max_hops {
+            continue;
+        }
+        for edge in indexed_seam_edges(connection, node_hash)? {
+            let mut next_path = path.clone();
+            next_path.push(edge.clone());
+            if !edge.dst.is_test && path_is_in_scope(&edge.dst_path, scope) {
+                return Ok(Some(next_path));
+            }
+            if visited.insert(edge.dst_hash) {
+                queue.push_back((edge.dst_hash, next_path));
+            }
+        }
+    }
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -798,51 +1211,134 @@ fn validate_seam_reachability(
     let connection = local_connection.as_ref().unwrap_or(connection);
     let test_hashes = indexed_test_hashes(connection, &reference, &test_nodes)?;
     if test_hashes.is_empty() {
-        bail!("TASK_SEAM_DISCONNECTED: {task_id}. seam_test_ref '{}' has no exact indexed test symbol. Do: refresh the index and submit the current test file or symbol.", reference.path);
+        let parsed_tests = test_nodes
+            .iter()
+            .map(|node| seam_node_label(&reference.path, &SeamNodeIdentity::from(node)))
+            .collect::<Vec<_>>();
+        bail!("TASK_SEAM_DISCONNECTED: {task_id}. seam_test_ref '{}' has no exact indexed test symbol. Calls discovered: none. Coverage statuses: parsed test symbols={}, indexed test symbols=0. Reached targets: [{}]. Stop reason: the index has no node matching the current test source. Do: run `contextunity-forge-mcp scan`, then submit the current test file or exact symbol.", reference.path, parsed_tests.len(), parsed_tests.join(", "));
     }
 
-    let mut connected = false;
+    let mut queue = VecDeque::new();
+    let mut visited = BTreeSet::new();
+    let mut reached = BTreeSet::new();
+    let mut calls = BTreeSet::new();
+    let mut stale_paths = BTreeSet::new();
+    let mut current_edges = 0usize;
+    let mut stale_edges = 0usize;
     for hash in test_hashes {
-        for first in indexed_seam_edges(connection, hash)? {
-            if !indexed_edge_is_current(connection, worktree, &first)? {
+        for node in &test_nodes {
+            reached.insert(seam_node_label(
+                &reference.path,
+                &SeamNodeIdentity::from(node),
+            ));
+        }
+        visited.insert((hash, 0usize));
+        queue.push_back((hash, 0usize, Vec::<IndexedSeamEdge>::new()));
+    }
+
+    while let Some((source_hash, depth, prefix)) = queue.pop_front() {
+        if depth >= MAX_SEAM_HOPS {
+            continue;
+        }
+        if let Some((source_path, source)) = indexed_seam_node(connection, source_hash)? {
+            if matches!(source.kind.as_str(), "function" | "method") {
+                let remaining = MAX_SEAM_HOPS.saturating_sub(depth);
+                if let Some(import_path) = current_import_call_path(
+                    connection,
+                    worktree,
+                    &source_path,
+                    &source,
+                    remaining,
+                    scope,
+                )? {
+                    reached.extend(
+                        import_path
+                            .iter()
+                            .map(|edge| seam_node_label(&edge.dst_path, &edge.dst)),
+                    );
+                    calls.insert(format!(
+                        "{} -call/import chain-> {}",
+                        seam_node_label(&source_path, &source),
+                        seam_path_label(&import_path)
+                    ));
+                    return Ok(());
+                }
+            }
+        }
+        for edge in indexed_seam_edges(connection, source_hash)? {
+            let edge_label = format!(
+                "{} -{}-> {}",
+                seam_node_label(&edge.src_path, &edge.src),
+                edge.kind,
+                seam_node_label(&edge.dst_path, &edge.dst)
+            );
+            calls.insert(edge_label);
+            let mut path = prefix.clone();
+            path.push(edge.clone());
+            if !indexed_edge_is_current(connection, worktree, &edge)? {
+                stale_edges += 1;
+                let remaining = MAX_SEAM_HOPS.saturating_sub(depth + 1);
+                let suffix = if !edge.dst.is_test && path_is_in_scope(&edge.dst_path, scope) {
+                    Some(Vec::new())
+                } else {
+                    indexed_path_to_scope(connection, edge.dst_hash, remaining, scope)?
+                };
+                if let Some(suffix) = suffix {
+                    let mut stale_path = path;
+                    stale_path.extend(suffix);
+                    stale_paths.insert(seam_path_label(&stale_path));
+                }
                 continue;
             }
-            if !first.dst.is_test && path_is_in_scope(&first.dst_path, scope) {
-                connected = true;
-                break;
+
+            current_edges += 1;
+            reached.insert(seam_node_label(&edge.dst_path, &edge.dst));
+            if !edge.dst.is_test && path_is_in_scope(&edge.dst_path, scope) {
+                return Ok(());
             }
-            for second in indexed_seam_edges(connection, first.dst_hash)? {
-                if second.src != first.dst || second.src_path != first.dst_path {
-                    continue;
-                }
-                if !indexed_edge_is_current(connection, worktree, &second)? {
-                    continue;
-                }
-                if !second.dst.is_test && path_is_in_scope(&second.dst_path, scope) {
-                    connected = true;
-                    break;
-                }
+            let next_depth = depth + 1;
+            if visited.insert((edge.dst_hash, next_depth)) {
+                queue.push_back((edge.dst_hash, next_depth, path));
             }
-            if connected {
-                break;
-            }
-        }
-        if connected {
-            break;
         }
     }
-    if !connected {
-        let missing_scope_files = missing_scope_files(worktree, scope);
-        if !missing_scope_files.is_empty() {
-            bail!(
-                "TASK_SEAM_DISCONNECTED: {task_id}. seam_test_ref '{}' has no current indexed one- or two-hop path into admitted production scope; target scope files do not exist yet on disk ({}). Do: for greenfield/new modules in task.scope, create minimal file scaffolding with compiling production stubs and module/import declarations so AST imports resolve, refresh the index (`contextunity-forge-mcp build`), and resubmit contract proof.",
-                reference.path,
-                missing_scope_files.join(", ")
-            );
-        }
-        bail!("TASK_SEAM_DISCONNECTED: {task_id}. seam_test_ref '{}' has no current indexed one- or two-hop path into admitted production scope. Do: refresh the claimed-worktree code map, then choose a connected test seam or admit its production dependency.", reference.path);
+
+    let calls = if calls.is_empty() {
+        "none".to_owned()
+    } else {
+        calls.into_iter().collect::<Vec<_>>().join("; ")
+    };
+    let reached = if reached.is_empty() {
+        "none".to_owned()
+    } else {
+        reached.into_iter().collect::<Vec<_>>().join(", ")
+    };
+    let coverage = format!(
+        "current indexed edges={current_edges}, stale indexed edges={stale_edges}, max hops={MAX_SEAM_HOPS}"
+    );
+    if !stale_paths.is_empty() {
+        bail!("TASK_SEAM_STALE: {task_id}. indexed seam evidence for '{}' was invalidated by current source drift. Calls discovered: [{calls}]. Coverage statuses: {coverage}. Reached targets: [{reached}]. Stale indexed path(s): [{}]. Stop reason: no other current proven path reaches admitted production scope. Do: run `contextunity-forge-mcp scan` to refresh the code map, then resubmit contract proof.", reference.path, stale_paths.into_iter().collect::<Vec<_>>().join("; "));
     }
-    Ok(())
+
+    let missing_scope = missing_scope_files(worktree, scope);
+    let (stop_reason, action) = if missing_scope.is_empty() {
+        (
+            "no current proven call/import path reaches admitted production scope within four hops".to_owned(),
+            "refresh the claimed-worktree code map with `contextunity-forge-mcp scan`, then connect a current indexed test path to an admitted production target".to_owned(),
+        )
+    } else {
+        (
+            format!(
+                "target scope files do not exist yet on disk ({})",
+                missing_scope.join(", ")
+            ),
+            format!(
+                "create minimal file scaffolding for {}; run `contextunity-forge-mcp build` to compile the seam",
+                missing_scope.join(", ")
+            ),
+        )
+    };
+    bail!("TASK_SEAM_DISCONNECTED: {task_id}. seam_test_ref '{}' has no current proven call/import path into admitted production scope. Calls discovered: [{calls}]. Coverage statuses: {coverage}. Reached targets: [{reached}]. Stop reason: {stop_reason}. Do: {action}.", reference.path)
 }
 
 #[cfg(test)]
@@ -1227,12 +1723,14 @@ impl TasksStore {
         }
         let observed_task = self.inspect(id)?;
         let profile = self.profile_for_task(&observed_task)?;
+        let observed_cursor = super::claim::cursor_for_stage(&profile, &observed_task.stage)?;
         let code_map = if action == "pass"
-            && profile.by_stage(stage).is_some_and(|gate| {
-                gate.proof
-                    .kind()
-                    .is_some_and(|kind| matches!(kind, ProofKind::Contract | ProofKind::Command))
-            }) {
+            && observed_cursor
+                .gate
+                .proof
+                .kind()
+                .is_some_and(|kind| matches!(kind, ProofKind::Contract | ProofKind::Command))
+        {
             observed_task
                 .worktree
                 .as_deref()
@@ -1271,22 +1769,11 @@ impl TasksStore {
             }
             bail!("TASK_STALE_SUBMISSION: task '{id}'. claim_revision {} already submitted with different evidence. Do: resubmit the accepted evidence for claim_revision {}.", evidence.claim_revision, evidence.claim_revision);
         }
-        let gate_index =
-            profile.index_of(&task.stage).with_context(|| {
-                format!(
-            "TASK_STAGE_UNKNOWN: task '{}' is stored at unknown stage '{}'; active gates: {}",
-            task.task_id,
-            task.stage,
-            profile.gates.iter().map(|gate| gate.id.as_str()).collect::<Vec<_>>().join(", ")
-        )
-            })?;
-        task.gate = gate_index;
-        let gate_def = profile
-            .gates
-            .get(gate_index)
-            .cloned()
-            .context("TASK_STAGE_UNKNOWN")?;
-        check_stage(id, &gate_def.id, stage)?;
+        let cursor = super::claim::cursor_for_stage(&profile, &task.stage)?;
+        let gate_index = cursor.flat_index;
+        task.gate = cursor.root_index;
+        let gate_def = cursor.gate.clone();
+        check_stage(id, &task.stage, stage)?;
         if task.status != "in_progress" {
             bail!("TASK_STALE_SUBMISSION: task '{id}'. status is '{}'. Do: claim the task before submitting.", task.status);
         }
@@ -1389,15 +1876,14 @@ impl TasksStore {
             }
         }
         if let Some(prior) = gate_def.independent_from.as_deref() {
-            let builder: String = tx.query_row(
-                "SELECT json_extract(evidence,'$.worker_id') FROM task_gates WHERE task_id=?1 AND gate=?2 AND state='passed' ORDER BY revision DESC LIMIT 1",
-                params![id, prior],
-                |r| r.get(0),
-            )?;
+            let prior_cursor = super::claim::cursor_for_stage(&profile, prior)?;
+            let prior_evidence = accepted_evidence_for_cursor(&tx, id, &profile, &prior_cursor)?
+                .context("TASK_GATES_INVALID: independent gate has no accepted proof")?;
+            let builder = prior_evidence.worker_id.clone();
             if builder == evidence.worker_id {
                 bail!("TASK_REVIEW_NOT_INDEPENDENT: task '{id}'. reviewer worker '{}' matches builder '{builder}'. Do: submit review with a worker_id other than '{builder}'.", evidence.worker_id);
             }
-            let build = accepted(&tx, id, prior)?;
+            let build = prior_evidence;
             if gate_def.proof.kind() != Some(ProofKind::Delivery) {
                 let canonical = evidence.commit.as_deref().and_then(|supplied| {
                     build
@@ -1416,12 +1902,14 @@ impl TasksStore {
             }
         }
         if gate_def.proof.kind() == Some(ProofKind::Delivery) && action == "pass" {
-            let snapshot_gate = profile.gates[..gate_index]
+            let gate_sequence = super::claim::gate_sequence(&profile)?;
+            let snapshot_gate = gate_sequence[..gate_index]
                 .iter()
                 .rev()
-                .find(|gate| gate.sha_snapshot)
+                .find(|cursor| cursor.gate.sha_snapshot)
                 .context("TASK_GATES_INVALID: delivery requires a prior sha_snapshot gate")?;
-            let build = accepted(&tx, id, &snapshot_gate.id)?;
+            let build = accepted_evidence_for_cursor(&tx, id, &profile, snapshot_gate)?
+                .context("TASK_GATES_INVALID: delivery snapshot has no accepted proof")?;
             let candidate_snapshot = build.commit.as_deref().unwrap_or("missing");
             if !gate_def.auto_commit {
                 let canonical = evidence.commit.as_deref().and_then(|supplied| {
@@ -1446,21 +1934,20 @@ impl TasksStore {
             }
             let mut review_proofs = Vec::with_capacity(gate_def.review_sources.len());
             for review_name in &gate_def.review_sources {
-                let review = accepted(&tx, id, review_name)?;
+                let review_gate = super::claim::cursor_for_stage(&profile, review_name)?;
+                let review = accepted_evidence_for_cursor(&tx, id, &profile, &review_gate)?
+                    .context("TASK_GATES_INVALID: review source has no accepted proof")?;
                 if review.commit != build.commit {
                     bail!("TASK_CANDIDATE_MISMATCH: task '{id}'. review source '{review_name}' commit != candidate snapshot {candidate_snapshot}. Do: resubmit review evidence with commit {candidate_snapshot}.");
                 }
-                let review_gate = profile
-                    .by_stage(review_name)
-                    .context("TASK_GATES_INVALID")?;
                 validate_gate_proof(
                     &review.proof,
-                    review_gate,
+                    &review_gate.gate,
                     &profile,
                     true,
                     &task.spec.proof_policy,
                 )?;
-                review_proofs.push((review_name.clone(), review.proof.clone()));
+                review_proofs.push((review_gate.canonical_stage_id.clone(), review.proof.clone()));
             }
             let claim_worktree: String = tx.query_row(
                 "SELECT worktree FROM task_claims WHERE task_id=?1 AND revision=?2 AND ended=0",
@@ -1594,8 +2081,9 @@ impl TasksStore {
             task.completed_at = Some(now());
             task.status = "completed".into();
         } else if action == "pass" {
-            task.gate = gate_index + 1;
-            task.stage = profile.gate_id(task.gate).to_owned();
+            let next = super::claim::advance_gate_cursor(&profile, Some(&task.stage))?;
+            task.gate = next.root_index;
+            task.stage = next.stage_id;
             task.status = "ready".into();
         } else {
             let findings = findings.context("reject requires findings")?;
@@ -1604,10 +2092,11 @@ impl TasksStore {
                 params![id, task.claim_revision, serde_json::to_string(findings)?],
             )?;
             if let Some(target) = gate_def.reject_to.as_deref() {
-                task.gate = profile.index_of(target).with_context(|| {
+                let target = super::claim::cursor_for_stage(&profile, target).with_context(|| {
                     format!("TASK_STAGE_INVALID: task '{id}'. reject target stage '{target}' not defined in profile. Do: set reject_to to a stage that exists in the profile.")
                 })?;
-                task.stage = target.to_owned();
+                task.gate = target.root_index;
+                task.stage = target.stage_id;
             }
             task.status = "ready".into();
         }
@@ -1746,38 +2235,24 @@ struct Submission {
     boundary_callers: Option<BaselineBoundaryCallers>,
 }
 
-fn accepted(conn: &rusqlite::Connection, id: &str, gate: &str) -> Result<Evidence> {
-    let json: String = conn.query_row("SELECT evidence FROM task_gates WHERE task_id=?1 AND gate=?2 AND state='passed' ORDER BY revision DESC LIMIT 1",params![id,gate],|r|r.get(0))?;
-    Ok(serde_json::from_str(&json)?)
-}
-
 fn candidate_snapshot(
     conn: &rusqlite::Connection,
     id: &str,
     profile: &crate::core::tasks::profile::GateProfile,
     gate_index: usize,
 ) -> Result<Option<String>> {
-    let Some(snapshot_gate) = profile.gates[..gate_index]
+    let gate_sequence = super::claim::gate_sequence(profile)?;
+    let Some(snapshot_gate) = gate_sequence[..gate_index]
         .iter()
         .rev()
-        .find(|gate| gate.sha_snapshot)
+        .find(|cursor| cursor.gate.sha_snapshot)
     else {
         return Ok(None);
     };
-    let serialized: Option<String> = conn
-        .query_row(
-            "SELECT evidence FROM task_gates WHERE task_id=?1 AND gate=?2 AND state='passed' ORDER BY revision DESC LIMIT 1",
-            params![id, snapshot_gate.id],
-            |row| row.get(0),
-        )
-        .optional()?;
-    serialized
-        .map(|json| {
-            let evidence: Evidence = serde_json::from_str(&json)?;
-            Ok(evidence.commit)
-        })
-        .transpose()
-        .map(Option::flatten)
+    Ok(
+        accepted_evidence_for_cursor(conn, id, profile, snapshot_gate)?
+            .and_then(|evidence| evidence.commit),
+    )
 }
 
 fn validate_receipt(
@@ -1788,7 +2263,8 @@ fn validate_receipt(
     expected_commit: Option<&str>,
     profile: &crate::core::tasks::profile::GateProfile,
 ) -> Result<()> {
-    validate_durable_receipt_with_profile(receipt, task.contract_revision, profile)?;
+    let flattened_profile = super::claim::flattened_profile(profile)?;
+    validate_durable_receipt_with_profile(receipt, task.contract_revision, &flattened_profile)?;
     if receipt.commit.as_deref() != expected_commit
         || receipt.contract_revision != task.contract_revision
         || receipt.evidence != build.proof

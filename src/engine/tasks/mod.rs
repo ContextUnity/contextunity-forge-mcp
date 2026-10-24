@@ -4,8 +4,8 @@ use crate::{
         shorten_task_response_commits, snapshot_inspect_cmd, Milestone,
     },
     db::tasks_store::{
-        BlackboardPageRequest, BlackboardPostInput, ClaimBoundExecutionTrace, GateExecutionTrace,
-        Task, TasksStore,
+        BlackboardPageRequest, BlackboardPostInput, ClaimBoundExecutionTrace, GateCheckpoint,
+        GateExecutionTrace, Task, TasksStore,
     },
 };
 use anyhow::{bail, Context, Result};
@@ -19,6 +19,7 @@ pub(crate) use workspaces::{numbered_manifests, Registry};
 mod context;
 use context::context_bundle;
 mod blackboard;
+mod claim;
 mod gates;
 mod git_snapshot;
 mod lifecycle;
@@ -212,6 +213,7 @@ pub struct Claim {
     /// Unique task identifier `{project}/{milestone_id}:{task_ref}`.
     pub task_id: String,
     /// Lifecycle stage identifier from the task's active workflow profile.
+    #[serde(default)]
     pub stage: String,
     /// Unique identifier of the claiming agent worker (must differ between builder and reviewer).
     pub worker_id: String,

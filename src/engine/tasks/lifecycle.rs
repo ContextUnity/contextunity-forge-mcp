@@ -92,8 +92,10 @@ fn claim_inner(root: &Path, p: Claim) -> Result<Value> {
     validate_authority(&task, &worktree, workspace, &registry)?;
     registry.check_scope(workspace, &task.spec.scope, Some(&worktree))?;
     context::validate_claim_gate_requirements(workspace, &task)?;
-    let claimed = store.claim(&p.task_id, &p.stage, &p.worker_id, &p.worktree)?;
-    finish_claim(root, workspace, &mut store, claimed, p.bundle)
+    let profile = store.profile_for_task(&task)?;
+    let cursor = super::claim::claim_nested_gate(&profile, &task.stage, &p.stage)?;
+    let claimed = store.claim(&p.task_id, &cursor.stage_id, &p.worker_id, &p.worktree)?;
+    finish_claim(root, workspace, &mut store, claimed, cursor, p.bundle)
 }
 
 fn finish_claim(
@@ -101,6 +103,7 @@ fn finish_claim(
     workspace: &workspaces::Workspace,
     store: &mut TasksStore,
     claimed: Task,
+    cursor: super::claim::GateCursor,
     bundle: Option<bool>,
 ) -> Result<Value> {
     let id = &claimed.task_id;
@@ -110,6 +113,8 @@ fn finish_claim(
             .as_deref()
             .context("claim worktree missing")?,
     );
+    let (milestone_id, breadcrumb) = super::claim::breadcrumb(id, &cursor)?;
+    let subagent_role = super::claim::resolve_subagent_role(&cursor);
     let activation = (|| {
         let milestone_prefix = claimed
             .task_id
@@ -130,9 +135,15 @@ fn finish_claim(
         return Err(error);
     }
     let response = (|| {
-        let details = workspace.guidance_envelope(store.inspect_details(id)?)?;
+        let mut details = workspace.guidance_envelope(store.inspect_details(id)?)?;
+        if let Some(object) = details.as_object_mut() {
+            object.insert("breadcrumb".into(), json!(breadcrumb));
+            object.insert("active_gate_path".into(), json!(cursor.gate_path.clone()));
+            object.insert("active_stage_id".into(), json!(cursor.stage_id.clone()));
+            object.insert("subagent_role".into(), json!(subagent_role));
+        }
         let details = context::adapt_workspace_guidance(workspace, details)?;
-        if bundle.unwrap_or(true) {
+        let result = if bundle.unwrap_or(true) {
             context_bundle(root, workspace, id, details)
         } else {
             let mut minimal = details;
@@ -156,7 +167,34 @@ fn finish_claim(
                 obj.insert("subtasks".into(), subtasks);
             }
             Ok(minimal)
+        };
+        let output = result?;
+        if worktree.join(".git").exists() {
+            let git_tree_sha = crate::core::git::git_stdout(
+                worktree,
+                &["rev-parse", "--verify", "HEAD^{tree}"],
+                "TASK_CHECKPOINT_STATE_INVALID",
+            )?;
+            store.save_checkpoint(&GateCheckpoint {
+                breadcrumb: breadcrumb.clone(),
+                milestone_id: milestone_id.clone(),
+                subject: id.to_owned(),
+                gate_path: cursor.gate_path.clone(),
+                transition_id: None,
+                git_tree_sha,
+                state_payload: json!({
+                    "task_id": id,
+                    "stage": cursor.stage_id.clone(),
+                    "gate_path": cursor.gate_path.clone(),
+                    "worker_id": claimed.worker_id.clone(),
+                    "claim_revision": claimed.claim_revision,
+                    "contract_revision": claimed.contract_revision,
+                    "worktree": claimed.worktree.clone(),
+                    "subagent_role": subagent_role.clone(),
+                }),
+            })?;
         }
+        Ok(output)
     })();
     if response.is_err() {
         if response
@@ -554,7 +592,11 @@ fn manage_inner(root: &Path, p: &mut Manage) -> Result<Value> {
                 context::validate_claim_gate_requirements(workspace, task)
             })?;
             match claimed {
-                Some(claimed) => finish_claim(root, workspace, &mut store, claimed, Some(true)),
+                Some(claimed) => {
+                    let profile = store.profile_for_task(&claimed)?;
+                    let cursor = super::claim::claim_nested_gate(&profile, &claimed.stage, "")?;
+                    finish_claim(root, workspace, &mut store, claimed, cursor, Some(true))
+                }
                 None => workspace.envelope(json!({"status":"idle","worker_id":worker})),
             }
         }
