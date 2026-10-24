@@ -1,5 +1,7 @@
 use crate::{
-    core::tasks::{Milestone, Receipt},
+    core::tasks::{
+        AcddError, AcddErrorCode, ContractType, Milestone, MilestoneContractMatrix, Receipt,
+    },
     db::tasks_store::{Task, TasksStore},
     engine::tasks,
 };
@@ -7,6 +9,7 @@ use anyhow::{bail, Context, Result};
 use chrono::{TimeZone, Utc};
 use serde_json::{json, Value};
 use std::{
+    collections::BTreeSet,
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
@@ -24,6 +27,83 @@ pub use integration::{
 };
 pub use recovery::db_recover;
 pub(crate) use recovery::obsolete_checkpoint_owners;
+
+/// Verify that every in-milestone task dependency has a synthesized matrix contract.
+pub fn verify_contract_matrix_parity(
+    milestone: &Milestone,
+    matrix: &MilestoneContractMatrix,
+) -> std::result::Result<(), AcddError> {
+    let mismatch = |message: String| AcddError::new(AcddErrorCode::ContractMatrixMismatch, message);
+    if matrix.milestone_id != milestone.id {
+        return Err(mismatch(format!(
+            "matrix belongs to '{}', expected '{}'",
+            matrix.milestone_id, milestone.id
+        )));
+    }
+
+    let task_refs: BTreeSet<_> = milestone
+        .tasks
+        .iter()
+        .map(|task| task.task_ref.as_str())
+        .collect();
+    let mut row_keys = BTreeSet::new();
+    for entry in &matrix.entries {
+        if entry.milestone_id != milestone.id {
+            return Err(mismatch(format!(
+                "entry for '{} -> {}' belongs to milestone '{}'",
+                entry.source_task, entry.target_task, entry.milestone_id
+            )));
+        }
+        if !task_refs.contains(entry.source_task.as_str())
+            || !task_refs.contains(entry.target_task.as_str())
+        {
+            return Err(mismatch(format!(
+                "entry references unknown task '{} -> {}'",
+                entry.source_task, entry.target_task
+            )));
+        }
+        if entry.source_task == entry.target_task
+            || entry.contract_ref.trim().is_empty()
+            || entry.revision == 0
+        {
+            return Err(mismatch(format!(
+                "entry '{} -> {}' requires distinct tasks, a contract reference, and a positive revision",
+                entry.source_task, entry.target_task
+            )));
+        }
+        if !row_keys.insert((
+            entry.source_task.as_str(),
+            entry.target_task.as_str(),
+            entry.contract_ref.as_str(),
+        )) {
+            return Err(mismatch(format!(
+                "duplicate contract reference '{}' for '{} -> {}'",
+                entry.contract_ref, entry.source_task, entry.target_task
+            )));
+        }
+    }
+
+    for consumer in &milestone.tasks {
+        for dependency in &consumer.depends_on {
+            if !task_refs.contains(dependency.as_str()) {
+                continue;
+            }
+            let represented = matrix.entries.iter().any(|entry| {
+                entry.source_task == *dependency
+                    && entry.target_task == consumer.task_ref
+                    && entry.contract_type == ContractType::SeamDependency
+            });
+            if !represented {
+                return Err(mismatch(format!(
+                    "dependency '{} -> {}' has no seam_dependency contract",
+                    dependency, consumer.task_ref
+                )));
+            }
+        }
+    }
+
+    Ok(())
+}
 
 /// Inputs for creating a milestone document.
 pub struct Init {

@@ -2,43 +2,44 @@
 id: AC-001-hierarchical-acdd-gates-and-milestone-orchestration
 title: Hierarchical ACDD gates, modular catalogs, and milestone orchestration
 doc_type: contract
-status: planned
+status: active
 depends_on:
-  - m-milestone-handoff-pruning-evidence-cleanup-and-list-guidance
+- m-milestone-handoff-pruning-evidence-cleanup-and-list-guidance
 owners:
-  - src/core/tasks/
-  - src/engine/tasks/
-  - src/db/tasks_store/
-  - src/db/reader.rs
-  - tests/acdd/
-  - src/cli/
-  - skills/contextunity-forge/
-  - docs/
+- src/core/tasks/
+- src/engine/tasks/
+- src/db/tasks_store/
+- src/db/reader.rs
+- tests/acdd/
+- src/cli/
+- skills/contextunity-forge/
+- docs/
 invariants:
-  - 'INV-UNIVERSAL-GATE-POLYMORPHISM: Every workflow node is a Gate; execution mode is determined by driver fields: Agent Gate (role), Command Gate (command), or Container Gate (gates).'
-  - 'INV-ZERO-ARGUMENT-SUBMISSION: Automated gate submissions (any gate configured with proof: command, contract, or delivery) require zero manual JSON arguments; Forge autonomously compiles proof from gate execution traces and Git tree state. Cognitive review gates (proof: review) strictly require typed review judgments (verdict, reviewer, contours_reviewed, extended_scope_review).'
-  - 'INV-IN-PLACE-LIFECYCLE: Task and milestone execution supports in-place operation (--in-place / worktree: ".") without mandatory worktree or branch isolation.'
-  - 'INV-SILENT-ENGINE-TELEMETRY: Gate transitions and command execution traces are automatically recorded in SQLite; automated engine progress logging to task_blackboard is suppressed, preserving blackboard bandwidth for RFCs, synthesized contract matrices, and human escalations.'
-  - 'INV-SEAM-ENGINE-RED-GREEN: Seam Engine automatically tracks contract runtime failure (matching configured expected_failure.exit_codes) to implementation pass (exit 0) via gate execution traces.'
-  - 'INV-SEAM-REACHABILITY-RESILIENCE: Static seam verification proves the current test-to-production connection through imports, re-exports, and bounded test-helper paths; stale source/index evidence produces an actionable stale-index diagnostic. An unresolved expression alone does not prove reachability.'
-  - 'INV-REQUIRED-SKILLS-GOVERNANCE: Manifests declare required_skills in frontmatter; milestone init fails closed (MILESTONE_PREFLIGHT_FAILED) before agent launch if any declared skill is absent.'
-  - 'INV-PREFLIGHT-MILESTONE-INIT: milestone init validates manifest syntax, checks required_skills on host, and pre-scaffolds base worktrees across declared repositories upfront before agent dispatch.'
-  - 'INV-MULTI-REPO-MANIFEST-DECLARATION: Multi-repository workflows declare participant repositories in manifest frontmatter; the engine coordinates cross-repo worktree initialization and compound breadcrumbs.'
-  - 'INV-EXTENDED-SCOPE-MANIFEST-SYNC: task extend-scope writes atomically to both SQLite and the milestone markdown manifest; review proof strictly requires extended_scope_review approval before deliver.'
-  - 'INV-BREADCRUMB-CHECKPOINT-UNIFICATION: Checkpoints are stored in SQLite gate_checkpoints keyed directly by turn breadcrumb locators; legacy .forge/checkpoints.json is eliminated.'
-  - 'INV-TRANSITION-TRACE-PERSISTENCE: Upon milestone handoff (INV-HANDOFF-SQLITE-PRUNING), completed milestone tasks, claims, revisions, gate transitions, execution traces, checkpoints, and task blackboard rows are purged from SQLite; milestone_tombstones is retained to keep archived dependencies satisfiable; canonical durable records reside permanently in docs/milestones/archive/*.md and Git history.'
-  - 'INV-PRE-DOC-AUTONOMOUS-VERIFICATION: Milestone verification executes as a container gate with automated checks, review, fallback repair subgraph, and autonomous delivery before documentation.'
-  - 'INV-MARKDOWN-FIRST-ERGONOMICS: Agent messages, guidance, and status reports follow Milestone 054 Markdown-first principles: clickable coordinates, callout blockers, compact status tables, zero dead metadata.'
-  - 'INV-MODULAR-SUBSYSTEM-DECOUPLING: Forge MCP decomposes functionality into 5 independent subsystems (codemap, acdd, blackboard, docs, checkpoints) configurable via forge-mcp.yaml modules/profile, with dynamic MCP tool registration and zero initialization cost for disabled subsystems.'
-  - 'INV-CONTEXT-AWARE-GUIDANCE-ADAPTATION: workflow_guidance, prompts, and gate verification dynamically adapt to enabled subsystems, suppressing dead tool references, omitting unused guidance structures, and falling back gracefully when graph or blackboard features are disabled.'
-  - 'INV-PAYLOAD-OVERFLOW-GUARD: Custom metadata, git_commit_note payloads (rendered as Markdown by default, or JSON), and in-database trace snippets attached to tasks are bounded by a 2 KiB limit (configurable via git_commit_note.limits.max_bytes / limits.max_metadata_bytes) with complete command outputs written to disk logs, protecting the 96 KiB MCP response budget and preventing Git note bloat.'
-  - 'INV-UNIVERSAL-PROFILE-ZERO-LANGUAGE-HARDCODE: The embedded default profile (acdd.default.yaml) and profile templates must remain strictly language-agnostic. Gates and commands must not hardcode Rust-specific binaries (such as cargo clippy or cargo test); all verification commands must use pattern-based dispatch (by_pattern) matching project file extensions or generic command identifiers. Guidance texts must not mention specific languages or compilers.'
-  - 'INV-TWO-LOOP-ACDD-GOVERNANCE: Task execution strictly distinguishes between scope: (files on disk, extensible by builder) and symbols: (admitted public interface deltas, strictly governed by architect). Review failures route via reject_routing (scope -> build, symbols -> contract). Unadmitted public interface mutations are prohibited from bypassing the Long Outer Loop (architect arbitration -> seam contract test -> builder).'
-  - 'INV-GUIDANCE-SLOT-BINDING: Gates declare parameterized guidance slots (e.g. guidance: [task.contract, hitl]), and milestones bind them in manifest frontmatter (guidance: { hitl: pro }). The engine resolves slot hitl with value pro via format!("{}.{}", slot, value) -> hitl.pro (or literal dotted keys). The validator verifies slot matching on milestone init/check, emitting warnings for unbound slots and falling back to profile defaults.'
+- 'INV-UNIVERSAL-GATE-POLYMORPHISM: Every workflow node is a Gate; execution mode is determined by driver fields: Agent Gate (role), Command Gate (command), or Container Gate (gates).'
+- 'INV-ZERO-ARGUMENT-SUBMISSION: Automated gate submissions (any gate configured with proof: command, contract, or delivery) require zero manual JSON arguments; Forge autonomously compiles proof from gate execution traces and Git tree state. Cognitive review gates (proof: review) strictly require typed review judgments (verdict, reviewer, contours_reviewed, extended_scope_review).'
+- 'INV-IN-PLACE-LIFECYCLE: Task and milestone execution supports in-place operation (--in-place / worktree: ".") without mandatory worktree or branch isolation.'
+- 'INV-SILENT-ENGINE-TELEMETRY: Gate transitions and command execution traces are automatically recorded in SQLite; automated engine progress logging to task_blackboard is suppressed, preserving blackboard bandwidth for RFCs, synthesized contract matrices, and human escalations.'
+- 'INV-SEAM-ENGINE-RED-GREEN: Seam Engine automatically tracks contract runtime failure (matching configured expected_failure.exit_codes) to implementation pass (exit 0) via gate execution traces.'
+- 'INV-SEAM-REACHABILITY-RESILIENCE: Static seam verification proves the current test-to-production connection through imports, re-exports, and bounded test-helper paths; stale source/index evidence produces an actionable stale-index diagnostic. An unresolved expression alone does not prove reachability.'
+- 'INV-REQUIRED-SKILLS-GOVERNANCE: Manifests declare required_skills in frontmatter; milestone init fails closed (MILESTONE_PREFLIGHT_FAILED) before agent launch if any declared skill is absent.'
+- 'INV-PREFLIGHT-MILESTONE-INIT: milestone init validates manifest syntax, checks required_skills on host, and pre-scaffolds base worktrees across declared repositories upfront before agent dispatch.'
+- 'INV-MULTI-REPO-MANIFEST-DECLARATION: Multi-repository workflows declare participant repositories in manifest frontmatter; the engine coordinates cross-repo worktree initialization and compound breadcrumbs.'
+- 'INV-EXTENDED-SCOPE-MANIFEST-SYNC: task extend-scope writes atomically to both SQLite and the milestone markdown manifest; review proof strictly requires extended_scope_review approval before deliver.'
+- 'INV-BREADCRUMB-CHECKPOINT-UNIFICATION: Checkpoints are stored in SQLite gate_checkpoints keyed directly by turn breadcrumb locators; legacy .forge/checkpoints.json is eliminated.'
+- 'INV-TRANSITION-TRACE-PERSISTENCE: Upon milestone handoff (INV-HANDOFF-SQLITE-PRUNING), completed milestone tasks, claims, revisions, gate transitions, execution traces, checkpoints, and task blackboard rows are purged from SQLite; milestone_tombstones is retained to keep archived dependencies satisfiable; canonical durable records reside permanently in docs/milestones/archive/*.md and Git history.'
+- 'INV-PRE-DOC-AUTONOMOUS-VERIFICATION: Milestone verification executes as a container gate with automated checks, review, fallback repair subgraph, and autonomous delivery before documentation.'
+- 'INV-MARKDOWN-FIRST-ERGONOMICS: Agent messages, guidance, and status reports follow Milestone 054 Markdown-first principles: clickable coordinates, callout blockers, compact status tables, zero dead metadata.'
+- 'INV-MODULAR-SUBSYSTEM-DECOUPLING: Forge MCP decomposes functionality into 5 independent subsystems (codemap, acdd, blackboard, docs, checkpoints) configurable via forge-mcp.yaml modules/profile, with dynamic MCP tool registration and zero initialization cost for disabled subsystems.'
+- 'INV-CONTEXT-AWARE-GUIDANCE-ADAPTATION: workflow_guidance, prompts, and gate verification dynamically adapt to enabled subsystems, suppressing dead tool references, omitting unused guidance structures, and falling back gracefully when graph or blackboard features are disabled.'
+- 'INV-PAYLOAD-OVERFLOW-GUARD: Custom metadata, git_commit_note payloads (rendered as Markdown by default, or JSON), and in-database trace snippets attached to tasks are bounded by a 2 KiB limit (configurable via git_commit_note.limits.max_bytes / limits.max_metadata_bytes) with complete command outputs written to disk logs, protecting the 96 KiB MCP response budget and preventing Git note bloat.'
+- 'INV-UNIVERSAL-PROFILE-ZERO-LANGUAGE-HARDCODE: The embedded default profile (acdd.default.yaml) and profile templates must remain strictly language-agnostic. Gates and commands must not hardcode Rust-specific binaries (such as cargo clippy or cargo test); all verification commands must use pattern-based dispatch (by_pattern) matching project file extensions or generic command identifiers. Guidance texts must not mention specific languages or compilers.'
+- 'INV-TWO-LOOP-ACDD-GOVERNANCE: Task execution strictly distinguishes between scope: (files on disk, extensible by builder) and symbols: (admitted public interface deltas, strictly governed by architect). Review failures route via reject_routing (scope -> build, symbols -> contract). Unadmitted public interface mutations are prohibited from bypassing the Long Outer Loop (architect arbitration -> seam contract test -> builder).'
+- 'INV-GUIDANCE-SLOT-BINDING: Gates declare parameterized guidance slots (e.g. guidance: [task.contract, hitl]), and milestones bind them in manifest frontmatter (guidance: { hitl: pro }). The engine resolves slot hitl with value pro via format!("{}.{}", slot, value) -> hitl.pro (or literal dotted keys). The validator verifies slot matching on milestone init/check, emitting warnings for unbound slots and falling back to profile defaults.'
 required_skills:
-  - contextunity-forge
-  - agent-instructions
+- contextunity-forge
+- agent-instructions
 related_plans: []
+started_at: 2026-10-24T02:28:16+00:00
 ---
 
 # Hierarchical ACDD gates, modular catalogs, and milestone orchestration
@@ -76,46 +77,175 @@ Evolve ContextUnity Forge MCP into a **Universal Hierarchical Gate Platform** wh
 
 ---
 
+### Canonical cross-task contract matrix
+
+For each row, source_task is the provider and target_task is the consumer.
+Every local depends_on edge has at least one seam_dependency row. Rows start at
+revision 1 with status synthesized; revision increases only when the owning
+contract changes, and status becomes verified after its seam is checked. The
+model and validator are
+[MilestoneContractMatrix](../../src/core/tasks/mod.rs#L61),
+[AcddErrorCode](../../src/core/tasks/mod.rs#L71), and
+[verify_contract_matrix_parity](../../src/engine/milestones/mod.rs#L32).
+
+| Source task | Target task | Type | Contract reference |
+| :--- | :--- | :--- | :--- |
+| Task 0 upfront-contract-synthesis-and-dag-prioritization | Task 1 universal-gate-ast-and-modular-catalog-spec | seam_dependency | GateProfile.error_codes |
+| Task 0 upfront-contract-synthesis-and-dag-prioritization | Task 2 sqlite-gate-transitions-and-trace-persistence | seam_dependency | core::tasks::MilestoneContractMatrix |
+| Task 1 universal-gate-ast-and-modular-catalog-spec | Task 3 zero-arg-transition-engine-and-command-runner | seam_dependency | GateDef; CommandDef |
+| Task 1 universal-gate-ast-and-modular-catalog-spec | Task 4 upfront-contract-synthesis-and-shared-helper-extraction | seam_dependency | GateProfile; PolicyDef |
+| Task 2 sqlite-gate-transitions-and-trace-persistence | Task 3 zero-arg-transition-engine-and-command-runner | seam_dependency | GateTransition; GateExecutionTrace |
+| Task 2 sqlite-gate-transitions-and-trace-persistence | Task 4 upfront-contract-synthesis-and-shared-helper-extraction | seam_dependency | TasksStore::replace_contract_matrix; TasksStore::list_contract_matrix |
+| Task 3 zero-arg-transition-engine-and-command-runner | Task 5 container-gate-and-claim-engine | seam_dependency | execute_command_gate; compile_evidence_envelope |
+| Task 4 upfront-contract-synthesis-and-shared-helper-extraction | Task 5 container-gate-and-claim-engine | seam_dependency | synthesize_milestone_contracts; validate_wave_dag |
+| Task 3 zero-arg-transition-engine-and-command-runner | Task 6 scope-extension-manifest-sync-and-review-audit | seam_dependency | compile_evidence_envelope |
+| Task 4 upfront-contract-synthesis-and-shared-helper-extraction | Task 6 scope-extension-manifest-sync-and-review-audit | seam_dependency | synthesize_milestone_contracts |
+
+verify_contract_matrix_parity rejects a wrong milestone identity, unknown task
+references, duplicate row keys, empty references, non-positive revisions, and
+any local dependency without the directed provider-to-consumer seam_dependency
+entry. Additional shared_helper and shared_type rows may describe contracts
+that do not correspond to manifest dependencies.
+Task 2's replace_contract_matrix writes the full matrix atomically; its
+list_contract_matrix read returns entries ordered by source_task, target_task,
+and contract_ref.
+
+The manifest task order is the stable tie-breaker within each topological wave.
+depends_on remains the source of execution blockers; a task may run only after
+all earlier-wave dependencies pass.
+
+| Wave | Concurrent task pair | Disjoint ownership |
+| :--- | :--- | :--- |
+| 0 | Task 0 | Owns the bootstrap contract, tests/acdd/mod.rs, and reserved seam files before later waves start. |
+| 1 | Tasks 1 and 2 | Task 1 owns core/profile/CLI/MCP/engine sources and gates_ast.rs; Task 2 owns src/db/tasks_store/ and persistence.rs. |
+| 2 | Tasks 3 and 4 | Task 3 owns transition/command-runner sources and runner.rs; Task 4 owns synthesis/milestone sources and synthesis.rs. |
+| 3 | Tasks 5 and 6 | Task 5 owns claim/container and reader sources plus seam_reachability.rs; Task 6 owns scope-sync, handoff, CLI/MCP and governance documents plus scope_sync.rs. |
+
+Same-wave tasks have no shared write path. Cross-wave path reuse is intentional
+and serialized by the dependency graph.
+
+---
+
 ### task: upfront-contract-synthesis-and-dag-prioritization
 
 ```yaml
 task_ref: upfront-contract-synthesis-and-dag-prioritization
-target: "Synthesize cross-task contract matrix, establish deterministic topological execution waves, standardize shared data models & error variants, pre-register seam test harness modules in tests/acdd/mod.rs, and freeze disjoint scopes for all AC-001 tasks"
+target: Synthesize cross-task contract matrix, establish deterministic topological execution waves, standardize shared data models & error variants, pre-register seam test harness modules in tests/acdd/mod.rs, and freeze disjoint scopes for all AC-001 tasks
 proof_policy: seam-test-first
 contract_revision: 1
 depends_on: []
 scope:
-  - docs/milestones/AC-001-hierarchical-acdd-gates-and-milestone-orchestration.md
-  - docs/future/adr/0020-hierarchical-acdd-gates-and-milestone-orchestration.md
-  - docs/future/references/acdd_profile.v2.yaml.example
-  - src/core/tasks/mod.rs
-  - src/engine/milestones/mod.rs
-  - tests/acdd/mod.rs
-  - tests/acdd/contract_synthesis.rs
-  - tests/acdd/gates_ast.rs
-  - tests/acdd/persistence.rs
-  - tests/acdd/runner.rs
-  - tests/acdd/synthesis.rs
-  - tests/acdd/seam_reachability.rs
-  - tests/acdd/scope_sync.rs
-status: planned
+- docs/milestones/AC-001-hierarchical-acdd-gates-and-milestone-orchestration.md
+- docs/future/adr/0020-hierarchical-acdd-gates-and-milestone-orchestration.md
+- docs/future/references/acdd_profile.v2.yaml.example
+- src/core/tasks/mod.rs
+- src/engine/milestones/mod.rs
+- tests/acdd/mod.rs
+- tests/acdd/contract_synthesis.rs
+- tests/acdd/gates_ast.rs
+- tests/acdd/persistence.rs
+- tests/acdd/runner.rs
+- tests/acdd/synthesis.rs
+- tests/acdd/seam_reachability.rs
+- tests/acdd/scope_sync.rs
+status: completed
 subtasks:
-  - subtask_ref: cross-task-data-contract-matrix
-    title: "Define canonical cross-task contract matrix and shared data structures"
-  - subtask_ref: deterministic-priority-waves-dag
-    title: "Establish deterministic topological execution waves and explicit DAG dependencies"
-  - subtask_ref: seam-test-harness-pre-registration
-    title: "Pre-register seam test stub files in tests/acdd/mod.rs and freeze test module boundaries"
-  - subtask_ref: disjoint-scope-boundaries-freeze
-    title: "Freeze disjoint file write scopes and seam test allocations across all tasks"
-  - subtask_ref: shared-error-taxonomy-and-diagnostic-codes
-    title: "Standardize shared error variants and diagnostic error codes in ADR and reference profile"
+- subtask_ref: cross-task-data-contract-matrix
+  title: Define canonical cross-task contract matrix and shared data structures
+  status: completed
+  evidence: Focused contract seam and full `cargo test --test acdd` (117 passed, 0 failed); `cargo clippy --all-targets --all-features -- -D warnings` passed.
+- subtask_ref: deterministic-priority-waves-dag
+  title: Establish deterministic topological execution waves and explicit DAG dependencies
+  status: completed
+  evidence: Focused contract seam and full `cargo test --test acdd` (117 passed, 0 failed); `cargo clippy --all-targets --all-features -- -D warnings` passed.
+- subtask_ref: seam-test-harness-pre-registration
+  title: Pre-register seam test stub files in tests/acdd/mod.rs and freeze test module boundaries
+  status: completed
+  evidence: Focused contract seam and full `cargo test --test acdd` (117 passed, 0 failed); `cargo clippy --all-targets --all-features -- -D warnings` passed.
+- subtask_ref: disjoint-scope-boundaries-freeze
+  title: Freeze disjoint file write scopes and seam test allocations across all tasks
+  status: completed
+  evidence: Focused contract seam and full `cargo test --test acdd` (117 passed, 0 failed); `cargo clippy --all-targets --all-features -- -D warnings` passed.
+- subtask_ref: shared-error-taxonomy-and-diagnostic-codes
+  title: Standardize shared error variants and diagnostic error codes in ADR and reference profile
+  status: completed
+  evidence: Focused contract seam and full `cargo test --test acdd` (117 passed, 0 failed); `cargo clippy --all-targets --all-features -- -D warnings` passed.
+receipt:
+  contract_revision: 1
+  passed_at: 2026-10-24T03:01:11.598244668+00:00
+  evidence:
+    command_proof:
+      command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --test acdd
+      exit_code: 0
+      tests_passed: 117
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: I inspected the claim-bound candidate snapshot 3d30822b78544a627df91842ec919474ed098e0f and the worktree status. The changed/untracked paths are exactly the 13 paths in the initial Task 0 scope; no scope extensions or unrelated configuration, credential, generated-state, or neighboring-project paths are present.
+        claims:
+          applicable: true
+          evidence: The accepted contract matrix, dependency waves, stable error catalog, and reserved seam modules match the Task 0 contract. The production validator verify_contract_matrix_parity checks matrix/milestone identity, task references, row uniqueness, contract references/revisions, and dependency-row parity; tests/acdd/contract_synthesis.rs calls that production validator for malformed and valid cases. The cycle diagnostic is stable. The accepted build proof for this exact snapshot records strict Clippy plus cargo test --test acdd passing (117 passed, 0 failed).
+        concurrency:
+          applicable: false
+          evidence: Task 0 adds value types and a pure parity validator; it does not add shared-state writes, transactions, locks, claims, or receipt publication. Atomic full-matrix replacement is explicitly assigned to the dependent Task 2 TasksStore API, so there is no Task 0 concurrent writer or transaction boundary to review.
+        project_isolation:
+          applicable: true
+          evidence: The matrix is manifest-local and validated against one parsed milestone. Persistence is assigned to TasksStore::replace_contract_matrix/list_contract_matrix. Existing TasksStore::open_project binds repository and project, and milestone_identity qualifies a milestone id with that store's namespace; the matrix value therefore need not carry a portable repository/project identity under the accepted contract.
+        administration:
+          applicable: true
+          evidence: The candidate changes a future profile example and future ADR only; it changes no active profile/configuration, migration, hook, receipt, or delivery path. The existing profile/invariant proof-shape mismatch is a deferred Task 6 item and is not introduced by this Task 0 candidate.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-UNIVERSAL-GATE-POLYMORPHISM: Every workflow node is a Gate; execution mode is determined by driver fields: Agent Gate (role), Command Gate (command), or Container Gate (gates).'
+    - 'INV-ZERO-ARGUMENT-SUBMISSION: Automated gate submissions (any gate configured with proof: command, contract, or delivery) require zero manual JSON arguments; Forge autonomously compiles proof from gate execution traces and Git tree state. Cognitive review gates (proof: review) strictly require typed review judgments (verdict, reviewer, contours_reviewed, extended_scope_review).'
+    - 'INV-IN-PLACE-LIFECYCLE: Task and milestone execution supports in-place operation (--in-place / worktree: ".") without mandatory worktree or branch isolation.'
+    - 'INV-SILENT-ENGINE-TELEMETRY: Gate transitions and command execution traces are automatically recorded in SQLite; automated engine progress logging to task_blackboard is suppressed, preserving blackboard bandwidth for RFCs, synthesized contract matrices, and human escalations.'
+    - 'INV-SEAM-ENGINE-RED-GREEN: Seam Engine automatically tracks contract runtime failure (matching configured expected_failure.exit_codes) to implementation pass (exit 0) via gate execution traces.'
+    - 'INV-SEAM-REACHABILITY-RESILIENCE: Static seam verification proves the current test-to-production connection through imports, re-exports, and bounded test-helper paths; stale source/index evidence produces an actionable stale-index diagnostic. An unresolved expression alone does not prove reachability.'
+    - 'INV-REQUIRED-SKILLS-GOVERNANCE: Manifests declare required_skills in frontmatter; milestone init fails closed (MILESTONE_PREFLIGHT_FAILED) before agent launch if any declared skill is absent.'
+    - 'INV-PREFLIGHT-MILESTONE-INIT: milestone init validates manifest syntax, checks required_skills on host, and pre-scaffolds base worktrees across declared repositories upfront before agent dispatch.'
+    - 'INV-MULTI-REPO-MANIFEST-DECLARATION: Multi-repository workflows declare participant repositories in manifest frontmatter; the engine coordinates cross-repo worktree initialization and compound breadcrumbs.'
+    - 'INV-EXTENDED-SCOPE-MANIFEST-SYNC: task extend-scope writes atomically to both SQLite and the milestone markdown manifest; review proof strictly requires extended_scope_review approval before deliver.'
+    - 'INV-BREADCRUMB-CHECKPOINT-UNIFICATION: Checkpoints are stored in SQLite gate_checkpoints keyed directly by turn breadcrumb locators; legacy .forge/checkpoints.json is eliminated.'
+    - 'INV-TRANSITION-TRACE-PERSISTENCE: Upon milestone handoff (INV-HANDOFF-SQLITE-PRUNING), completed milestone tasks, claims, revisions, gate transitions, execution traces, checkpoints, and task blackboard rows are purged from SQLite; milestone_tombstones is retained to keep archived dependencies satisfiable; canonical durable records reside permanently in docs/milestones/archive/*.md and Git history.'
+    - 'INV-PRE-DOC-AUTONOMOUS-VERIFICATION: Milestone verification executes as a container gate with automated checks, review, fallback repair subgraph, and autonomous delivery before documentation.'
+    - 'INV-MARKDOWN-FIRST-ERGONOMICS: Agent messages, guidance, and status reports follow Milestone 054 Markdown-first principles: clickable coordinates, callout blockers, compact status tables, zero dead metadata.'
+    - 'INV-MODULAR-SUBSYSTEM-DECOUPLING: Forge MCP decomposes functionality into 5 independent subsystems (codemap, acdd, blackboard, docs, checkpoints) configurable via forge-mcp.yaml modules/profile, with dynamic MCP tool registration and zero initialization cost for disabled subsystems.'
+    - 'INV-CONTEXT-AWARE-GUIDANCE-ADAPTATION: workflow_guidance, prompts, and gate verification dynamically adapt to enabled subsystems, suppressing dead tool references, omitting unused guidance structures, and falling back gracefully when graph or blackboard features are disabled.'
+    - 'INV-PAYLOAD-OVERFLOW-GUARD: Custom metadata, git_commit_note payloads (rendered as Markdown by default, or JSON), and in-database trace snippets attached to tasks are bounded by a 2 KiB limit (configurable via git_commit_note.limits.max_bytes / limits.max_metadata_bytes) with complete command outputs written to disk logs, protecting the 96 KiB MCP response budget and preventing Git note bloat.'
+    - 'INV-UNIVERSAL-PROFILE-ZERO-LANGUAGE-HARDCODE: The embedded default profile (acdd.default.yaml) and profile templates must remain strictly language-agnostic. Gates and commands must not hardcode Rust-specific binaries (such as cargo clippy or cargo test); all verification commands must use pattern-based dispatch (by_pattern) matching project file extensions or generic command identifiers. Guidance texts must not mention specific languages or compilers.'
+    - 'INV-TWO-LOOP-ACDD-GOVERNANCE: Task execution strictly distinguishes between scope: (files on disk, extensible by builder) and symbols: (admitted public interface deltas, strictly governed by architect). Review failures route via reject_routing (scope -> build, symbols -> contract). Unadmitted public interface mutations are prohibited from bypassing the Long Outer Loop (architect arbitration -> seam contract test -> builder).'
+    - 'INV-GUIDANCE-SLOT-BINDING: Gates declare parameterized guidance slots (e.g. guidance: [task.contract, hitl]), and milestones bind them in manifest frontmatter (guidance: { hitl: pro }). The engine resolves slot hitl with value pro via format!("{}.{}", slot, value) -> hitl.pro (or literal dotted keys). The validator verifies slot matching on milestone init/check, emitting warnings for unbound slots and falling back to profile defaults.'
+    architectural_notes:
+    - 'deferred: Deferred to Task 6 (scope-extension-manifest-sync-and-review-audit): AC-001 invariant INV-EXTENDED-SCOPE-MANIFEST-SYNC says review proof must validate extended_scope_review approval, but the current active ReviewProof schema only accepts `decision` and the five contour results, and rejects that field. Task 0 has no scope extensions. Task 6 must align the typed review proof/schema and add production-seam coverage before milestone handoff.'
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: not_applicable
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Admitted Symbols (Wave 0)
 - `doc:milestone_contract_matrix`
 - `doc:shared_error_taxonomy`
 - `fn:verify_contract_matrix_parity`
+
+- `enum:ContractType`
+- `enum:ContractStatus`
+- `struct:MilestoneContractEntry`
+- `struct:MilestoneContractMatrix`
+- `enum:AcddErrorCode`
+- `struct:AcddError`
+- `method:AcddErrorCode::as_str`
+- `method:AcddError::new`
 
 ### task: universal-gate-ast-and-modular-catalog-spec
 
@@ -210,6 +340,8 @@ subtasks:
 - `cmd:validate`
 - `slot:hitl`
 
+- field:GateProfile.error_codes
+
 ### task: sqlite-gate-transitions-and-trace-persistence
 
 ```yaml
@@ -255,6 +387,9 @@ subtasks:
 - `fn:TasksStore::record_gate_transition`
 - `fn:TasksStore::record_execution_trace`
 - `fn:TasksStore::save_checkpoint`
+
+- `fn:TasksStore::replace_contract_matrix`
+- `fn:TasksStore::list_contract_matrix`
 
 ### task: zero-arg-transition-engine-and-command-runner
 

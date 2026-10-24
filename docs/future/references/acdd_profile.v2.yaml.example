@@ -47,6 +47,41 @@
 version: 2
 
 # =============================================================================
+# SHARED DIAGNOSTIC ERROR CATALOG
+# Keys must match AcddErrorCode identifiers exactly across CLI, MCP, and profile
+# diagnostics. Descriptions define stable machine categories, not user copy.
+# =============================================================================
+error_codes:
+  CONTRACT_MATRIX_MISMATCH:
+    description: "A dependency or matrix entry does not match the milestone contract."
+  DEPENDENCY_MUTATED:
+    description: "An upstream dependency changed after the task contract was admitted."
+  FEATURE_DISABLED:
+    description: "A requested Forge subsystem is disabled."
+  FEATURE_REQUIRED_BY_PROFILE:
+    description: "The active profile requires a disabled subsystem."
+  GATE_INVALID_CONFIGURATION:
+    description: "A gate has missing, conflicting, or invalid driver fields."
+  MILESTONE_DAG_CYCLE:
+    description: "The task dependency graph contains a cycle."
+  MILESTONE_PREFLIGHT_FAILED:
+    description: "Manifest, skill, repository, or worktree preflight failed."
+  TASK_CANDIDATE_MISMATCH:
+    description: "The delivery tree differs from the reviewed immutable candidate."
+  TASK_CANDIDATE_OUT_OF_SCOPE:
+    description: "The task candidate changes a path outside admitted scope."
+  TASK_SCOPE_INVALID:
+    description: "A scope path is malformed or outside declared roots."
+  TASK_SCOPE_PROTECTED:
+    description: "A protected path cannot be added to task scope."
+  TASK_SEAM_DISCONNECTED:
+    description: "No current, proven test-to-production path reaches the target."
+  TASK_SEAM_STALE:
+    description: "Source drift invalidated indexed seam evidence; refresh the index."
+  UNADMITTED_SYMBOL_EXPANSION:
+    description: "A public symbol change was not admitted at the contract gate."
+
+# =============================================================================
 # DEFAULT GUIDANCE SLOTS
 # Gates declare parameterized slots (e.g. hitl); milestone frontmatter binds
 # them (e.g. guidance: { hitl: hitl.pro }). If unbound, profile defaults apply.

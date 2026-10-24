@@ -13,6 +13,142 @@ pub mod profile;
 /// The gates value.
 pub const GATES: [&str; 4] = ["contract", "build", "review", "deliver"];
 
+/// Contract relationship persisted between milestone tasks.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum ContractType {
+    /// A helper implementation shared by task boundaries.
+    SharedHelper,
+    /// A producer-consumer dependency between task seams.
+    SeamDependency,
+    /// A shared type required by more than one task.
+    SharedType,
+}
+
+/// Lifecycle state of a synthesized task contract.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ContractStatus {
+    /// The architecture contract is admitted but not yet verified.
+    Synthesized,
+    /// The contract was verified against its implementation seam.
+    Verified,
+}
+
+/// A directed cross-task contract row from milestone_contract_matrix.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct MilestoneContractEntry {
+    /// Milestone that owns the relationship.
+    pub milestone_id: String,
+    /// Upstream task that provides the contract.
+    pub source_task: String,
+    /// Downstream task that consumes the contract.
+    pub target_task: String,
+    /// Relationship kind.
+    pub contract_type: ContractType,
+    /// Stable symbol, seam, or helper reference.
+    pub contract_ref: String,
+    /// Contract revision admitted by the architect.
+    pub revision: u64,
+    /// Current verification state.
+    pub status: ContractStatus,
+}
+
+/// Cross-task contract rows synthesized for one milestone.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct MilestoneContractMatrix {
+    /// Milestone that owns all entries.
+    pub milestone_id: String,
+    /// Directed relationships between task contracts.
+    pub entries: Vec<MilestoneContractEntry>,
+}
+
+/// Stable machine-readable ACDD diagnostic codes shared by AC-001 subsystems.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum AcddErrorCode {
+    /// A manifest task dependency is missing from the synthesized matrix.
+    ContractMatrixMismatch,
+    /// An upstream task's admitted dependency contract changed.
+    DependencyMutated,
+    /// A required Forge subsystem is unavailable.
+    FeatureDisabled,
+    /// A profile requires a Forge subsystem that is unavailable.
+    FeatureRequiredByProfile,
+    /// A workflow gate has invalid or conflicting driver fields.
+    GateInvalidConfiguration,
+    /// The milestone task dependency graph contains a cycle.
+    MilestoneDagCycle,
+    /// Milestone initialization failed preflight validation.
+    MilestonePreflightFailed,
+    /// The task tree differs from the immutable build candidate.
+    TaskCandidateMismatch,
+    /// A task changed a path outside its admitted scope.
+    TaskCandidateOutOfScope,
+    /// A task scope is malformed or escapes its declared roots.
+    TaskScopeInvalid,
+    /// A protected path was added to a task scope.
+    TaskScopeProtected,
+    /// No current test-to-production path proves the admitted seam.
+    TaskSeamDisconnected,
+    /// Indexed evidence is stale because the source changed.
+    TaskSeamStale,
+    /// A public symbol change was not admitted by the contract gate.
+    UnadmittedSymbolExpansion,
+}
+
+impl AcddErrorCode {
+    /// Return the stable diagnostic identifier used in CLI and MCP output.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ContractMatrixMismatch => "CONTRACT_MATRIX_MISMATCH",
+            Self::DependencyMutated => "DEPENDENCY_MUTATED",
+            Self::FeatureDisabled => "FEATURE_DISABLED",
+            Self::FeatureRequiredByProfile => "FEATURE_REQUIRED_BY_PROFILE",
+            Self::GateInvalidConfiguration => "GATE_INVALID_CONFIGURATION",
+            Self::MilestoneDagCycle => "MILESTONE_DAG_CYCLE",
+            Self::MilestonePreflightFailed => "MILESTONE_PREFLIGHT_FAILED",
+            Self::TaskCandidateMismatch => "TASK_CANDIDATE_MISMATCH",
+            Self::TaskCandidateOutOfScope => "TASK_CANDIDATE_OUT_OF_SCOPE",
+            Self::TaskScopeInvalid => "TASK_SCOPE_INVALID",
+            Self::TaskScopeProtected => "TASK_SCOPE_PROTECTED",
+            Self::TaskSeamDisconnected => "TASK_SEAM_DISCONNECTED",
+            Self::TaskSeamStale => "TASK_SEAM_STALE",
+            Self::UnadmittedSymbolExpansion => "UNADMITTED_SYMBOL_EXPANSION",
+        }
+    }
+}
+
+/// Typed ACDD failure carrying a stable code and a human-readable explanation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AcddError {
+    /// Machine-readable failure category.
+    pub code: AcddErrorCode,
+    /// Context-specific explanation.
+    pub message: String,
+}
+
+impl AcddError {
+    /// Create a coded ACDD error.
+    pub fn new(code: AcddErrorCode, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for AcddError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}: {}", self.code.as_str(), self.message)
+    }
+}
+
+impl std::error::Error for AcddError {}
+
 /// Format the agent-facing command for inspecting a candidate snapshot.
 /// Durable evidence and receipts retain the full commit ID.
 pub fn snapshot_inspect_cmd(commit: &str) -> String {
@@ -937,7 +1073,11 @@ impl Milestone {
                 return Ok(());
             }
             if !active.insert(id) {
-                bail!("cyclic task dependencies");
+                return Err(AcddError::new(
+                    AcddErrorCode::MilestoneDagCycle,
+                    "task dependency graph contains a cycle",
+                )
+                .into());
             }
             if let Some(task) = tasks.iter().find(|t| t.task_ref == id) {
                 for dep in &task.depends_on {

@@ -459,7 +459,36 @@ To avoid circular dependencies, type drift between parallel builder sessions, an
    - **Wave 2 (Engine & Runner)**: Zero-argument transition runner, automated synthesis gate, and Seam Engine Red-to-Green verifier (`src/engine/`).
    - **Wave 3 (Runtime, Consumers & Tooling)**: Downstream consumers, transition runner, in-place execution runner, atomic scope extension, and CLI commands (`src/cli/`).
 
-3. **Disjoint Scope Boundaries & Speculative Stacked Execution**:
+3. **Task 0 Contract Matrix, Deterministic Waves & Scope Freeze**:
+   - Contract rows point from provider to consumer. A local task dependency from consumer to provider requires a seam_dependency matrix row with the reverse, provider-to-consumer direction.
+   - The shared core models are ContractType (shared_helper, seam_dependency, shared_type), ContractStatus (synthesized, verified), MilestoneContractEntry, [MilestoneContractMatrix](../../../src/core/tasks/mod.rs#L61), [AcddErrorCode](../../../src/core/tasks/mod.rs#L71), and AcddError. Each entry uses the milestone_contract_matrix columns, requires a non-empty contract_ref and positive revision, and is unique by milestone_id, source_task, target_task, and contract_ref.
+   - Task 2 exposes TasksStore::replace_contract_matrix for an atomic full-matrix replacement and TasksStore::list_contract_matrix for deterministic reads ordered by source_task, target_task, and contract_ref.
+   - [verify_contract_matrix_parity](../../../src/engine/milestones/mod.rs#L32) fails closed with CONTRACT_MATRIX_MISMATCH when the matrix belongs to a different milestone, references unknown tasks, repeats a row key, contains an empty reference or non-positive revision, or omits a local manifest dependency. Extra shared_helper and shared_type entries are allowed.
+   - AC-001 uses these deterministic topological waves; milestone task order breaks ties: Wave 0, Task 0; Wave 1, Tasks 1 and 2; Wave 2, Tasks 3 and 4; Wave 3, Tasks 5 and 6. The manifest depends_on graph remains the execution authority.
+   - Same-wave scopes are disjoint: Task 1 owns core/profile/CLI/MCP/engine schema work and gates_ast.rs while Task 2 owns src/db/tasks_store/ and persistence.rs; Task 3 owns transition/command-runner work and runner.rs while Task 4 owns synthesis/milestone work and synthesis.rs; Task 5 owns claim/container and reader work with seam_reachability.rs while Task 6 owns scope-sync, handoff, CLI/MCP and governance files with scope_sync.rs. Cross-wave path reuse is serialized by dependencies.
+
+4. **Shared Error Taxonomy**:
+   AC-001 uses one stable, machine-readable diagnostic set in core, the future profile, and operator-facing errors. AcddErrorCode::as_str() defines the canonical spelling; profile keys must match exactly.
+   - GateProfile.error_codes is the profile representation. It must contain the same identifiers as AcddErrorCode and reject unknown identifiers during profile validation.
+
+   | Code | Meaning |
+   | :--- | :--- |
+   | CONTRACT_MATRIX_MISMATCH | A dependency or matrix entry does not match the milestone contract. |
+   | DEPENDENCY_MUTATED | An upstream dependency changed after the task contract was admitted. |
+   | FEATURE_DISABLED | A requested Forge subsystem is disabled. |
+   | FEATURE_REQUIRED_BY_PROFILE | The active profile requires a disabled subsystem. |
+   | GATE_INVALID_CONFIGURATION | A gate has missing, conflicting, or invalid driver fields. |
+   | MILESTONE_DAG_CYCLE | The task dependency graph contains a cycle. |
+   | MILESTONE_PREFLIGHT_FAILED | Manifest, skill, repository, or worktree preflight failed. |
+   | TASK_CANDIDATE_MISMATCH | The delivery tree differs from the reviewed immutable candidate. |
+   | TASK_CANDIDATE_OUT_OF_SCOPE | The task candidate changes a path outside admitted scope. |
+   | TASK_SCOPE_INVALID | A scope path is malformed or outside declared roots. |
+   | TASK_SCOPE_PROTECTED | A protected path cannot be added to task scope. |
+   | TASK_SEAM_DISCONNECTED | No current, proven test-to-production path reaches the target. |
+   | TASK_SEAM_STALE | Source drift invalidated indexed seam evidence; refresh the index. |
+   | UNADMITTED_SYMBOL_EXPANSION | A public symbol change was not admitted at the contract gate. |
+
+5. **Disjoint Scope Boundaries & Speculative Stacked Execution**:
    - **Disjoint Scope Foundation**: Parallel tasks within the same wave (e.g. Task 1 in `src/core/` and Task 2 in `src/db/`) are guaranteed by the Architect to have disjoint file paths, eliminating git merge conflicts across parallel builder sessions.
    - **Speculative Concurrency (`mode: speculative`, `sync_on: snapshot`)**:
      Dependent tasks across waves (or even within a wave) do NOT have to wait for upstream tasks to reach terminal `deliver`. When declared with `mode: speculative`:
