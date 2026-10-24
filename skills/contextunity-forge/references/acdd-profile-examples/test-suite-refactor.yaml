@@ -1,0 +1,139 @@
+# =============================================================================
+# HIERARCHICAL ACDD PROFILE: Test Suite Refactor Workflow
+#
+# Aligned with: `test-suite-refactor` skill & `test-contract-seam`
+# Goal: Split, type, consolidate, or remove tests in an existing suite
+#       WITHOUT weakening production-path coverage or losing observable dimensions.
+# =============================================================================
+
+version: 2
+
+# =============================================================================
+# 1. ROLES CATALOG (`roles`)
+# =============================================================================
+roles:
+  test_architect:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:xhigh'
+      - 'claude-opus-5.5'
+
+  refactorer:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:medium'
+      - 'claude-opus-5.5'
+
+  coverage_auditor:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:xhigh'
+
+# =============================================================================
+# 2. COMMANDS CATALOG (`commands`)
+# =============================================================================
+commands:
+  freeze_baseline_inventory:
+    command: "pytest --collect-only -q {scope_target} > .forge/baseline_test_inventory.txt 2>&1 || cargo test --test {scope_target} -- --list > .forge/baseline_test_inventory.txt"
+    timeout_seconds: 30
+
+  verify_scoped_refactor:
+    command: "pytest -v {scope_target} || cargo test --test {scope_target} -- --nocapture"
+    timeout_seconds: 120
+
+  verify_suite_parity_and_linter:
+    command: "ruff check {scope_target} && basedpyright {scope_target} || cargo clippy --test {scope_target} -- -D warnings"
+    timeout_seconds: 90
+
+  verify_full_test_harness:
+    command: "pytest tests/ || cargo test --all-targets"
+    timeout_seconds: 600
+
+# =============================================================================
+# 3. GUIDANCE CATALOG (`guidance`)
+# =============================================================================
+guidance:
+  refactor.inventory: >
+    Freeze collect-only unique test baseline (path::class_or_module::name).
+    Map production owners and call reachability: test state -> ingress -> normalized type -> persistence -> consumer.
+    Identify duplicates, weak mock-asserts, and monolithic fixtures before editing.
+
+  refactor.consolidate: >
+    Replace weak duplicate tests with parameterized table fixtures.
+    Decompose monolithic test files along domain and behavioral boundaries.
+    Ensure every remaining test has explicit type hints and typed fixtures.
+
+  contour.coverage_invariants: >
+    Verify that NO production observable dimension was removed.
+    Confirm that test count reductions correspond strictly to subsumed duplicate cases.
+    Ensure zero weakening of production branch or edge-case coverage.
+
+  contour.purity: >
+    Verify tests exercise real collaborating domain components rather than synthetic stubs.
+    Ensure mocks do not mock the unit under test or leak across test boundaries.
+
+# =============================================================================
+# 4. POLICIES CATALOG (`policies`)
+# =============================================================================
+policies:
+  strict_audit:
+    independent_worker: true
+    require_all_contours: true
+    enforce_baseline_parity: true
+
+# =============================================================================
+# 5. HIERARCHICAL GATES PIPELINE (`gates`)
+# =============================================================================
+gates:
+  - tasks:
+      gates:
+      # Step 1: Inventory & Classification Baseline (Agent Gate)
+      - id: inventory
+        role: test_architect
+        guidance: [refactor.inventory]
+        command: freeze_baseline_inventory
+        proof: contract
+
+      # Step 2: Test De-duplication & Typing Cycle
+      - id: refactor_cycle
+        gates:
+          - id: consolidate_and_type
+            role: refactorer
+            guidance: [refactor.consolidate]
+            proof: none
+
+          # Command Gate: Verify all refactored tests compile and pass green (0 tokens)
+          - id: verify_green_tests
+            command: verify_scoped_refactor
+            reject_to: consolidate_and_type
+
+          # Command Gate: Verify strict typing and linter standards (0 tokens)
+          - id: verify_typing
+            command: verify_suite_parity_and_linter
+            reject_to: consolidate_and_type
+
+      # Step 3: Independent Coverage Preservation Audit
+      - id: coverage_audit
+        role: coverage_auditor
+        guidance:
+          - contour.coverage_invariants
+          - contour.purity
+          - contour.paths
+        policy: strict_audit
+        proof: review
+        reject_to: refactor_cycle
+
+      # Step 4: Atomic Delivery
+      - id: deliver
+        role: coverage_auditor
+        policy: default_delivery
+        proof: delivery
+        reject_to: refactor_cycle
+
+  # Autonomous Full Repository Sanity Verification
+  - id: full_suite_verify
+    command: verify_full_test_harness
+    reject_to: refactor_tasks

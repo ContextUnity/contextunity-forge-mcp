@@ -1,0 +1,92 @@
+---
+id: m-commerce-checkout-redesign
+title: "Commerce Checkout Redesign & Multi-Service Integration"
+doc_type: contract
+status: active
+depends_on:
+  - m-commerce-auth-v2
+owners:
+  - backend/src/checkout/
+  - frontend/src/views/checkout/
+  - tests/e2e/checkout/
+invariants:
+  - 'INV-ZERO-DOWNTIME-MIGRATION: All database schema modifications must be additive and non-breaking.'
+  - 'INV-N-PLUS-ONE-GUARD: Checkout order summary endpoints must execute <= 6 database queries.'
+  - 'INV-E2E-BROWSER-VERIFIED: The entire cart-to-order flow must pass headless Playwright verification before delivery.'
+
+# =============================================================================
+# EXPLICIT REQUIRED SKILLS DECLARATION
+#
+# Validated upfront during `workflow init` / `milestone admit`:
+# 1. Forge checks that all named skills are installed on the host before any agent launches.
+# 2. `workflow_guidance.active_skills` returns the whitelist of admitted skill names.
+# =============================================================================
+required_skills:
+  - contextunity-forge       # Core symbol discovery, AST grep, impact analysis, and ACDD lifecycle
+  - django-gridviewspec      # Django ORM patterns, HTMX attributes, and GridViewSpec conventions
+  - playwright               # Browser testing, headless navigation, and DOM state assertions
+  - test-suite-refactor      # Strict test inventory rules and zero-coverage-loss refactoring
+
+# =============================================================================
+# MULTI-REPOSITORY METADATA DECLARATION
+#
+# Declares participant repositories. `workflow init` verifies their paths,
+# validates base branches, and automatically scaffolds base worktrees upfront.
+# =============================================================================
+repositories:
+  - name: backend
+    path: backend
+    role: "Core Django API & ORM"
+  - name: frontend
+    path: frontend
+    role: "HTMX & Alpine UI Components"
+  - name: e2e
+    path: tests/e2e
+    role: "Playwright Integration Tests"
+---
+
+# Commerce Checkout Redesign & Multi-Service Integration
+
+## Outcome and purpose
+
+Deliver a high-conversion, resilient checkout flow powered by Django SSR + HTMX with Playwright e2e validation.
+
+---
+
+## Tasks in this milestone
+
+### task: backend-order-checkout-api
+
+```yaml
+task_ref: backend-order-checkout-api
+target: "Implement idempotent order creation, stock reservation, and tax calculation endpoints in Django"
+proof_policy: seam-test-first
+contract_revision: 1
+scope:
+  - backend/src/checkout/services.py
+  - backend/src/checkout/views.py
+  - backend/tests/test_checkout_api.py
+status: ready
+subtasks:
+  - subtask_ref: stock-reservation-seam-test
+  - subtask_ref: idempotent-order-creation
+  - subtask_ref: tax-calculation-service
+```
+
+### task: frontend-htmx-checkout-island
+
+```yaml
+task_ref: frontend-htmx-checkout-island
+target: "Implement reactive checkout Island component with client validation and HTMX partial swaps"
+proof_policy: seam-test-first
+contract_revision: 1
+scope:
+  - frontend/src/views/checkout/island.html
+  - frontend/src/views/checkout/payment_form.html
+  - tests/e2e/checkout/test_checkout_flow.py
+status: ready
+subtasks:
+  - subtask_ref: payment-form-swap-markup
+  - subtask_ref: client-side-field-validation
+  - subtask_ref: playwright-e2e-checkout-proof
+```

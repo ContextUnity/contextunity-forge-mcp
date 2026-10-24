@@ -1,0 +1,165 @@
+# =============================================================================
+# HIERARCHICAL ACDD PROFILE: Full-stack Commerce (Django + Playwright MCP)
+#
+# Stack:
+# - Backend: Python / Django (ORM, HTMX/SSR, REST/Ninja, Celery)
+# - Tooling: Ruff (linter/formatter), Basedpyright (types), Pytest-Django
+# - End-to-End: Playwright MCP / Headless browser tests
+# - Governance: Two-tier scope, automated N+1 query audit, migration safety
+# =============================================================================
+
+version: 2
+
+# =============================================================================
+# 1. ROLES CATALOG (`roles`)
+# =============================================================================
+roles:
+  architect:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:xhigh'
+      - 'claude-opus-5.5'
+
+  builder:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:medium'
+      - 'claude-opus-5.5'
+
+  e2e_specialist:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:xhigh'
+      - 'claude-opus-5.5'
+
+  reviewer:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:xhigh'
+
+# =============================================================================
+# 2. COMMANDS CATALOG (`commands`)
+# =============================================================================
+commands:
+  check_task_backend:
+    command: "ruff check {scope_target} && basedpyright {scope_target} && pytest -q {scope_target}"
+    timeout_seconds: 60
+
+  check_migration_safety:
+    command: "python manage.py makemigrations --check --dry-run"
+    timeout_seconds: 30
+
+  run_playwright_seam:
+    command: "pytest tests/e2e/ -k {seam_target} --browser chromium --headless"
+    timeout_seconds: 120
+
+  check_full_repo:
+    command: "ruff check . && basedpyright && python manage.py makemigrations --check --dry-run && pytest tests/unit tests/integration && pytest tests/e2e -q --browser chromium --headless"
+    timeout_seconds: 600
+
+# =============================================================================
+# 3. GUIDANCE CATALOG (`guidance`)
+# =============================================================================
+guidance:
+  commerce.contract: >
+    Analyze Django models, ORM queries, and API/template interfaces.
+    For existing commerce flows, extend pytest-django integration fixtures.
+    Ensure initial seam test fails with AssertionError (exit code 1).
+    Verify that target migrations and schema changes are planned without breaking reverse compatibility.
+
+  commerce.code: >
+    Implement minimal Django views, models, or HTMX components.
+    Prevent N+1 query regressions with select_related / prefetch_related.
+    Stay strictly within admitted task.scope.
+
+  commerce.e2e: >
+    Author or execute Playwright MCP browser interaction flow.
+    Verify DOM state transitions, cart/checkout mutations, and HTMX swap responses.
+
+  contour.django_safety: >
+    Verify migration safety (no non-nullable fields added without defaults),
+    CSRF token presence on mutation endpoints, and absence of raw unescaped SQL.
+
+  contour.query_efficiency: >
+    Audit django.db.connection.queries count in integration test assertions
+    to prevent performance regressions on cart, catalog, and order endpoints.
+
+# =============================================================================
+# 4. POLICIES CATALOG (`policies`)
+# =============================================================================
+policies:
+  default_review:
+    independent_worker: true
+    require_all_contours: true
+    audit_extended_scope: true
+
+  default_delivery:
+    auto_commit: true
+    enforce_clean_worktree: true
+
+# =============================================================================
+# 5. HIERARCHICAL GATES PIPELINE (`gates`)
+# =============================================================================
+gates:
+  # Declarative task lifecycle
+  - tasks:
+      gates:
+      # Step 1: Architectural & Seam Contract
+      - id: contract
+        role: architect
+        guidance: [commerce.contract]
+        proof: contract
+
+      # Step 2: Implementation & Code Verification
+      - id: implement
+        gates:
+          - id: code
+            role: builder
+            guidance: [commerce.code]
+            proof: none
+
+          # Command Gate: Fast Static & Unit Verification (0 tokens)
+          - id: verify_backend
+            command: check_task_backend
+            reject_to: code
+
+          # Command Gate: Schema / Migration Divergence Check (0 tokens)
+          - id: verify_migrations
+            command: check_migration_safety
+            reject_to: code
+
+      # Step 3: End-to-End Browser / Playwright Verification
+      - id: e2e_validation
+        role: e2e_specialist
+        guidance: [commerce.e2e]
+        command: run_playwright_seam
+        proof: contract
+        reject_to: implement
+
+      # Step 4: Cognitive Review
+      - id: review
+        role: reviewer
+        guidance:
+          - contour.django_safety
+          - contour.query_efficiency
+          - contour.paths
+          - contour.claims
+        policy: default_review
+        proof: review
+        reject_to: implement
+
+      # Step 5: Delivery
+      - id: deliver
+        role: reviewer
+        policy: default_delivery
+        proof: delivery
+        reject_to: implement
+
+  # Autonomous Full-Stack Pre-Handoff Verification (0 LLM Tokens)
+  - id: full_repo_verify
+    command: check_full_repo
+    reject_to: tasks_delivery

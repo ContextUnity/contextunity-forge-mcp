@@ -1,0 +1,195 @@
+# =============================================================================
+# HIERARCHICAL ACDD PROFILE: Legacy Plans & Tasks to Milestone DAG Migration
+#
+# Aligned with: `planner`, `agent-instructions`, and `contextunity-forge` skills
+# Goal: Ingest legacy, unstructured design plans (`docs/plans/*.md`) and ad-hoc
+#       tasks, refactoring them into a strictly ordered, validated DAG of formal
+#       ACDD milestone contracts in `docs/milestones/`.
+# =============================================================================
+
+version: 2
+
+# =============================================================================
+# 1. ROLES CATALOG (`roles`)
+# =============================================================================
+roles:
+  portfolio_architect:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'claude-opus-5.5'
+      - 'gpt-6.1-sol:xhigh'
+
+  milestone_specifier:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'claude-opus-5.5'
+      - 'gpt-6.1-sol:medium'
+
+  governance_auditor:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'claude-opus-5.5'
+      - 'gpt-6.1-sol:xhigh'
+
+# =============================================================================
+# 2. COMMANDS CATALOG (`commands`)
+# =============================================================================
+commands:
+  validate_manifest_syntax:
+    # Validates YAML frontmatter, schema types, and task definitions in docs/milestones/
+    command: "test -d docs/milestones && find docs/milestones -name \"*.md\" | xargs grep -l '^doc_type: contract' > /dev/null"
+    timeout_seconds: 30
+
+  verify_dag_acyclicity:
+    # Autonomous python check confirming depends_on references form a valid acyclic graph
+    command: >
+      python3 -c '
+      import glob, re, sys
+      deps = {}
+      for f in glob.glob("docs/milestones/*.md"):
+          content = open(f).read()
+          m_id = re.search(r"^id:\s*(m-[a-z0-9-]+)", content, re.M)
+          if not m_id: continue
+          mid = m_id.group(1)
+          raw_deps = re.findall(r"-\s+(m-[a-z0-9-]+)", content.split("---")[1] if "---" in content else "")
+          deps[mid] = raw_deps
+      # Cycle detection
+      visited, rec_stack = set(), set()
+      def is_cyclic(node):
+          visited.add(node); rec_stack.add(node)
+          for neighbor in deps.get(node, []):
+              if neighbor not in visited and is_cyclic(neighbor): return True
+              elif neighbor in rec_stack: return True
+          rec_stack.remove(node)
+          return False
+      for m in deps:
+          if m not in visited and is_cyclic(m):
+              print(f"Cycle detected involving {m}"); sys.exit(1)
+      print("Milestone dependency DAG verified: 0 cycles detected.")
+      '
+    timeout_seconds: 30
+
+  guard_source_code_untouched:
+    # Planning workflows must never modify production source code or test harnesses
+    command: "! git diff --name-only | grep -E '^(src/|tests/|crates/|app/|lib/)'"
+    timeout_seconds: 15
+
+  verify_plan_admission_traceability:
+    # Confirms that migrated plans in docs/plans/ have status: admitted and link to their milestones
+    command: "grep -l 'status: admitted' docs/plans/*.md > /dev/null 2>&1 || true"
+    timeout_seconds: 15
+
+# =============================================================================
+# 3. POLICIES CATALOG (`policies`)
+# =============================================================================
+policies:
+  migration_review_policy:
+    independent_worker: true
+    require_all_contours: true
+    audit_extended_scope: true
+    enforce_dag_acyclicity: true
+    enforce_zero_code_tampering: true
+    enforce_schema_validity: true
+
+  migration_delivery_policy:
+    auto_commit: true
+    enforce_clean_worktree: true
+
+# =============================================================================
+# 4. GUIDANCE CATALOG (`guidance`)
+# =============================================================================
+guidance:
+  migration.synthesize_dag: >
+    Audit existing legacy documents in `docs/plans/*.md` and backlog task notes.
+    Decompose monolithic proposals into cohesive milestone deliverables.
+    Map architectural predecessors and consumers into explicit `depends_on` relationships.
+    Ensure zero orphaned steps: every requirement in the plan must map to a milestone task.
+
+  migration.draft_milestones: >
+    Generate standard ACDD milestone contracts in `docs/milestones/0XX-<slug>.md`.
+    Populate frontmatter: `id: m-<slug>`, `title`, `doc_type: contract`, `status: planned`,
+    `owners: [...]`, `invariants: [...]`, and `required_skills: [...]`.
+    Decompose deliverables into atomic tasks with explicit `scope: [...]`, `proof_policy: seam-test-first`,
+    and concrete subtasks.
+    Update legacy plans in `docs/plans/` to `status: admitted` and reference the admitting milestone.
+
+  contour.dag_topology: >
+    Verify that all `depends_on` milestone IDs exist, have valid naming prefixes (`m-...`),
+    and form a strictly acyclic directed graph (DAG).
+
+  contour.invariant_completeness: >
+    Verify that each generated milestone defines testable, non-trivial invariants (`INV-*`)
+    protecting architectural boundaries and failure modes.
+
+  contour.task_scope_atomicity: >
+    Verify that tasks have disjoint, bounded `scope: [...]` paths and no task spans more than
+    one public production seam.
+
+  contour.no_code_tampering: >
+    Verify that the git diff contains zero edits to implementation code, libraries, or test suites.
+
+# =============================================================================
+# 5. GATES DEFINITION (`gates`)
+# =============================================================================
+gates:
+  # ---------------------------------------------------------------------------
+  # Gate 1: Portfolio DAG Architecture & Decomposition (Agent)
+  # ---------------------------------------------------------------------------
+  contract:
+    role: portfolio_architect
+    proof: contract
+    guidance:
+      - migration.synthesize_dag
+    timeout_seconds: 900
+
+  # ---------------------------------------------------------------------------
+  # Gate 2: Implementation Container Gate (Manifest Authoring + Automated Guards)
+  # ---------------------------------------------------------------------------
+  implement:
+    gates:
+      # Step 2a: Draft formal milestone contracts and reconcile legacy plans
+      author_manifests:
+        role: milestone_specifier
+        guidance:
+          - migration.draft_milestones
+        timeout_seconds: 1500
+
+      # Step 2b: Guard that no source code files were edited
+      guard_code_untouched:
+        command: guard_source_code_untouched
+        reject_to: author_manifests
+
+      # Step 2c: Validate YAML frontmatter and milestone schema syntax
+      check_manifest_syntax:
+        command: validate_manifest_syntax
+        reject_to: author_manifests
+
+      # Step 2d: Validate global DAG acyclicity across all milestone dependencies
+      check_dag_acyclicity:
+        command: verify_dag_acyclicity
+        reject_to: author_manifests
+
+  # ---------------------------------------------------------------------------
+  # Gate 3: Governance & Invariant Review (Independent Agent)
+  # ---------------------------------------------------------------------------
+  review:
+    role: governance_auditor
+    policy: migration_review_policy
+    proof: review
+    guidance:
+      - contour.dag_topology
+      - contour.invariant_completeness
+      - contour.task_scope_atomicity
+      - contour.no_code_tampering
+    reject_to: implement.author_manifests
+    timeout_seconds: 600
+
+  # ---------------------------------------------------------------------------
+  # Gate 4: Autonomous Delivery (Zero-Token Commit)
+  # ---------------------------------------------------------------------------
+  deliver:
+    policy: migration_delivery_policy
+    proof: delivery

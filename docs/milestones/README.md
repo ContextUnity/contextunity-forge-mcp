@@ -42,3 +42,66 @@ Archived milestones with 3-digit pure numbers (`010`–`056`) represent the foun
 - `050`–`056` $\to$ Phase 0 predecessors of **`UX`** (`Agent Ergonomics & MCP`).
 
 Active commitments migrate to the `TAG-NNN` standard; archived milestone files and receipts remain untouched in [archive/](archive/README.md) to preserve historical commit and receipt integrity.
+
+---
+
+## Milestone Authoring and Contract Governance
+
+Every milestone document in `docs/milestones/` is an immutable ACDD execution contract. When authoring or revising milestones, follow the instructions in [`docs/milestones/AGENTS.md`](AGENTS.md) (and [`docs/future/milestones/AGENTS.md`](../future/milestones/AGENTS.md) for target v2 capabilities):
+
+### 1. Frontmatter Format
+
+```yaml
+---
+id: AC-001-hierarchical-acdd-gates-and-milestone-orchestration
+title: Hierarchical ACDD gates, modular catalogs, and milestone orchestration
+doc_type: contract
+status: planned
+depends_on: []
+owners:
+  - src/core/tasks/
+  - src/engine/tasks/
+invariants:
+  - 'INV-...: Explicit invariant statements'
+required_skills:
+  - contextunity-forge
+---
+```
+
+Frontmatter must strictly declare only fields supported by the active engine parser (`id`, `title`, `doc_type`, `status`, `depends_on`, `owners`, `invariants`, `required_skills`, `related_plans`). Unknown fields must not be introduced into active manifests. Target v2 features such as `guidance:` slot binding are specified in [`docs/future/milestones/AGENTS.md`](../future/milestones/AGENTS.md) and enabled upon landing milestone `AC-001`.
+
+### 2. Task Blocks and Scope Boundaries
+
+Every YAML task block in `## Tasks in this milestone` must explicitly define physical file boundaries and dependencies forming topological waves:
+
+```yaml
+### task: sqlite-gate-transitions-and-trace-persistence
+
+```yaml
+task_ref: sqlite-gate-transitions-and-trace-persistence
+target: "Implement SQLite schema migrations for gate_transitions and gate_execution_traces"
+proof_policy: seam-test-first
+contract_revision: 1
+depends_on:
+  - upfront-contract-synthesis-and-dag-prioritization
+scope:
+  - src/db/tasks_store/schema.rs
+  - src/db/tasks_store/trace.rs
+status: planned
+subtasks:
+  - subtask_ref: gate-transitions-table-migration
+    title: "Implement SQLite migration and store APIs for durable gate_transitions audit table"
+  - subtask_ref: gate-execution-trace-table-migration
+    title: "Implement SQLite migration for gate_execution_traces with 2 KiB output snippets"
+```
+```
+
+- **`depends_on:` (Topological Waves)**: Waves are purely determined by the dependency DAG `depends_on: [...]`. Tasks without dependencies run in Wave 0; tasks depending solely on Task 0 run concurrently in Wave 1.
+- **`scope:` (Files)**: Physical files mutable by the builder. The builder can extend file boundaries via `task extend-scope` (checked for sibling locks and protected paths).
+- **Target Interface Boundaries & Symbols Confinement**: In the current runtime (`v0.3.x`), interface fidelity is governed through contract seam tests and cognitive review. Declarative `symbols:` validation and universal format (`kind:identifier`) are target v2 capabilities specified in [`docs/future/milestones/AGENTS.md`](../future/milestones/AGENTS.md).
+
+### 3. Review & Verification Governance
+
+- **Current Runtime (`v0.3.x`)**: Progression follows the linear gate sequence `contract` $\to$ `build` $\to$ `review` $\to$ `deliver`. Review defects route back to the builder via `task reject`. Unexpected interface shifts escalate to human operators via structured A/B Decision Cards on `task_blackboard`.
+- **Target v2 Two-Loop Governance**: Declarative `reject_routing: { scope: build, symbols: contract }`, automated synthesis, and 4-tier HITL governance are specified in [`docs/future/milestones/AGENTS.md`](../future/milestones/AGENTS.md) and enabled upon landing milestone `AC-001`.
+

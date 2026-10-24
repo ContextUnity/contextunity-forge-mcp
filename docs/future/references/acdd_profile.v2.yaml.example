@@ -47,6 +47,14 @@
 version: 2
 
 # =============================================================================
+# DEFAULT GUIDANCE SLOTS
+# Gates declare parameterized slots (e.g. hitl); milestone frontmatter binds
+# them (e.g. guidance: { hitl: hitl.pro }). If unbound, profile defaults apply.
+# =============================================================================
+guidance_slots:
+  hitl: hitl.pro
+
+# =============================================================================
 # 0. GIT COMMIT NOTE & RESOURCE BUDGETS
 # =============================================================================
 git_commit_note:
@@ -67,10 +75,72 @@ git_commit_note:
 
 limits:
   max_metadata_bytes: 2048       # 2 KiB hard payload limit for arbitrary task/gate metadata & metrics
-  max_trace_summary_bytes: 4096  # Tail output size for gate_execution_traces snippet in SQLite
+  max_trace_summary_bytes: 2048  # Tail output size for gate_execution_traces snippet in SQLite (INV-PAYLOAD-OVERFLOW-GUARD)
 
 # =============================================================================
-# 1. ROLES CATALOG (`roles`)
+# 1. PROOFS CATALOG (`proofs`)
+# Declarative proof schemas. The engine collects runtime evidence envelopes
+# into SQLite (traces, test lists, diffs) and compiles zero-argument proofs.
+# =============================================================================
+proofs:
+  contract:
+    description: "Proof of runtime assertion failure (exit 101/1/134) proving red seam baseline"
+    schema:
+      type: object
+      required: [exit_code, stderr]
+      properties:
+        exit_code: { type: integer }
+        stderr: { type: string }
+        contract_test_ref: { type: string }
+
+  command:
+    description: "Autonomous command execution proof (exit code 0, passed linters/tests)"
+    schema:
+      type: object
+      required: [exit_code]
+      properties:
+        exit_code: { type: integer, const: 0 }
+        tests_passed: { type: integer }
+        tests_failed: { type: integer, const: 0 }
+
+  review:
+    description: "Independent cognitive review sign-off across focus lenses"
+    schema:
+      type: object
+      required: [verdict, reviewer, contours_reviewed]
+      properties:
+        verdict: { type: string, enum: ["approved", "rejected"] }
+        reviewer: { type: string }
+        contours_reviewed: { type: array, items: { type: string } }
+        extended_scope_review:
+          type: object
+          properties:
+            approved_paths: { type: array, items: { type: string } }
+            reason_verified: { type: boolean }
+        notes: { type: string }
+
+  seam_test:
+    description: "Joint seam integration proof verifying all referenced cross-task tests passed"
+    schema:
+      type: object
+      required: [exit_code, seam_test_refs]
+      properties:
+        exit_code: { type: integer, const: 0 }
+        seam_test_refs: { type: array, items: { type: string } }
+        tests_passed: { type: integer }
+        tests_failed: { type: integer, const: 0 }
+
+  delivery:
+    description: "Autonomous delivery receipt and atomic Git commit proof"
+    schema:
+      type: object
+      required: [commit_sha, receipt_id]
+      properties:
+        commit_sha: { type: string }
+        receipt_id: { type: string }
+
+# =============================================================================
+# 2. ROLES CATALOG (`roles`)
 # =============================================================================
 roles:
   architect:
@@ -115,8 +185,18 @@ commands:
     timeout_seconds: 60
 
   check_full_repo:
-    command: "cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets"
+    by_pattern:
+      "**/*.py": "pytest"
+      "**/*.{ts,tsx,vue}": "npm test"
+      "**/*.rs": "cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets"
     timeout_seconds: 600
+
+  verify_migration:
+    # Verifies database migrations and rollback safety (e.g. Django in traverse-commerce or SQLite in forge)
+    by_pattern:
+      "**/migrations/*.py": "python manage.py makemigrations --check --dry-run && pytest tests/test_migrations.py"
+      "src/db/tasks_store/migrations/**": "cargo test --test acdd tasks::task_store_migration"
+    timeout_seconds: 60
 
   benchmark:
     # Language-agnostic benchmark command emitting structured metrics
@@ -124,7 +204,6 @@ commands:
       "**/*.py": "pytest benchmarks/ --benchmark-json"
       "**/*.{ts,tsx}": "npm run bench -- --json"
       "**/*.rs": "cargo bench -- --output-format bencher"
-      "**/*": "./scripts/benchmark.sh"
     timeout_seconds: 120
 
 # =============================================================================
@@ -140,11 +219,78 @@ guidance:
 
   task.contract: >
     Define production-seam test for this task. Ensure additive seam evolution by
-    strengthening existing test fixtures. Verify runtime-red assertion failure (exit 101).
+    strengthening existing test fixtures. Verify runtime-red assertion failure matching
+    configured expected_failure.exit_codes rather than compilation or syntax errors.
 
   task.code: >
     Implement minimal production code to satisfy accepted seam test.
     Stay strictly within admitted task.scope (or approved task.extended_scope).
+
+  task.deferred_final_test: >
+    Load the `test-suite-refactor` skill to audit test reachability, replace temporary mocks
+    with real production callers, and eliminate duplicate stubs accumulated during isolated
+    worktree runs without weakening coverage. Load `test-contract-seam` to preserve settled
+    invariants. Run the registered verification command and submit passing SeamTest proof (exit code 0).
+
+  task.seam_review: >
+    Independently review the reconciled seam changes across interdependent tasks.
+    Verify that temporary stubs were safely eliminated without dropping test assertions,
+    and that no regressions or scope leaks were introduced during seam integration.
+
+  task.db_migration: >
+    Verify database schema migrations and rollback safety. Ensure zero unmigrated model changes,
+    no destructive data loss on schema transitions, and passing rollback tests.
+
+  task.public_api: >
+    Public API signatures, tool inputs, or exports were modified. Prompt agent to increment
+    the repository SemVer version in the project manifest and document changes in release notes.
+
+  # ===========================================================================
+  # HITL ESCALATION CATALOG (Bound to 'hitl' guidance slot in milestone manifest)
+  # ===========================================================================
+  hitl.careless: >
+    HITL GOVERNANCE LEVEL: CARELESS (Maximum Agent Autonomy).
+    1. Scope & Symbols Autonomy: The Architect has 100% autonomous authority to admit,
+       rename, split, or create new structs, traits, helper methods, and database columns.
+    2. Zero Human Escalation: Escalation to human operators is strictly prohibited for
+       interface, schema, or API changes.
+    3. Escalation Exceptions: Escalate to human ONLY in unrecoverable infrastructure deadlocks:
+       circular cross-task DAG blockers or fatal unrecoverable environment crashes.
+    4. Arbitration Loop: On reviewer rejection, synthesize extended_symbols, increment
+       contract_revision, produce Red Seam Test, and immediately dispatch back to builder.
+
+  hitl.curious: >
+    HITL GOVERNANCE LEVEL: CURIOUS (Informational Telemetry with High Autonomy).
+    1. Autonomous Approvals: Architect autonomously approves module-internal symbols,
+       refactorings, helper functions, and non-breaking trait implementations.
+    2. Blackboard Telemetry: When a notable public signature or data structure is modified,
+       Architect MUST post an informational event to task_blackboard (topic="telemetry",
+       kind="interface_evolution") detailing the changes, but DOES NOT block execution.
+    3. Mandatory Human Escalation: Escalate via A/B Decision Card ONLY on: breaking public
+       library exports, irreversible database migrations, or new external package/library dependencies.
+
+  hitl.pro: >
+    HITL GOVERNANCE LEVEL: PRO (Professional Engineering Balance — Default).
+    1. Permitted Autonomous Additions: Architect is authorized to self-admit into extended_symbols
+       without human sign-off: module-internal helper functions, private classes, structs, or internal types,
+       non-breaking error variants, internal test helpers/fixtures, documentation, and comments.
+    2. Mandatory Human Escalation Triggers: Architect is STRICTLY PROHIBITED from self-approving
+       and MUST escalate to a human on:
+       - Public API Surface: Any alteration to public exports/interfaces exposed in root package entrypoints or public module exports.
+       - CLI Commands & Arguments: Any new subcommand, altered flag, or changed default behavior.
+       - Database & Storage: Any new SQLite/DB table, column schema modification, or index creation.
+       - MCP Protocol Surface: Any new tool, altered tool arguments, or schema changes.
+       - Cross-Milestone Contracts: Any change to symbols consumed by linked_to milestone tasks.
+    3. Escalation Protocol: Post structured A/B Decision Card to task_blackboard and halt with human blocker.
+
+  hitl.paranoic: >
+    HITL GOVERNANCE LEVEL: PARANOIC (Zero Autonomous Interface Mutation).
+    1. Absolute Zero Autonomy: Architect is strictly forbidden from self-approving ANY new symbol
+       or signature modification into extended_symbols, including private helpers.
+    2. Universal Escalation: Every single symbol deviation detected by the reviewer requires
+       an explicit human sign-off through an A/B Decision Card on task_blackboard.
+    3. Full Contract Freezing: Task cannot transition out of architect arbitration until a human
+       explicitly posts an approval response on the blackboard with the chosen option.
 
   # Review Focus Lenses (Cognitive Contours)
   contour.paths: >
@@ -181,6 +327,8 @@ guidance:
     milestone changes into the definitive integration commit, captures the full milestone
     telemetry passport, writes the archive manifest to docs/milestones/archive/<slug>.md, and
     purges transient milestone records from SQLite while retaining milestone_tombstones.
+    Any source changes absorbed during handoff require re-running full repository verification
+    and obtaining final reviewer sign-off bound to the final content tree (TESTS.md).
 
 # =============================================================================
 # 4. POLICIES & TEMPLATES
@@ -202,22 +350,22 @@ policies:
 gate_templates:
   build_review_cycle:
     gates:
-      - id: code
+      - id: build
         role: builder
         guidance: [task.code]
-        proof: none
+        command: check_task
+        proof: command
         persistence:
           pre: snapshot              # Captures starting state of builder turn
           post: snapshot             # Captures candidate snapshot of implemented code
-
-      - id: verify
-        reject_to: code
 
       - id: review
         role: reviewer
         policy: default_review
         proof: review
-        reject_to: code
+        reject_routing:
+          scope: build               # Unadmitted files or implementation defects route to build gate (builder)
+          symbols: contract          # Interface/symbol drift or contract gaps route to architect contract gate
         persistence:
           immutable: true            # Prohibits any file mutation during review; must match candidate snapshot!
 
@@ -228,21 +376,24 @@ gates:
   # Gate 1: Upfront Milestone Synthesis & DAG Optimization (Agent Gate)
   - id: contract_synthesis
     role: architect
-    guidance: [milestone.synthesis]
+    guidance: [milestone.synthesis, hitl]
     proof: contract
     persistence:
       pre: snapshot                  # Captures pristine working tree before architect reshuffles tasks/manifest
       post: commit                   # Commits synthesized contracts and optimized wave plan to milestone branch
       restore_on_reject: true        # Restores tree to pristine pre-snapshot if synthesis fails
 
-  # Gate 2: Milestone Tasks Container (Container Gate: runs per-task in parallel)
-  - id: tasks_delivery
-    for_each: tasks
-    gates:
+  # Gate 2: Milestone Tasks Container (First-class declarative task lifecycle)
+  # Default task type is type: ["code"]. Non-code tasks (type: ["doc"], type: ["db"]) skip code gates automatically.
+  # Sub-profiles applied to individual tasks simply extract this `tasks:` block directly.
+  - tasks:
+      gates:
       # Sub-Gate 2.1: Task Contract (Agent Gate)
+      # Executes for code tasks to define runtime-red production-seam test baseline.
       - id: contract
+        when: code
         role: architect
-        guidance: [task.contract]
+        guidance: [task.contract, hitl]
         proof: contract
         expected_failure:
           exit_codes: [1, 101, 134]          # Language-agnostic: Rust=101, Python/pytest=1, C=134
@@ -250,37 +401,91 @@ gates:
         persistence:
           post: snapshot             # Captures red-seam baseline snapshot
 
-      # Sub-Gate 2.2: Implement & Review (Reusable Subgraph Template parameterized with check_task)
-      # Note: Individual tasks can override this default by declaring `command: <custom_cmd>` in their manifest.
-      # Tasks declaring `mode: speculative` auto-rebase on upstream candidate snapshots during the implement
-      # phase before candidate snapshot submission, resolving conflicts autonomously via task_blackboard.
-      - id: implement
-        use: build_review_cycle
+      # Sub-Gate 2.2: Task Build (Agent Gate)
+      # Builder implements code to pass seam test and executes check_task.
+      - id: build
+        when: code
+        role: builder
+        guidance: [task.code]
         command: check_task
-        # mode: speculative         # Declared on speculative tasks to begin work ahead of upstream verification
-        # sync_on: snapshot         # Rebase trigger: auto-rebases on upstream snapshot during implement
+        proof: command
+        persistence:
+          pre: snapshot              # Captures starting state of builder turn
+          post: snapshot             # Captures candidate snapshot of implemented code
 
-      # Sub-Gate 2.3: Autonomous Task Delivery (0 Tokens: Atomic Git commit & receipt)
-      # Coordinated Delivery Barrier: tasks do not transition to deliver until both their
-      # upstream dependencies and downstream dependents have passed review.
-      # Once the dependency contour passes review, delivery lands candidate snapshots simultaneously.
+      # Sub-Gate 2.3: Database Migration Verification (Conditional Gate)
+      # Triggers when task.type has "db" or task.scope touches migration files
+      - id: migration_check
+        when: db_migration
+        role: builder
+        guidance: [task.db_migration]
+        command: verify_migration
+        proof: command
+        reject_to: build
+
+      # Sub-Gate 2.4: Independent Review of Task Candidate (Agent Gate)
+      - id: review
+        role: reviewer
+        policy: default_review
+        proof: review
+        independent_from: build
+        reject_routing:
+          scope: build               # Unadmitted files or implementation defects route to build gate
+          symbols: contract          # Interface/symbol drift or contract gaps route to architect contract gate
+        persistence:
+          immutable: true            # Strictly enforces that tree matches reviewed candidate snapshot
+
+      # Sub-Gate 2.5: Joint Seam Integration & Review (Container Gate)
+      # Executes conditionally when the task participates in an active dependency relationship in the DAG.
+      # If the task is isolated (0 dependencies, 0 dependents), the entire seam container is automatically skipped.
+      - id: seam
+        when: seam                   # Pure topological property of DAG (code, doc, or observer tasks)
+        gates:
+          - id: integrate
+            when: code               # Code tasks compile & verify seam tests; doc/observer tasks skip
+            role: builder
+            guidance: [task.deferred_final_test]
+            command: check_task
+            proof: seam_test         # SeamTestProof: validates all referenced seam_test_refs actually passed
+            persistence:
+              post: snapshot
+
+          - id: review
+            role: reviewer
+            guidance: [task.seam_review]
+            proof: review
+            independent_from: seam.integrate
+            reject_to: integrate
+            persistence:
+              immutable: true
+
+      # Sub-Gate 2.6: Autonomous Task Delivery (0 Tokens: Atomic Git commit & receipt)
+      # Coordinated Delivery Barrier: lands candidate snapshot after individual and seam reviews pass.
+      # Sequential hard blockers deliver immediately; barrier coordinates speculative/parallel tasks.
       - id: deliver
         proof: delivery
         receipt: true                # Emits durable receipt and sets status: completed
-        delivery_barrier: contour_reviewed # Waits until upstream & downstream dependencies pass review
         persistence:
           immutable: true            # Strictly enforces that tree matches reviewed candidate snapshot
           post: commit               # Lands candidate snapshot into milestone branch Git HEAD
           git_commit_note: telemetry # Default: automated task engineering passport (diff breakdown, AST symbols, test suite, swarm)
-          # Alternative (command-driven):
-          # git_commit_note: command.benchmark # Attaches output of configured command.benchmark to refs/notes/forge
 
   # Gate 3: Milestone Integration Verification & Polish
   - id: milestone_verification
     gates:
+      # Sub-Gate 3.1: Public API SemVer & Changelog Verification (Conditional Gate)
+      # Triggers at milestone level when AST detects modified public API exports, MCP tool schemas, or CLI commands
+      - id: api_version_bump
+        when: public_api
+        role: builder
+        guidance: [task.public_api]
+        proof: command
+
+      # Sub-Gate 3.2: Full Repository Verification (Command Gate)
       - id: verify
         command: check_full_repo
 
+      # Sub-Gate 3.3: Integration Review (Agent Gate)
       - id: review
         role: reviewer
         policy: default_review
@@ -324,5 +529,4 @@ gates:
       git_commit_note: telemetry     # Attaches complete milestone telemetry passport
       # Alternative (command-driven custom benchmark / verification script):
       # git_commit_note: command.benchmark
-    prune_archived_state: true       # Purges tasks, claims, revisions, transitions, traces, checkpoints, and blackboard from active SQLite
-    tombstone_eviction: safe_guard   # Retains SQLite milestone_tombstone cache indefinitely; pruned only when verified across all worktrees that no active manifest remains and archive has valid handoff proof token
+

@@ -1,0 +1,156 @@
+# =============================================================================
+# HIERARCHICAL ACDD PROFILE: Infrastructure Deployment & Database Migrations
+#
+# Scope: Infrastructure changes (Terraform / Kube / Docker), DB Migrations,
+#        Canary Deployments, Automated Smoke Healthchecks, and Rollback Subgraph.
+# =============================================================================
+
+version: 2
+
+# =============================================================================
+# 1. ROLES CATALOG (`roles`)
+# =============================================================================
+roles:
+  infra_architect:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:xhigh'
+      - 'claude-opus-5.5'
+
+  ops_engineer:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:medium'
+
+  release_reviewer:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:xhigh'
+
+# =============================================================================
+# 2. COMMANDS CATALOG (`commands`)
+# =============================================================================
+commands:
+  check_infra_syntax:
+    command: "terraform fmt -check && terraform validate"
+    timeout_seconds: 60
+
+  check_migration_dry_run:
+    command: "python manage.py makemigrations --check --dry-run && python manage.py migrate --plan"
+    timeout_seconds: 60
+
+  backup_state_checkpoint:
+    command: "./scripts/backup-db-snapshot.sh --target .forge/db_pre_deploy.sql"
+    timeout_seconds: 180
+
+  apply_db_migrations:
+    command: "python manage.py migrate --no-input"
+    timeout_seconds: 300
+
+  deploy_rolling_containers:
+    command: "./scripts/deploy.sh --mode rolling --env production"
+    timeout_seconds: 300
+
+  verify_smoke_healthcheck:
+    command: "./scripts/healthcheck.sh --endpoint https://api.commerce.internal/healthz --synthetic-order"
+    timeout_seconds: 90
+
+  rollback_deployment_and_db:
+    command: "./scripts/rollback.sh && ./scripts/restore-db-snapshot.sh --source .forge/db_pre_deploy.sql"
+    timeout_seconds: 300
+
+# =============================================================================
+# 3. GUIDANCE CATALOG (`guidance`)
+# =============================================================================
+guidance:
+  infra.contract: >
+    Specify infrastructure delta and database schema evolution plan.
+    Ensure zero-downtime migration protocol (expand-contract pattern):
+    new columns must be nullable or have database-level defaults.
+    Verify backup procedures and rollback targets before applying state mutations.
+
+  infra.code: >
+    Apply Terraform configs, Kubernetes manifests, or Django migration files.
+    Stay strictly within admitted task.scope.
+
+  contour.infra_safety: >
+    Verify that destructive schema operations (table drop, column rename) are deferred
+    to subsequent cleanup milestones after all code consumers migrate.
+
+  contour.downtime_guards: >
+    Verify healthcheck endpoints, readiness probes, and database lock timeouts.
+
+# =============================================================================
+# 4. POLICIES CATALOG (`policies`)
+# =============================================================================
+policies:
+  strict_release:
+    independent_worker: true
+    require_all_contours: true
+    require_clean_healthcheck: true
+
+# =============================================================================
+# 5. HIERARCHICAL GATES PIPELINE (`gates`)
+# =============================================================================
+gates:
+  # Gate 1: Upfront Specification & Migration Plan
+  - id: migration_contract
+    role: infra_architect
+    guidance: [infra.contract]
+    proof: contract
+
+  # Gate 2: Preflight Static Validation (Autonomous Command Gate - 0 tokens)
+  - id: preflight_checks
+    gates:
+      - id: lint_infra
+        command: check_infra_syntax
+
+      - id: dry_run_migrations
+        command: check_migration_dry_run
+
+  # Gate 3: Live Staged Deployment Container with Automated Rollback Fallback
+  - id: live_deployment
+    gates:
+      # Step 3.1: State & DB Snapshot Checkpoint
+      - id: snapshot_checkpoint
+        command: backup_state_checkpoint
+
+      # Step 3.2: Forward Migration Execution
+      - id: execute_migrations
+        command: apply_db_migrations
+        reject_to: live_deployment.rollback_sequence
+
+      # Step 3.3: Rolling Deployment
+      - id: apply_containers
+        command: deploy_rolling_containers
+        reject_to: live_deployment.rollback_sequence
+
+      # Step 3.4: Automated Synthetic Smoke Healthcheck
+      - id: smoke_validation
+        command: verify_smoke_healthcheck
+        reject_to: live_deployment.rollback_sequence
+
+    # Fallback Subgraph: Triggered autonomously if migration or smoke check fails!
+    fallback:
+      id: rollback_sequence
+      command: rollback_deployment_and_db
+      max_attempts: 1
+
+  # Gate 4: Independent Operational Review & Release Seal
+  - id: release_audit
+    role: release_reviewer
+    guidance:
+      - contour.infra_safety
+      - contour.downtime_guards
+      - contour.claims
+    policy: strict_release
+    proof: review
+
+  # Gate 5: Autonomous Final Receipt & Commit
+  - id: deliver
+    role: release_reviewer
+    policy: default_delivery
+    proof: delivery

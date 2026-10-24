@@ -1,0 +1,147 @@
+# =============================================================================
+# HIERARCHICAL ACDD PROFILE: Multi-Repo Umbrella Cross-Service Coordination
+#
+# Use case: Coordinated multi-repository initiative (e.g. backend, frontend, infra)
+# Execution:
+# - Each repo advances tasks in parallel isolated worktrees
+# - Cross-repo schema contracts are synthesized upfront in `milestone_contract_matrix`
+# - Autonomous umbrella integration gate verifies end-to-end compatibility before handoff
+# =============================================================================
+
+version: 2
+
+# =============================================================================
+# 1. ROLES CATALOG (`roles`)
+# =============================================================================
+roles:
+  lead_architect:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:xhigh'
+      - 'claude-opus-5.5'
+
+  service_builder:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:medium'
+
+  integration_reviewer:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:xhigh'
+
+# =============================================================================
+# 2. COMMANDS CATALOG (`commands`)
+# =============================================================================
+commands:
+  # Multi-language/multi-repo scoped verification
+  check_task:
+    by_pattern:
+      "backend/**/*.py": "cd backend && ruff check {scope_target} && pytest -q {scope_target}"
+      "frontend/**/*.{ts,tsx,vue}": "cd frontend && npm run typecheck && npm test -- {scope_target}"
+      "infra/**/*.{tf,yaml}": "cd infra && terraform fmt -check && terraform validate"
+    timeout_seconds: 90
+
+  # Cross-repository live contract & integration check
+  verify_cross_repo_e2e:
+    command: "./scripts/run-cross-service-integration.sh --env test --headless"
+    timeout_seconds: 300
+
+  # Full repository sanity check
+  check_all_services:
+    command: "pytest backend/tests/ && npm --prefix frontend test && terraform -chdir=infra validate"
+    timeout_seconds: 600
+
+# =============================================================================
+# 3. GUIDANCE CATALOG (`guidance`)
+# =============================================================================
+guidance:
+  umbrella.synthesis: >
+    Analyze cross-service boundaries and data contracts across all repositories.
+    Publish OpenAPI, protobuf, or event schemas into SQLite `milestone_contract_matrix`.
+    Consumer services bind seam tests directly to the synthesized matrix schema.
+
+  service.code: >
+    Implement production code confined to the assigned service repository worktree.
+    Adhere strictly to the published cross-repo schema in `milestone_contract_matrix`.
+
+  contour.cross_repo_compatibility: >
+    Verify backward and forward wire compatibility.
+    Ensure that schema additions are non-breaking and default-tolerant.
+
+  contour.isolation: >
+    Verify that commits in service A do not introduce hard dependencies on unreleased
+    runtime states of service B.
+
+# =============================================================================
+# 4. POLICIES CATALOG (`policies`)
+# =============================================================================
+policies:
+  umbrella_review:
+    independent_worker: true
+    require_all_contours: true
+
+  umbrella_delivery:
+    auto_commit: true
+    enforce_clean_worktree: true
+
+# =============================================================================
+# 5. HIERARCHICAL GATES PIPELINE (`gates`)
+# =============================================================================
+gates:
+  # Gate 1: Upfront Umbrella Contract Synthesis (Agent Gate)
+  - id: cross_repo_synthesis
+    role: lead_architect
+    guidance: [umbrella.synthesis]
+    proof: contract
+
+  # Gate 2: Parallel Multi-Repo Task Delivery Container
+  - tasks:
+      gates:
+      # 2.1 Service-level Seam Contract
+      - id: contract
+        role: lead_architect
+        proof: contract
+
+      # 2.2 In-Repo Implementation & Local Verification
+      - id: implement
+        gates:
+          - id: code
+            role: service_builder
+            guidance: [service.code]
+            proof: none
+
+          - id: verify_service
+            command: check_task
+            reject_to: code
+
+      # 2.3 Service Review
+      - id: review
+        role: integration_reviewer
+        guidance:
+          - contour.cross_repo_compatibility
+          - contour.isolation
+          - contour.paths
+        policy: umbrella_review
+        proof: review
+        reject_to: implement
+
+      # 2.4 Service Delivery
+      - id: deliver
+        role: integration_reviewer
+        policy: umbrella_delivery
+        proof: delivery
+        reject_to: implement
+
+  # Gate 3: Autonomous Cross-Repo Integration Gate (0 LLM Tokens)
+  - id: umbrella_integration_verify
+    command: verify_cross_repo_e2e
+    reject_to: tasks_delivery
+
+  # Gate 4: Final Coordinated Milestone Verification
+  - id: full_umbrella_verify
+    command: check_all_services
+    reject_to: tasks_delivery

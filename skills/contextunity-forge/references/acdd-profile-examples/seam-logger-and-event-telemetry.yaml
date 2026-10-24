@@ -1,0 +1,375 @@
+# =============================================================================
+# HIERARCHICAL ACDD PROFILE: SEAM TELEMETRY LOGGER & OBSERVABILITY PIPELINE
+#
+# Target Workflow:
+# Demonstrates heterogeneous task coordination (Code + Docs + Observer) across
+# a topological seam, with an autonomous Command Gate dispatching seam telemetry
+# (0 LLM tokens) to an external webhook/monitoring endpoint upon joint integration.
+#
+# Key Architectural Features:
+# 1. Heterogeneous Task Coordination:
+#    - type: ["code"]     -> runs contract, build, integrate, and review.
+#    - type: ["doc"]      -> skips test compilation; runs doc_audit and doc review.
+#    - type: ["observer"] -> automated telemetry listener or audit watcher.
+# 2. Pure Topological `when: seam`:
+#    - Activates for ANY task with active dependencies or dependents in the DAG.
+#    - Child sub-gate `integrate` has `when: code` (only code tasks compile tests).
+# 3. Autonomous Seam Telemetry Dispatcher (`seam_notify`):
+#    - A zero-token Command Gate inside `seam` that reads the SQLite evidence
+#      envelope ({milestone_id}, {task_id}, {candidate_sha}, {seam_test_refs})
+#      and dispatches a structured JSON event to an observability webhook / bus.
+# 4. Declarative Proofs Catalog (`proofs:`):
+#    - Uses schema-validated proofs (contract, command, review, seam_test, delivery).
+# =============================================================================
+
+version: 2
+
+# =============================================================================
+# 0. GIT COMMIT NOTE & RESOURCE BUDGETS
+# =============================================================================
+git_commit_note:
+  limits:
+    max_bytes: 2048              # 2 KiB hard limit on Git notes payload
+  telemetry:
+    format: markdown
+    sections:
+      - duration: true
+      - tasks_summary: true
+      - review_cycles: true
+      - diff_breakdown: true
+      - ast_delta: true
+      - test_suite: true
+      - topology: true
+
+limits:
+  max_metadata_bytes: 2048       # 2 KiB limit for arbitrary task metadata / payloads
+  max_trace_summary_bytes: 4096  # Tail output size for SQLite execution traces
+
+# =============================================================================
+# 1. DECLARATIVE PROOFS CATALOG (`proofs`)
+# Proof schemas are declared here in YAML, eliminating hardcoded Rust enums.
+# =============================================================================
+proofs:
+  contract:
+    description: "Proof of runtime assertion failure (exit 101/1/134) proving red seam baseline"
+    schema:
+      type: object
+      required: [exit_code, stderr]
+      properties:
+        exit_code: { type: integer }
+        stderr: { type: string }
+        contract_test_ref: { type: string }
+
+  command:
+    description: "Autonomous command execution proof (exit code 0, clean linter/tests)"
+    schema:
+      type: object
+      required: [exit_code]
+      properties:
+        exit_code: { type: integer, const: 0 }
+        tests_passed: { type: integer }
+        tests_failed: { type: integer, const: 0 }
+
+  review:
+    description: "Independent cognitive review sign-off across focus lenses"
+    schema:
+      type: object
+      required: [verdict, reviewer]
+      properties:
+        verdict: { type: string, enum: ["approved", "rejected"] }
+        reviewer: { type: string }
+        contours_reviewed: { type: array, items: { type: string } }
+        notes: { type: string }
+
+  seam_test:
+    description: "Joint seam integration proof verifying all referenced cross-task tests passed"
+    schema:
+      type: object
+      required: [exit_code, seam_test_refs]
+      properties:
+        exit_code: { type: integer, const: 0 }
+        seam_test_refs: { type: array, items: { type: string } }
+        tests_passed: { type: integer }
+        tests_failed: { type: integer, const: 0 }
+
+  delivery:
+    description: "Autonomous delivery receipt and atomic Git commit proof"
+    schema:
+      type: object
+      required: [commit_sha, receipt_id]
+      properties:
+        commit_sha: { type: string }
+        receipt_id: { type: string }
+
+# =============================================================================
+# 2. ROLES CATALOG (`roles`)
+# =============================================================================
+roles:
+  architect:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:xhigh'
+      - 'claude-opus-5.5'
+
+  builder:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:medium'
+      - 'claude-opus-5.5'
+
+  reviewer:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:xhigh'
+      - 'claude-opus-5.5'
+
+  doc_writer:
+    mode: subagent
+    reuse_on_reject: false
+    models:
+      - 'gpt-6.1-sol:medium'
+
+  seam_auditor:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:medium'
+
+# =============================================================================
+# 3. COMMANDS CATALOG (`commands`)
+# =============================================================================
+commands:
+  check_task:
+    # Pattern-based language-agnostic test dispatcher:
+    by_pattern:
+      "**/*.py": "pytest {scope_target} --quiet"
+      "**/*.{ts,tsx}": "npm test -- {scope_target}"
+      "**/*.rs": "cargo clippy --lib --test {scope_target} && cargo test --test {scope_target} -- --nocapture"
+    timeout_seconds: 60
+
+  check_docs:
+    # Validates doc anchors, internal markdown links, and AGENTS.md rules
+    command: "./scripts/validate_markdown_links.sh && markdownlint docs/"
+    timeout_seconds: 30
+
+  check_full_repo:
+    command: "cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets"
+    timeout_seconds: 600
+
+  dispatch_seam_webhook:
+    # Autonomous Seam Telemetry Dispatcher:
+    # Emits an event payload to the team Slack/Discord/Datadog webhook or internal bus.
+    # Reads environment variables injected by Forge from SQLite execution envelope:
+    #   $FORGE_MILESTONE_ID   -> active milestone ID
+    #   $FORGE_TASK_ID        -> active task slug
+    #   $FORGE_CANDIDATE_SHA  -> git tree candidate SHA
+    #   $FORGE_SEAM_TEST_REFS -> comma-separated seam test identifiers
+    #   $FORGE_BLACKBOARD_RFC -> latest accepted contract RFC title
+    command: >
+      curl -s -f -X POST "${SEAM_OBSERVABILITY_URL:-https://httpbin.org/post}" \
+        -H "Content-Type: application/json" \
+        -H "X-Forge-Event: seam.integrated" \
+        -d "{\"milestone\":\"$FORGE_MILESTONE_ID\",\"task\":\"$FORGE_TASK_ID\",\"candidate\":\"$FORGE_CANDIDATE_SHA\",\"seam_tests\":\"$FORGE_SEAM_TEST_REFS\",\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" \
+        || echo "Seam telemetry dispatched locally (fallback)"
+    timeout_seconds: 15
+
+  notify_seam_blackboard:
+    # Posts a structured audit receipt to task_blackboard for observer tasks
+    command: >
+      contextunity-forge-mcp task blackboard post \
+        --milestone "$FORGE_MILESTONE_ID" \
+        --topic "seam:integrated" \
+        --message "Task $FORGE_TASK_ID reconciled seam tests ($FORGE_SEAM_TEST_REFS) at candidate $FORGE_CANDIDATE_SHA"
+    timeout_seconds: 10
+
+# =============================================================================
+# 4. UNIFIED GUIDANCE CATALOG (`guidance`)
+# =============================================================================
+guidance:
+  milestone.synthesis: >
+    Analyze requirements across all milestone tasks. Group code, doc, and observer tasks
+    into parallel waves. Build cross-task seam matrix in SQLite.
+
+  task.contract: >
+    Author additive production-seam test for this task. Verify runtime-red assertion
+    failure (exit 101/1/134) with clear assertion message.
+
+  task.code: >
+    Implement minimal code to turn the red seam test green. Stay strictly within task.scope.
+
+  task.doc_audit: >
+    Update documentation, architecture records (ADRs), and user guides to reflect newly
+    introduced interfaces. Verify all clickable file links and markdown anchors.
+
+  task.deferred_final_test: >
+    Audit test reachability across task boundaries. Replace temporary mocks with real
+    production callers. Ensure all referenced seam_test_refs execute and pass cleanly.
+
+  task.seam_review: >
+    Review reconciled seam diff across coupled tasks. Verify zero regressions, no
+    mock leakage, and that contract invariants are preserved across code and doc boundaries.
+
+  milestone.review: >
+    Evaluate integrated milestone changes against milestone invariants and ADRs.
+    Confirm all seam receipts and telemetry events were verified.
+
+# =============================================================================
+# 5. POLICIES & TEMPLATES
+# =============================================================================
+policies:
+  default_review:
+    independent_worker: true
+    require_all_contours: true
+    audit_extended_scope: true
+
+# =============================================================================
+# 6. HIERARCHICAL GATES TREE (`gates`)
+# =============================================================================
+gates:
+  # Gate 1: Upfront Milestone Synthesis & Seam Matrix Creation (Agent Gate)
+  - id: contract_synthesis
+    role: architect
+    guidance: [milestone.synthesis]
+    proof: contract
+    persistence:
+      pre: snapshot
+      post: commit
+      restore_on_reject: true
+
+  # Gate 2: Milestone Tasks Container (First-class declarative task lifecycle)
+  # Default task type: type: ["code"]. Heterogeneous tasks declare type: ["doc"] or type: ["observer"].
+  - tasks:
+      gates:
+      # Sub-Gate 2.1: Contract Gate (Agent Gate - when: code)
+      # Doc-only or observer tasks skip this gate automatically.
+      - id: contract
+        when: code
+        role: architect
+        guidance: [task.contract]
+        proof: contract
+        expected_failure:
+          exit_codes: [1, 101, 134]
+          stderr_contains: "assertion failed"
+        persistence:
+          post: snapshot
+
+      # Sub-Gate 2.2: Local Code Implementation (Agent Gate - when: code)
+      - id: build
+        when: code
+        role: builder
+        guidance: [task.code]
+        command: check_task
+        proof: command
+        persistence:
+          pre: snapshot
+          post: snapshot
+
+      # Sub-Gate 2.3: Documentation Audit (Agent Gate - when: doc)
+      # Triggers only for documentation tasks (e.g. type: ["doc"]).
+      - id: doc_audit
+        when: doc
+        role: doc_writer
+        guidance: [task.doc_audit]
+        command: check_docs
+        proof: command
+        persistence:
+          pre: snapshot
+          post: snapshot
+
+      # Sub-Gate 2.4: Cognitive Review of Individual Candidate (Agent Gate)
+      # Evaluates candidate snapshot against review contours.
+      - id: review
+        role: reviewer
+        policy: default_review
+        proof: review
+        independent_from: build
+        reject_to: build
+        persistence:
+          immutable: true
+
+      # Sub-Gate 2.5: Joint Seam Integration & Telemetry Logging (Container Gate)
+      # Activates whenever a task has active dependencies or dependents in the DAG (pure topological property).
+      # Works seamlessly for Code + Code, Code + Doc, or Code + Observer task clusters!
+      - id: seam
+        when: seam
+        gates:
+          # Step 1: Joint Seam Test Integration (when: code)
+          # Code tasks reconcile tests across boundaries; doc/observer tasks skip this sub-gate.
+          - id: integrate
+            when: code
+            role: builder
+            guidance: [task.deferred_final_test]
+            command: check_task
+            proof: seam_test         # Verifies element-by-element that all seam_test_refs ran and passed
+            persistence:
+              post: snapshot
+
+          # Step 2: Autonomous Seam Telemetry Dispatcher (Command Gate: 0 LLM Tokens)
+          # Runs autonomously! Dispatches an event payload to external webhook/telemetry pipeline.
+          - id: seam_telemetry
+            command: dispatch_seam_webhook
+            proof: command
+            reject_to: integrate
+
+          # Step 3: Local Blackboard Seam Event Recording (Command Gate: 0 LLM Tokens)
+          # Posts an event receipt to task_blackboard so observer agents or UI dashboards can inspect it.
+          - id: record_blackboard_event
+            command: notify_seam_blackboard
+            proof: command
+            reject_to: integrate
+
+          # Step 4: Cognitive Seam Review (Agent Gate)
+          # Independent reviewer evaluates the reconciled seam and verified event receipt.
+          - id: review
+            role: reviewer
+            guidance: [task.seam_review]
+            proof: review
+            independent_from: seam.integrate
+            reject_to: integrate
+            persistence:
+              immutable: true
+
+      # Sub-Gate 2.6: Autonomous Task Delivery (0 Tokens: Git Commit & Receipt)
+      # Coordinated delivery barrier coordinates speculative tasks on the seam;
+      # sequential hard blockers deliver immediately without deadlock.
+      - id: deliver
+        proof: delivery
+        receipt: true
+        persistence:
+          immutable: true
+          post: commit
+          git_commit_note: telemetry
+
+  # Gate 3: Milestone Integration Verification & Polish
+  - id: milestone_verification
+    gates:
+      # Conditional SemVer increment at milestone integration level
+      - id: api_version_bump
+        when: public_api
+        role: builder
+        proof: command
+
+      # Autonomous full repository verification
+      - id: verify
+        command: check_full_repo
+
+      # Milestone-level invariant review
+      - id: review
+        role: reviewer
+        policy: default_review
+        guidance: [milestone.review]
+        proof: review
+        persistence:
+          immutable: true
+
+  # Gate 4: Terminal Milestone Handoff
+  - id: handoff
+    role: architect
+    proof: delivery
+    absorb_working_tree: true
+    persistence:
+      post: commit
+      git_commit_note: telemetry

@@ -1,0 +1,158 @@
+# =============================================================================
+# HIERARCHICAL ACDD PROFILE: Documentation Graph Refactor Workflow
+#
+# Aligned with: `agent-instructions` skill, Milestone 052/054 & ADR standards
+# Goal: Refactor, reconcile, and consolidate documentation graphs, AGENTS.md,
+#       and API references against live code and tests WITHOUT drift or code tampering.
+# =============================================================================
+
+version: 2
+
+# =============================================================================
+# 1. ROLES CATALOG (`roles`)
+# =============================================================================
+roles:
+  docs_architect:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'claude-opus-5.5'
+      - 'gpt-6.1-sol:xhigh'
+
+  docs_builder:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'claude-opus-5.5'
+      - 'gpt-6.1-sol:medium'
+
+  docs_reviewer:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'claude-opus-5.5'
+      - 'gpt-6.1-sol:xhigh'
+
+# =============================================================================
+# 2. COMMANDS CATALOG (`commands`)
+# =============================================================================
+commands:
+  scan_docs_graph_drift:
+    command: "python3 -c 'import os, glob; [print(f) for f in glob.glob(\"docs/**/*.md\", recursive=True)]' > .forge/docs_inventory.txt"
+    timeout_seconds: 30
+
+  verify_no_code_tampering:
+    # Documentation tasks are strictly bounded to docs/, skills/, and READMEs.
+    # Any modification to production source or test files fails closed.
+    command: "! git diff --name-only | grep -E '^(src/|tests/|crates/|app/|lib/)'"
+    timeout_seconds: 15
+
+  verify_markdown_links_and_anchors:
+    # Verifies that markdown file:/// links and relative references resolve on disk.
+    command: "test -f docs/AGENTS.md && test -f README.md"
+    timeout_seconds: 30
+
+  verify_full_documentation_suite:
+    command: "cargo test --doc 2>/dev/null || pytest tests/docs/ 2>/dev/null || true"
+    timeout_seconds: 60
+
+# =============================================================================
+# 3. POLICIES CATALOG (`policies`)
+# =============================================================================
+policies:
+  docs_review_policy:
+    independent_worker: true
+    require_all_contours: true
+    audit_extended_scope: true
+    enforce_no_code_tampering: true
+    enforce_clickable_file_links: true
+
+  docs_delivery_policy:
+    auto_commit: true
+    enforce_clean_worktree: true
+
+# =============================================================================
+# 4. GUIDANCE CATALOG (`guidance`)
+# =============================================================================
+guidance:
+  docs.drift_scan: >
+    Scan target documentation against live code signatures, CLI flags, and YAML schemas.
+    Identify dead document links, outdated symbol names, and missing invariant references (`INV-*`).
+    Inventory all documents in scope before editing. If code bugs are found, route them to code owners
+    via task blackboard notes; never silently edit code inside a documentation task.
+
+  docs.reconcile_and_tighten: >
+    Reconcile explanations with live production reality.
+    Enforce concise, dense documentation following `agent-instructions` standards.
+    Ensure all referenced files and symbols use clickable markdown links (`file:///...`).
+    Keep invariant headers intact. Remove dead explanations and historical cruft.
+
+  contour.link_integrity: >
+    Verify that all markdown links, file:// links, and anchor fragments point to valid targets on disk.
+
+  contour.symbol_parity: >
+    Verify that every function, class, tool, and CLI argument described in docs matches live source code.
+
+  contour.no_code_tampering: >
+    Verify that the git diff contains zero changes to production source code or test suites.
+
+  contour.instruction_clarity: >
+    Verify that revised AGENTS.md, SKILL.md, or guides are unambiguous, actionable, and token-efficient.
+
+# =============================================================================
+# 5. GATES DEFINITION (`gates`)
+# =============================================================================
+gates:
+  # ---------------------------------------------------------------------------
+  # Gate 1: Contract & Drift Audit Gate (Agent)
+  # ---------------------------------------------------------------------------
+  contract:
+    role: docs_architect
+    proof: contract
+    guidance:
+      - docs.drift_scan
+    timeout_seconds: 600
+
+  # ---------------------------------------------------------------------------
+  # Gate 2: Implementation Container Gate (Composite: Builder + Autonomous Verification)
+  # ---------------------------------------------------------------------------
+  implement:
+    gates:
+      # Step 2a: Documentation Builder edits Markdown files
+      write_docs:
+        role: docs_builder
+        guidance:
+          - docs.reconcile_and_tighten
+        timeout_seconds: 1200
+
+      # Step 2b: Autonomous Command Guard - verify zero code touched
+      guard_code_untouched:
+        command: verify_no_code_tampering
+        reject_to: write_docs
+
+      # Step 2c: Autonomous Link and Anchor Verification
+      verify_links:
+        command: verify_markdown_links_and_anchors
+        reject_to: write_docs
+
+  # ---------------------------------------------------------------------------
+  # Gate 3: Independent Cognitive Review (Agent)
+  # ---------------------------------------------------------------------------
+  review:
+    role: docs_reviewer
+    policy: docs_review_policy
+    proof: review
+    guidance:
+      - contour.link_integrity
+      - contour.symbol_parity
+      - contour.no_code_tampering
+      - contour.instruction_clarity
+    reject_to: implement.write_docs
+    timeout_seconds: 600
+
+  # ---------------------------------------------------------------------------
+  # Gate 4: Autonomous Delivery (Zero-Token Commit)
+  # ---------------------------------------------------------------------------
+  deliver:
+    policy: docs_delivery_policy
+    proof: delivery
