@@ -4417,8 +4417,8 @@ fn dedicated_store_rejects_index_and_unknown_schema_without_ddl() {
     assert_eq!(objects, [("view".into(), "old_projection".into())]);
 
     let current = root.0.join("current.sqlite");
-    drop(TasksStore::open(&current).expect("empty DB should initialize as schema v6"));
-    let reopened = TasksStore::open(&current).expect("schema v6 should remain supported");
+    drop(TasksStore::open(&current).expect("empty DB should initialize as schema v7"));
+    let reopened = TasksStore::open(&current).expect("schema v7 should remain supported");
     let version: String = reopened
         .connection
         .query_row(
@@ -4427,7 +4427,7 @@ fn dedicated_store_rejects_index_and_unknown_schema_without_ddl() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(version, "6");
+    assert_eq!(version, "7");
     // Exercise migration from an actual v5 layout, preserving existing data.
     reopened.connection.execute_batch("DROP TABLE milestone_tombstones; UPDATE task_store_metadata SET value='5' WHERE key='schema_version';").unwrap();
     drop(reopened);
@@ -4440,7 +4440,7 @@ fn dedicated_store_rejects_index_and_unknown_schema_without_ddl() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(version, "6");
+    assert_eq!(version, "7");
     let count: i64 = migrated
         .connection
         .query_row("SELECT COUNT(*) FROM milestone_tombstones", [], |row| {
@@ -8232,7 +8232,7 @@ fn task_blackboard_gate_targeting_and_schema_hint() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(schema_version, "6");
+    assert_eq!(schema_version, "7");
     let gate_column_exists: bool = store
         .connection
         .query_row(

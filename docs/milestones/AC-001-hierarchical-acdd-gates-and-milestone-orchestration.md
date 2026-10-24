@@ -346,30 +346,100 @@ subtasks:
 
 ```yaml
 task_ref: sqlite-gate-transitions-and-trace-persistence
-target: "Implement SQLite schema migrations for gate_transitions, gate_execution_traces, gate_checkpoints (breadcrumb-keyed), milestone_contract_matrix, and task_blackboard recipient addressing (recipient_task_id) for inter-agent RFC negotiation"
+target: Implement SQLite schema migrations for gate_transitions, gate_execution_traces, gate_checkpoints (breadcrumb-keyed), milestone_contract_matrix, and task_blackboard recipient addressing (recipient_task_id) for inter-agent RFC negotiation
 proof_policy: seam-test-first
 contract_revision: 1
 depends_on:
-  - upfront-contract-synthesis-and-dag-prioritization
+- upfront-contract-synthesis-and-dag-prioritization
 scope:
-  - src/db/tasks_store/mod.rs
-  - src/db/tasks_store/schema.rs
-  - src/db/tasks_store/lifecycle.rs
-  - src/db/tasks_store/matrix.rs
-  - src/db/tasks_store/trace.rs
-  - tests/acdd/persistence.rs
-status: planned
+- src/db/tasks_store/mod.rs
+- src/db/tasks_store/schema.rs
+- src/db/tasks_store/lifecycle.rs
+- src/db/tasks_store/matrix.rs
+- src/db/tasks_store/trace.rs
+- tests/acdd/persistence.rs
+status: completed
 subtasks:
-  - subtask_ref: gate-transitions-table-migration
-    title: "Implement SQLite migration and store APIs for durable gate_transitions audit table"
-  - subtask_ref: gate-execution-trace-table-migration
-    title: "Implement SQLite migration for gate_execution_traces with 2 KiB output snippets"
-  - subtask_ref: gate-checkpoints-breadcrumb-keyed-table
-    title: "Implement gate_checkpoints SQLite table keyed by compound turn breadcrumb"
-  - subtask_ref: milestone-contract-matrix-table
-    title: "Implement milestone_contract_matrix SQLite table for cross-task helper tracking"
-  - subtask_ref: blackboard-recipient-and-rfc-support
-    title: "Add recipient_task_id column and status indexing to task_blackboard table"
+- subtask_ref: gate-transitions-table-migration
+  title: Implement SQLite migration and store APIs for durable gate_transitions audit table
+  status: ready
+  evidence: null
+- subtask_ref: gate-execution-trace-table-migration
+  title: Implement SQLite migration for gate_execution_traces with 2 KiB output snippets
+  status: ready
+  evidence: null
+- subtask_ref: gate-checkpoints-breadcrumb-keyed-table
+  title: Implement gate_checkpoints SQLite table keyed by compound turn breadcrumb
+  status: ready
+  evidence: null
+- subtask_ref: milestone-contract-matrix-table
+  title: Implement milestone_contract_matrix SQLite table for cross-task helper tracking
+  status: ready
+  evidence: null
+- subtask_ref: blackboard-recipient-and-rfc-support
+  title: Add recipient_task_id column and status indexing to task_blackboard table
+  status: ready
+  evidence: null
+receipt:
+  contract_revision: 1
+  passed_at: 2026-10-24T04:35:20.914257191+00:00
+  evidence:
+    command_proof:
+      command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --test acdd
+      exit_code: 0
+      tests_passed: 118
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: Diff from target base 205fe8b to candidate 60418b2 changes exactly the six original paths plus the two successfully Forge-admitted sibling files tests/acdd/tasks.rs and src/db/tasks_store/recovery.rs; no configuration, receipt, generated, credential, or neighboring project paths changed.
+        claims:
+          applicable: true
+          evidence: The v6-to-v7 migration creates the four contract tables, their required keys and trace uniqueness/2 KiB CHECK, adds recipient/status defaults and the exact composite index, and commits DDL plus version update in one IMMEDIATE transaction. Typed store APIs round-trip transition, trace, checkpoint, and contract matrix data. The seam test reaches production TasksStore::open through fixture and exercises each API.
+        concurrency:
+          applicable: true
+          evidence: Migration and contract-matrix replacement use IMMEDIATE transactions; the migration checks the schema-version update row count before commit, matrix failures roll back atomically, trace inserts rely on the declared uniqueness constraint, and checkpoint save is one SQLite upsert. No shared task state is mutated outside these SQLite operations.
+        project_isolation:
+          applicable: true
+          evidence: All new persistence methods operate on the owning TasksStore connection; matrix replacement validates matching milestone ids and reads/deletes by milestone id. The recovery change only admits schema version 7 in the existing read-only copy probe. No workspace paths or Git operations were added.
+        administration:
+          applicable: true
+          evidence: 'The schema preserves the existing v5-to-v6 path and upgrades v6 to v7 atomically; the recovery probe now recognizes 5, 6, and 7 without modifying the original database. No profile, protected configuration, receipt, or hook was changed. Forge accepted strict Clippy and ACDD evidence: 118 passed, 0 failed.'
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-UNIVERSAL-GATE-POLYMORPHISM: Every workflow node is a Gate; execution mode is determined by driver fields: Agent Gate (role), Command Gate (command), or Container Gate (gates).'
+    - 'INV-ZERO-ARGUMENT-SUBMISSION: Automated gate submissions (any gate configured with proof: command, contract, or delivery) require zero manual JSON arguments; Forge autonomously compiles proof from gate execution traces and Git tree state. Cognitive review gates (proof: review) strictly require typed review judgments (verdict, reviewer, contours_reviewed, extended_scope_review).'
+    - 'INV-IN-PLACE-LIFECYCLE: Task and milestone execution supports in-place operation (--in-place / worktree: ".") without mandatory worktree or branch isolation.'
+    - 'INV-SILENT-ENGINE-TELEMETRY: Gate transitions and command execution traces are automatically recorded in SQLite; automated engine progress logging to task_blackboard is suppressed, preserving blackboard bandwidth for RFCs, synthesized contract matrices, and human escalations.'
+    - 'INV-SEAM-ENGINE-RED-GREEN: Seam Engine automatically tracks contract runtime failure (matching configured expected_failure.exit_codes) to implementation pass (exit 0) via gate execution traces.'
+    - 'INV-SEAM-REACHABILITY-RESILIENCE: Static seam verification proves the current test-to-production connection through imports, re-exports, and bounded test-helper paths; stale source/index evidence produces an actionable stale-index diagnostic. An unresolved expression alone does not prove reachability.'
+    - 'INV-REQUIRED-SKILLS-GOVERNANCE: Manifests declare required_skills in frontmatter; milestone init fails closed (MILESTONE_PREFLIGHT_FAILED) before agent launch if any declared skill is absent.'
+    - 'INV-PREFLIGHT-MILESTONE-INIT: milestone init validates manifest syntax, checks required_skills on host, and pre-scaffolds base worktrees across declared repositories upfront before agent dispatch.'
+    - 'INV-MULTI-REPO-MANIFEST-DECLARATION: Multi-repository workflows declare participant repositories in manifest frontmatter; the engine coordinates cross-repo worktree initialization and compound breadcrumbs.'
+    - 'INV-EXTENDED-SCOPE-MANIFEST-SYNC: task extend-scope writes atomically to both SQLite and the milestone markdown manifest; review proof strictly requires extended_scope_review approval before deliver.'
+    - 'INV-BREADCRUMB-CHECKPOINT-UNIFICATION: Checkpoints are stored in SQLite gate_checkpoints keyed directly by turn breadcrumb locators; legacy .forge/checkpoints.json is eliminated.'
+    - 'INV-TRANSITION-TRACE-PERSISTENCE: Upon milestone handoff (INV-HANDOFF-SQLITE-PRUNING), completed milestone tasks, claims, revisions, gate transitions, execution traces, checkpoints, and task blackboard rows are purged from SQLite; milestone_tombstones is retained to keep archived dependencies satisfiable; canonical durable records reside permanently in docs/milestones/archive/*.md and Git history.'
+    - 'INV-PRE-DOC-AUTONOMOUS-VERIFICATION: Milestone verification executes as a container gate with automated checks, review, fallback repair subgraph, and autonomous delivery before documentation.'
+    - 'INV-MARKDOWN-FIRST-ERGONOMICS: Agent messages, guidance, and status reports follow Milestone 054 Markdown-first principles: clickable coordinates, callout blockers, compact status tables, zero dead metadata.'
+    - 'INV-MODULAR-SUBSYSTEM-DECOUPLING: Forge MCP decomposes functionality into 5 independent subsystems (codemap, acdd, blackboard, docs, checkpoints) configurable via forge-mcp.yaml modules/profile, with dynamic MCP tool registration and zero initialization cost for disabled subsystems.'
+    - 'INV-CONTEXT-AWARE-GUIDANCE-ADAPTATION: workflow_guidance, prompts, and gate verification dynamically adapt to enabled subsystems, suppressing dead tool references, omitting unused guidance structures, and falling back gracefully when graph or blackboard features are disabled.'
+    - 'INV-PAYLOAD-OVERFLOW-GUARD: Custom metadata, git_commit_note payloads (rendered as Markdown by default, or JSON), and in-database trace snippets attached to tasks are bounded by a 2 KiB limit (configurable via git_commit_note.limits.max_bytes / limits.max_metadata_bytes) with complete command outputs written to disk logs, protecting the 96 KiB MCP response budget and preventing Git note bloat.'
+    - 'INV-UNIVERSAL-PROFILE-ZERO-LANGUAGE-HARDCODE: The embedded default profile (acdd.default.yaml) and profile templates must remain strictly language-agnostic. Gates and commands must not hardcode Rust-specific binaries (such as cargo clippy or cargo test); all verification commands must use pattern-based dispatch (by_pattern) matching project file extensions or generic command identifiers. Guidance texts must not mention specific languages or compilers.'
+    - 'INV-TWO-LOOP-ACDD-GOVERNANCE: Task execution strictly distinguishes between scope: (files on disk, extensible by builder) and symbols: (admitted public interface deltas, strictly governed by architect). Review failures route via reject_routing (scope -> build, symbols -> contract). Unadmitted public interface mutations are prohibited from bypassing the Long Outer Loop (architect arbitration -> seam contract test -> builder).'
+    - 'INV-GUIDANCE-SLOT-BINDING: Gates declare parameterized guidance slots (e.g. guidance: [task.contract, hitl]), and milestones bind them in manifest frontmatter (guidance: { hitl: pro }). The engine resolves slot hitl with value pro via format!("{}.{}", slot, value) -> hitl.pro (or literal dotted keys). The validator verifies slot matching on milestone init/check, emitting warnings for unbound slots and falling back to profile defaults.'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Admitted Symbols (Wave 1)

@@ -423,7 +423,7 @@ pub(crate) fn probe_copy(path: &Path) -> Result<StoreHealth> {
             [],
             |r| r.get(0),
         )?;
-        if !matches!(version.as_str(), "5" | "6") {
+        if !matches!(version.as_str(), "5" | "6" | "7") {
             bail!("TASK_RECOVERY_SCHEMA_UNSUPPORTED: schema {version}; preserve the original database");
         }
         let integrity: String = connection.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;

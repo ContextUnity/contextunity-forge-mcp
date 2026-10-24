@@ -430,6 +430,51 @@ impl TasksStore {
     }
 }
 
+/// Insert a gate transition and return its SQLite row identifier.
+pub(super) fn record_transition(
+    connection: &Connection,
+    transition: &GateTransition,
+) -> Result<i64> {
+    for (field, value) in [
+        ("milestone_id", transition.milestone_id.as_str()),
+        ("subject", transition.subject.as_str()),
+        ("gate_path", transition.gate_path.as_str()),
+        ("action", transition.action.as_str()),
+        ("proof_kind", transition.proof_kind.as_str()),
+        ("git_tree_sha", transition.git_tree_sha.as_str()),
+        ("worker_id", transition.worker_id.as_str()),
+    ] {
+        if value.trim().is_empty() {
+            anyhow::bail!("TASK_TRANSITION_INVALID: {field} must not be empty");
+        }
+    }
+    let proof_payload = serde_json::to_string(&transition.proof_payload)?;
+    connection.execute(
+        "INSERT INTO gate_transitions (
+            milestone_id, subject, gate_path, action, proof_kind, proof_payload,
+            git_tree_sha, worker_id
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            transition.milestone_id,
+            transition.subject,
+            transition.gate_path,
+            transition.action,
+            transition.proof_kind,
+            proof_payload,
+            transition.git_tree_sha,
+            transition.worker_id,
+        ],
+    )?;
+    Ok(connection.last_insert_rowid())
+}
+
+impl TasksStore {
+    /// Persist one task or milestone gate transition and return its SQLite row identifier.
+    pub fn record_gate_transition(&self, transition: &GateTransition) -> Result<i64> {
+        record_transition(&self.connection, transition)
+    }
+}
+
 struct ClaimContext {
     repository: String,
     project: String,

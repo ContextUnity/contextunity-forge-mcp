@@ -9,11 +9,15 @@ use std::path::{Path, PathBuf};
 
 mod blackboard;
 mod lifecycle;
+mod matrix;
 pub mod recovery;
+mod schema;
 mod subtasks;
+mod trace;
 
 pub(crate) use blackboard::clear_blackboard;
 pub use blackboard::is_canonical_blackboard_topic;
+pub use trace::{GateCheckpoint, GateExecutionTrace, GateTransition, MAX_OUTPUT_SNIPPET_BYTES};
 
 /// The retention seconds value.
 pub const RETENTION_SECONDS: i64 = 14 * 24 * 60 * 60;
@@ -444,7 +448,7 @@ impl TasksStore {
         // Only initialization participates in index publication fencing. Supported
         // task stores retain their connection-local, writer-independent open.
         #[cfg(unix)]
-        let (connection, known, _initialization_lock) = if known {
+        let (mut connection, known, _initialization_lock) = if known {
             (connection, known, None)
         } else {
             let target = path.canonicalize()?;
@@ -458,6 +462,8 @@ impl TasksStore {
             let known = has_task_store_metadata(&connection)?;
             (connection, known, Some(lock))
         };
+        #[cfg(not(unix))]
+        let mut connection = connection;
         if known {
             let version: String = connection.query_row(
                 "SELECT value FROM task_store_metadata WHERE key='schema_version'",
@@ -476,7 +482,7 @@ impl TasksStore {
                     UPDATE task_store_metadata SET value='6' WHERE key='schema_version';
                     COMMIT;",
                 )?;
-            } else if version != "6" {
+            } else if !matches!(version.as_str(), "6" | "7") {
                 bail!("unsupported tasks schema; use recovery tooling");
             }
         } else {
@@ -534,12 +540,13 @@ impl TasksStore {
             CREATE TRIGGER IF NOT EXISTS task_delete_generation AFTER DELETE ON tasks BEGIN UPDATE meta SET value=value+1 WHERE key='generation'; END;
             COMMIT;")?;
         }
+        schema::migrate(&mut connection)?;
         let version: String = connection.query_row(
             "SELECT value FROM task_store_metadata WHERE key='schema_version'",
             [],
             |r| r.get(0),
         )?;
-        if version != "6" {
+        if version != "7" {
             bail!("unsupported tasks schema; use recovery tooling");
         }
         Ok(Self {
