@@ -16,7 +16,7 @@ This document defines the rules for placing, creating, refactoring, and maintain
 ## 2. Compilation and Binary Budget (Coherent Domain Modules)
 - In Cargo, every `.rs` file directly in `tests/` is compiled and linked as an independent test executable.
 - Organize tests into coherent domain modules:
-  - `tests/acdd.rs` (`tests/acdd/`): Task lifecycles, subtasks, blackboard coordination, and milestone operations (`INV-ACDD-SUITE-COHESION`).
+  - `tests/acdd.rs` (`tests/acdd/`): Task lifecycles, subtasks, blackboard coordination, and milestone operations (`INV-ACDD-SUITE-COHESION`). Read [tests/acdd/AGENTS.md](acdd/AGENTS.md) for ACDD sub-suite partitioning and authoring rules.
   - `tests/cli_roots.rs`: CLI entrypoints, root discovery, and path normalization across subcommands.
   - `tests/core.rs` (`tests/core/`): Storage engine, SQLite schema, adapters, scanner limits, and coverage diagnostics.
   - `tests/impact_context.rs`: Impact analysis, traversal reachability, and blast-radius evaluation context.
@@ -30,10 +30,13 @@ This document defines the rules for placing, creating, refactoring, and maintain
   - `tests/commitment_integrity.rs`: Merkle trees, leaf digest stability, and deterministic cryptographic commitments.
   - `tests/common/`: Shared fixtures, RAII temp workspaces, and MCP test clients (`INV-SHARED-HARNESS`).
 - Group new task tests into existing domain test suites.
+- **Domain modularity over monolithic files**: Organize test files strictly along cohesive architectural and domain boundaries. Do not accumulate unrelated test concerns into single monolithic files; when distinct behavioral domains emerge (e.g. lifecycle, reachability, boundaries, workspaces), split them into domain sub-directories with their own `mod.rs` and local `AGENTS.md`.
 - Keep framework-manifest tests in `tests/framework_manifests/`; keep HTML template and relation tests in `tests/languages/html/`.
 - Keep TypeScript framework tests under `tests/languages/typescript/frameworks/`, with parser-selection coverage in `grammar.rs`.
 - Keep receiver tests under `tests/receivers/{rust,python}/`; Rust module-path cases stay under `rust/module_paths.rs`.
 - Each test subtree maintains its own local `AGENTS.md` specifying module scope, shared helpers, and verification rules:
+  - [`tests/acdd/AGENTS.md`](acdd/AGENTS.md): ACDD gate AST, runners, and task lifecycle domain partitioning.
+  - [`tests/acdd/tasks/AGENTS.md`](acdd/tasks/AGENTS.md): Decomposed ACDD task suite modules (`boundaries.rs`, `guidance.rs`, `lifecycle.rs`, `seams.rs`, `workspaces.rs`).
   - [`tests/framework_manifests/AGENTS.md`](framework_manifests/AGENTS.md): Declarative framework packs and TOML manifests.
   - [`tests/languages/html/AGENTS.md`](languages/html/AGENTS.md): HTML templates, Django/Jinja syntax, and HTMX/Alpine relations.
   - [`tests/languages/typescript/frameworks/AGENTS.md`](languages/typescript/frameworks/AGENTS.md): NestJS, Nuxt, and Vue runtime test suites.
@@ -50,8 +53,8 @@ This document defines the rules for placing, creating, refactoring, and maintain
   cargo test --test linker value_flow::
   ```
 - Table-driven tests over function duplication: iterate over structured data tables (`for case in cases { ... }`) for permutations and error codes.
-- Shared test harnesses over repeated boilerplate: common setups (temporary SQLite stores, worktree layouts) belong in shared test helpers (`tests/common/`).
-- Domain cohesion: keep coherent test suites unified within their subsystem domain (`tests/acdd/tasks.rs`, `tests/framework_manifests.rs`). Split tests strictly along natural architectural sub-boundaries when distinct domains emerge.
+- Shared test harnesses over repeated boilerplate: common setups (temporary SQLite stores, worktree layouts) belong in shared test helpers (`tests/common/`, `tests/acdd/support.rs`).
+- Domain cohesion: keep coherent test suites unified within their subsystem domain. Split tests strictly along natural architectural sub-boundaries when distinct domains emerge.
 
 ## 3. Suite moves
 - When moving, renaming, splitting, or removing a test suite or test file, update `docs/testing/README.md` and this file in the same `build`.

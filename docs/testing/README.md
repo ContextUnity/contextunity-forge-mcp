@@ -12,6 +12,16 @@ tests. It owns domain grouping, public seams, and benchmark placement.
 [Root instructions](../../AGENTS.md) own engineering requirements;
 [`TESTS.md`](../../TESTS.md) owns the required test and lint commands.
 
+## ACDD task tests
+
+The task engine suite is routed through [tests/acdd/tasks/mod.rs](../../tests/acdd/tasks/mod.rs)
+and split by domain: lifecycle, seams, signature and scope boundaries, workspaces,
+guidance, and retirement. Read the [ACDD suite rules](../../tests/acdd/AGENTS.md)
+and [task module rules](../../tests/acdd/tasks/AGENTS.md) before moving or adding
+tests. Shared ACDD fixtures live in [tests/acdd/support.rs](../../tests/acdd/support.rs).
+Keep each task domain module at or below 4,000 lines, splitting at a behavior
+boundary when it approaches that ceiling.
+
 ## Rust verification
 
 Run from the repository root with the current Cargo manifest. Match the command

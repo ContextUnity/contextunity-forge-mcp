@@ -74,6 +74,7 @@ Evolve ContextUnity Forge MCP into a **Universal Hierarchical Gate Platform** wh
 | **Wave 3** | **Automation** | `upfront-contract-synthesis-and-shared-helper-extraction` | Automated synthesis gate, helper extraction, and preflight milestone init | Wave 1; scope-ordered after Task 3 |
 | **Wave 4** | **Runtime** | `container-gate-and-claim-engine` | In-place execution (`--in-place`), silent telemetry, state-driven claims, and unread RFC guidance injection | Wave 2 and 3 |
 | **Wave 4** | **Tooling** | `scope-extension-manifest-sync-and-review-audit` | CLI zero-argument submission, atomic `task extend-scope`, manifest sync, and SQLite checkpoints tool migration | Wave 2 and 3 |
+| **Wave 5** | **Quality** | `acdd-test-suite-modularization-and-domain-decomposition` | Decompose monolithic 10k-line `tests/acdd/tasks.rs` into domain modules, extract common harnesses, and establish multi-tier AGENTS.md test hierarchy | Wave 4 |
 
 ---
 
@@ -100,6 +101,8 @@ model and validator are
 | Task 4 upfront-contract-synthesis-and-shared-helper-extraction | Task 5 container-gate-and-claim-engine | seam_dependency | synthesize_milestone_contracts; validate_wave_dag |
 | Task 3 zero-arg-transition-engine-and-command-runner | Task 6 scope-extension-manifest-sync-and-review-audit | seam_dependency | compile_evidence_envelope |
 | Task 4 upfront-contract-synthesis-and-shared-helper-extraction | Task 6 scope-extension-manifest-sync-and-review-audit | seam_dependency | synthesize_milestone_contracts |
+| Task 5 container-gate-and-claim-engine | Task 7 acdd-test-suite-modularization-and-domain-decomposition | seam_dependency | tests/acdd/seam_reachability.rs |
+| Task 6 scope-extension-manifest-sync-and-review-audit | Task 7 acdd-test-suite-modularization-and-domain-decomposition | seam_dependency | tests/acdd/scope_sync.rs |
 
 verify_contract_matrix_parity rejects a wrong milestone identity, unknown task
 references, duplicate row keys, empty references, non-positive revisions, and
@@ -121,6 +124,7 @@ all earlier-wave dependencies pass.
 | 2 | Task 3 | Owns transition/command-runner, task-store lifecycle, module registration seams, runner.rs, and task reference updates. |
 | 3 | Task 4 | Owns synthesis sources and synthesis.rs; shared store/module files are serialized after Task 3 by the scope dependency. |
 | 4 | Tasks 5 and 6 | Task 5 owns claim/container, reader, context guidance, and seam_reachability.rs; Task 6 owns scope-sync, handoff, CLI/MCP, governance documents, and scope_sync.rs. |
+| 5 | Task 7 | Owns tests/acdd/tasks/ domain decomposition, tests/acdd/tasks.rs retirement, tests/acdd/mod.rs wiring, tests/acdd/support.rs fixtures, tests/acdd/AGENTS.md, tests/acdd/tasks/AGENTS.md, tests/AGENTS.md, and docs/testing/README.md. |
 
 Same-wave tasks have no shared write path. Cross-wave path reuse is intentional
 and serialized by the dependency graph.
@@ -1169,3 +1173,126 @@ receipt:
 - `cmd:task submit`
 - `cmd:task extend-scope`
 - `cmd:milestone handoff`
+
+---
+
+### task: acdd-test-suite-modularization-and-domain-decomposition
+
+```yaml
+task_ref: acdd-test-suite-modularization-and-domain-decomposition
+target: Decompose monolithic 10k-line tests/acdd/tasks.rs into domain-partitioned modules under tests/acdd/tasks/, extract common workspace fixtures into tests/acdd/support.rs, establish multi-tier AGENTS.md instruction hierarchy across tests/ and tests/acdd/, and update test suite documentation
+proof_policy: direct-proof
+contract_revision: 2
+depends_on:
+- container-gate-and-claim-engine
+- scope-extension-manifest-sync-and-review-audit
+scope:
+- tests/acdd/tasks.rs
+- tests/acdd/tasks/mod.rs
+- tests/acdd/tasks/lifecycle.rs
+- tests/acdd/tasks/seams.rs
+- tests/acdd/tasks/boundaries.rs
+- tests/acdd/tasks/workspaces.rs
+- tests/acdd/tasks/guidance.rs
+- tests/acdd/tasks/retirement.rs
+- tests/acdd/tasks/AGENTS.md
+- tests/acdd/mod.rs
+- tests/acdd/support.rs
+- tests/acdd/AGENTS.md
+- tests/AGENTS.md
+- docs/testing/README.md
+scope_roots:
+- tests/
+- tests/acdd/
+- docs/testing/
+- src/engine/tasks/
+status: completed
+subtasks:
+- subtask_ref: create-acdd-instruction-hierarchy
+  title: Author tests/acdd/AGENTS.md and tests/acdd/tasks/AGENTS.md formalizing modular test boundaries, file size ceilings, and harness reuse
+  status: completed
+  evidence: Added tests/acdd/AGENTS.md and tests/acdd/tasks/AGENTS.md with module ownership, routing, shared-fixture guidance, and a 4,000-line ceiling; docs links and rustfmt checks passed.
+- subtask_ref: extract-acdd-shared-fixtures
+  title: Extract shared workspace setup helpers and fixtures into tests/acdd/support.rs
+  status: completed
+  evidence: 'Moved eight common indexed-boundary/workspace fixture helpers into tests/acdd/support.rs. The full ACDD suite passed: 133 passed, 0 failed; strict Clippy passed.'
+- subtask_ref: partition-acdd-tasks-domain-modules
+  title: Decompose tests/acdd/tasks.rs into domain modules under tests/acdd/tasks/ preserving all 116 tests without regressions
+  status: completed
+  evidence: Replaced monolithic tests/acdd/tasks.rs with six domain modules under tests/acdd/tasks/. Preserved all 133 collected ACDD tests, including all 66 task tests; full suite passed.
+- subtask_ref: update-root-test-router-and-docs
+  title: Update tests/AGENTS.md and docs/testing/README.md with new domain module routes and file size invariants
+  status: completed
+  evidence: Updated tests/AGENTS.md and docs/testing/README.md to route the ACDD task suite and describe module boundaries/ceiling. Relative-link check and Forge documentation retrieval passed.
+receipt:
+  contract_revision: 2
+  passed_at: 2026-10-25T10:49:23.762694767+00:00
+  evidence:
+    command_proof:
+      command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --test acdd
+      exit_code: 0
+      tests_passed: 133
+      tests_failed: 0
+      log: 'Strict Clippy passed. ACDD: 133 passed, 0 failed, finished in 377.41s.'
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: Inspected candidate a764e23 as a scope-projected tree; all 14 included paths are admitted, including the explicit src/engine/tasks/mod.rs extension. Hashes of every candidate path match the current worktree, so there are no post-snapshot edits. Other dirty files, including tests/acdd/runner.rs, are outside the candidate and are not part of this task snapshot.
+        claims:
+          applicable: true
+          evidence: The six domain modules are registered under tests/acdd/tasks/mod.rs, shared workspace helpers are in tests/acdd/support.rs, and the new instructions/docs route those owners. The seam test delivery_requires_terminal_subtasks_with_verification_evidence directly calls engine::tasks::submit twice and asserts the delivery error plus unchanged persisted task state. Forge reports a fresh exact call edge, no parse errors, and zero untested public surface; the accepted build proof reports strict Clippy and 133 ACDD tests passing.
+        concurrency:
+          applicable: true
+          evidence: 'No production logic changed: src/engine/tasks/mod.rs is identical to candidate baseline 8a36c361. The refactor retains the lifecycle lock/mutation test and scoped snapshot/worktree concurrency coverage in their domains; all 133 ACDD tests pass. Forge task_list found no other active task owner in this milestone.'
+        project_isolation:
+          applicable: true
+          evidence: The refactor preserves ScopedWorkspace-based temporary roots and task-local SQLite fixtures. Workspace isolation and linked-scope tests remain in the workspaces domain. No repository, project identity, production path, or database behavior was modified.
+        administration:
+          applicable: true
+          evidence: The candidate changes tests and testing guidance only, with the admitted unchanged engine module included as seam context. No schema, migration, profile, configuration, receipt, or protected milestone block changed. Candidate hashes match the reviewed tree; the recorded build passed strict Clippy and the full affected ACDD target.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-UNIVERSAL-GATE-POLYMORPHISM: Every workflow node is a Gate; execution mode is determined by driver fields: Agent Gate (role), Command Gate (command), or Container Gate (gates).'
+    - 'INV-ZERO-ARGUMENT-SUBMISSION: Automated gate submissions (any gate configured with proof: command, contract, or delivery) require zero manual JSON arguments; Forge autonomously compiles proof from gate execution traces and Git tree state. Cognitive review gates (proof: review) strictly require typed review judgments (verdict, reviewer, contours_reviewed, extended_scope_review).'
+    - 'INV-IN-PLACE-LIFECYCLE: Task and milestone execution supports in-place operation (--in-place / worktree: ".") without mandatory worktree or branch isolation.'
+    - 'INV-SILENT-ENGINE-TELEMETRY: Gate transitions and command execution traces are automatically recorded in SQLite; automated engine progress logging to task_blackboard is suppressed, preserving blackboard bandwidth for RFCs, synthesized contract matrices, and human escalations.'
+    - 'INV-SEAM-ENGINE-RED-GREEN: Seam Engine automatically tracks contract runtime failure (matching configured expected_failure.exit_codes) to implementation pass (exit 0) via gate execution traces.'
+    - 'INV-SEAM-REACHABILITY-RESILIENCE: Static seam verification proves the current test-to-production connection through imports, re-exports, and bounded test-helper paths; stale source/index evidence produces an actionable stale-index diagnostic. An unresolved expression alone does not prove reachability.'
+    - 'INV-REQUIRED-SKILLS-GOVERNANCE: Manifests declare required_skills in frontmatter; milestone init fails closed (MILESTONE_PREFLIGHT_FAILED) before agent launch if any declared skill is absent.'
+    - 'INV-PREFLIGHT-MILESTONE-INIT: milestone init validates manifest syntax, checks required_skills on host, and pre-scaffolds base worktrees across declared repositories upfront before agent dispatch.'
+    - 'INV-MULTI-REPO-MANIFEST-DECLARATION: Multi-repository workflows declare participant repositories in manifest frontmatter; the engine coordinates cross-repo worktree initialization and compound breadcrumbs.'
+    - 'INV-EXTENDED-SCOPE-MANIFEST-SYNC: task extend-scope writes atomically to both SQLite and the milestone markdown manifest; review proof strictly requires extended_scope_review approval before deliver.'
+    - 'INV-BREADCRUMB-CHECKPOINT-UNIFICATION: Checkpoints are stored in SQLite gate_checkpoints keyed directly by turn breadcrumb locators; legacy .forge/checkpoints.json is eliminated.'
+    - 'INV-TRANSITION-TRACE-PERSISTENCE: Upon milestone handoff (INV-HANDOFF-SQLITE-PRUNING), completed milestone tasks, claims, revisions, gate transitions, execution traces, checkpoints, and task blackboard rows are purged from SQLite; milestone_tombstones is retained to keep archived dependencies satisfiable; canonical durable records reside permanently in docs/milestones/archive/*.md and Git history.'
+    - 'INV-PRE-DOC-AUTONOMOUS-VERIFICATION: Milestone verification executes as a container gate with automated checks, review, fallback repair subgraph, and autonomous delivery before documentation.'
+    - 'INV-MARKDOWN-FIRST-ERGONOMICS: Agent messages, guidance, and status reports follow Milestone 054 Markdown-first principles: clickable coordinates, callout blockers, compact status tables, zero dead metadata.'
+    - 'INV-MODULAR-SUBSYSTEM-DECOUPLING: Forge MCP decomposes functionality into 5 independent subsystems (codemap, acdd, blackboard, docs, checkpoints) configurable via forge-mcp.yaml modules/profile, with dynamic MCP tool registration and zero initialization cost for disabled subsystems.'
+    - 'INV-CONTEXT-AWARE-GUIDANCE-ADAPTATION: workflow_guidance, prompts, and gate verification dynamically adapt to enabled subsystems, suppressing dead tool references, omitting unused guidance structures, and falling back gracefully when graph or blackboard features are disabled.'
+    - 'INV-PAYLOAD-OVERFLOW-GUARD: Custom metadata, git_commit_note payloads (rendered as Markdown by default, or JSON), and in-database trace snippets attached to tasks are bounded by a 2 KiB limit (configurable via git_commit_note.limits.max_bytes / limits.max_metadata_bytes) with complete command outputs written to disk logs, protecting the 96 KiB MCP response budget and preventing Git note bloat.'
+    - 'INV-UNIVERSAL-PROFILE-ZERO-LANGUAGE-HARDCODE: The embedded default profile (acdd.default.yaml) and profile templates must remain strictly language-agnostic. Gates and commands must not hardcode Rust-specific binaries (such as cargo clippy or cargo test); all verification commands must use pattern-based dispatch (by_pattern) matching project file extensions or generic command identifiers. Guidance texts must not mention specific languages or compilers.'
+    - 'INV-TWO-LOOP-ACDD-GOVERNANCE: Task execution strictly distinguishes between scope: (files on disk, extensible by builder) and symbols: (admitted public interface deltas, strictly governed by architect). Review failures route via reject_routing (scope -> build, symbols -> contract). Unadmitted public interface mutations are prohibited from bypassing the Long Outer Loop (architect arbitration -> seam contract test -> builder).'
+    - 'INV-GUIDANCE-SLOT-BINDING: Gates declare parameterized guidance slots (e.g. guidance: [task.contract, hitl]), and milestones bind them in manifest frontmatter (guidance: { hitl: pro }). The engine resolves slot hitl with value pro via format!("{}.{}", slot, value) -> hitl.pro (or literal dotted keys). The validator verifies slot matching on milestone init/check, emitting warnings for unbound slots and falling back to profile defaults.'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
+```
+
+#### Admitted Symbols (Wave 5)
+- `mod:tests::acdd::tasks`
+- `mod:tests::acdd::tasks::lifecycle`
+- `mod:tests::acdd::tasks::seams`
+- `mod:tests::acdd::tasks::boundaries`
+- `mod:tests::acdd::tasks::workspaces`
+- `mod:tests::acdd::tasks::guidance`
+- `mod:tests::acdd::tasks::retirement`
+
