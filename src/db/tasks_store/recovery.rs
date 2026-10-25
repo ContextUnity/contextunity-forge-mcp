@@ -188,10 +188,119 @@ pub struct ActiveCheckpoint {
 struct Publication {
     active: Vec<ActiveCheckpoint>,
     retired: Vec<ActiveCheckpoint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    manifest_replacement: Option<ManifestReplacement>,
+}
+
+/// A manifest replacement committed as part of the SQLite publication intent.
+///
+/// The payload stores the exact relative path, the expected current-content hash,
+/// and the target bytes/hash so recovery can finish the write without re-running
+/// the task mutation.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ManifestReplacement {
+    root: PathBuf,
+    relative_path: String,
+    before_hash: String,
+    target_hash: String,
+    target: Vec<u8>,
+}
+
+impl ManifestReplacement {
+    pub(crate) fn new(
+        root: &Path,
+        relative_path: &str,
+        before: &[u8],
+        after: &[u8],
+    ) -> Result<Self> {
+        let root = crate::core::fs::canonical_root(root)?;
+        let relative = crate::core::tasks::relative_path(relative_path)?;
+        if relative.to_str() != Some(relative_path)
+            || relative
+                .extension()
+                .and_then(|extension| extension.to_str())
+                != Some("md")
+        {
+            bail!("TASK_MANIFEST_PUBLICATION_INVALID: expected an exact relative Markdown path");
+        }
+        let path = crate::core::tasks::confined_path(&root, relative_path)?;
+        if path != root.join(&relative) || !path.is_file() {
+            bail!("TASK_MANIFEST_PUBLICATION_INVALID: manifest path is not a file");
+        }
+        let current = std::fs::read(&path)?;
+        let before_hash = crate::core::commitments::hash(before);
+        if current.as_slice() != before || crate::core::commitments::hash(&current) != before_hash {
+            bail!("TASK_MANIFEST_PUBLICATION_CONFLICT: manifest changed before staging");
+        }
+        let target_hash = crate::core::commitments::hash(after);
+        Ok(Self {
+            root,
+            relative_path: relative_path.to_owned(),
+            before_hash,
+            target_hash,
+            target: after.to_vec(),
+        })
+    }
+
+    fn validate(&self) -> Result<PathBuf> {
+        let root = crate::core::fs::canonical_root(&self.root)?;
+        if root != self.root
+            || crate::core::tasks::relative_path(&self.relative_path)?.to_str()
+                != Some(self.relative_path.as_str())
+            || Path::new(&self.relative_path)
+                .extension()
+                .and_then(|extension| extension.to_str())
+                != Some("md")
+            || crate::core::commitments::hash(&self.target) != self.target_hash
+        {
+            bail!("TASK_MANIFEST_PUBLICATION_INVALID");
+        }
+        let path = crate::core::tasks::confined_path(&root, &self.relative_path)?;
+        if path != root.join(&self.relative_path) || !path.is_file() {
+            bail!("TASK_MANIFEST_PUBLICATION_INVALID: manifest path is not a file");
+        }
+        Ok(path)
+    }
+
+    fn validate_preimage(&self) -> Result<()> {
+        let path = self.validate()?;
+        let current = std::fs::read(path)?;
+        let current_hash = crate::core::commitments::hash(&current);
+        if current_hash != self.before_hash && current_hash != self.target_hash {
+            bail!("TASK_MANIFEST_PUBLICATION_CONFLICT: manifest no longer matches its preimage or target");
+        }
+        Ok(())
+    }
+
+    fn publish(&self) -> Result<()> {
+        let path = self.validate()?;
+        let current = std::fs::read(&path)?;
+        let current_hash = crate::core::commitments::hash(&current);
+        if current_hash == self.target_hash {
+            return Ok(());
+        }
+        if current_hash != self.before_hash {
+            bail!("TASK_MANIFEST_PUBLICATION_CONFLICT: manifest no longer matches its preimage or target");
+        }
+        crate::core::fs::atomic_replace(&path, &self.target)?;
+        let published = std::fs::read(&path)?;
+        if crate::core::commitments::hash(&published) != self.target_hash {
+            bail!("TASK_MANIFEST_PUBLICATION_CONFLICT: published manifest does not match target");
+        }
+        Ok(())
+    }
 }
 
 impl Publication {
     fn publish(&self) -> Result<()> {
+        self.publish_with(|replacement| replacement.publish())
+    }
+
+    fn publish_with(
+        &self,
+        mut publish_manifest: impl FnMut(&ManifestReplacement) -> Result<()>,
+    ) -> Result<()> {
         publish_cohort(&self.active)?;
         for state in &self.retired {
             if state.task.is_some() || state.intent.is_some() {
@@ -227,6 +336,9 @@ impl Publication {
                     String::from_utf8_lossy(&deleted.stderr)
                 );
             }
+        }
+        if let Some(replacement) = &self.manifest_replacement {
+            publish_manifest(replacement)?;
         }
         Ok(())
     }
@@ -1128,6 +1240,9 @@ fn states(
 pub(crate) struct ManagedTransaction<'a> {
     tx: Option<Transaction<'a>>,
     context: Option<CheckpointContext>,
+    database_path: Option<PathBuf>,
+    publication_fence: Option<DatabaseFence>,
+    manifest_replacement: Option<ManifestReplacement>,
     before: Vec<ActiveCheckpoint>,
     frozen: Option<Vec<ActiveCheckpoint>>,
     retired: Option<String>,
@@ -1147,6 +1262,10 @@ pub(crate) fn transaction(
     connection: &mut Connection,
     context: Option<CheckpointContext>,
 ) -> Result<ManagedTransaction<'_>> {
+    let database_path = context
+        .as_ref()
+        .map(|context| context.database.clone())
+        .or_else(|| connection.path().map(PathBuf::from));
     let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     ensure_observable(&tx)?;
     let original_rows = if context.is_some() {
@@ -1157,6 +1276,9 @@ pub(crate) fn transaction(
     let managed = ManagedTransaction {
         tx: Some(tx),
         context,
+        database_path,
+        publication_fence: None,
+        manifest_replacement: None,
         before: Vec::new(),
         frozen: None,
         retired: None,
@@ -1226,6 +1348,39 @@ fn publish_cohort(states: &[ActiveCheckpoint]) -> Result<()> {
 }
 
 impl ManagedTransaction<'_> {
+    fn persistent_database_path(&mut self) -> Result<PathBuf> {
+        let path = self
+            .database_path
+            .as_deref()
+            .context("manifest publication requires a file-backed task store")?;
+        if path == Path::new(":memory:") || path.to_string_lossy().starts_with("file:") {
+            bail!("manifest publication requires a file-backed task store");
+        }
+        let path = path.canonicalize()?;
+        if !path.is_file() {
+            bail!("manifest publication requires a file-backed task store");
+        }
+        self.database_path = Some(path.clone());
+        Ok(path)
+    }
+
+    /// Stage a manifest replacement in the same durable publication as this SQL transaction.
+    pub(crate) fn stage_manifest_replacement(
+        &mut self,
+        replacement: ManifestReplacement,
+    ) -> Result<()> {
+        if self.manifest_replacement.is_some() {
+            bail!("TASK_MANIFEST_PUBLICATION_INVALID: only one manifest replacement may be staged");
+        }
+        if self.context.is_none() {
+            let database = self.persistent_database_path()?;
+            self.publication_fence = Some(lock_database(&database)?);
+        }
+        replacement.validate_preimage()?;
+        self.manifest_replacement = Some(replacement);
+        Ok(())
+    }
+
     /// Declare potential writers before any owned file or SQL side effect.
     /// Initial enrollment includes genuine peers of the same admitted milestone;
     /// subsequent publication preserves their cohort without allocating peer revisions.
@@ -1420,9 +1575,41 @@ impl ManagedTransaction<'_> {
         }
         Ok(())
     }
-    pub(crate) fn commit(mut self) -> Result<()> {
+    pub(crate) fn commit(self) -> Result<()> {
+        self.commit_with_publisher(|replacement| replacement.publish())
+    }
+
+    fn commit_with_publisher(
+        mut self,
+        mut publish_manifest: impl FnMut(&ManifestReplacement) -> Result<()>,
+    ) -> Result<()> {
         let Some(context) = self.context.clone() else {
+            let Some(replacement) = self.manifest_replacement.take() else {
+                self.tx.take().expect("active transaction").commit()?;
+                return Ok(());
+            };
+            let database = self.persistent_database_path()?;
+            if self.publication_fence.is_none() {
+                bail!("manifest publication requires the task database fence");
+            }
+            let publication = Publication {
+                active: Vec::new(),
+                retired: Vec::new(),
+                manifest_replacement: Some(replacement),
+            };
+            self.execute(
+                "INSERT INTO task_store_metadata VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                params![PENDING, serde_json::to_string(&publication)?],
+            )?;
             self.tx.take().expect("active transaction").commit()?;
+            publication
+                .publish_with(&mut publish_manifest)
+                .map_err(|error| {
+                    anyhow::Error::new(CheckpointPending).context(error.to_string())
+                })?;
+            clear_pending(&database).map_err(|error| {
+                anyhow::Error::new(CheckpointPending).context(error.to_string())
+            })?;
             return Ok(());
         };
         let mut after = match self.frozen.take() {
@@ -1477,6 +1664,7 @@ impl ManagedTransaction<'_> {
         let publication = Publication {
             active: after,
             retired,
+            manifest_replacement: self.manifest_replacement.take(),
         };
         self.execute("INSERT INTO task_store_metadata VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![PENDING, serde_json::to_string(&publication)?])?;
         self.execute("INSERT INTO task_store_metadata VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![ROOT, context.root.to_string_lossy()])?;
@@ -1489,18 +1677,19 @@ impl ManagedTransaction<'_> {
         // No Drop compensation is legal after SQL COMMIT, even when Git publication fails.
         self.before.clear();
         publication
-            .publish()
+            .publish_with(&mut publish_manifest)
             .map_err(|error| anyhow::Error::new(CheckpointPending).context(error.to_string()))?;
-        let connection = Connection::open(&context.database)
-            .map_err(|error| anyhow::Error::new(CheckpointPending).context(error.to_string()))?;
-        connection
-            .busy_timeout(std::time::Duration::from_secs(5))
-            .map_err(|error| anyhow::Error::new(CheckpointPending).context(error.to_string()))?;
-        connection
-            .execute("DELETE FROM task_store_metadata WHERE key=?1", [PENDING])
+        clear_pending(&context.database)
             .map_err(|error| anyhow::Error::new(CheckpointPending).context(error.to_string()))?;
         Ok(())
     }
+}
+
+fn clear_pending(database: &Path) -> Result<()> {
+    let connection = Connection::open(database)?;
+    connection.busy_timeout(std::time::Duration::from_secs(5))?;
+    connection.execute("DELETE FROM task_store_metadata WHERE key=?1", [PENDING])?;
+    Ok(())
 }
 impl Drop for ManagedTransaction<'_> {
     fn drop(&mut self) {
@@ -1953,6 +2142,86 @@ impl TasksStore {
         crate::core::tasks::valid_identity(milestone_id)?;
         let identity = self.milestone_identity(milestone_id);
         self.connection.execute("INSERT INTO milestone_tombstones VALUES(?1,?2,?3,?4) ON CONFLICT(milestone_id) DO UPDATE SET all_tasks_terminal=excluded.all_tasks_terminal,completed_task_ids=excluded.completed_task_ids", params![identity,now(),completed,serde_json::to_string(completed_ids)?])?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    struct TestTempDir(PathBuf);
+
+    impl TestTempDir {
+        fn new() -> Result<Self> {
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "contextunity-forge-task-store-{}-{nonce}",
+                std::process::id()
+            ));
+            std::fs::create_dir(&path)?;
+            Ok(Self(path))
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestTempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn pending_manifest_publication_replays_for_non_git_task_store() -> Result<()> {
+        let temp = TestTempDir::new()?;
+        let workspace = temp.path().join("workspace");
+        let manifest = workspace.join("docs/milestones/010-scope.md");
+        std::fs::create_dir_all(manifest.parent().context("manifest parent")?)?;
+        let before = b"# Scope\n";
+        let after = b"# Scope\n\nExtended scope.\n";
+        std::fs::write(&manifest, before)?;
+
+        let replacement =
+            ManifestReplacement::new(&workspace, "docs/milestones/010-scope.md", before, after)?;
+        let database = temp.path().join(".forge/tasks.sqlite");
+        let mut store = TasksStore::open_project(&database, "repo", "project")?;
+        let context = store.checkpoint_context()?;
+        assert!(
+            context.is_none(),
+            "fixture must not have Git checkpoint context"
+        );
+
+        // Existing pending publications keep deserializing after this additive field.
+        let legacy: Publication = serde_json::from_str(r#"{"active":[],"retired":[]}"#)?;
+        assert!(legacy.manifest_replacement.is_none());
+
+        let mut tx = transaction(&mut store.connection, context)?;
+        tx.stage_manifest_replacement(replacement)?;
+        let error = tx
+            .commit_with_publisher(|_| Err(anyhow::anyhow!("injected publication failure")))
+            .expect_err("injected failure must leave the committed publication pending");
+        assert!(is_pending(&error));
+        assert_eq!(std::fs::read(&manifest)?, before);
+        assert!(ensure_observable(&store.connection).is_err());
+
+        std::fs::write(&manifest, b"# Third-party edit\n")?;
+        let error = store
+            .reconcile_checkpoints()
+            .expect_err("recovery must fail closed on unexpected manifest content");
+        assert!(is_pending(&error));
+        assert!(ensure_observable(&store.connection).is_err());
+
+        std::fs::write(&manifest, before)?;
+        assert!(store.reconcile_checkpoints()?);
+        assert_eq!(std::fs::read(&manifest)?, after);
+        assert!(!store.reconcile_checkpoints()?);
+        ensure_observable(&store.connection)?;
         Ok(())
     }
 }

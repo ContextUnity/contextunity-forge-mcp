@@ -191,6 +191,8 @@ fn cancelled_tasks_retain_history_and_do_not_unblock_dependencies() {
         milestone.tasks[0].status = None;
         milestone.tasks[0].receipt = None;
         milestone.tasks[0].proof_policy = "direct-proof".into();
+        milestone.tasks[0].subtasks[0].status = "completed".into();
+        milestone.tasks[0].subtasks[0].evidence = Some("Child work verified".into());
         // This seam resets/re-admits retained task history, so it needs a live
         // manifest rather than a handed-off archive that forbids resurrection.
         write_manifest(&completed, "docs/cancelled.md", &milestone);
@@ -460,6 +462,25 @@ fn task_subtasks_lifecycle_management_and_digest_independence() {
     drop(store);
 
     // Deliver task through all 4 gates and prove subtasks are rendered into durable milestone markdown
+    let mut store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
+    store
+        .subtask_update(
+            task_id,
+            "sub-1",
+            "completed",
+            Some("Existing discovery verified"),
+        )
+        .unwrap();
+    store
+        .subtask_update(
+            task_id,
+            "sub-3",
+            "completed",
+            Some("Documentation verified"),
+        )
+        .unwrap();
+    drop(store);
+
     let stages = ["contract", "build", "review", "deliver"];
     for (index, stage) in stages.iter().enumerate() {
         let worker = if index >= 2 { "reviewer" } else { "builder" };
@@ -500,6 +521,17 @@ fn task_subtasks_lifecycle_management_and_digest_independence() {
         delivered_task.subtasks[1].evidence.as_deref(),
         Some("Added unit test")
     );
+    assert!(delivered_task
+        .subtasks
+        .iter()
+        .all(|subtask| matches!(subtask.status.as_str(), "completed" | "cancelled")));
+    assert!(delivered_task.subtasks.iter().all(|subtask| {
+        subtask.status != "completed"
+            || subtask
+                .evidence
+                .as_deref()
+                .is_some_and(|evidence| !evidence.trim().is_empty())
+    }));
 
     // Post-delivery immutability: modifying subtasks on a completed task fails with TASK_TERMINAL
     let mut store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();

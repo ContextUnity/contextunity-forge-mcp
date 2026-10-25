@@ -968,46 +968,197 @@ receipt:
 
 ```yaml
 task_ref: scope-extension-manifest-sync-and-review-audit
-target: "Wire zero-argument task submission into the CLI, implement atomic task extend-scope manifest synchronization, extended_scope_review verification gate, extend milestone handoff SQLite pruning to trace, transition, and checkpoint tables, and migrate the session-checkpoint tool to gate_checkpoints"
+target: Wire zero-argument task submission into the CLI, implement atomic task extend-scope manifest synchronization and extended_scope_review enforcement, migrate session checkpoints to SQLite, prune milestone gate telemetry on handoff, and implement the pre-documentation milestone verification container with a full-repository check, independent review, bounded build_review_cycle fallback, and autonomous delivery commit
 proof_policy: seam-test-first
-contract_revision: 2
+contract_revision: 14
 depends_on:
-  - zero-arg-transition-engine-and-command-runner
-  - upfront-contract-synthesis-and-shared-helper-extraction
+- zero-arg-transition-engine-and-command-runner
+- upfront-contract-synthesis-and-shared-helper-extraction
 scope:
-  - src/cli/task.rs
-  - src/cli/guide.rs
-  - src/mcp/tools.rs
-  - src/engine/milestones/contract.rs
-  - src/engine/milestones/handoff.rs
-  - src/engine/milestones/integration.rs
-  - tests/acdd/scope_sync.rs
-  - docs/reference/tasks.md
-  - docs/reference/cli.md
-  - skills/contextunity-forge/SKILL.md
-  - docs/future/adr/0020-hierarchical-acdd-gates-and-milestone-orchestration.md
-  - docs/adr/0020-hierarchical-acdd-gates-and-milestone-orchestration.md
-  - docs/adr/README.md
-  - docs/future/milestones/AGENTS.md
-  - docs/milestones/AGENTS.md
-  - docs/future/references/acdd_profile.v2.yaml.example
-  - docs/future/AGENTS.md
-status: planned
+- src/cli/task.rs
+- src/cli/guide.rs
+- src/mcp/tools.rs
+- src/engine/milestones/contract.rs
+- src/engine/milestones/handoff.rs
+- src/engine/milestones/integration.rs
+- tests/acdd/scope_sync.rs
+- tests/acdd/tasks.rs
+- tests/mcp/tool_evolution/mcp_boundaries.rs
+- tests/mcp/freshness/stdio_and_response.rs
+- tests/mcp/context.rs
+- tests/acdd/persistence.rs
+- tests/acdd/milestones.rs
+- tests/acdd/mcp.rs
+- src/db/tasks_store/recovery.rs
+- src/engine/tasks/mod.rs
+- docs/reference/profiles.md
+- docs/reference/tasks.md
+- docs/reference/cli.md
+- skills/contextunity-forge/SKILL.md
+- docs/future/adr/0020-hierarchical-acdd-gates-and-milestone-orchestration.md
+- docs/adr/0020-hierarchical-acdd-gates-and-milestone-orchestration.md
+- docs/adr/README.md
+- docs/future/milestones/AGENTS.md
+- docs/milestones/AGENTS.md
+- docs/milestones/README.md
+- docs/future/references/acdd_profile.v2.yaml.example
+- docs/future/AGENTS.md
+- src/db/tasks_store/lifecycle.rs
+- src/engine/tasks/lifecycle.rs
+- src/core/tasks/gates.rs
+- src/engine/tasks/gates.rs
+- src/db/tasks_store/trace.rs
+- src/db/tasks_store/mod.rs
+- docs/reference/mcp-tools.md
+- docs/milestones/AC-001-hierarchical-acdd-gates-and-milestone-orchestration.md
+- docs/reference/profiles.md
+- src/core/tasks/profile.rs
+- src/engine/tasks/context.rs
+- .forge/acdd/profile.yaml
+- tests/acdd/subtasks.rs
+- tests/mcp/skill_sync.rs
+- src/cli/milestone.rs
+- src/engine/milestones/mod.rs
+scope_roots:
+- src/cli/task.rs
+- src/cli/guide.rs
+- src/mcp/tools.rs
+- src/engine/milestones/contract.rs
+- src/engine/milestones/handoff.rs
+- src/engine/milestones/integration.rs
+- tests/acdd/scope_sync.rs
+- docs/reference/tasks.md
+- docs/reference/cli.md
+- skills/contextunity-forge/SKILL.md
+- docs/future/adr/0020-hierarchical-acdd-gates-and-milestone-orchestration.md
+- docs/adr/0020-hierarchical-acdd-gates-and-milestone-orchestration.md
+- docs/adr/README.md
+- docs/future/milestones/AGENTS.md
+- docs/milestones/AGENTS.md
+- docs/milestones/README.md
+- docs/future/references/acdd_profile.v2.yaml.example
+- docs/future/AGENTS.md
+- src/db/tasks_store/lifecycle.rs
+- src/engine/tasks/lifecycle.rs
+- src/core/tasks/gates.rs
+- src/engine/tasks/gates.rs
+- src/db/tasks_store/trace.rs
+- src/db/tasks_store/mod.rs
+- docs/reference/mcp-tools.md
+- docs/milestones/AC-001-hierarchical-acdd-gates-and-milestone-orchestration.md
+- src/core/tasks/profile.rs
+- src/engine/tasks/context.rs
+- .forge/acdd/profile.yaml
+- docs/reference/profiles.md
+- tests/acdd/
+- tests/mcp/
+- src/engine/tasks/mod.rs
+- src/db/tasks_store/recovery.rs
+- src/engine/milestones/
+- src/cli/milestone.rs
+- src/core/tasks/acdd.default.yaml
+status: completed
 subtasks:
-  - subtask_ref: extend-scope-markdown-manifest-sync
-    title: "Implement atomic two-tier scope extension synchronizing SQLite and markdown manifest"
-  - subtask_ref: extended-scope-review-proof-enforcement
-    title: "Implement review gate validator enforcing extended_scope_review sign-off on scope additions"
-  - subtask_ref: session-checkpoint-sqlite-migration
-    title: "Migrate session_checkpoint MCP tool to query gate_checkpoints SQLite table by breadcrumb"
-  - subtask_ref: milestone-handoff-trace-and-checkpoint-pruning
-    title: "Extend milestone handoff pruning to purge gate_transitions, traces, and checkpoints tables"
-  - subtask_ref: milestone-verification-container-and-autonomous-deliver
-    title: "Implement milestone verification container gate with full repo check, review, fallback subgraph, and autonomous delivery"
-  - subtask_ref: zero-argument-task-submit-cli-wiring
-    title: "Wire the CLI task submit command to Task 3's zero-argument submission engine"
-  - subtask_ref: promote-future-adr-and-milestone-governance
-    title: "Promote docs/future/adr/0020-*.md to docs/adr/ and docs/future/milestones/AGENTS.md to docs/milestones/AGENTS.md, registering ADR 0020 in docs/adr/README.md and pruning docs/future/"
+- subtask_ref: extend-scope-markdown-manifest-sync
+  title: Implement atomic two-tier scope extension synchronizing SQLite and markdown manifest
+  status: completed
+  evidence: 'Source path verified: TasksStore::extend_scope -> extend_scope_with_pre_commit; atomically updates manifest with rollback closure around SQLite commit. ACDD tests scope_extension_updates_sqlite_and_milestone_manifest and scope_extension_rejects_invalid_manifest_dependencies_before_persisting passed within `cargo test --test acdd` (132 passed, 0 failed, exit 0); strict Clippy exit 0.'
+- subtask_ref: extended-scope-review-proof-enforcement
+  title: Implement review gate validator enforcing extended_scope_review sign-off on scope additions
+  status: completed
+  evidence: 'cargo test --test acdd review_requires_exact_extended_scope_approval_before_delivery: exit 0, 1 passed. Existing seam now rejects missing proof, wrong/extra/duplicate paths, and reason_verified=false; exact approved_paths with reason_verified=true advances to deliver. Forge code_map_explain resolves test calls into src/engine/tasks/gates.rs::TasksStore::submit and src/cli/task.rs::run. Full strict Clippy and ACDD will be rerun before parent build submission.'
+- subtask_ref: session-checkpoint-sqlite-migration
+  title: Migrate session_checkpoint MCP tool to query gate_checkpoints SQLite table by breadcrumb
+  status: completed
+  evidence: 'cargo test --test acdd session_checkpoints_use_sqlite_breadcrumb_rows: exit 0, 1 passed; cargo test --test mcp repair_checkpoint_page_shapes_are_opaque_and_persistence_is_unchanged: exit 0, 1 passed; rustfmt --edition 2021 --check src/mcp/tools.rs tests/acdd/scope_sync.rs: exit 0. MCP and ACDD seams both call cli::guide::checkpoint; after `contextunity-forge-mcp scan`, Forge graph shows both edges with matched freshness. Test covers SQLite breadcrumb save/get/list/delete, project namespace isolation, no legacy .forge/checkpoints.json, opaque payload and MCP response behavior. Full strict Clippy and ACDD will be rerun before parent build submission.'
+- subtask_ref: milestone-handoff-trace-and-checkpoint-pruning
+  title: Extend milestone handoff pruning to purge gate_transitions, traces, and checkpoints tables
+  status: completed
+  evidence: '`cargo test --test acdd milestone_handoff_prunes_only_its_gate_telemetry_identity`: exit 0, 1 passed. The fixture creates a checkpoint, execution trace, and transition for both m_test and m-test, calls TasksStore::handoff_milestone, and proves only the exact m_test identity is pruned. Forge code_map_explain confirms tests/acdd/milestones.rs -> TasksStore::handoff_milestone -> handoff_milestone_with_unlink -> prune_milestone_gate_records.'
+- subtask_ref: milestone-verification-container-and-autonomous-deliver
+  title: Implement milestone verification container gate with full repo check, review, fallback subgraph, and autonomous delivery
+  status: completed
+  evidence: 'Targeted rustfmt check passed. `cargo clippy --all-targets --all-features -- -D warnings`: exit 0. `cargo test --test acdd`: exit 0, 132 passed, 0 failed (697.67s).'
+- subtask_ref: promote-future-adr-and-milestone-governance
+  title: Promote docs/future/adr/0020-*.md to docs/adr/ and docs/future/milestones/AGENTS.md to docs/milestones/AGENTS.md, registering ADR 0020 in docs/adr/README.md and pruning docs/future/
+  status: completed
+  evidence: Verified already satisfied in current worktree; no edits needed. docs/adr/0020-hierarchical-acdd-gates-and-milestone-orchestration.md exists with accepted status and Forge get_doc retrieves it; docs/adr/README.md lists ADR 0020 as item 20; docs/milestones/AGENTS.md contains promoted governance rules; docs/future/adr/ and docs/future/milestones/ are absent. docs/future/AGENTS.md states accepted architecture and milestone rules were promoted and retains only the v2 profile example routed to Task 1. Forge scan completed and document retrieval is current.
+- subtask_ref: zero-argument-task-submit-cli-wiring
+  title: Wire the CLI task submit command to Task 3's zero-argument submission engine
+  status: completed
+  evidence: cargo test --test acdd task_submit_cli_accepts_omitted_evidence_and_uses_automatic_proof — exit 0, 1 passed. CLI parses omitted --evidence and dispatches to the claim-bound automatic proof engine.
+- subtask_ref: subtask-completion-delivery-guard
+  title: Implement mechanical delivery blocker enforcing 100% terminal subtask completion and evidence verification
+  status: completed
+  evidence: '`cargo test --test acdd delivery_requires_terminal_subtasks_with_verification_evidence`: exit 0, 1 passed. Cases verify incomplete subtasks and completed subtasks with missing or whitespace evidence block delivery without advancing task state. Forge code_map_explain confirms the test calls engine::tasks::submit.'
+- subtask_ref: profile-clean-room-inheritance-control
+  title: Implement inherit none clean-room profile isolation without embedded catalog leakage
+  status: completed
+  evidence: '`cargo test --test acdd declarative_profile_compiles_defaults_and_respects_role_overrides`: exit 0, 1 passed. The existing profile seam verifies inherit:none clears embedded roles, commands, error codes, proofs, guidance, policies, contours, and templates; Forge code_map_explain confirms calls to load_for_workspace and validate_profile_document.'
+- subtask_ref: profile-universal-commands-catalog-fix
+  title: Support empty commands catalog in compiler and eliminate hardcoded language dispatch from context selector
+  status: completed
+  evidence: '`cargo test --test acdd declarative_profile_compiles_defaults_and_respects_role_overrides` and `cargo test --test acdd boundary_guards_follow_configured_proof_kinds_and_non_cargo_commands_keep_paths`: each exit 0, 1 passed. The profile seam proves explicit commands:{} clears the inherited registry when command gates are absent; the boundary seam proves all configured non-Cargo commands keep the ordinary scoped path.'
+receipt:
+  contract_revision: 14
+  passed_at: 2026-10-25T09:49:48.629563663+00:00
+  evidence:
+    command_proof:
+      command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --test acdd
+      exit_code: 0
+      tests_passed: 133
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: Reviewed immutable candidate 8a9d7166884bef8747dadc304c7a6a4f70a54104 against captured base 1a000bc6d1a9774854fb7e93f36b659166b2f382 using the full explicit effective scope. Its only delta from reviewed 566c92e4 is ADR0020 line 353 link correction plus trailing whitespace cleanup. All 41 surviving snapshot paths and 3 admitted deletions remain authorized; protected .forge/acdd/profile.yaml was initially admitted. command_gate.rs is explicitly in Forge allowed_scope and authorized beneath manifest scope_roots src/engine/milestones/. I approve that extension as necessary for the full-log caller at integration.rs:268. Scoped bytes match worktree, including untracked promoted ADR blob 725c7769f8b619bd225279e37c5a3e3df667f95f. Unrelated dirty tests/AGENTS.md and sibling source/test paths remain excluded and untouched.
+        claims:
+          applicable: true
+          evidence: 'All T6-F1–F12 are closed. F12 corrected ../../src link resolves to src/engine/milestones/integration.rs; matched Forge graph now verifies ADR0020:353 -> run_milestone_check:204. F1–F11 source/tests are byte-identical to 566c92e4 independently reviewed in #1230: optional CLI evidence reaches submit_zero_arg; exact extended_scope_review required; scope synchronization uses managed publication; SQLite breadcrumbs preserve opaque payloads and protect lifecycle ownership/provenance; full log persistence includes bounded trace snippets; Delivered source/executable-skill drift requires fresh verify/review; admitted persist_log has pub(super); Exhausted action matches persisted writer and retries stay terminal. Existing three production CLI milestone verification seams independently passed on identical source/tests (exit 0, 3 passed, 14.40s). Fresh accepted builder strict Clippy plus ACDD proof in #1231 is exit 0, 133 passed, 0 failed. No new behavior or test change requires another runtime rerun.'
+        concurrency:
+          applicable: true
+          evidence: Revalidated unchanged managed transaction/revision/root/conflict fences and preimage-checked recoverable manifest publication. Existing rollback, blocked-writer and replay seam coverage remains unchanged. Milestone verification retains prepared store lock, candidate/binding/HEAD checks, clean-tree validation, bounded two-attempt fallback and claim-bound repair review. Exhausted reload/retries reject without additional command/history. Generic scratch checkpoint SQL upsert/delete predicates cannot replace transition-owned state; lifecycle loader verifies identity, tree, phase/action and proof digest. Candidate immutability preserved throughout review.
+        project_isolation:
+          applicable: true
+          evidence: Unchanged namespace-confined breadcrumb save/get/list/delete and exact milestone transition lookup prevent cross-project access. Handoff deletes checkpoint/trace/transition rows by fully qualified equality, preserving neighbors. Scope extensions remain normalized, protected-path checked and confined to admitted roots. Full logs use hashed identifiers, canonical worktree root, no-follow directory traversal and exclusive files. Reviewer codex-ac001-task6-reviewer-20261025-formal-r5 differs from accepted builder codex-ac001-task6-builder-20261025. Every task operation uses the claimed worktree; no sibling edits.
+        administration:
+          applicable: true
+          evidence: F12 closes the sole unresolved Markdown target from the prior full scoped link check; all other Markdown links are byte-unchanged. Forge now returns the ADR section as verified documentation for run_milestone_check, with matched freshness on 387 files and 0 parse errors. Scoped diff --check passes. Promoted ADR/governance, updated CLI/MCP/reference behavior, clean-room/empty-command profiles, terminal subtask evidence guard, telemetry pruning and durable archive/tombstone authority remain as reviewed. No receipt/schema/Git mutations and no delivery performed. All twelve prior findings closed; no remaining scoped findings.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-UNIVERSAL-GATE-POLYMORPHISM: Every workflow node is a Gate; execution mode is determined by driver fields: Agent Gate (role), Command Gate (command), or Container Gate (gates).'
+    - 'INV-ZERO-ARGUMENT-SUBMISSION: Automated gate submissions (any gate configured with proof: command, contract, or delivery) require zero manual JSON arguments; Forge autonomously compiles proof from gate execution traces and Git tree state. Cognitive review gates (proof: review) strictly require typed review judgments (verdict, reviewer, contours_reviewed, extended_scope_review).'
+    - 'INV-IN-PLACE-LIFECYCLE: Task and milestone execution supports in-place operation (--in-place / worktree: ".") without mandatory worktree or branch isolation.'
+    - 'INV-SILENT-ENGINE-TELEMETRY: Gate transitions and command execution traces are automatically recorded in SQLite; automated engine progress logging to task_blackboard is suppressed, preserving blackboard bandwidth for RFCs, synthesized contract matrices, and human escalations.'
+    - 'INV-SEAM-ENGINE-RED-GREEN: Seam Engine automatically tracks contract runtime failure (matching configured expected_failure.exit_codes) to implementation pass (exit 0) via gate execution traces.'
+    - 'INV-SEAM-REACHABILITY-RESILIENCE: Static seam verification proves the current test-to-production connection through imports, re-exports, and bounded test-helper paths; stale source/index evidence produces an actionable stale-index diagnostic. An unresolved expression alone does not prove reachability.'
+    - 'INV-REQUIRED-SKILLS-GOVERNANCE: Manifests declare required_skills in frontmatter; milestone init fails closed (MILESTONE_PREFLIGHT_FAILED) before agent launch if any declared skill is absent.'
+    - 'INV-PREFLIGHT-MILESTONE-INIT: milestone init validates manifest syntax, checks required_skills on host, and pre-scaffolds base worktrees across declared repositories upfront before agent dispatch.'
+    - 'INV-MULTI-REPO-MANIFEST-DECLARATION: Multi-repository workflows declare participant repositories in manifest frontmatter; the engine coordinates cross-repo worktree initialization and compound breadcrumbs.'
+    - 'INV-EXTENDED-SCOPE-MANIFEST-SYNC: task extend-scope writes atomically to both SQLite and the milestone markdown manifest; review proof strictly requires extended_scope_review approval before deliver.'
+    - 'INV-BREADCRUMB-CHECKPOINT-UNIFICATION: Checkpoints are stored in SQLite gate_checkpoints keyed directly by turn breadcrumb locators; legacy .forge/checkpoints.json is eliminated.'
+    - 'INV-TRANSITION-TRACE-PERSISTENCE: Upon milestone handoff (INV-HANDOFF-SQLITE-PRUNING), completed milestone tasks, claims, revisions, gate transitions, execution traces, checkpoints, and task blackboard rows are purged from SQLite; milestone_tombstones is retained to keep archived dependencies satisfiable; canonical durable records reside permanently in docs/milestones/archive/*.md and Git history.'
+    - 'INV-PRE-DOC-AUTONOMOUS-VERIFICATION: Milestone verification executes as a container gate with automated checks, review, fallback repair subgraph, and autonomous delivery before documentation.'
+    - 'INV-MARKDOWN-FIRST-ERGONOMICS: Agent messages, guidance, and status reports follow Milestone 054 Markdown-first principles: clickable coordinates, callout blockers, compact status tables, zero dead metadata.'
+    - 'INV-MODULAR-SUBSYSTEM-DECOUPLING: Forge MCP decomposes functionality into 5 independent subsystems (codemap, acdd, blackboard, docs, checkpoints) configurable via forge-mcp.yaml modules/profile, with dynamic MCP tool registration and zero initialization cost for disabled subsystems.'
+    - 'INV-CONTEXT-AWARE-GUIDANCE-ADAPTATION: workflow_guidance, prompts, and gate verification dynamically adapt to enabled subsystems, suppressing dead tool references, omitting unused guidance structures, and falling back gracefully when graph or blackboard features are disabled.'
+    - 'INV-PAYLOAD-OVERFLOW-GUARD: Custom metadata, git_commit_note payloads (rendered as Markdown by default, or JSON), and in-database trace snippets attached to tasks are bounded by a 2 KiB limit (configurable via git_commit_note.limits.max_bytes / limits.max_metadata_bytes) with complete command outputs written to disk logs, protecting the 96 KiB MCP response budget and preventing Git note bloat.'
+    - 'INV-UNIVERSAL-PROFILE-ZERO-LANGUAGE-HARDCODE: The embedded default profile (acdd.default.yaml) and profile templates must remain strictly language-agnostic. Gates and commands must not hardcode Rust-specific binaries (such as cargo clippy or cargo test); all verification commands must use pattern-based dispatch (by_pattern) matching project file extensions or generic command identifiers. Guidance texts must not mention specific languages or compilers.'
+    - 'INV-TWO-LOOP-ACDD-GOVERNANCE: Task execution strictly distinguishes between scope: (files on disk, extensible by builder) and symbols: (admitted public interface deltas, strictly governed by architect). Review failures route via reject_routing (scope -> build, symbols -> contract). Unadmitted public interface mutations are prohibited from bypassing the Long Outer Loop (architect arbitration -> seam contract test -> builder).'
+    - 'INV-GUIDANCE-SLOT-BINDING: Gates declare parameterized guidance slots (e.g. guidance: [task.contract, hitl]), and milestones bind them in manifest frontmatter (guidance: { hitl: pro }). The engine resolves slot hitl with value pro via format!("{}.{}", slot, value) -> hitl.pro (or literal dotted keys). The validator verifies slot matching on milestone init/check, emitting warnings for unbound slots and falling back to profile defaults.'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Admitted Symbols (Wave 3)

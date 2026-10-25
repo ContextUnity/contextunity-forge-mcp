@@ -1,9 +1,12 @@
 use super::{
     contract::Snapshot,
-    integration::{self, HandoffBinding, IntegrationEvidence},
+    integration::{
+        self, HandoffBinding, IntegrationEvidence, IntegrationReview, MilestoneVerificationReview,
+        VerificationCheck,
+    },
     render_task_receipt, snapshots,
 };
-use crate::db::tasks_store::{Task, TasksStore};
+use crate::db::tasks_store::{GateCheckpoint, GateTransition, Task, TasksStore};
 use crate::engine::tasks;
 use anyhow::{bail, Context, Result};
 use chrono::{TimeZone, Utc};
@@ -542,11 +545,19 @@ fn validate_effective_scope(
             .map_err(|_| invalid())
     };
 
+    let extended_scope = original
+        .extended_scope
+        .iter()
+        .map(|path| normalize(path))
+        .collect::<Result<BTreeSet<_>>>()?;
     let original_scope = original
         .scope
         .iter()
         .map(|path| normalize(path))
-        .collect::<Result<BTreeSet<_>>>()?;
+        .collect::<Result<BTreeSet<_>>>()?
+        .difference(&extended_scope)
+        .cloned()
+        .collect::<BTreeSet<_>>();
     if !task.initial_scope.is_empty()
         && task
             .initial_scope
@@ -784,9 +795,19 @@ fn binding(
     })
 }
 
-/// Prepare content identities for external integration review and verification.
-/// Accepted proof objects are retained independently of mutable branch history.
-pub fn handoff_context(root: &Path, selector: &str, target_base: &str) -> Result<Value> {
+struct PreparedHandoff {
+    item: Snapshot,
+    store: TasksStore,
+    binding: HandoffBinding,
+    commit: String,
+    target: String,
+}
+
+fn prepare_handoff_context(
+    root: &Path,
+    selector: &str,
+    target_base: &str,
+) -> Result<PreparedHandoff> {
     let fence = crate::db::tasks_store::recovery::lock_database(&tasks::database_path(root)?)?;
     let (item, mut store, relevant) = ready_milestone(root, selector)?;
     store.adopt_checkpoint_lock(fence.clone());
@@ -804,10 +825,966 @@ pub fn handoff_context(root: &Path, selector: &str, target_base: &str) -> Result
     };
     integration::enroll_preparation(&mut store, root, &owner)?;
     integration::write_handoff_owner(root, &commit, &owner)?;
-    Ok(
-        json!({"binding":binding, "commit":commit, "target_base":target,
-        "requires_project_verification":source_polish(root, &item)?}),
+    Ok(PreparedHandoff {
+        item,
+        store,
+        binding,
+        commit,
+        target,
+    })
+}
+
+/// Prepare content identities for external integration review and verification.
+/// Accepted proof objects are retained independently of mutable branch history.
+pub fn handoff_context(root: &Path, selector: &str, target_base: &str) -> Result<Value> {
+    let prepared = prepare_handoff_context(root, selector, target_base)?;
+    Ok(json!({
+        "binding":prepared.binding,
+        "commit":prepared.commit,
+        "target_base":prepared.target,
+        "requires_project_verification":source_polish(root, &prepared.item)?
+    }))
+}
+
+const MILESTONE_VERIFICATION_GATE_PATH: &str = "milestone_verification";
+const MILESTONE_VERIFICATION_BREADCRUMB_SUFFIX: &str = "milestone_verification/milestone/verify";
+const MILESTONE_VERIFICATION_STATE_DIGEST_KEY: &str = "_forge_milestone_verification_state_sha256";
+
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum MilestoneVerificationPhase {
+    ReviewRequired,
+    FallbackRequired,
+    FallbackBuildClaimed,
+    FallbackVerificationRequired,
+    DeliveryPending,
+    Delivered,
+    Exhausted,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FallbackBuildClaim {
+    worker_id: String,
+    base_binding: HandoffBinding,
+    base_head: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MilestoneVerificationState {
+    phase: MilestoneVerificationPhase,
+    binding: HandoffBinding,
+    target_base: String,
+    candidate_head: String,
+    candidate_tree_sha: String,
+    verification: VerificationCheck,
+    fallback_attempts: u32,
+    verification_runs: u32,
+    last_failure: Option<String>,
+    review: Option<IntegrationReview>,
+    #[serde(default)]
+    fallback_build_claim: Option<FallbackBuildClaim>,
+    #[serde(default)]
+    fallback_builder: Option<String>,
+    delivery_commit: Option<String>,
+    receipt_id: Option<String>,
+}
+
+fn milestone_verification_identity(item: &Snapshot) -> String {
+    format!("{}/{}/{}", item.repository, item.project, item.id)
+}
+
+fn milestone_verification_breadcrumb(identity: &str) -> String {
+    format!("{identity}/{MILESTONE_VERIFICATION_BREADCRUMB_SUFFIX}")
+}
+
+fn load_milestone_verification_state(
+    store: &TasksStore,
+    identity: &str,
+) -> Result<Option<MilestoneVerificationState>> {
+    let Some(checkpoint) = store.get_checkpoint(&milestone_verification_breadcrumb(identity))?
+    else {
+        return Ok(None);
+    };
+    let transition_id = checkpoint.transition_id.context(
+        "MILESTONE_VERIFICATION_CHECKPOINT_INVALID: stored state has no lifecycle transition",
+    )?;
+    let transition = store
+        .get_gate_transition(transition_id, identity)?
+        .context("MILESTONE_VERIFICATION_CHECKPOINT_INVALID: lifecycle transition is missing")?;
+    let state: MilestoneVerificationState = serde_json::from_value(checkpoint.state_payload)
+        .context("MILESTONE_VERIFICATION_CHECKPOINT_INVALID: stored state is malformed")?;
+    if checkpoint.milestone_id != identity
+        || checkpoint.subject != "milestone"
+        || checkpoint.gate_path != MILESTONE_VERIFICATION_GATE_PATH
+        || transition.subject != "milestone"
+        || transition.git_tree_sha != checkpoint.git_tree_sha
+        || transition.gate_path
+            != format!(
+                "{MILESTONE_VERIFICATION_GATE_PATH}.{}",
+                action_gate(&transition.action)
+            )
+        || !milestone_verification_action_matches_phase(&transition.action, state.phase)
+    {
+        bail!("MILESTONE_VERIFICATION_CHECKPOINT_INVALID: stored state does not match its lifecycle transition");
+    }
+    if let Some(stored_digest) = transition
+        .proof_payload
+        .get(MILESTONE_VERIFICATION_STATE_DIGEST_KEY)
+    {
+        let expected_digest = integration::digest(&state)?;
+        if stored_digest.as_str() != Some(expected_digest.as_str()) {
+            bail!("MILESTONE_VERIFICATION_CHECKPOINT_INVALID: stored state differs from its lifecycle proof");
+        }
+    }
+    Ok(Some(state))
+}
+
+fn save_milestone_verification_state(
+    store: &TasksStore,
+    identity: &str,
+    state: &MilestoneVerificationState,
+    action: &str,
+    proof_kind: &str,
+    proof_payload: Value,
+    worker_id: &str,
+) -> Result<()> {
+    let state_digest = integration::digest(state)?;
+    let mut transition_payload = match proof_payload {
+        Value::Object(payload) => payload,
+        proof => {
+            let mut payload = serde_json::Map::new();
+            payload.insert("proof".to_owned(), proof);
+            payload
+        }
+    };
+    transition_payload.insert(
+        MILESTONE_VERIFICATION_STATE_DIGEST_KEY.to_owned(),
+        json!(state_digest),
+    );
+    let transition_id = store.record_gate_transition(&GateTransition {
+        milestone_id: identity.to_owned(),
+        subject: "milestone".to_owned(),
+        gate_path: format!("{MILESTONE_VERIFICATION_GATE_PATH}.{}", action_gate(action)),
+        action: action.to_owned(),
+        proof_kind: proof_kind.to_owned(),
+        proof_payload: Value::Object(transition_payload),
+        git_tree_sha: state.candidate_tree_sha.clone(),
+        worker_id: worker_id.to_owned(),
+    })?;
+    store.save_checkpoint(&GateCheckpoint {
+        breadcrumb: milestone_verification_breadcrumb(identity),
+        milestone_id: identity.to_owned(),
+        subject: "milestone".to_owned(),
+        gate_path: MILESTONE_VERIFICATION_GATE_PATH.to_owned(),
+        transition_id: Some(transition_id),
+        git_tree_sha: state.candidate_tree_sha.clone(),
+        state_payload: serde_json::to_value(state)?,
+    })
+}
+
+fn milestone_verification_action_matches_phase(
+    action: &str,
+    phase: MilestoneVerificationPhase,
+) -> bool {
+    match phase {
+        MilestoneVerificationPhase::ReviewRequired => {
+            matches!(action, "verify_pass" | "fallback_verify_pass")
+        }
+        MilestoneVerificationPhase::FallbackRequired => action == "fallback",
+        MilestoneVerificationPhase::FallbackBuildClaimed => action == "fallback_build_claim",
+        MilestoneVerificationPhase::FallbackVerificationRequired => action == "fallback_build_pass",
+        MilestoneVerificationPhase::DeliveryPending => {
+            matches!(action, "review_pass" | "fallback_review_pass")
+        }
+        MilestoneVerificationPhase::Delivered => action == "deliver",
+        MilestoneVerificationPhase::Exhausted => action == "exhausted",
+    }
+}
+
+fn action_gate(action: &str) -> &str {
+    if action.starts_with("fallback_build") {
+        "fallback.build"
+    } else if action.starts_with("fallback_verify") {
+        "fallback.verify"
+    } else if action.starts_with("fallback_review") {
+        "fallback.review"
+    } else if action.starts_with("review") {
+        "review"
+    } else if action == "deliver" {
+        "deliver"
+    } else {
+        "verify"
+    }
+}
+
+fn milestone_verification_profile(
+    profile: &crate::core::tasks::profile::GateProfile,
+) -> Result<&crate::core::tasks::profile::GateDef> {
+    profile
+        .milestone_verification
+        .as_ref()
+        .context("MILESTONE_VERIFICATION_PROFILE_MISSING: configure milestone_verification before running the container")
+}
+
+fn milestone_verification_result(state: &MilestoneVerificationState) -> Value {
+    match state.phase {
+        MilestoneVerificationPhase::ReviewRequired => json!({
+            "status":"review_required",
+            "next_gate":"review",
+            "binding":state.binding,
+            "target_base":state.target_base,
+            "candidate_head":state.candidate_head,
+            "verification":state.verification,
+            "fallback_attempts":state.fallback_attempts
+        }),
+        MilestoneVerificationPhase::FallbackRequired => json!({
+            "status":"fallback_required",
+            "next_gate":"build",
+            "next_role":"architect",
+            "binding":state.binding,
+            "candidate_head":state.candidate_head,
+            "verification":state.verification,
+            "fallback_attempts":state.fallback_attempts,
+            "last_failure":state.last_failure
+        }),
+        MilestoneVerificationPhase::FallbackBuildClaimed => json!({
+            "status":"fallback_build_claimed",
+            "next_gate":"build.submit",
+            "builder":state.fallback_build_claim.as_ref().map(|claim| claim.worker_id.as_str()),
+            "base_head":state.candidate_head,
+            "fallback_attempts":state.fallback_attempts
+        }),
+        MilestoneVerificationPhase::FallbackVerificationRequired => json!({
+            "status":"fallback_verification_required",
+            "next_gate":"verify",
+            "binding":state.binding,
+            "candidate_head":state.candidate_head,
+            "fallback_builder":state.fallback_builder,
+            "fallback_attempts":state.fallback_attempts
+        }),
+        MilestoneVerificationPhase::DeliveryPending => json!({
+            "status":"delivery_pending",
+            "next_gate":"deliver",
+            "binding":state.binding,
+            "candidate_head":state.candidate_head
+        }),
+        MilestoneVerificationPhase::Delivered => json!({
+            "status":"delivered",
+            "next_gate":"documentation",
+            "binding":state.binding,
+            "candidate_head":state.candidate_head,
+            "delivery_commit":state.delivery_commit,
+            "receipt_id":state.receipt_id
+        }),
+        MilestoneVerificationPhase::Exhausted => json!({
+            "status":"blocked",
+            "next_gate":null,
+            "binding":state.binding,
+            "candidate_head":state.candidate_head,
+            "fallback_attempts":state.fallback_attempts,
+            "last_failure":state.last_failure
+        }),
+    }
+}
+
+fn fallback_configuration(
+    profile: &crate::core::tasks::profile::GateProfile,
+    container: &crate::core::tasks::profile::GateDef,
+) -> Result<(Value, String, u32)> {
+    let fallback = container
+        .fallback
+        .as_ref()
+        .context("MILESTONE_VERIFICATION_PROFILE_INVALID: fallback is required")?;
+    let template_name = fallback
+        .use_template
+        .as_deref()
+        .context("MILESTONE_VERIFICATION_PROFILE_INVALID: fallback template is required")?;
+    if template_name != "build_review_cycle" {
+        bail!("MILESTONE_VERIFICATION_PROFILE_INVALID: unsupported fallback template '{template_name}'");
+    }
+    if !profile.roles.contains_key("architect") {
+        bail!("MILESTONE_VERIFICATION_PROFILE_INVALID: build_review_cycle requires the architect role");
+    }
+    let template_body = profile
+        .gate_templates
+        .get(template_name)
+        .map(serde_json::to_value)
+        .transpose()?
+        .unwrap_or_else(|| {
+            json!({
+                "gates":[
+                    {"id":"build","role":"architect","proof":"none"},
+                    {"id":"verify","command":"check_full_repo","proof":"command"},
+                    {"id":"review","role":"independent_reviewer","proof":"review","independent_from":"build","contours":"standard"}
+                ]
+            })
+        });
+    let template = json!({"id":template_name,"gates":template_body["gates"]});
+    let command = fallback
+        .command
+        .clone()
+        .context("MILESTONE_VERIFICATION_PROFILE_INVALID: fallback command is required")?;
+    Ok((template, command, fallback.max_attempts.unwrap_or(2)))
+}
+
+fn require_current_verification_candidate(
+    prepared: &PreparedHandoff,
+    state: &MilestoneVerificationState,
+) -> Result<()> {
+    if prepared.commit != state.candidate_head
+        || prepared.target != state.target_base
+        || prepared.binding != state.binding
+    {
+        bail!("MILESTONE_VERIFICATION_STALE: the candidate, target base, or milestone authority changed; rerun milestone verify before review");
+    }
+    Ok(())
+}
+
+fn delivered_verification_matches_current(
+    root: &Path,
+    prepared: &PreparedHandoff,
+    state: &MilestoneVerificationState,
+) -> Result<bool> {
+    let Some(delivery_commit) = state.delivery_commit.as_deref() else {
+        return Ok(false);
+    };
+    if prepared.target != state.target_base {
+        return Ok(false);
+    }
+    let mut current_binding = prepared.binding.clone();
+    current_binding.implementation_digest = state.binding.implementation_digest.clone();
+    if current_binding != state.binding {
+        return Ok(false);
+    }
+    let ancestor = crate::core::git::git_command(
+        root,
+        &[
+            "merge-base",
+            "--is-ancestor",
+            delivery_commit,
+            &prepared.commit,
+        ],
+    )?;
+    if !ancestor.status.success() {
+        if ancestor.status.code() == Some(1) {
+            return Ok(false);
+        }
+        bail!("MILESTONE_VERIFICATION_CANDIDATE_UNAVAILABLE: cannot validate delivered commit ancestry");
+    }
+    let changes = crate::core::git::git_command(
+        root,
+        &[
+            "diff",
+            "--name-only",
+            "--no-renames",
+            "-z",
+            &state.candidate_head,
+            &prepared.commit,
+        ],
+    )?;
+    if !changes.status.success() {
+        bail!("MILESTONE_VERIFICATION_CANDIDATE_UNAVAILABLE: cannot inspect post-delivery changes");
+    }
+    for path in changes
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+    {
+        let path = std::str::from_utf8(path)?;
+        if !is_documentation_path(path) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn is_documentation_path(path: &str) -> bool {
+    path.starts_with("docs/") || path.ends_with(".md")
+}
+
+fn route_milestone_verification_fallback(
+    prepared: &PreparedHandoff,
+    profile: &crate::core::tasks::profile::GateProfile,
+    container: &crate::core::tasks::profile::GateDef,
+    identity: &str,
+    state: &mut MilestoneVerificationState,
+    reason: &str,
+    worker_id: &str,
+) -> Result<Value> {
+    let (template, command, max_attempts) = fallback_configuration(profile, container)?;
+    state.last_failure = Some(reason.to_owned());
+    if state.fallback_attempts >= max_attempts {
+        state.phase = MilestoneVerificationPhase::Exhausted;
+        state.fallback_build_claim = None;
+        save_milestone_verification_state(
+            &prepared.store,
+            identity,
+            state,
+            "exhausted",
+            "fallback",
+            json!({"reason":reason,"fallback_attempts":state.fallback_attempts,"max_attempts":max_attempts}),
+            worker_id,
+        )?;
+        bail!("MILESTONE_VERIFICATION_EXHAUSTED: verification remains unresolved after {max_attempts} build_review_cycle attempts: {reason}");
+    }
+    state.fallback_attempts += 1;
+    state.phase = MilestoneVerificationPhase::FallbackRequired;
+    state.fallback_build_claim = None;
+    state.fallback_builder = None;
+    state.review = None;
+    state.delivery_commit = None;
+    state.receipt_id = None;
+    save_milestone_verification_state(
+        &prepared.store,
+        identity,
+        state,
+        "fallback",
+        "fallback",
+        json!({"reason":reason,"attempt":state.fallback_attempts,"max_attempts":max_attempts}),
+        worker_id,
+    )?;
+    Ok(json!({
+        "status":"fallback_required",
+        "next_gate":"build",
+        "next_role":"architect",
+        "fallback_template":template,
+        "fallback_command":command,
+        "fallback_attempt":state.fallback_attempts,
+        "max_attempts":max_attempts,
+        "remaining_attempts":max_attempts.saturating_sub(state.fallback_attempts),
+        "binding":state.binding,
+        "candidate_head":state.candidate_head,
+        "reason":reason
+    }))
+}
+
+fn current_tree(root: &Path) -> Result<String> {
+    crate::core::git::git_stdout(
+        root,
+        &["rev-parse", "--verify", "HEAD^{tree}"],
+        "MILESTONE_VERIFICATION_CANDIDATE_UNAVAILABLE",
     )
+}
+
+/// Run the profile-registered full repository check for the current milestone snapshot.
+pub fn execute_milestone_verification(
+    root: &Path,
+    selector: &str,
+    target_base: &str,
+) -> Result<Value> {
+    let prepared = prepare_handoff_context(root, selector, target_base)?;
+    let identity = milestone_verification_identity(&prepared.item);
+    let profile = crate::core::tasks::profile::load_for_workspace(root)?;
+    let container = milestone_verification_profile(&profile)?;
+    let command = profile
+        .commands
+        .get("check_full_repo")
+        .context("MILESTONE_VERIFICATION_PROFILE_INVALID: check_full_repo is not registered")?;
+    let previous = load_milestone_verification_state(&prepared.store, &identity)?;
+    if let Some(state) = &previous {
+        if state.target_base != prepared.target {
+            bail!("MILESTONE_VERIFICATION_TARGET_CHANGED: the configured target base differs from the active verification checkpoint");
+        }
+        match state.phase {
+            MilestoneVerificationPhase::Delivered => {
+                if delivered_verification_matches_current(root, &prepared, state)? {
+                    return Ok(milestone_verification_result(state));
+                }
+            }
+            MilestoneVerificationPhase::Exhausted => {
+                bail!("MILESTONE_VERIFICATION_EXHAUSTED: create a new milestone verification revision to retry")
+            }
+            MilestoneVerificationPhase::DeliveryPending => {
+                return finish_milestone_verification_delivery(
+                    root,
+                    &prepared,
+                    &identity,
+                    state.clone(),
+                );
+            }
+            MilestoneVerificationPhase::ReviewRequired
+                if state.candidate_head == prepared.commit && state.binding == prepared.binding =>
+            {
+                return Ok(milestone_verification_result(state));
+            }
+            MilestoneVerificationPhase::FallbackRequired
+                if state.candidate_head == prepared.commit =>
+            {
+                let (template, command, max_attempts) =
+                    fallback_configuration(&profile, container)?;
+                return Ok(json!({
+                    "status":"fallback_required",
+                    "next_gate":"build",
+                    "next_role":"architect",
+                    "fallback_template":template,
+                    "fallback_command":command,
+                    "fallback_attempt":state.fallback_attempts,
+                    "max_attempts":max_attempts,
+                    "remaining_attempts":max_attempts.saturating_sub(state.fallback_attempts),
+                    "binding":state.binding,
+                    "candidate_head":state.candidate_head,
+                    "reason":state.last_failure
+                }));
+            }
+            MilestoneVerificationPhase::FallbackRequired => {
+                bail!("MILESTONE_VERIFICATION_FALLBACK_BUILD_REQUIRED: claim the architect build gate before changing the failed candidate")
+            }
+            MilestoneVerificationPhase::FallbackBuildClaimed => {
+                if state.candidate_head != prepared.commit || state.binding != prepared.binding {
+                    bail!("MILESTONE_VERIFICATION_FALLBACK_BUILD_STALE: submit the claimed build against its original candidate")
+                }
+                return Ok(milestone_verification_result(state));
+            }
+            MilestoneVerificationPhase::FallbackVerificationRequired => {
+                require_current_verification_candidate(&prepared, state)?;
+            }
+            _ => {}
+        }
+    }
+    let fallback_verification = previous.as_ref().is_some_and(|state| {
+        state.phase == MilestoneVerificationPhase::FallbackVerificationRequired
+    });
+    let previous_runs = previous
+        .as_ref()
+        .map(|state| state.verification_runs)
+        .unwrap_or_default();
+    let attempt_id = i64::from(previous_runs.saturating_add(1));
+    let gate_path = if fallback_verification {
+        "milestone_verification.fallback.verify"
+    } else {
+        "milestone_verification.verify"
+    };
+    let (verification, output) = integration::run_milestone_check(
+        root,
+        &prepared.store,
+        &identity,
+        attempt_id,
+        gate_path,
+        command,
+    )?;
+    let head_after_check = integration::resolve_commit(root, "HEAD")?;
+    if head_after_check != prepared.commit {
+        bail!(
+            "MILESTONE_VERIFICATION_CANDIDATE_CHANGED: check_full_repo changed HEAD while running"
+        );
+    }
+    integration::require_clean_tree(
+        root,
+        &prepared.commit,
+        &archive_outputs(root, &prepared.item)?,
+    )?;
+    let candidate_tree_sha = current_tree(root)?;
+    let mut state = MilestoneVerificationState {
+        phase: if verification.passed() {
+            MilestoneVerificationPhase::ReviewRequired
+        } else {
+            MilestoneVerificationPhase::FallbackRequired
+        },
+        binding: prepared.binding.clone(),
+        target_base: prepared.target.clone(),
+        candidate_head: prepared.commit.clone(),
+        candidate_tree_sha,
+        verification: verification.clone(),
+        fallback_attempts: previous
+            .as_ref()
+            .map(|state| state.fallback_attempts)
+            .unwrap_or_default(),
+        verification_runs: previous_runs.saturating_add(1),
+        last_failure: None,
+        review: None,
+        fallback_build_claim: None,
+        fallback_builder: previous
+            .as_ref()
+            .and_then(|state| state.fallback_builder.clone()),
+        delivery_commit: None,
+        receipt_id: None,
+    };
+    if !verification.passed() {
+        state.last_failure = Some(format!(
+            "check_full_repo status '{}' exited {:?}: {}",
+            verification.status,
+            verification.exit_code,
+            output.trim()
+        ));
+        save_milestone_verification_state(
+            &prepared.store,
+            &identity,
+            &state,
+            if fallback_verification {
+                "fallback_verify_fail"
+            } else {
+                "verify_fail"
+            },
+            "command",
+            serde_json::to_value(&verification)?,
+            "forge-milestone-verification",
+        )?;
+        let reason = state.last_failure.clone().unwrap_or_default();
+        return route_milestone_verification_fallback(
+            &prepared,
+            &profile,
+            container,
+            &identity,
+            &mut state,
+            &reason,
+            "forge-milestone-verification",
+        );
+    }
+    save_milestone_verification_state(
+        &prepared.store,
+        &identity,
+        &state,
+        if fallback_verification {
+            "fallback_verify_pass"
+        } else {
+            "verify_pass"
+        },
+        "command",
+        serde_json::to_value(&verification)?,
+        "forge-milestone-verification",
+    )?;
+    Ok(milestone_verification_result(&state))
+}
+
+fn milestone_verification_build_claim(
+    root: &Path,
+    selector: &str,
+    target_base: &str,
+    worker_id: &str,
+) -> Result<Value> {
+    let prepared = prepare_handoff_context(root, selector, target_base)?;
+    let identity = milestone_verification_identity(&prepared.item);
+    let profile = crate::core::tasks::profile::load_for_workspace(root)?;
+    let container = milestone_verification_profile(&profile)?;
+    let (_, _, max_attempts) = fallback_configuration(&profile, container)?;
+    let mut state = load_milestone_verification_state(&prepared.store, &identity)?
+        .context("MILESTONE_VERIFICATION_ORDER: a failed check or review must route to build_review_cycle first")?;
+    if state.target_base != prepared.target {
+        bail!("MILESTONE_VERIFICATION_TARGET_CHANGED: the configured target base differs from the active verification checkpoint");
+    }
+    if worker_id.trim().is_empty() {
+        bail!("MILESTONE_VERIFICATION_BUILD_INVALID: architect worker_id must not be empty");
+    }
+    if state.binding.builders.contains(&worker_id.to_owned()) {
+        bail!("MILESTONE_VERIFICATION_BUILD_NOT_INDEPENDENT: architect must differ from accepted milestone builders");
+    }
+    match state.phase {
+        MilestoneVerificationPhase::FallbackBuildClaimed => {
+            let claim = state.fallback_build_claim.as_ref().context(
+                "MILESTONE_VERIFICATION_CHECKPOINT_INVALID: claimed build has no claim record",
+            )?;
+            if claim.worker_id == worker_id
+                && claim.base_head == prepared.commit
+                && claim.base_binding == prepared.binding
+            {
+                return Ok(milestone_verification_result(&state));
+            }
+            bail!("MILESTONE_VERIFICATION_BUILD_CLAIMED: the fallback build belongs to another worker or candidate")
+        }
+        MilestoneVerificationPhase::FallbackRequired => {}
+        MilestoneVerificationPhase::Exhausted => {
+            bail!("MILESTONE_VERIFICATION_EXHAUSTED: no fallback build attempts remain")
+        }
+        _ => bail!("MILESTONE_VERIFICATION_ORDER: the fallback build gate is not currently open"),
+    }
+    if state.fallback_attempts == 0 || state.fallback_attempts > max_attempts {
+        bail!("MILESTONE_VERIFICATION_CHECKPOINT_INVALID: fallback attempt is outside the configured bound");
+    }
+    require_current_verification_candidate(&prepared, &state)?;
+    state.phase = MilestoneVerificationPhase::FallbackBuildClaimed;
+    state.fallback_build_claim = Some(FallbackBuildClaim {
+        worker_id: worker_id.to_owned(),
+        base_binding: state.binding.clone(),
+        base_head: state.candidate_head.clone(),
+    });
+    save_milestone_verification_state(
+        &prepared.store,
+        &identity,
+        &state,
+        "fallback_build_claim",
+        "claim",
+        json!({"worker_id":worker_id,"base_head":state.candidate_head,"binding":state.binding,"attempt":state.fallback_attempts}),
+        worker_id,
+    )?;
+    Ok(milestone_verification_result(&state))
+}
+
+fn same_fallback_authority(before: &HandoffBinding, after: &HandoffBinding) -> bool {
+    before.version == after.version
+        && before.repository == after.repository
+        && before.project == after.project
+        && before.milestone == after.milestone
+        && before.authority_digest == after.authority_digest
+        && before.target_base_digest == after.target_base_digest
+        && before.builders == after.builders
+}
+
+fn require_fallback_descendant(root: &Path, base: &str, candidate: &str) -> Result<()> {
+    let output =
+        crate::core::git::git_command(root, &["merge-base", "--is-ancestor", base, candidate])?;
+    if !output.status.success() {
+        bail!("MILESTONE_VERIFICATION_BUILD_STALE: fallback candidate must descend from its claimed base");
+    }
+    Ok(())
+}
+
+fn milestone_verification_build_submit(
+    root: &Path,
+    selector: &str,
+    target_base: &str,
+    worker_id: &str,
+) -> Result<Value> {
+    let prepared = prepare_handoff_context(root, selector, target_base)?;
+    let identity = milestone_verification_identity(&prepared.item);
+    let profile = crate::core::tasks::profile::load_for_workspace(root)?;
+    let container = milestone_verification_profile(&profile)?;
+    fallback_configuration(&profile, container)?;
+    let mut state = load_milestone_verification_state(&prepared.store, &identity)?
+        .context("MILESTONE_VERIFICATION_ORDER: claim the architect build gate first")?;
+    let claim = state.fallback_build_claim.clone().context(
+        "MILESTONE_VERIFICATION_BUILD_CLAIM_REQUIRED: no architect build claim is active",
+    )?;
+    if state.phase != MilestoneVerificationPhase::FallbackBuildClaimed
+        || claim.worker_id != worker_id
+        || worker_id.trim().is_empty()
+    {
+        bail!("MILESTONE_VERIFICATION_BUILD_CLAIM_MISMATCH: only the claimed architect may submit this fallback build");
+    }
+    if state.target_base != prepared.target
+        || claim.base_head != state.candidate_head
+        || claim.base_binding != state.binding
+    {
+        bail!("MILESTONE_VERIFICATION_BUILD_STALE: claimed fallback baseline changed");
+    }
+    if prepared.commit == claim.base_head
+        || prepared.binding.implementation_digest == claim.base_binding.implementation_digest
+        || !same_fallback_authority(&claim.base_binding, &prepared.binding)
+    {
+        bail!("MILESTONE_VERIFICATION_BUILD_INVALID: the architect must submit a changed implementation with unchanged milestone authority");
+    }
+    require_fallback_descendant(root, &claim.base_head, &prepared.commit)?;
+    let candidate_tree_sha = current_tree(root)?;
+    state.phase = MilestoneVerificationPhase::FallbackVerificationRequired;
+    state.binding = prepared.binding.clone();
+    state.candidate_head = prepared.commit.clone();
+    state.candidate_tree_sha = candidate_tree_sha;
+    state.fallback_builder = Some(worker_id.to_owned());
+    state.fallback_build_claim = None;
+    state.last_failure = None;
+    state.review = None;
+    state.delivery_commit = None;
+    state.receipt_id = None;
+    save_milestone_verification_state(
+        &prepared.store,
+        &identity,
+        &state,
+        "fallback_build_pass",
+        "none",
+        json!({"worker_id":worker_id,"base_head":claim.base_head,"candidate_head":prepared.commit,"binding":prepared.binding,"attempt":state.fallback_attempts}),
+        worker_id,
+    )?;
+    Ok(milestone_verification_result(&state))
+}
+
+/// Claim or submit the architect build step in the bounded milestone fallback graph.
+pub fn milestone_verification_build(
+    root: &Path,
+    selector: &str,
+    target_base: &str,
+    worker_id: &str,
+    action: &str,
+) -> Result<Value> {
+    match action {
+        "claim" => milestone_verification_build_claim(root, selector, target_base, worker_id),
+        "submit" => milestone_verification_build_submit(root, selector, target_base, worker_id),
+        _ => bail!("MILESTONE_VERIFICATION_BUILD_INVALID: action must be claim or submit"),
+    }
+}
+
+/// Accept an independent review proof and autonomously commit the verified milestone receipt.
+pub fn submit_milestone_verification_review(
+    root: &Path,
+    selector: &str,
+    submission: &MilestoneVerificationReview,
+) -> Result<Value> {
+    let prepared = prepare_handoff_context(root, selector, &submission.target_base)?;
+    let identity = milestone_verification_identity(&prepared.item);
+    let profile = crate::core::tasks::profile::load_for_workspace(root)?;
+    let container = milestone_verification_profile(&profile)?;
+    let mut state = load_milestone_verification_state(&prepared.store, &identity)?
+        .context("MILESTONE_VERIFICATION_ORDER: run milestone verify before submitting review")?;
+    match state.phase {
+        MilestoneVerificationPhase::Delivered => {
+            if delivered_verification_matches_current(root, &prepared, &state)? {
+                return Ok(milestone_verification_result(&state));
+            }
+            bail!("MILESTONE_VERIFICATION_STALE: implementation or authority changed after delivery; rerun milestone verify and obtain fresh review");
+        }
+        MilestoneVerificationPhase::DeliveryPending => {
+            return finish_milestone_verification_delivery(root, &prepared, &identity, state);
+        }
+        MilestoneVerificationPhase::ReviewRequired => {}
+        MilestoneVerificationPhase::FallbackRequired
+        | MilestoneVerificationPhase::FallbackBuildClaimed
+        | MilestoneVerificationPhase::FallbackVerificationRequired => {
+            bail!("MILESTONE_VERIFICATION_ORDER: complete the build and full verification steps before review")
+        }
+        MilestoneVerificationPhase::Exhausted => {
+            bail!(
+                "MILESTONE_VERIFICATION_EXHAUSTED: review cannot advance an exhausted verification"
+            )
+        }
+    }
+    require_current_verification_candidate(&prepared, &state)?;
+    if submission.binding != state.binding {
+        bail!("MILESTONE_VERIFICATION_STALE: review binding does not match the verified candidate");
+    }
+    let review = &submission.review;
+    if review.worker_id.trim().is_empty() {
+        bail!("MILESTONE_REVIEW_INVALID: reviewer worker_id must not be empty");
+    }
+    if state.binding.builders.contains(&review.worker_id) {
+        bail!("MILESTONE_REVIEW_NOT_INDEPENDENT: reviewer must differ from every accepted milestone builder");
+    }
+    if state.fallback_builder.as_deref() == Some(review.worker_id.as_str()) {
+        bail!("MILESTONE_REVIEW_NOT_INDEPENDENT: fallback reviewer must differ from the architect who built this candidate");
+    }
+    if review.summary.trim().is_empty() {
+        bail!("MILESTONE_REVIEW_INVALID: review summary must not be empty");
+    }
+    if !matches!(review.decision.as_str(), "pass" | "reject") {
+        bail!("MILESTONE_REVIEW_INVALID: decision must be pass or reject");
+    }
+    state.review = Some(review.clone());
+    if review.decision == "reject"
+        || !review.scope_findings.is_empty()
+        || !review.contract_findings.is_empty()
+    {
+        state.phase = MilestoneVerificationPhase::ReviewRequired;
+        save_milestone_verification_state(
+            &prepared.store,
+            &identity,
+            &state,
+            if state.fallback_builder.is_some() {
+                "fallback_review_reject"
+            } else {
+                "review_reject"
+            },
+            "review",
+            serde_json::to_value(review)?,
+            &review.worker_id,
+        )?;
+        let reason = if review.decision == "reject" {
+            review.summary.clone()
+        } else {
+            format!(
+                "review left unresolved findings: {} scope and {} contract",
+                review.scope_findings.len(),
+                review.contract_findings.len()
+            )
+        };
+        return route_milestone_verification_fallback(
+            &prepared,
+            &profile,
+            container,
+            &identity,
+            &mut state,
+            &reason,
+            &review.worker_id,
+        );
+    }
+    state.phase = MilestoneVerificationPhase::DeliveryPending;
+    save_milestone_verification_state(
+        &prepared.store,
+        &identity,
+        &state,
+        if state.fallback_builder.is_some() {
+            "fallback_review_pass"
+        } else {
+            "review_pass"
+        },
+        "review",
+        serde_json::to_value(review)?,
+        &review.worker_id,
+    )?;
+    finish_milestone_verification_delivery(root, &prepared, &identity, state)
+}
+
+fn finish_milestone_verification_delivery(
+    root: &Path,
+    prepared: &PreparedHandoff,
+    identity: &str,
+    mut state: MilestoneVerificationState,
+) -> Result<Value> {
+    let profile = crate::core::tasks::profile::load_for_workspace(root)?;
+    let container = milestone_verification_profile(&profile)?;
+    let deliver = container
+        .deliver
+        .as_ref()
+        .context("MILESTONE_VERIFICATION_PROFILE_INVALID: delivery declaration is required")?;
+    if deliver["proof"].as_str() != Some("delivery")
+        || deliver["persistence"]["post"].as_str() != Some("commit")
+    {
+        bail!("MILESTONE_VERIFICATION_PROFILE_INVALID: delivery must commit a delivery proof");
+    }
+    let binding_digest = integration::digest(&state.binding)?;
+    let marker = format!("Forge-Milestone-Verification: {identity}/{binding_digest}");
+    let current_head = integration::resolve_commit(root, "HEAD")?;
+    let delivery_commit = if current_head == state.candidate_head {
+        integration::require_clean_tree(
+            root,
+            &current_head,
+            &archive_outputs(root, &prepared.item)?,
+        )?;
+        let message = format!(
+            "Deliver milestone verification: {}\n\n{marker}\nForge-Milestone-Candidate: {}\n",
+            prepared.item.id, state.candidate_head
+        );
+        crate::core::git::git_stdout(
+            root,
+            &["commit", "--allow-empty", "-m", &message],
+            "MILESTONE_DELIVERY_COMMIT_FAILED",
+        )?;
+        integration::resolve_commit(root, "HEAD")?
+    } else {
+        let message = crate::core::git::git_stdout(
+            root,
+            &["show", "-s", "--format=%B", "HEAD"],
+            "MILESTONE_DELIVERY_COMMIT_UNAVAILABLE",
+        )?;
+        if !message.lines().any(|line| line == marker) {
+            bail!("MILESTONE_VERIFICATION_STALE: delivery candidate changed before the autonomous commit");
+        }
+        current_head
+    };
+    let parent = crate::core::git::git_stdout(
+        root,
+        &[
+            "rev-parse",
+            "--verify",
+            &format!("{delivery_commit}^{{commit}}^"),
+        ],
+        "MILESTONE_DELIVERY_COMMIT_INVALID",
+    )?;
+    if parent != state.candidate_head || current_tree(root)? != state.candidate_tree_sha {
+        bail!("MILESTONE_DELIVERY_COMMIT_INVALID: delivery commit does not retain the verified candidate tree and parent");
+    }
+    let receipt_id = integration::digest(&(identity, &state.binding, &delivery_commit))?;
+    state.phase = MilestoneVerificationPhase::Delivered;
+    state.delivery_commit = Some(delivery_commit.clone());
+    state.receipt_id = Some(receipt_id.clone());
+    save_milestone_verification_state(
+        &prepared.store,
+        identity,
+        &state,
+        "deliver",
+        "delivery",
+        json!({"commit_sha":delivery_commit,"receipt_id":receipt_id,"binding_digest":binding_digest}),
+        "forge-milestone-delivery",
+    )?;
+    Ok(milestone_verification_result(&state))
 }
 
 fn source_polish(root: &Path, item: &Snapshot) -> Result<bool> {

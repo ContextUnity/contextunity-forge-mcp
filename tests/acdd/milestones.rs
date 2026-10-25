@@ -1,5 +1,7 @@
 use super::support::*;
-use contextunity_forge_mcp::db::tasks_store::TasksStore;
+use contextunity_forge_mcp::db::tasks_store::{
+    GateCheckpoint, GateExecutionTrace, GateTransition, TasksStore,
+};
 use contextunity_forge_mcp::engine::milestones as milestone_engine;
 use contextunity_forge_mcp::engine::tasks::list_workspaces;
 
@@ -240,6 +242,12 @@ fn complete_task_with_builder(
         .unwrap();
         let task = store.inspect(task_id).unwrap();
         let mut evidence = evidence(&task);
+        if *stage == "review" && !task.spec.extended_scope.is_empty() {
+            evidence.proof["review_proof"]["extended_scope_review"] = json!({
+                "approved_paths": task.spec.extended_scope,
+                "reason_verified": true,
+            });
+        }
         evidence.commit = None;
         let request: tasks::Submit = serde_json::from_value(json!({
             "task_id":task_id,
@@ -1584,7 +1592,7 @@ fn milestone_handoff_requires_completed_tasks_and_archives_typed_receipt() {
         "forge-mcp.yaml",
         "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
     );
-    let source = "---\nid: m-close\ntitle: Close work\ndoc_type: contract\nstatus: active\nstarted_at: 2026-10-01T10:00:00Z\n---\n# Close work\n### task: finish\n```yaml\ntask_ref: finish\ntarget: Finish work\nproof_policy: seam-test-first\nscope: [src/lib.rs]\n```\n```yaml\ntask_ref: cancelled\ntarget: Transferred work\nproof_policy: seam-test-first\nscope: [cancelled/]\nstatus: cancelled\n```\n";
+    let source = "---\nid: m-close\ntitle: Close work\ndoc_type: contract\nstatus: active\nstarted_at: 2026-10-01T10:00:00Z\n---\n# Close work\n### task: finish\n```yaml\ntask_ref: finish\ntarget: Finish work\nproof_policy: seam-test-first\nscope: [src/lib.rs]\nscope_roots: [src/]\n```\n```yaml\ntask_ref: cancelled\ntarget: Transferred work\nproof_policy: seam-test-first\nscope: [cancelled/]\nstatus: cancelled\n```\n";
     root.write("src/lib.rs", "pub fn finish() {}\n");
     root.write("docs/milestones/010-close.md", source);
     commit_handoff_fixture_inputs(
@@ -1622,9 +1630,18 @@ fn milestone_handoff_requires_completed_tasks_and_archives_typed_receipt() {
         .into_iter()
         .find(|task| task.spec.task_ref == "finish")
         .unwrap();
-    store
-        .extend_scope(&task.task_id, &["src/extra.rs".to_owned()], &root.0)
-        .unwrap();
+    drop(store);
+    tasks::manage(
+        &root.0,
+        tasks::Manage {
+            action: tasks::ManageAction::ExtendScope,
+            task_id: Some(task.task_id.clone()),
+            paths: Some(vec!["src/extra.rs".to_owned()]),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
     root.write("src/lib.rs", "pub fn finish() {}\n");
     root.write("src/extra.rs", "pub fn admitted_extension() {}\n");
     complete_task_through_engine(&root, &store, &task.task_id);
@@ -1883,7 +1900,11 @@ fn milestone_handoff_requires_completed_tasks_and_archives_typed_receipt() {
     );
     let oversized = milestone_cli(&root, &completed_args);
     assert!(!oversized.status.success());
-    assert!(String::from_utf8_lossy(&oversized.stderr).contains("HANDOFF_PASSPORT_TOO_LARGE"));
+    assert!(
+        String::from_utf8_lossy(&oversized.stderr).contains("HANDOFF_PASSPORT_TOO_LARGE"),
+        "unexpected oversized handoff error: {}",
+        String::from_utf8_lossy(&oversized.stderr)
+    );
     assert_eq!(
         std::fs::read(root.0.join("docs/milestones/010-close.md")).unwrap(),
         before_active
@@ -2848,6 +2869,104 @@ fn milestone_handoff_requires_completed_tasks_and_archives_typed_receipt() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn milestone_handoff_prunes_only_its_gate_telemetry_identity() {
+    let root = ScopedWorkspace::new("forge_gate_telemetry_handoff");
+    root.write(
+        "forge-mcp.yaml",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+    );
+    root.write("src/lib.rs", "pub fn fixture() {}\n");
+    let old_ref = "docs/milestones/010-gate-telemetry.md";
+    let new_ref = "docs/milestones/archive/010-gate-telemetry.md";
+    let manifest = "---\nid: m_test\ntitle: Gate telemetry pruning\ndoc_type: contract\nstatus: active\n---\n# Gate telemetry pruning\n```yaml\ntask_ref: cancelled\ntarget: Preserve cancelled task history through handoff\nproof_policy: seam-test-first\nscope: [src/lib.rs]\nstatus: cancelled\n```\n";
+    root.write(old_ref, manifest);
+
+    let milestone = Milestone::parse(manifest, "forge-mcp").unwrap();
+    let mut store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
+    store.sync(&milestone, old_ref, &root.0).unwrap();
+
+    let target_identity = format!("forge-mcp/forge-mcp/{}", milestone.id);
+    let neighboring_identity = "forge-mcp/forge-mcp/m-test";
+    for (identity, label) in [
+        (target_identity.as_str(), "target"),
+        (neighboring_identity, "neighbor"),
+    ] {
+        let transition_id = store
+            .record_gate_transition(&GateTransition {
+                milestone_id: identity.into(),
+                subject: format!("{label}-task"),
+                gate_path: "tasks.build".into(),
+                action: "advance".into(),
+                proof_kind: "command".into(),
+                proof_payload: json!({"exit_code": 0}),
+                git_tree_sha: "fixture-tree".into(),
+                worker_id: "fixture-worker".into(),
+            })
+            .unwrap();
+        store
+            .record_execution_trace(&GateExecutionTrace {
+                milestone_id: identity.into(),
+                subject: format!("{label}-task"),
+                gate_path: "tasks.build".into(),
+                attempt_id: 1,
+                command_id: format!("{label}-build"),
+                command_str: "cargo test --test acdd".into(),
+                status: "completed".into(),
+                exit_code: Some(0),
+                log_path: None,
+                output_snippet: None,
+                stdout_sha256: None,
+                duration_ms: 1,
+            })
+            .unwrap();
+        store
+            .save_checkpoint(&GateCheckpoint {
+                breadcrumb: format!("{identity}/tasks.build/{label}-task/build"),
+                milestone_id: identity.into(),
+                subject: format!("{label}-task"),
+                gate_path: "tasks.build".into(),
+                transition_id: Some(transition_id),
+                git_tree_sha: "fixture-tree".into(),
+                state_payload: json!({"stage": "build"}),
+            })
+            .unwrap();
+    }
+
+    let expected_tasks = store.list(None, "all", None).unwrap();
+    assert_eq!(expected_tasks.len(), 1);
+    TasksStore::handoff_milestone(
+        &mut store,
+        &format!("forge-mcp/{}:", milestone.id),
+        old_ref,
+        new_ref,
+        &expected_tasks,
+        &std::collections::BTreeMap::new(),
+    )
+    .unwrap();
+
+    for table in [
+        "gate_checkpoints",
+        "gate_execution_traces",
+        "gate_transitions",
+    ] {
+        for (identity, expected_count) in [(target_identity.as_str(), 0), (neighboring_identity, 1)]
+        {
+            let count = store
+                .connection
+                .query_row(
+                    &format!("SELECT count(*) FROM {table} WHERE milestone_id=?1"),
+                    [identity],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap();
+            assert_eq!(count, expected_count, "{table} for {identity}");
+        }
+    }
+    assert!(store.milestone_tombstoned(&milestone.id).unwrap());
+    assert!(!store.milestone_tombstoned("m-test").unwrap());
 }
 
 #[test]
@@ -7111,4 +7230,978 @@ fn handoff_rejects_stale_or_untrusted_integration_evidence_atomically() {
             );
         }
     }
+}
+
+fn milestone_verification_fixture(fail_check: bool) -> (ScopedWorkspace, TasksStore, String) {
+    let root = ScopedWorkspace::new("forge_milestone_verification");
+    let manifest = r####"---
+id: m-verification
+title: Milestone verification
+doc_type: contract
+status: active
+started_at: 2026-10-01T10:00:00Z
+---
+# Milestone verification
+```yaml
+task_ref: implementation
+target: Deliver a verified source change
+proof_policy: seam-test-first
+scope: [src/lib.rs, docs/reference/verification.md, skills/lean-ctx/SKILL.md, skills/lean-ctx/scripts/install.sh]
+```
+"####;
+    root.write(".gitignore", ".forge/\n");
+    root.write(
+        "forge-mcp.yaml",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+    );
+    root.write("docs/milestones/010-verification.md", manifest);
+    root.write("src/lib.rs", "pub fn value() -> u8 { 0 }\n");
+    root.write(
+        "docs/reference/verification.md",
+        "# Verification notes\n\nBaseline docs.\n",
+    );
+    root.write(
+        "skills/lean-ctx/SKILL.md",
+        "# Lean Context\n\nBaseline skill docs.\n",
+    );
+    root.write(
+        "skills/lean-ctx/scripts/install.sh",
+        "#!/bin/sh\nprintf 'baseline skill script\\n'\n",
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            root.0.join("skills/lean-ctx/scripts/install.sh"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+    }
+    root.write(
+        ".forge/acdd/profile.yaml",
+        r####"roles:
+  architect: {}
+commands:
+  check_full_repo:
+    command: "mkdir -p .forge && printf '%4096s' '' | tr ' ' x && echo full-output-tail && echo check >> .forge/verification-order && test ! -f .forge/fail-check"
+    description: "Fixture check command for milestone verification."
+    timeout_seconds: 30
+policies:
+  milestone_verification:
+    container:
+      id: milestone_verification
+      gates:
+        - id: verify
+          command: check_full_repo
+          proof: command
+        - id: review
+          role: independent_reviewer
+          proof: review
+          independent_from: verify
+          contours: standard
+      fallback:
+        use: build_review_cycle
+        command: check_full_repo
+        max_attempts: 2
+      deliver:
+        proof: delivery
+        persistence:
+          post: commit
+    templates:
+      build_review_cycle:
+        gates:
+          - id: build
+            role: architect
+            proof: none
+          - id: verify
+            command: check_full_repo
+            proof: command
+          - id: review
+            role: independent_reviewer
+            proof: review
+            independent_from: build
+            contours: standard
+"####,
+    );
+    let milestone = Milestone::parse(manifest, "forge-mcp").unwrap();
+    let mut store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
+    store
+        .sync(&milestone, "docs/milestones/010-verification.md", &root.0)
+        .unwrap();
+    commit_handoff_fixture_inputs(
+        &root,
+        &[
+            ".gitignore",
+            "forge-mcp.yaml",
+            "docs/milestones/010-verification.md",
+            "src/lib.rs",
+            "docs/reference/verification.md",
+            "skills/lean-ctx/SKILL.md",
+            "skills/lean-ctx/scripts/install.sh",
+        ],
+    );
+    let target_base = git_head(&root.0);
+    complete_task_with_builder(
+        &root,
+        &store,
+        &milestone.task_id(&milestone.tasks[0]),
+        "milestone-builder",
+    );
+    if fail_check {
+        root.write(".forge/fail-check", "fail\n");
+    }
+    (root, store, target_base)
+}
+
+fn milestone_verification_review_decision(
+    result: &Value,
+    target_base: &str,
+    worker_id: &str,
+    decision: &str,
+) -> Value {
+    json!({
+        "binding":result["binding"],
+        "target_base":target_base,
+        "review":{
+            "worker_id":worker_id,
+            "decision":decision,
+            "summary":"The repository check and candidate scope were independently reviewed.",
+            "scope_findings":if decision == "pass" { vec![] } else { vec!["repair required"] },
+            "contract_findings":[]
+        }
+    })
+}
+
+fn milestone_verification_review(result: &Value, target_base: &str, worker_id: &str) -> Value {
+    milestone_verification_review_decision(result, target_base, worker_id, "pass")
+}
+
+fn submit_milestone_verification_review(
+    root: &ScopedWorkspace,
+    result: &Value,
+    target_base: &str,
+    worker_id: &str,
+) -> std::process::Output {
+    let review_path = root.0.join(".forge/milestone-review.json");
+    std::fs::write(
+        &review_path,
+        serde_json::to_vec(&milestone_verification_review(
+            result,
+            target_base,
+            worker_id,
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    milestone_cli(
+        root,
+        &[
+            "verify-review",
+            "m-verification",
+            "--review-file",
+            review_path.to_str().unwrap(),
+        ],
+    )
+}
+
+fn submit_milestone_verification_review_decision(
+    root: &ScopedWorkspace,
+    result: &Value,
+    target_base: &str,
+    worker_id: &str,
+    decision: &str,
+) -> std::process::Output {
+    let review_path = root.0.join(".forge/milestone-review.json");
+    std::fs::write(
+        &review_path,
+        serde_json::to_vec(&milestone_verification_review_decision(
+            result,
+            target_base,
+            worker_id,
+            decision,
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    milestone_cli(
+        root,
+        &[
+            "verify-review",
+            "m-verification",
+            "--review-file",
+            review_path.to_str().unwrap(),
+        ],
+    )
+}
+
+fn milestone_verification_build(
+    root: &ScopedWorkspace,
+    target_base: &str,
+    worker_id: &str,
+    action: &str,
+) -> std::process::Output {
+    milestone_cli(
+        root,
+        &[
+            "verify-build",
+            "m-verification",
+            "--target-base",
+            target_base,
+            "--worker-id",
+            worker_id,
+            "--action",
+            action,
+        ],
+    )
+}
+
+fn commit_verification_candidate(root: &ScopedWorkspace, value: u8) {
+    root.write(
+        "src/lib.rs",
+        &format!("pub fn value() -> u8 {{ {value} }}\n"),
+    );
+    let added = std::process::Command::new("git")
+        .args(["add", "src/lib.rs"])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    assert!(added.status.success(), "{added:?}");
+    let committed = std::process::Command::new("git")
+        .args(["commit", "-m", "update verification candidate"])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    assert!(
+        committed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&committed.stderr)
+    );
+}
+
+fn commit_verification_skill_script(root: &ScopedWorkspace) {
+    root.write(
+        "skills/lean-ctx/scripts/install.sh",
+        "#!/bin/sh\nprintf 'updated skill implementation\\n'\n",
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            root.0.join("skills/lean-ctx/scripts/install.sh"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+    }
+    let added = std::process::Command::new("git")
+        .args(["add", "skills/lean-ctx/scripts/install.sh"])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    assert!(added.status.success(), "{added:?}");
+    let committed = std::process::Command::new("git")
+        .args(["commit", "-m", "update verification skill script"])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    assert!(
+        committed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&committed.stderr)
+    );
+}
+
+fn milestone_verification_actions(store: &TasksStore, identity: &str) -> Vec<String> {
+    let mut statement = store
+        .connection
+        .prepare(
+            "SELECT action FROM gate_transitions \
+             WHERE milestone_id=?1 AND subject='milestone' \
+               AND gate_path LIKE 'milestone_verification.%' ORDER BY id",
+        )
+        .unwrap();
+    statement
+        .query_map([identity], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap()
+}
+
+fn milestone_verification_trace(
+    store: &TasksStore,
+    identity: &str,
+    gate_path: &str,
+    attempt_id: i64,
+) -> (Option<String>, Option<String>, String, Option<i32>) {
+    store
+        .connection
+        .query_row(
+            "SELECT log_path, output_snippet, status, exit_code
+             FROM gate_execution_traces
+             WHERE milestone_id=?1 AND subject='milestone' AND gate_path=?2
+               AND attempt_id=?3 AND command_id='check_full_repo'",
+            rusqlite::params![identity, gate_path, attempt_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap()
+}
+
+fn commit_verification_documentation(root: &ScopedWorkspace) {
+    root.write(
+        "docs/reference/verification.md",
+        "# Verification notes\n\nUpdated docs.\n",
+    );
+    root.write(
+        "skills/lean-ctx/SKILL.md",
+        "# Lean Context\n\nUpdated skill documentation.\n",
+    );
+    let added = std::process::Command::new("git")
+        .args([
+            "add",
+            "docs/reference/verification.md",
+            "skills/lean-ctx/SKILL.md",
+        ])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    assert!(added.status.success(), "{added:?}");
+    let committed = std::process::Command::new("git")
+        .args(["commit", "-m", "update verification documentation"])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    assert!(
+        committed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&committed.stderr)
+    );
+}
+
+#[test]
+fn milestone_verification_binds_check_review_and_delivery_in_order() {
+    let (root, store, target_base) = milestone_verification_fixture(false);
+    let verified = milestone_cli(
+        &root,
+        &["verify", "m-verification", "--target-base", &target_base],
+    );
+    assert!(
+        verified.status.success(),
+        "{}",
+        String::from_utf8_lossy(&verified.stderr)
+    );
+    let verified: Value = serde_json::from_slice(&verified.stdout).unwrap();
+    assert_eq!(verified["status"], "review_required");
+    assert_eq!(verified["next_gate"], "review");
+    assert_eq!(verified["verification"]["command_id"], "check_full_repo");
+    assert_eq!(
+        std::fs::read_to_string(root.0.join(".forge/verification-order"))
+            .unwrap()
+            .lines()
+            .collect::<Vec<_>>(),
+        ["check"]
+    );
+    let checkpoint = store
+        .list_checkpoints()
+        .unwrap()
+        .into_iter()
+        .find(|checkpoint| checkpoint.gate_path == "milestone_verification")
+        .unwrap();
+    assert_eq!(checkpoint.state_payload["phase"], "review_required");
+    let identity = checkpoint.milestone_id.clone();
+    let transition_id = checkpoint.transition_id.unwrap();
+    let save_error = store
+        .save_checkpoint_payload(
+            &checkpoint.breadcrumb,
+            &checkpoint.git_tree_sha,
+            json!({"phase":"delivered","delivery_commit":"forged"}),
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(save_error.contains("TASK_CHECKPOINT_OWNED"), "{save_error}");
+    let delete_error = store
+        .delete_checkpoint(&checkpoint.breadcrumb)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        delete_error.contains("TASK_CHECKPOINT_OWNED"),
+        "{delete_error}"
+    );
+    let untouched = store
+        .get_checkpoint(&checkpoint.breadcrumb)
+        .unwrap()
+        .unwrap();
+    assert_eq!(untouched.state_payload["phase"], "review_required");
+    assert_eq!(untouched.transition_id, Some(transition_id));
+
+    let mut forged_state = checkpoint.state_payload.clone();
+    forged_state["verification_runs"] = json!(99);
+    let forged_payload = serde_json::to_string(&json!({
+        "_forge_checkpoint_payload_v1": forged_state
+    }))
+    .unwrap();
+    store
+        .connection
+        .execute(
+            "UPDATE gate_checkpoints SET state_payload=?1 WHERE breadcrumb=?2",
+            rusqlite::params![forged_payload, checkpoint.breadcrumb],
+        )
+        .unwrap();
+    let forged = milestone_cli(
+        &root,
+        &["verify", "m-verification", "--target-base", &target_base],
+    );
+    assert!(!forged.status.success());
+    assert!(String::from_utf8_lossy(&forged.stderr)
+        .contains("MILESTONE_VERIFICATION_CHECKPOINT_INVALID"));
+    store.save_checkpoint(&checkpoint).unwrap();
+
+    store
+        .connection
+        .execute(
+            "UPDATE gate_checkpoints SET transition_id=NULL WHERE breadcrumb=?1",
+            [&checkpoint.breadcrumb],
+        )
+        .unwrap();
+    let untrusted = milestone_cli(
+        &root,
+        &["verify", "m-verification", "--target-base", &target_base],
+    );
+    assert!(!untrusted.status.success());
+    assert!(String::from_utf8_lossy(&untrusted.stderr)
+        .contains("MILESTONE_VERIFICATION_CHECKPOINT_INVALID"));
+    store.save_checkpoint(&checkpoint).unwrap();
+
+    let same_builder =
+        submit_milestone_verification_review(&root, &verified, &target_base, "milestone-builder");
+    assert!(!same_builder.status.success());
+    assert!(
+        String::from_utf8_lossy(&same_builder.stderr).contains("MILESTONE_REVIEW_NOT_INDEPENDENT"),
+        "{}",
+        String::from_utf8_lossy(&same_builder.stderr)
+    );
+
+    commit_verification_candidate(&root, 1);
+    let stale = submit_milestone_verification_review(
+        &root,
+        &verified,
+        &target_base,
+        "independent-milestone-reviewer",
+    );
+    assert!(!stale.status.success());
+    assert!(String::from_utf8_lossy(&stale.stderr).contains("MILESTONE_VERIFICATION_STALE"));
+
+    let rerun = milestone_cli(
+        &root,
+        &["verify", "m-verification", "--target-base", &target_base],
+    );
+    assert!(
+        rerun.status.success(),
+        "{}",
+        String::from_utf8_lossy(&rerun.stderr)
+    );
+    let rerun: Value = serde_json::from_slice(&rerun.stdout).unwrap();
+    let delivered = submit_milestone_verification_review(
+        &root,
+        &rerun,
+        &target_base,
+        "independent-milestone-reviewer",
+    );
+    assert!(
+        delivered.status.success(),
+        "{}",
+        String::from_utf8_lossy(&delivered.stderr)
+    );
+    let delivered: Value = serde_json::from_slice(&delivered.stdout).unwrap();
+    assert_eq!(delivered["status"], "delivered");
+    assert_eq!(delivered["next_gate"], "documentation");
+    assert_eq!(
+        milestone_verification_actions(&store, &identity).join(","),
+        "verify_pass,verify_pass,review_pass,deliver"
+    );
+    let candidate = rerun["candidate_head"].as_str().unwrap();
+    let delivery = delivered["delivery_commit"].as_str().unwrap();
+    let parent = std::process::Command::new("git")
+        .args(["rev-parse", &format!("{delivery}^")])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    assert!(parent.status.success());
+    assert_eq!(String::from_utf8_lossy(&parent.stdout).trim(), candidate);
+
+    let repeat = milestone_cli(
+        &root,
+        &["verify", "m-verification", "--target-base", &target_base],
+    );
+    assert!(
+        repeat.status.success(),
+        "{}",
+        String::from_utf8_lossy(&repeat.stderr)
+    );
+    let repeat: Value = serde_json::from_slice(&repeat.stdout).unwrap();
+    assert_eq!(repeat["status"], "delivered");
+    assert_eq!(
+        std::fs::read_to_string(root.0.join(".forge/verification-order"))
+            .unwrap()
+            .lines()
+            .count(),
+        2,
+        "an unchanged delivered candidate does not rerun verification"
+    );
+
+    commit_verification_documentation(&root);
+    let after_docs = milestone_cli(
+        &root,
+        &["verify", "m-verification", "--target-base", &target_base],
+    );
+    assert!(
+        after_docs.status.success(),
+        "{}",
+        String::from_utf8_lossy(&after_docs.stderr)
+    );
+    let after_docs: Value = serde_json::from_slice(&after_docs.stdout).unwrap();
+    assert_eq!(after_docs["status"], "delivered");
+    assert!(submit_milestone_verification_review(
+        &root,
+        &after_docs,
+        &target_base,
+        "independent-milestone-reviewer"
+    )
+    .status
+    .success());
+    assert_eq!(
+        std::fs::read_to_string(root.0.join(".forge/verification-order"))
+            .unwrap()
+            .lines()
+            .count(),
+        2,
+        "documentation and skill Markdown commits preserve the delivered verification"
+    );
+
+    commit_verification_skill_script(&root);
+    let stale_skill_review = submit_milestone_verification_review(
+        &root,
+        &after_docs,
+        &target_base,
+        "independent-milestone-reviewer",
+    );
+    assert!(!stale_skill_review.status.success());
+    assert!(String::from_utf8_lossy(&stale_skill_review.stderr)
+        .contains("MILESTONE_VERIFICATION_STALE"));
+    let after_skill_script = milestone_cli(
+        &root,
+        &["verify", "m-verification", "--target-base", &target_base],
+    );
+    assert!(
+        after_skill_script.status.success(),
+        "{}",
+        String::from_utf8_lossy(&after_skill_script.stderr)
+    );
+    let after_skill_script: Value = serde_json::from_slice(&after_skill_script.stdout).unwrap();
+    assert_eq!(after_skill_script["status"], "review_required");
+    assert_eq!(after_skill_script["candidate_head"], git_head(&root.0));
+    assert_eq!(
+        std::fs::read_to_string(root.0.join(".forge/verification-order"))
+            .unwrap()
+            .lines()
+            .count(),
+        3,
+        "an executable skill script change requires a fresh repository check"
+    );
+    let script_redelivery = submit_milestone_verification_review(
+        &root,
+        &after_skill_script,
+        &target_base,
+        "independent-milestone-reviewer-two",
+    );
+    assert!(
+        script_redelivery.status.success(),
+        "{}",
+        String::from_utf8_lossy(&script_redelivery.stderr)
+    );
+    let script_redelivery: Value = serde_json::from_slice(&script_redelivery.stdout).unwrap();
+    assert_eq!(script_redelivery["status"], "delivered");
+
+    commit_verification_candidate(&root, 2);
+    let stale_script_review = submit_milestone_verification_review(
+        &root,
+        &script_redelivery,
+        &target_base,
+        "independent-milestone-reviewer-two",
+    );
+    assert!(!stale_script_review.status.success());
+    assert!(String::from_utf8_lossy(&stale_script_review.stderr)
+        .contains("MILESTONE_VERIFICATION_STALE"));
+
+    let after_source_drift = milestone_cli(
+        &root,
+        &["verify", "m-verification", "--target-base", &target_base],
+    );
+    assert!(
+        after_source_drift.status.success(),
+        "{}",
+        String::from_utf8_lossy(&after_source_drift.stderr)
+    );
+    let after_source_drift: Value = serde_json::from_slice(&after_source_drift.stdout).unwrap();
+    assert_eq!(after_source_drift["status"], "review_required");
+    assert_eq!(after_source_drift["candidate_head"], git_head(&root.0));
+    assert_eq!(
+        std::fs::read_to_string(root.0.join(".forge/verification-order"))
+            .unwrap()
+            .lines()
+            .count(),
+        4,
+        "source drift after delivery requires a fresh repository check"
+    );
+    let old_binding = submit_milestone_verification_review(
+        &root,
+        &after_docs,
+        &target_base,
+        "independent-milestone-reviewer",
+    );
+    assert!(!old_binding.status.success());
+    assert!(String::from_utf8_lossy(&old_binding.stderr).contains("MILESTONE_VERIFICATION_STALE"));
+    let redelivered = submit_milestone_verification_review(
+        &root,
+        &after_source_drift,
+        &target_base,
+        "independent-milestone-reviewer-three",
+    );
+    assert!(
+        redelivered.status.success(),
+        "{}",
+        String::from_utf8_lossy(&redelivered.stderr)
+    );
+    let redelivered: Value = serde_json::from_slice(&redelivered.stdout).unwrap();
+    assert_eq!(redelivered["status"], "delivered");
+    assert_ne!(redelivered["delivery_commit"], delivered["delivery_commit"]);
+    assert_eq!(
+        milestone_verification_actions(&store, &identity).join(","),
+        "verify_pass,verify_pass,review_pass,deliver,verify_pass,review_pass,deliver,verify_pass,review_pass,deliver"
+    );
+}
+
+#[test]
+fn milestone_verification_fallback_repairs_and_stops_after_two_attempts() {
+    let (root, store, target_base) = milestone_verification_fixture(true);
+    let run_verify = || {
+        milestone_cli(
+            &root,
+            &["verify", "m-verification", "--target-base", &target_base],
+        )
+    };
+    let first = run_verify();
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let first: Value = serde_json::from_slice(&first.stdout).unwrap();
+    assert_eq!(first["status"], "fallback_required");
+    assert_eq!(first["next_gate"], "build");
+    assert_eq!(first["fallback_template"]["id"], "build_review_cycle");
+    assert_eq!(first["fallback_attempt"], 1);
+    let checkpoint = store
+        .list_checkpoints()
+        .unwrap()
+        .into_iter()
+        .find(|checkpoint| checkpoint.gate_path == "milestone_verification")
+        .unwrap();
+    let (log_path, snippet, status, exit_code) = milestone_verification_trace(
+        &store,
+        &checkpoint.milestone_id,
+        "milestone_verification.verify",
+        1,
+    );
+    assert_eq!(status, "completed");
+    assert_eq!(exit_code, Some(1));
+    let log_path = log_path.expect("full command output has a durable trace log");
+    let full_log = std::fs::read_to_string(root.0.join(log_path)).unwrap();
+    assert!(full_log.len() > 2 * 1024);
+    assert!(full_log.contains("full-output-tail"));
+    let snippet = snippet.unwrap();
+    assert!(snippet.len() <= 2 * 1024);
+    assert!(!snippet.contains("full-output-tail"));
+
+    let claimed = milestone_verification_build(&root, &target_base, "architect-worker", "claim");
+    assert!(
+        claimed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&claimed.stderr)
+    );
+    let claimed: Value = serde_json::from_slice(&claimed.stdout).unwrap();
+    assert_eq!(claimed["status"], "fallback_build_claimed");
+    std::fs::remove_file(root.0.join(".forge/fail-check")).unwrap();
+    commit_verification_candidate(&root, 1);
+    let built = milestone_verification_build(&root, &target_base, "architect-worker", "submit");
+    assert!(
+        built.status.success(),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let built: Value = serde_json::from_slice(&built.stdout).unwrap();
+    assert_eq!(built["status"], "fallback_verification_required");
+    let repaired = run_verify();
+    assert!(
+        repaired.status.success(),
+        "{}",
+        String::from_utf8_lossy(&repaired.stderr)
+    );
+    let repaired: Value = serde_json::from_slice(&repaired.stdout).unwrap();
+    assert_eq!(repaired["status"], "review_required");
+    assert_eq!(repaired["fallback_attempts"], 1);
+    let builder_review =
+        submit_milestone_verification_review(&root, &repaired, &target_base, "architect-worker");
+    assert!(!builder_review.status.success());
+    assert!(String::from_utf8_lossy(&builder_review.stderr)
+        .contains("MILESTONE_REVIEW_NOT_INDEPENDENT"));
+    let delivered = submit_milestone_verification_review(
+        &root,
+        &repaired,
+        &target_base,
+        "independent-milestone-reviewer",
+    );
+    assert!(
+        delivered.status.success(),
+        "{}",
+        String::from_utf8_lossy(&delivered.stderr)
+    );
+    let delivered: Value = serde_json::from_slice(&delivered.stdout).unwrap();
+    assert_eq!(delivered["next_gate"], "documentation");
+
+    let (exhausted_root, exhausted_store, exhausted_base) = milestone_verification_fixture(true);
+    let run_exhaustion_check = || {
+        milestone_cli(
+            &exhausted_root,
+            &["verify", "m-verification", "--target-base", &exhausted_base],
+        )
+    };
+    let first_failure = run_exhaustion_check();
+    assert!(first_failure.status.success());
+    let first_failure: Value = serde_json::from_slice(&first_failure.stdout).unwrap();
+    assert_eq!(first_failure["fallback_attempt"], 1);
+    let mut final_build = None;
+    for (attempt, value) in [(1, 1), (2, 2)] {
+        let worker = format!("architect-{attempt}");
+        let claim =
+            milestone_verification_build(&exhausted_root, &exhausted_base, &worker, "claim");
+        assert!(
+            claim.status.success(),
+            "{}",
+            String::from_utf8_lossy(&claim.stderr)
+        );
+        commit_verification_candidate(&exhausted_root, value);
+        let build =
+            milestone_verification_build(&exhausted_root, &exhausted_base, &worker, "submit");
+        assert!(
+            build.status.success(),
+            "{}",
+            String::from_utf8_lossy(&build.stderr)
+        );
+        let build: Value = serde_json::from_slice(&build.stdout).unwrap();
+        if attempt == 2 {
+            final_build = Some(build);
+        }
+        let failure = run_exhaustion_check();
+        if attempt == 1 {
+            assert!(
+                failure.status.success(),
+                "{}",
+                String::from_utf8_lossy(&failure.stderr)
+            );
+            let failure: Value = serde_json::from_slice(&failure.stdout).unwrap();
+            assert_eq!(failure["status"], "fallback_required");
+            assert_eq!(failure["fallback_attempt"], 2);
+        } else {
+            assert!(!failure.status.success());
+            assert!(String::from_utf8_lossy(&failure.stderr)
+                .contains("MILESTONE_VERIFICATION_EXHAUSTED"));
+        }
+    }
+    let checkpoint = exhausted_store
+        .list_checkpoints()
+        .unwrap()
+        .into_iter()
+        .find(|checkpoint| checkpoint.gate_path == "milestone_verification")
+        .unwrap();
+    assert_eq!(checkpoint.state_payload["phase"], "exhausted");
+    assert_eq!(checkpoint.state_payload["fallback_attempts"], 2);
+    assert_eq!(
+        std::fs::read_to_string(exhausted_root.0.join(".forge/verification-order"))
+            .unwrap()
+            .lines()
+            .count(),
+        3
+    );
+    let action_count =
+        milestone_verification_actions(&exhausted_store, &checkpoint.milestone_id).len();
+    let retry_verify = run_exhaustion_check();
+    assert!(!retry_verify.status.success());
+    assert!(
+        String::from_utf8_lossy(&retry_verify.stderr).contains("MILESTONE_VERIFICATION_EXHAUSTED")
+    );
+    let retry_build = milestone_verification_build(
+        &exhausted_root,
+        &exhausted_base,
+        "architect-after-exhaustion",
+        "claim",
+    );
+    assert!(!retry_build.status.success());
+    assert!(
+        String::from_utf8_lossy(&retry_build.stderr).contains("MILESTONE_VERIFICATION_EXHAUSTED")
+    );
+    let retry_review = submit_milestone_verification_review(
+        &exhausted_root,
+        &final_build.expect("the terminal fallback has a persisted candidate"),
+        &exhausted_base,
+        "reviewer-after-exhaustion",
+    );
+    assert!(!retry_review.status.success());
+    assert!(
+        String::from_utf8_lossy(&retry_review.stderr).contains("MILESTONE_VERIFICATION_EXHAUSTED")
+    );
+    let checkpoint_after_retry = exhausted_store
+        .list_checkpoints()
+        .unwrap()
+        .into_iter()
+        .find(|checkpoint| checkpoint.gate_path == "milestone_verification")
+        .unwrap();
+    assert_eq!(checkpoint_after_retry.state_payload["phase"], "exhausted");
+    assert_eq!(checkpoint_after_retry.state_payload["fallback_attempts"], 2);
+    assert_eq!(checkpoint_after_retry.state_payload["verification_runs"], 3);
+    assert_eq!(
+        std::fs::read_to_string(exhausted_root.0.join(".forge/verification-order"))
+            .unwrap()
+            .lines()
+            .count(),
+        3,
+        "operations after exhaustion do not launch another repository check"
+    );
+    assert_eq!(
+        milestone_verification_actions(&exhausted_store, &checkpoint.milestone_id).len(),
+        action_count,
+        "operations after exhaustion do not mutate lifecycle history"
+    );
+}
+
+#[test]
+fn milestone_verification_review_rejection_runs_bounded_build_verify_review_cycles() {
+    let (root, store, target_base) = milestone_verification_fixture(false);
+    let run_verify = || {
+        milestone_cli(
+            &root,
+            &["verify", "m-verification", "--target-base", &target_base],
+        )
+    };
+    let initial = run_verify();
+    assert!(
+        initial.status.success(),
+        "{}",
+        String::from_utf8_lossy(&initial.stderr)
+    );
+    let initial: Value = serde_json::from_slice(&initial.stdout).unwrap();
+    let rejected = submit_milestone_verification_review_decision(
+        &root,
+        &initial,
+        &target_base,
+        "milestone-reviewer-one",
+        "reject",
+    );
+    assert!(
+        rejected.status.success(),
+        "{}",
+        String::from_utf8_lossy(&rejected.stderr)
+    );
+    let rejected: Value = serde_json::from_slice(&rejected.stdout).unwrap();
+    assert_eq!(rejected["next_gate"], "build");
+    assert_eq!(rejected["fallback_attempt"], 1);
+
+    for (attempt, value) in [(1, 1), (2, 2)] {
+        let builder = format!("architect-review-cycle-{attempt}");
+        let claim = milestone_verification_build(&root, &target_base, &builder, "claim");
+        assert!(
+            claim.status.success(),
+            "{}",
+            String::from_utf8_lossy(&claim.stderr)
+        );
+        commit_verification_candidate(&root, value);
+        let built = milestone_verification_build(&root, &target_base, &builder, "submit");
+        assert!(
+            built.status.success(),
+            "{}",
+            String::from_utf8_lossy(&built.stderr)
+        );
+        let verified = run_verify();
+        assert!(
+            verified.status.success(),
+            "{}",
+            String::from_utf8_lossy(&verified.stderr)
+        );
+        let verified: Value = serde_json::from_slice(&verified.stdout).unwrap();
+        if attempt == 1 {
+            let rejected = submit_milestone_verification_review_decision(
+                &root,
+                &verified,
+                &target_base,
+                "milestone-reviewer-two",
+                "reject",
+            );
+            assert!(
+                rejected.status.success(),
+                "{}",
+                String::from_utf8_lossy(&rejected.stderr)
+            );
+            let rejected: Value = serde_json::from_slice(&rejected.stdout).unwrap();
+            assert_eq!(rejected["next_gate"], "build");
+            assert_eq!(rejected["fallback_attempt"], 2);
+        } else {
+            let delivered = submit_milestone_verification_review(
+                &root,
+                &verified,
+                &target_base,
+                "milestone-reviewer-three",
+            );
+            assert!(
+                delivered.status.success(),
+                "{}",
+                String::from_utf8_lossy(&delivered.stderr)
+            );
+            let delivered: Value = serde_json::from_slice(&delivered.stdout).unwrap();
+            assert_eq!(delivered["next_gate"], "documentation");
+        }
+    }
+    let checkpoint = store
+        .list_checkpoints()
+        .unwrap()
+        .into_iter()
+        .find(|checkpoint| checkpoint.gate_path == "milestone_verification")
+        .unwrap();
+    let actions = milestone_verification_actions(&store, &checkpoint.milestone_id);
+    assert_eq!(
+        actions
+            .iter()
+            .filter(|action| action.as_str() == "fallback")
+            .count(),
+        2
+    );
+    assert_eq!(
+        actions
+            .iter()
+            .filter(|action| action.as_str() == "fallback_build_pass")
+            .count(),
+        2
+    );
+    assert_eq!(
+        actions
+            .iter()
+            .filter(|action| action.as_str() == "fallback_verify_pass")
+            .count(),
+        2
+    );
+    assert_eq!(
+        actions
+            .iter()
+            .filter(|action| action.as_str() == "fallback_review_reject")
+            .count(),
+        1
+    );
+    assert_eq!(actions.last().map(String::as_str), Some("deliver"));
 }

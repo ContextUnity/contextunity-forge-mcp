@@ -1200,7 +1200,7 @@ fn stdio_caps_documents_scalars_checkpoints_and_tool_errors() {
     let workspace = Workspace::new();
     workspace.write(
         "forge-mcp.yaml",
-        "roots: [.]\nresponse:\n  max_output_bytes: 1024\n",
+        "roots: [.]\ntasks_db: .forge/tasks.sqlite\nresponse:\n  max_output_bytes: 1024\n",
     );
     workspace.write(
         "README.md",
@@ -1237,13 +1237,13 @@ fn stdio_caps_documents_scalars_checkpoints_and_tool_errors() {
         json!({"nested":["\"\\\nПривіт".repeat(2_000)]}),
     ];
     for (index, invalid_format) in invalid_formats.into_iter().enumerate() {
-        let name = format!("invalid-format-{index}");
+        let name = format!("forge-mcp/forge-mcp/m-test/tasks/invalid-format-{index}/build");
         let (bytes, response) = client.call(
             "session_checkpoint",
             json!({
                 "format":invalid_format,
                 "action":"save",
-                "name":name,
+                "name":name.clone(),
                 "content":{"must_not_persist":true}
             }),
         );
@@ -1259,22 +1259,26 @@ fn stdio_caps_documents_scalars_checkpoints_and_tool_errors() {
         assert!(
             client
                 .payload("session_checkpoint", json!({"action":"list"}))
-                .get(format!("invalid-format-{index}"))
+                .get(&name)
                 .is_none(),
-            "invalid format persisted checkpoint invalid-format-{index}"
+            "invalid format persisted checkpoint {name}"
         );
     }
     let (_, unknown) = client.call(&"\"\\Привіт".repeat(30_000), json!({}));
     assert!(unknown["result"]["isError"] == true || unknown.get("error").is_some());
+    let large_checkpoint = "forge-mcp/forge-mcp/m-test/tasks/large/build";
     client.payload(
         "session_checkpoint",
-        json!({"action":"save","name":"large","content":"\"\\Привіт".repeat(20_000)}),
+        json!({"action":"save","name":large_checkpoint,"content":"\"\\Привіт".repeat(20_000)}),
     );
-    let (_, response) = client.call("session_checkpoint", json!({"action":"get","name":"large"}));
+    let (_, response) = client.call(
+        "session_checkpoint",
+        json!({"action":"get","name":large_checkpoint}),
+    );
     assert_eq!(response["result"]["isError"], true, "{response}");
     assert_eq!(
         client.payload("session_checkpoint", json!({"action":"list"})),
-        json!({"large":{"bytes":320002}})
+        json!({(large_checkpoint):{"bytes":320002}})
     );
     let (_, response) = client.call("get_doc", json!({"path_or_id":"README.md","limit":101}));
     assert_eq!(response["result"]["isError"], true);
@@ -2007,22 +2011,45 @@ fn repair_variadic_matcher_budget_is_checked_inside_backtracking() {
     assert_eq!(legacy.len(), 1);
     assert_eq!(legacy[0]["line"], 25_001);
 }
+fn checkpoint_breadcrumb(subject: &str) -> String {
+    format!(
+        "forge-mcp/checkpoint-fixture/AC-001-hierarchical-acdd-gates-and-milestone-orchestration/tasks.build/checkpoint-{subject}/build"
+    )
+}
+
+fn checkpoint_snapshot(workspace: &Workspace) -> Vec<u8> {
+    let store = contextunity_forge_mcp::engine::tasks::store(workspace.root()).unwrap();
+    serde_json::to_vec(&store.list_checkpoints().unwrap()).unwrap()
+}
+
+fn checkpoint_payload(workspace: &Workspace, breadcrumb: &str) -> Option<Value> {
+    let store = contextunity_forge_mcp::engine::tasks::store(workspace.root()).unwrap();
+    store
+        .get_checkpoint(breadcrumb)
+        .unwrap()
+        .map(|checkpoint| checkpoint.state_payload)
+}
+
 #[test]
 fn repair_checkpoint_page_shapes_are_opaque_and_persistence_is_unchanged() {
     let workspace = Workspace::new();
+    workspace.write(
+        "forge-mcp.yaml",
+        "tasks_db: .forge/tasks.sqlite\ntask_project: checkpoint-fixture\n",
+    );
     let mut client = Client::new(&workspace);
     let page = json!({"total":2,"offset":0,"limit":2,"generation":"saved-snapshot","next_offset":null,"has_more":false,"items":[{"text":"x".repeat(60_000)},{"text":"y".repeat(60_000)}]});
-    for (name, value) in [
+    for (subject, value) in [
         ("page", page.clone()),
         ("nested", json!({"snapshot":{"matches":page}})),
     ] {
+        let name = checkpoint_breadcrumb(subject);
         client.payload(
             "session_checkpoint",
             json!({"action":"save","name":name,"content":value}),
         );
-        let stored = fs::read(workspace.path(".forge/checkpoints.json")).unwrap();
-        let persisted: Value = serde_json::from_slice(&stored).unwrap();
-        assert_eq!(persisted["entries"][name], value);
+        let stored = checkpoint_snapshot(&workspace);
+        assert_eq!(checkpoint_payload(&workspace, &name), Some(value.clone()));
         for format in [None, Some("markdown"), Some("json")] {
             let mut arguments = json!({"action":"get","name":name});
             if let Some(format) = format {
@@ -2036,15 +2063,12 @@ fn repair_checkpoint_page_shapes_are_opaque_and_persistence_is_unchanged() {
             assert!(response["result"]["content"][0]["text"]
                 .as_str()
                 .unwrap()
-                .contains(".forge/checkpoints.json"));
-            assert_eq!(
-                fs::read(workspace.path(".forge/checkpoints.json")).unwrap(),
-                stored
-            );
+                .contains("checkpoint"));
+            assert_eq!(checkpoint_snapshot(&workspace), stored);
         }
         let listed = client.payload("session_checkpoint", json!({"action":"list"}));
         assert_eq!(
-            listed[name]["bytes"],
+            listed[&name]["bytes"],
             serde_json::to_vec(&value).unwrap().len()
         );
         let (_, listed_markdown) = client.call(
@@ -2055,25 +2079,26 @@ fn repair_checkpoint_page_shapes_are_opaque_and_persistence_is_unchanged() {
             .as_str()
             .unwrap();
         assert!(listed_markdown.contains(&format!("**{name}**")));
-        assert!(listed_markdown.contains(&listed[name]["bytes"].to_string()));
+        assert!(listed_markdown.contains(&listed[&name]["bytes"].to_string()));
         let cli_list = run_cli(&workspace, &["--format", "markdown", "checkpoint", "list"]);
         assertions::assert_command_succeeded(&cli_list);
         let cli_list = std::str::from_utf8(&cli_list.stdout).unwrap();
         assert!(cli_list.contains(&format!("**{name}**")));
-        assert!(cli_list.contains(&listed[name]["bytes"].to_string()));
+        assert!(cli_list.contains(&listed[&name]["bytes"].to_string()));
         assert_eq!(listed_markdown.trim_end(), cli_list.trim_end());
-        assert_eq!(
-            fs::read(workspace.path(".forge/checkpoints.json")).unwrap(),
-            stored
-        );
+        assert_eq!(checkpoint_snapshot(&workspace), stored);
     }
     let small = json!({"total":2,"offset":0,"limit":2,"generation":"saved","next_offset":null,"items":[1,2]});
+    let small_breadcrumb = checkpoint_breadcrumb("small");
     client.payload(
         "session_checkpoint",
-        json!({"action":"save","name":"small","content":small}),
+        json!({"action":"save","name":small_breadcrumb,"content":small}),
     );
     assert_eq!(
-        client.payload("session_checkpoint", json!({"action":"get","name":"small"})),
+        client.payload(
+            "session_checkpoint",
+            json!({"action":"get","name":small_breadcrumb})
+        ),
         small
     );
 
@@ -2083,18 +2108,20 @@ fn repair_checkpoint_page_shapes_are_opaque_and_persistence_is_unchanged() {
         "metadata":{},"items":[],"count":0,"complete":false,
         "nested":{"total":0,"offset":0,"limit":1,"generation":"user-page-token","items":[]}
     });
+    let format_breadcrumb = checkpoint_breadcrumb("format-contract");
     let (_, saved) = client.call(
         "session_checkpoint",
         json!({
-            "action":"save","name":"format-contract","content":opaque,"format":"markdown"
+            "action":"save","name":format_breadcrumb,"content":opaque,"format":"markdown"
         }),
     );
     assert_ne!(saved["result"]["isError"], true, "{saved}");
     let save_markdown = saved["result"]["content"][0]["text"].as_str().unwrap();
     assert!(save_markdown.contains("**action**: `\"save\"`"));
-    assert!(save_markdown.contains("**name**: `\"format-contract\"`"));
+    assert!(save_markdown.contains(&format!("**name**: `\"{format_breadcrumb}\"`")));
     let cli_saved_content = json!({"cli":"checkpoint","generation":"user-token"});
     let cli_saved_content_argument = serde_json::to_string(&cli_saved_content).unwrap();
+    let cli_save_breadcrumb = checkpoint_breadcrumb("cli-save-markdown");
     let cli_saved = run_cli(
         &workspace,
         &[
@@ -2103,7 +2130,7 @@ fn repair_checkpoint_page_shapes_are_opaque_and_persistence_is_unchanged() {
             "checkpoint",
             "save",
             "--name",
-            "cli-save-markdown",
+            &cli_save_breadcrumb,
             "--content",
             &cli_saved_content_argument,
         ],
@@ -2111,13 +2138,15 @@ fn repair_checkpoint_page_shapes_are_opaque_and_persistence_is_unchanged() {
     assertions::assert_command_succeeded(&cli_saved);
     let cli_save_text = std::str::from_utf8(&cli_saved.stdout).unwrap();
     assert!(cli_save_text.contains("**action**: `\"save\"`"));
-    assert!(cli_save_text.contains("**name**: `\"cli-save-markdown\"`"));
-    let persisted = fs::read(workspace.path(".forge/checkpoints.json")).unwrap();
-    let persisted_value: Value = serde_json::from_slice(&persisted).unwrap();
-    assert_eq!(persisted_value["entries"]["format-contract"], opaque);
+    assert!(cli_save_text.contains(&format!("**name**: `\"{cli_save_breadcrumb}\"`")));
+    let persisted = checkpoint_snapshot(&workspace);
     assert_eq!(
-        persisted_value["entries"]["cli-save-markdown"],
-        cli_saved_content
+        checkpoint_payload(&workspace, &format_breadcrumb),
+        Some(opaque.clone())
+    );
+    assert_eq!(
+        checkpoint_payload(&workspace, &cli_save_breadcrumb),
+        Some(cli_saved_content)
     );
 
     // Invalid presentation must be rejected before a real persisted mutation.
@@ -2125,17 +2154,14 @@ fn repair_checkpoint_page_shapes_are_opaque_and_persistence_is_unchanged() {
         let (_, rejected) = client.call(
             "session_checkpoint",
             json!({
-                "action":"save","name":"format-contract","content":{"changed":true},"format":invalid
+                "action":"save","name":format_breadcrumb,"content":{"changed":true},"format":invalid
             }),
         );
         assert!(
             rejected.get("error").is_some() || rejected["result"]["isError"] == true,
             "invalid MCP format {invalid:?}: {rejected}"
         );
-        assert_eq!(
-            fs::read(workspace.path(".forge/checkpoints.json")).unwrap(),
-            persisted
-        );
+        assert_eq!(checkpoint_snapshot(&workspace), persisted);
         let rejected = run_cli(
             &workspace,
             &[
@@ -2144,27 +2170,24 @@ fn repair_checkpoint_page_shapes_are_opaque_and_persistence_is_unchanged() {
                 "checkpoint",
                 "save",
                 "--name",
-                "format-contract",
+                &format_breadcrumb,
                 "--content",
                 "{\"changed\":true}",
             ],
         );
         assert!(!rejected.status.success(), "invalid CLI format {invalid:?}");
-        assert_eq!(
-            fs::read(workspace.path(".forge/checkpoints.json")).unwrap(),
-            persisted
-        );
+        assert_eq!(checkpoint_snapshot(&workspace), persisted);
     }
 
     let mut markdown = Vec::new();
     for format in [None, Some("markdown"), Some("json")] {
-        let mut arguments = json!({"action":"get","name":"format-contract"});
+        let mut arguments = json!({"action":"get","name":format_breadcrumb});
         let mut cli_args = Vec::new();
         if let Some(format) = format {
             arguments["format"] = json!(format);
             cli_args.extend(["--format", format]);
         }
-        cli_args.extend(["checkpoint", "get", "--name", "format-contract"]);
+        cli_args.extend(["checkpoint", "get", "--name", &format_breadcrumb]);
         let (_, result) = client.call("session_checkpoint", arguments);
         assert_ne!(result["result"]["isError"], true, "{result}");
         let mcp_text = result["result"]["content"][0]["text"].as_str().unwrap();
@@ -2207,24 +2230,21 @@ fn repair_checkpoint_page_shapes_are_opaque_and_persistence_is_unchanged() {
         markdown[0], markdown[1],
         "omission and explicit Markdown differ"
     );
-    assert_eq!(
-        fs::read(workspace.path(".forge/checkpoints.json")).unwrap(),
-        persisted
-    );
+    assert_eq!(checkpoint_snapshot(&workspace), persisted);
 
     let mut missing_renderings = Vec::new();
-    for (name, value, rendered) in [
+    for (subject, value, rendered) in [
         ("empty-array", json!([]), "[]"),
         ("empty-object", json!({}), "{}"),
     ] {
+        let name = checkpoint_breadcrumb(subject);
         let (_, saved) = client.call(
             "session_checkpoint",
             json!({"action":"save","name":name,"content":value}),
         );
         assert_ne!(saved["result"]["isError"], true, "{saved}");
-        let persisted = fs::read(workspace.path(".forge/checkpoints.json")).unwrap();
-        let stored: Value = serde_json::from_slice(&persisted).unwrap();
-        assert_eq!(stored["entries"][name], value);
+        let persisted = checkpoint_snapshot(&workspace);
+        assert_eq!(checkpoint_payload(&workspace, &name), Some(value.clone()));
 
         let mut markdown = Vec::new();
         for format in [None, Some("markdown"), Some("json")] {
@@ -2234,7 +2254,7 @@ fn repair_checkpoint_page_shapes_are_opaque_and_persistence_is_unchanged() {
                 arguments["format"] = json!(format);
                 cli_args.extend(["--format", format]);
             }
-            cli_args.extend(["checkpoint", "get", "--name", name]);
+            cli_args.extend(["checkpoint", "get", "--name", &name]);
             let (_, response) = client.call("session_checkpoint", arguments);
             assert_ne!(response["result"]["isError"], true, "{response}");
             let mcp_text = response["result"]["content"][0]["text"].as_str().unwrap();
@@ -2256,10 +2276,7 @@ fn repair_checkpoint_page_shapes_are_opaque_and_persistence_is_unchanged() {
                 assert_eq!(mcp_text.trim_end(), cli_text);
                 markdown.push(mcp_text.to_owned());
             }
-            assert_eq!(
-                fs::read(workspace.path(".forge/checkpoints.json")).unwrap(),
-                persisted
-            );
+            assert_eq!(checkpoint_snapshot(&workspace), persisted);
         }
         assert_eq!(
             markdown[0], markdown[1],
@@ -2272,32 +2289,30 @@ fn repair_checkpoint_page_shapes_are_opaque_and_persistence_is_unchanged() {
         missing_renderings.join("; ")
     );
 
-    for (name, content) in [
+    for (subject, content) in [
         ("mcp-delete-markdown", json!({"keep":false})),
         ("cli-delete-markdown", json!({"keep":0})),
     ] {
+        let name = checkpoint_breadcrumb(subject);
         client.payload(
             "session_checkpoint",
             json!({"action":"save","name":name,"content":content}),
         );
     }
+    let mcp_delete_breadcrumb = checkpoint_breadcrumb("mcp-delete-markdown");
     let (_, mcp_deleted) = client.call(
         "session_checkpoint",
-        json!({"action":"delete","name":"mcp-delete-markdown","format":"markdown"}),
+        json!({"action":"delete","name":mcp_delete_breadcrumb,"format":"markdown"}),
     );
     assert_ne!(mcp_deleted["result"]["isError"], true, "{mcp_deleted}");
     let mcp_delete_text = mcp_deleted["result"]["content"][0]["text"]
         .as_str()
         .unwrap();
     assert!(mcp_delete_text.contains("**action**: `\"delete\"`"));
-    assert!(mcp_delete_text.contains("**name**: `\"mcp-delete-markdown\"`"));
-    let deleted_entries: Value =
-        serde_json::from_slice(&fs::read(workspace.path(".forge/checkpoints.json")).unwrap())
-            .unwrap();
-    assert!(deleted_entries["entries"]
-        .get("mcp-delete-markdown")
-        .is_none());
+    assert!(mcp_delete_text.contains(&format!("**name**: `\"{mcp_delete_breadcrumb}\"`")));
+    assert_eq!(checkpoint_payload(&workspace, &mcp_delete_breadcrumb), None);
 
+    let cli_delete_breadcrumb = checkpoint_breadcrumb("cli-delete-markdown");
     let cli_deleted = run_cli(
         &workspace,
         &[
@@ -2306,19 +2321,47 @@ fn repair_checkpoint_page_shapes_are_opaque_and_persistence_is_unchanged() {
             "checkpoint",
             "delete",
             "--name",
-            "cli-delete-markdown",
+            &cli_delete_breadcrumb,
         ],
     );
     assertions::assert_command_succeeded(&cli_deleted);
     let cli_delete_text = std::str::from_utf8(&cli_deleted.stdout).unwrap();
     assert!(cli_delete_text.contains("**action**: `\"delete\"`"));
-    assert!(cli_delete_text.contains("**name**: `\"cli-delete-markdown\"`"));
-    let deleted_entries: Value =
-        serde_json::from_slice(&fs::read(workspace.path(".forge/checkpoints.json")).unwrap())
-            .unwrap();
-    assert!(deleted_entries["entries"]
-        .get("cli-delete-markdown")
-        .is_none());
+    assert!(cli_delete_text.contains(&format!("**name**: `\"{cli_delete_breadcrumb}\"`")));
+    assert_eq!(checkpoint_payload(&workspace, &cli_delete_breadcrumb), None);
+    assert!(!workspace.path(".forge/checkpoints.json").exists());
+
+    let other_workspace = Workspace::new();
+    let shared_database = workspace.path(".forge/tasks.sqlite");
+    other_workspace.write(
+        "forge-mcp.yaml",
+        &format!(
+            "tasks_db: {}\ntask_project: checkpoint-other\n",
+            shared_database.display()
+        ),
+    );
+    let mut other_client = Client::new(&other_workspace);
+    let other_breadcrumb = "forge-mcp/checkpoint-other/AC-001-hierarchical-acdd-gates-and-milestone-orchestration/tasks.build/checkpoint-shared/build".to_owned();
+    other_client.payload(
+        "session_checkpoint",
+        json!({"action":"save","name":other_breadcrumb,"content":{"project":"other"}}),
+    );
+    let other_list = other_client.payload("session_checkpoint", json!({"action":"list"}));
+    assert_eq!(other_list.as_object().unwrap().len(), 1);
+    assert_eq!(
+        other_list[&other_breadcrumb]["bytes"],
+        serde_json::to_vec(&json!({"project":"other"}))
+            .unwrap()
+            .len()
+    );
+    let primary_list = client.payload("session_checkpoint", json!({"action":"list"}));
+    assert!(primary_list.get(&other_breadcrumb).is_none());
+    assert!(primary_list.get(checkpoint_breadcrumb("shared")).is_none());
+    let (_, cross_project) = other_client.call(
+        "session_checkpoint",
+        json!({"action":"get","name":checkpoint_breadcrumb("page")}),
+    );
+    assert_eq!(cross_project["result"]["isError"], true);
 }
 #[tokio::test]
 async fn transport_accepts_exact_bound_and_replaces_oversized_frames() {
@@ -3199,14 +3242,22 @@ fn stdio_server_keeps_its_linked_worktree_and_resolves_registered_sibling_names(
         json!({"contract_proof":{"seam_test_ref":"tests/routing.rs", "red_exit_code":101}});
     let rejected = client.payload("task_submit", json!({"task_id":task_id, "stage":"contract", "action":"reject", "worktree":"51", "evidence":evidence, "findings":{"summary":"Release the fixture claim after proving selected-root submission"}}));
     assert_eq!(rejected["stage"], "contract", "{rejected}");
-    for (selector, value) in [(".", "linked"), ("51", "sibling")] {
+    let linked_checkpoint = "forge-mcp/forge-mcp/m-branch-only/tasks/linked-routing/contract";
+    let sibling_checkpoint = "forge-mcp/forge-mcp/m-branch-only/tasks/sibling-routing/contract";
+    for (selector, value, name) in [
+        (".", "linked", linked_checkpoint),
+        ("51", "sibling", sibling_checkpoint),
+    ] {
         client.payload(
             "session_checkpoint",
-            json!({"action":"save", "name":"routing", "content":value, "worktree":selector}),
+            json!({"action":"save", "name":name, "content":value, "worktree":selector}),
         );
     }
-    for (selector, value) in [(None, "linked"), (Some("51"), "sibling")] {
-        let mut args = json!({"action":"get", "name":"routing"});
+    for (selector, value, name) in [
+        (None, "linked", linked_checkpoint),
+        (Some("51"), "sibling", sibling_checkpoint),
+    ] {
+        let mut args = json!({"action":"get", "name":name});
         if let Some(selector) = selector {
             args["worktree"] = json!(selector);
         }

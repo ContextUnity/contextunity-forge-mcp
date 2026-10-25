@@ -17,6 +17,51 @@ use std::{
     path::{Path, PathBuf},
 };
 
+fn validate_extended_scope_review(
+    proof: &serde_json::Value,
+    extended_scope: &[String],
+) -> Result<()> {
+    if extended_scope.is_empty() {
+        return Ok(());
+    }
+
+    let approval = proof
+        .get("review_proof")
+        .and_then(|review| review.get("extended_scope_review"))
+        .context(
+            "TASK_EXTENDED_SCOPE_REVIEW_REQUIRED: review must approve the task's extended scope",
+        )?;
+    let approved_paths = approval
+        .get("approved_paths")
+        .and_then(serde_json::Value::as_array)
+        .context("TASK_EXTENDED_SCOPE_REVIEW_INVALID: approved_paths must be an array")?;
+    let reason_verified = approval
+        .get("reason_verified")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    if !reason_verified {
+        bail!("TASK_EXTENDED_SCOPE_REVIEW_INVALID: reason_verified must be true");
+    }
+
+    let mut approved = BTreeSet::new();
+    for path in approved_paths {
+        let path = path
+            .as_str()
+            .filter(|path| !path.trim().is_empty())
+            .context(
+                "TASK_EXTENDED_SCOPE_REVIEW_INVALID: approved paths must be non-empty strings",
+            )?;
+        if !approved.insert(path.to_owned()) {
+            bail!("TASK_EXTENDED_SCOPE_REVIEW_INVALID: duplicate approved path '{path}'");
+        }
+    }
+    let expected = extended_scope.iter().cloned().collect::<BTreeSet<_>>();
+    if expected.len() != extended_scope.len() || approved != expected {
+        bail!("TASK_EXTENDED_SCOPE_REVIEW_INVALID: approved_paths must exactly match the admitted extended_scope");
+    }
+    Ok(())
+}
+
 fn code_map_connection(
     _store: &TasksStore,
     worktree: &Path,
@@ -1828,6 +1873,9 @@ impl TasksStore {
             action == "pass",
             &task.spec.proof_policy,
         )?;
+        if action == "pass" && gate_def.proof.kind() == Some(ProofKind::Review) {
+            validate_extended_scope_review(&evidence.proof, &task.spec.extended_scope)?;
+        }
         let mut boundary_callers_snapshot = None;
         if action == "pass"
             && matches!(
@@ -1947,6 +1995,9 @@ impl TasksStore {
                     true,
                     &task.spec.proof_policy,
                 )?;
+                if review_gate.gate.proof.kind() == Some(ProofKind::Review) {
+                    validate_extended_scope_review(&review.proof, &task.spec.extended_scope)?;
+                }
                 review_proofs.push((review_gate.canonical_stage_id.clone(), review.proof.clone()));
             }
             let claim_worktree: String = tx.query_row(
@@ -2069,6 +2120,21 @@ impl TasksStore {
             } else {
                 task.spec.subtasks.clone()
             };
+            if let Some(subtask) = final_subtasks
+                .iter()
+                .find(|subtask| !matches!(subtask.status.as_str(), "completed" | "cancelled"))
+            {
+                bail!("TASK_SUBTASKS_INCOMPLETE: task '{id}' cannot be delivered while subtask '{}' is '{}'. Do: complete or cancel every subtask before delivery.", subtask.subtask_ref, subtask.status);
+            }
+            if let Some(subtask) = final_subtasks.iter().find(|subtask| {
+                subtask.status == "completed"
+                    && subtask
+                        .evidence
+                        .as_deref()
+                        .is_none_or(|evidence| evidence.trim().is_empty())
+            }) {
+                bail!("TASK_SUBTASK_EVIDENCE_MISSING: task '{id}' cannot be delivered because completed subtask '{}' has no verification evidence. Do: record non-empty verification evidence for every completed subtask.", subtask.subtask_ref);
+            }
             let written = crate::engine::milestones::render_task_receipt(
                 &text,
                 task_ref,

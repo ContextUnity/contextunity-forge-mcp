@@ -16,21 +16,9 @@ informed:
 
 ## Context
 
-ContextUnity Forge MCP implements Augmented Context-Driven Development (ACDD). In the current engine (`v0.3.x`), task progression is governed by a flat, linear gate sequence defined in `acdd.default.yaml` (`contract` -> `build` -> `review` -> `deliver`) where transitions are hardcoded to single-task increments (`task.gate += 1`).
+ACDD task and milestone workflows use one gate model. Task gates consume profile commands and proofs; milestone gates coordinate task dependency waves, checkpoints, verification, and handoff. The same lifecycle state must remain consistent across SQLite, milestone manifests, command evidence, and reviewer decisions.
 
-While effective for isolated task execution, this flat structure has revealed architectural bottlenecks and conceptual ambiguities during multi-task milestone execution (demonstrated in sessions `01a15926-1ada` and `01a15b58`):
-
-1. **Entity Dichotomy Confusion (Task vs Gate vs Pipeline)**:
-   Attempting to define "milestone tasks", "task gates", "command gates", and "pipelines" as separate schema types created conceptual fragmentation. In reality, every single step in an ACDD workflow is simply a **Gate** (`GateDef`) that must be fulfilled to advance.
-
-2. **Extreme Verification Latency (Full Suite Paranoia)**:
-   Task gates previously executed the full repository test suite (`cargo test --all-targets`) after every minor change. A task modifying one file spent 4 minutes compiling and executing 800+ unrelated tests. Iterative review rounds multiplied this latency into 30–60 minutes of dead compile time.
-
-3. **Fragile JSON Checkpoint Storage**:
-   The legacy `session_checkpoint` tool wrote to a loose filesystem file `.forge/checkpoints.json`. This was disconnected from SQLite transactions, prone to write contention, and unrelated to agent breadcrumb locators.
-
-4. **Scope Drift & Audit Gaps**:
-   In legacy execution, `extend_scope` mutated SQLite directly without updating the milestone contract in Git (`docs/milestones/<TAG>-<NNN>-<slug>.md`), causing database-to-manifest divergence. Furthermore, there was no typed audit requiring reviewers to explicitly approve mid-flight scope expansions.
+The architecture therefore needs declarative gate composition, claim-bound proof compilation, breadcrumb-addressed checkpoint persistence, atomic scope synchronization, and a bounded verification path that completes before documentation and handoff.
 
 ---
 
@@ -256,15 +244,17 @@ To maintain absolute fidelity between SQLite and the Git milestone manifest:
 
    **Atomic Dual-Synchronization**: The tool updates **both** SQLite and the markdown manifest (`docs/milestones/<TAG>-<NNN>-<slug>.md`) under the task block in a single transaction.
 3. **Mandatory Review Proof Verification**:
-   If `extended_scope` is non-empty, the review gate engine enforces that `review_proof` must contain an explicit approval:
+   If `extended_scope` is non-empty, `review_proof.extended_scope_review` must contain an explicit approval. The approval value has this shape:
    ```json
    {
-     "extended_scope_review": {
-       "status": "APPROVED",
-       "audit_comment": "Verified justification: documentation invariants updated alongside code"
-     }
+     "approved_paths": [
+       "docs/reference/tasks.md",
+       "src/engine/tasks/gates.rs"
+     ],
+     "reason_verified": true
    }
    ```
+   `approved_paths` must exactly match the task's admitted `extended_scope` set; missing, extra, or duplicate paths fail validation. `reason_verified` must be `true`.
    Advancement to `deliver` is strictly blocked if `extended_scope` lacks reviewer sign-off.
 4. **Protected Paths Guard (`TASK_SCOPE_PROTECTED`)**:
    Protected system configuration and infrastructure paths (including `.forge/acdd/**`, `.forge-mcp.yaml`, and lockfiles) are strictly forbidden from mid-flight addition via `task extend-scope`. Any attempt to add a protected path fails closed with `TASK_SCOPE_PROTECTED`.
@@ -276,24 +266,26 @@ To maintain absolute fidelity between SQLite and the Git milestone manifest:
 We completely eliminate the ad-hoc filesystem file `.forge/checkpoints.json`.
 Checkpoints are now **native SQLite entities (`gate_checkpoints`) keyed directly by the turn breadcrumb**:
 
-$$\mathbf{Breadcrumb} = \text{\{milestone\_id\}}/\text{\{gate\_path\}}/\text{\{task\_id\}}/\text{\{stage\_id\}}$$
+**Breadcrumb** = `{repository}/{project}/{milestone_id}/{gate_path}/{task_ref}/{stage_id}`
 
 where:
+- `repository` and `project`: workspace namespace components, e.g. `forge-mcp/forge-mcp`
 - `milestone_id`: e.g. `AC-001-hierarchical-acdd-gates-and-milestone-orchestration`
 - `gate_path`: dot-delimited path down the gate tree, e.g. `tasks` or `milestone_verification`
-- `task_id`: specific task slug (e.g. `sqlite-gate-transitions-and-trace-persistence`) or `milestone` for top-level gates
+- `task_ref`: specific task slug (e.g. `sqlite-gate-transitions-and-trace-persistence`) or `milestone` for top-level gates
 - `stage_id`: specific active leaf gate ID (e.g. `contract`, `build`, `review`, `deliver`)
 
 1. **State Machine Cursor `(gate_path, subject)`**:
-   Replaces the legacy flat `task.gate_index`. The active position in the gate DAG is addressed by the compound cursor `(gate_path, subject)`.
+   The active position in the gate DAG is addressed by the compound cursor `(gate_path, subject)`.
 2. **Automatic Lifecycle Checkpoint**:
    On every gate transition, Forge writes a snapshot into `gate_checkpoints` containing:
    - `breadcrumb`: unique composite key
    - `transition_id`: reference to `gate_transitions(id)`
    - `git_tree_sha`: immutable snapshot of the working tree
    - `state_payload`: active scratchpad, compiler logs, and changed files.
+   Engine-owned checkpoint rows keep their `transition_id`; generic session checkpoint saves and deletes cannot replace or remove those rows. Milestone verification validates its stored state against that transition and the state digest in its proof.
 3. **On-Demand Inspection Tool (`session_checkpoint`)**:
-   Agents query `session_checkpoint(action="get")` to inspect the checkpoint of the active breadcrumb without reading raw files or running manual shell checks.
+   Agents query `session_checkpoint(action="get", name="<full breadcrumb>")` to inspect the checkpoint at a breadcrumb without reading raw files or running manual shell checks. The name includes repository and project namespaces so shared-store rows remain isolated.
 
 ---
 
@@ -358,6 +350,7 @@ where:
   Encapsulates the complete two-stage check:
   - `verify`: Autonomous command gate (`check_full_repo` on all targets with 0 LLM tokens).
   - `review`: Cognitive reviewer evaluating cross-milestone integrity and invariants.
+   [`run_milestone_check`](../../src/engine/milestones/integration.rs) stores complete combined command output in a confined `.forge/task-traces/` log and records its path with the bounded SQLite snippet for successful, failed, timed-out, and spawn-error runs.
 4. **Fallback Polish Subgraph (`fallback: { use: build_review_cycle, command: check_full_repo, max_attempts: 2 }`)**:
   If either check fails, the container activates its fallback subgraph directly on the milestone branch (architect fixes seam defects $\rightarrow$ verifies $\rightarrow$ reviewer signs off).
   If unresolved after `max_attempts` (default: 2), it halts with a fail-closed `> [!CAUTION] BLOCKER`.
@@ -370,7 +363,7 @@ where:
 
 ### Pillar 6: Markdown-First Message Ergonomics (Milestone 054 Alignment)
 
-Under the invariants established in [ADR 0019 (Markdown Contracts)](../reference/mcp-markdown-contracts.md) and [Milestone 054](archive/054-markdown-first-dual-surface-and-agent-ergonomics.md):
+Under the invariants established in [ADR 0019 (Markdown Contracts)](../reference/mcp-markdown-contracts.md) and [Milestone 054](../milestones/archive/054-markdown-first-dual-surface-and-agent-ergonomics.md):
 1. **Tool Output Default**:
    All CLI and MCP operations default to compact GitHub Markdown. Raw JSON envelopes are only emitted when explicitly requested via `--format json` or `format: "json"`.
 2. **Clickable Coordinates**:
@@ -461,14 +454,14 @@ To avoid circular dependencies, type drift between parallel builder sessions, an
 
 3. **Task 0 Contract Matrix, Deterministic Waves & Scope Freeze**:
    - Contract rows point from provider to consumer. A local task dependency from consumer to provider requires a seam_dependency matrix row with the reverse, provider-to-consumer direction.
-   - The shared core models are ContractType (shared_helper, seam_dependency, shared_type), ContractStatus (synthesized, verified), MilestoneContractEntry, [MilestoneContractMatrix](../../../src/core/tasks/mod.rs#L61), [AcddErrorCode](../../../src/core/tasks/mod.rs#L71), and AcddError. Each entry uses the milestone_contract_matrix columns, requires a non-empty contract_ref and positive revision, and is unique by milestone_id, source_task, target_task, and contract_ref.
+   - The shared core models are ContractType (shared_helper, seam_dependency, shared_type), ContractStatus (synthesized, verified), MilestoneContractEntry, [MilestoneContractMatrix](../../src/core/tasks/mod.rs#L61), [AcddErrorCode](../../src/core/tasks/mod.rs#L71), and AcddError. Each entry uses the milestone_contract_matrix columns, requires a non-empty contract_ref and positive revision, and is unique by milestone_id, source_task, target_task, and contract_ref.
    - Task 2 exposes TasksStore::replace_contract_matrix for an atomic full-matrix replacement and TasksStore::list_contract_matrix for deterministic reads ordered by source_task, target_task, and contract_ref.
-   - [verify_contract_matrix_parity](../../../src/engine/milestones/mod.rs#L32) fails closed with CONTRACT_MATRIX_MISMATCH when the matrix belongs to a different milestone, references unknown tasks, repeats a row key, contains an empty reference or non-positive revision, or omits a local manifest dependency. Extra shared_helper and shared_type entries are allowed.
+   - [verify_contract_matrix_parity](../../src/engine/milestones/mod.rs#L32) fails closed with CONTRACT_MATRIX_MISMATCH when the matrix belongs to a different milestone, references unknown tasks, repeats a row key, contains an empty reference or non-positive revision, or omits a local manifest dependency. Extra shared_helper and shared_type entries are allowed.
    - AC-001 uses these deterministic topological waves; milestone task order breaks ties: Wave 0, Task 0; Wave 1, Tasks 1 and 2; Wave 2, Tasks 3 and 4; Wave 3, Tasks 5 and 6. The manifest depends_on graph remains the execution authority.
    - Same-wave scopes are disjoint: Task 1 owns core/profile/CLI/MCP/engine schema work and gates_ast.rs while Task 2 owns src/db/tasks_store/ and persistence.rs; Task 3 owns transition/command-runner work and runner.rs while Task 4 owns synthesis/milestone work and synthesis.rs; Task 5 owns claim/container and reader work with seam_reachability.rs while Task 6 owns scope-sync, handoff, CLI/MCP and governance files with scope_sync.rs. Cross-wave path reuse is serialized by dependencies.
 
 4. **Shared Error Taxonomy**:
-   AC-001 uses one stable, machine-readable diagnostic set in core, the future profile, and operator-facing errors. AcddErrorCode::as_str() defines the canonical spelling; profile keys must match exactly.
+   AC-001 uses one stable, machine-readable diagnostic set in core, the profile, and operator-facing errors. AcddErrorCode::as_str() defines the canonical spelling; profile keys must match exactly.
    - GateProfile.error_codes is the profile representation. It must contain the same identifiers as AcddErrorCode and reject unknown identifiers during profile validation.
 
    | Code | Meaning |
@@ -560,8 +553,8 @@ Analysis of production multi-agent sessions revealed that separating messaging i
 
 To eliminate the recurring `Output exceeds the response byte limit` failures identified during multi-agent benchmark analysis, the response transport and task listing subsystems are overhauled:
 
-1. **Response Budget Increase to 96 KiB (`MAX_OUTPUT_BYTES = 96 * 1024`)**:
-   - The transport ceiling is raised from 64 KiB to 96 KiB (98,304 bytes), superseding the legacy constraint from ADR 0011.
+1. **Response Budget of 96 KiB (`MAX_OUTPUT_BYTES = 96 * 1024`)**:
+   - The transport ceiling is 96 KiB (98,304 bytes), preserving bounded MCP responses under ADR 0011.
    - Provides safe, verified headroom for multi-file graph listings, large integration test bodies, and complete task trees without triggering client-side truncation or stdio drops.
 
 2. **Context-Aware `task_list` Scoping & Multi-Milestone Aggregation**:
@@ -639,7 +632,7 @@ persistence:
    - Captures a pure parentless content-addressed tree snapshot (`git commit-tree` without `-p`), protected from `git gc` by a moving keeper ref (`refs/forge/state/<milestone>/<task_slug>`).
    - Completely lightweight, zero-token restore point that preserves working tree state without cluttering public Git history, deleted at milestone handoff.
 2. **`commit` (Branch HEAD)**:
-   - Commits reviewed/accepted changes directly into the active milestone branch HEAD with a standardized `forge-task:` commit message. This serves as the single commit mechanism, replacing legacy `auto_commit: true`.
+   - Commits reviewed and accepted changes directly into the active milestone branch HEAD with a standardized `forge-task:` commit message. This is the single task commit mechanism.
 3. **`pre` vs `post` Lifecycle Hooks**:
    - `pre`: Runs before agent begins editing (on `task claim`). Essential for the Architect or major refactoring tasks to preserve a pristine baseline before rewriting documents.
    - `post`: Runs when the stage passes (`task submit --action pass`), locking in verified changes.
@@ -759,9 +752,9 @@ CREATE TABLE gate_execution_traces (
     UNIQUE(milestone_id, subject, gate_path, attempt_id, command_id)
 );
 
--- 3. Unified Checkpoints keyed by turn breadcrumb (replaces checkpoints.json)
+-- 3. Checkpoints keyed by turn breadcrumb
 CREATE TABLE gate_checkpoints (
-    breadcrumb TEXT PRIMARY KEY,      -- e.g. "AC-001-hierarchical-acdd-gates-and-milestone-orchestration/tasks.build/task:core-formatter"
+    breadcrumb TEXT PRIMARY KEY,      -- e.g. "forge-mcp/forge-mcp/AC-001-hierarchical-acdd-gates-and-milestone-orchestration/tasks/container-gate-and-claim-engine/build"
     milestone_id TEXT NOT NULL,
     subject TEXT NOT NULL,
     gate_path TEXT NOT NULL,
@@ -909,7 +902,7 @@ When the Architect escalates to a human, raw logs are forbidden. The human recei
 > **Architectural Escalation (Milestone AC-001, HITL Level: PRO)**
 > **Task**: `zero-arg-transition-engine`
 > **Finding**: Builder requires persistent storage for command traces.
-> 
+>
 > **Architect Recommendation:**
 > - **[A] (Recommended)** Approve new `gate_execution_traces` SQLite table with TTL pruning.
 > - **[B]** Reject table — mandate writing trace logs purely to disk in `.forge/traces/`.
@@ -928,5 +921,5 @@ When the Architect escalates to a human, raw logs are forbidden. The human recei
 - **Clean Fallback on Milestone Seams**: Defect polish on the integrated milestone branch uses the reusable `build_review_cycle` subgraph without task reopening churn.
 
 ### Negative
-- Requires database migration for `gate_transitions`, `gate_execution_traces`, `gate_checkpoints`, and `milestone_contract_matrix`.
-- Requires manifest AST rewrite engine for `task extend-scope`.
+- Scope extension must atomically publish the updated milestone manifest alongside the SQLite transaction.
+- Milestone verification runs a full-repository command and an independent review before documentation, increasing the final integration gate's resource and review cost.

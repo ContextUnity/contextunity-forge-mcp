@@ -2,7 +2,7 @@ use crate::{
     core::tasks::profile::CommandDef, db::tasks_store::GateExecutionTrace,
     engine::tasks::store_for_task,
 };
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use sha2::{Digest, Sha256};
 #[cfg(unix)]
 use std::fs::File;
@@ -327,7 +327,7 @@ fn read_all(mut reader: impl Read) -> std::io::Result<Vec<u8>> {
     Ok(output)
 }
 
-fn persist_log(
+pub(super) fn persist_log(
     root: &Path,
     task_id: &str,
     gate_path: &str,

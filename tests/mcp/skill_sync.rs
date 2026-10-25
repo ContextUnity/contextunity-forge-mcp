@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -7,8 +7,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use pulldown_cmark::{Event, Parser, Tag};
 
 fn read_skill_files(root: &Path) -> io::Result<BTreeMap<PathBuf, Vec<u8>>> {
+    let root = fs::canonicalize(root)?;
     let mut files = BTreeMap::new();
-    collect_skill_files(root, root, &mut files)?;
+    collect_skill_files(&root, &root, &mut files, &mut BTreeSet::new())?;
     Ok(files)
 }
 
@@ -16,14 +17,36 @@ fn collect_skill_files(
     root: &Path,
     directory: &Path,
     files: &mut BTreeMap<PathBuf, Vec<u8>>,
+    ancestors: &mut BTreeSet<PathBuf>,
 ) -> io::Result<()> {
+    let canonical_directory = fs::canonicalize(directory)?;
+    if !canonical_directory.starts_with(root) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("skill directory {} escapes skill root", directory.display()),
+        ));
+    }
+    if !ancestors.insert(canonical_directory.clone()) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("skill directory cycle at {}", directory.display()),
+        ));
+    }
+
     for entry in fs::read_dir(directory)? {
         let entry = entry?;
         let path = entry.path();
-        let file_type = entry.file_type()?;
-        if file_type.is_dir() {
-            collect_skill_files(root, &path, files)?;
-        } else if file_type.is_file() {
+        let canonical_path = fs::canonicalize(&path)?;
+        if !canonical_path.starts_with(root) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("skill entry {} escapes skill root", path.display()),
+            ));
+        }
+        let metadata = fs::metadata(&path)?;
+        if metadata.is_dir() {
+            collect_skill_files(root, &path, files, ancestors)?;
+        } else if metadata.is_file() {
             let relative_path = path
                 .strip_prefix(root)
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
@@ -35,6 +58,7 @@ fn collect_skill_files(
             ));
         }
     }
+    ancestors.remove(&canonical_directory);
     Ok(())
 }
 
@@ -103,7 +127,7 @@ fn validate_installed_skill_links(skill_root: &Path) -> Result<(), String> {
         .map_err(|error| format!("cannot read installed skill tree: {error}"))?;
 
     for (relative_path, contents) in installed_files {
-        if !is_markdown_file(&relative_path) {
+        if !is_installed_skill_markdown(&relative_path) {
             continue;
         }
         let markdown_path = skill_root.join(&relative_path);
@@ -156,6 +180,18 @@ fn is_markdown_file(path: &Path) -> bool {
             .file_name()
             .and_then(|name| name.to_str())
             .is_some_and(|name| name.ends_with(".md.example"))
+}
+
+fn is_installed_skill_markdown(path: &Path) -> bool {
+    // These templates target the consuming repository's docs tree, not the installed skill tree.
+    let source_example_catalogs = [
+        Path::new("references/acdd-profile-examples"),
+        Path::new("references/accd-profile-examples"),
+    ];
+    !source_example_catalogs
+        .iter()
+        .any(|catalog| path.starts_with(catalog))
+        && is_markdown_file(path)
 }
 
 fn has_uri_scheme(destination: &str) -> bool {

@@ -74,7 +74,7 @@ evidence. See the [task lifecycle Markdown contract](mcp-markdown-contracts.md#t
 | `ast_grep_search` | Match a language-specific AST `pattern` in admitted source. Indexed file lists and FTS terms narrow candidate files before Tree-sitter parses their contents. |
 | `search_docs` | Search indexed Markdown by `query` and optional `doc_type`; `include_excerpt=true` adds a bounded match excerpt. |
 | `get_doc` | Retrieve a Markdown document by `path_or_id` and optionally a heading `section`; full responses include source locations, citation links, uniquely verified referenced symbols, and a paged `referenced_symbol_candidates` collection for ambiguous eligible claims. Unscoped claims match symbols in the source document's workspace; an explicit normalized file link can cross workspaces. Compact responses omit candidate details and return a hint to request `detail="full"`. |
-| `session_checkpoint` | `list` checkpoint names and serialized byte sizes; `save`, `get`, or `delete` a named local JSON checkpoint. |
+| `session_checkpoint` | List SQLite checkpoints by full breadcrumb and serialized byte size; save, get, or delete an opaque JSON state payload by breadcrumb. |
 | `forge_guide` | Return the built-in usage guide. |
 | `task_list` | List ready tasks in the selected workspace and unique active milestone by default; zero active milestones returns an empty page and multiple active milestones require an explicit milestone selector/status. Accepts `limit` (1–100, default 30), `offset` (default 0), and `generation` (required for nonzero offsets), plus repository, task status, milestone, stage, and detail filters. Pagination reports total matches, actual returned count, byte-omitted records, and a continuation hint; its generation binds the workspace, filters, and task/subtask state, not the code index. Status accepts `ready`, `in_progress`, `blocked`, `parked`, `completed`, `cancelled`, or `all`. A targeted milestone defaults to all milestone statuses; explicit `milestone_status: "all"` retains archived tasks. Subtasks are compact by default; request `detail: "full"` for titles and evidence. |
 | `task_claim` | Atomically claim the current task gate for a worker and worktree. |
@@ -219,14 +219,32 @@ Unsupported fragments and invalid syntax produce an MCP tool error with the diag
 
 ## SQL and checkpoints
 
-Markdown checkpoint lists show the returned names and serialized byte sizes;
-save and delete display the actual action and name. Get preserves the stored JSON
-value losslessly and does not interpret user fields such as `generation`,
-`freshness`, or `items` as Forge metadata.
+Markdown checkpoint lists show the returned full breadcrumbs and serialized
+byte sizes; save and delete display the actual action and breadcrumb. Get
+preserves the stored JSON value losslessly and does not interpret user fields
+such as `generation`, `freshness`, or `items` as Forge metadata.
 
 `code_map_query(operation="sql")` accepts exactly one `SELECT` or `WITH` statement. The connection is read-only, and write or administrative SQL is rejected. It has a query time budget; large result sets should be paged. For structural cycle analysis, use `code_map_analyze` with `include_cycles=true`. Cycles are static graph findings.
 
-A checkpoint saves a JSON value under a local name in `.forge/checkpoints.json`. `save` needs both a name and valid JSON content. `list` returns each name with its serialized JSON byte size; `get` loads the value. Names are 1–200 UTF-8 bytes and cannot contain `..`, `/`, `\`, or a NUL byte. Values are limited to 1 MiB. A checkpoint is local session data, not part of the source index.
+`session_checkpoint` stores values in SQLite `gate_checkpoints`, scoped to the
+active task-store project. Its schema-compatible `name` field carries the
+complete breadcrumb for `save`, `get`, and `delete`:
+`{repository}/{project}/{milestone_id}/{gate_path}/{task_id}/{stage_id}`. The
+milestone, gate path, task, and stage components identify the active gate; the
+repository and project prefix namespace the locator. `name` is 1–2,048 bytes
+and cannot contain a NUL byte. Slash-separated components are accepted.
+
+`list` takes no `name` and returns each stored breadcrumb with its serialized
+JSON byte size. `save` requires both `name` and JSON `content` and writes or
+replaces a scratchpad payload at that exact breadcrumb. `get` requires `name`
+and returns the stored JSON value. `delete` requires `name` and removes the exact
+scratchpad breadcrumb. Values are limited to 1 MiB. A breadcrumb from another
+project is rejected. Gate-transition checkpoints are engine-owned: `save` and
+`delete` return `TASK_CHECKPOINT_OWNED` for rows with a lifecycle transition, and
+the milestone verification cursor is reserved even before its first transition.
+The tool continues to read these rows with `get`. Scratchpad data is local
+session state, separate from the source index; the tool does not read or write
+`.forge/checkpoints.json`.
 
 ## Syntax diagnostics on demand
 

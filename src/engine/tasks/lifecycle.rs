@@ -8,6 +8,44 @@ fn task_response_bytes(value: &Value) -> usize {
     value.to_string().len()
 }
 
+fn render_scope_extension_manifest(
+    text: &str,
+    task_ref: &str,
+    scope: &[String],
+    extended_scope: &[String],
+) -> Result<String> {
+    let mut block_start = None;
+    let mut cursor = 0;
+    for line in text.split_inclusive('\n') {
+        if line.trim() == "```yaml" {
+            block_start = Some(cursor + line.len());
+        } else if line.trim() == "```" {
+            if let Some(start) = block_start.take() {
+                let mut block: serde_yaml::Value = serde_yaml::from_str(&text[start..cursor])?;
+                if block["task_ref"].as_str() == Some(task_ref) {
+                    let map = block
+                        .as_mapping_mut()
+                        .context("TASK_SCOPE_MANIFEST_INVALID: task block must be a mapping")?;
+                    map.insert(
+                        serde_yaml::Value::String("scope".into()),
+                        serde_yaml::to_value(scope)?,
+                    );
+                    let extended_scope_key = serde_yaml::Value::String("extended_scope".into());
+                    if extended_scope.is_empty() {
+                        map.remove(&extended_scope_key);
+                    } else {
+                        map.insert(extended_scope_key, serde_yaml::to_value(extended_scope)?);
+                    }
+                    let yaml = serde_yaml::to_string(&block)?;
+                    return Ok(format!("{}{}{}", &text[..start], yaml, &text[cursor..]));
+                }
+            }
+        }
+        cursor += line.len();
+    }
+    bail!("TASK_SCOPE_MANIFEST_INVALID: task block '{task_ref}' not found")
+}
+
 fn bound_task_response(mut value: Value) -> Value {
     if task_response_bytes(&value) <= TASK_RESPONSE_BYTES {
         return value;
@@ -113,7 +151,14 @@ fn finish_claim(
             .as_deref()
             .context("claim worktree missing")?,
     );
-    let (milestone_id, breadcrumb) = super::claim::breadcrumb(id, &cursor)?;
+    let (milestone_id, task_breadcrumb) = super::claim::breadcrumb(id, &cursor)?;
+    let namespace_prefix = format!("{}/{}/", workspace.repository, workspace.project);
+    let checkpoint_milestone_id = format!("{namespace_prefix}{milestone_id}");
+    let breadcrumb = format!("{namespace_prefix}{task_breadcrumb}");
+    let checkpoint_subject = id
+        .rsplit_once(':')
+        .map(|(_, task_ref)| task_ref)
+        .context("TASK_BREADCRUMB_INVALID: task reference is missing")?;
     let subagent_role = super::claim::resolve_subagent_role(&cursor);
     let activation = (|| {
         let milestone_prefix = claimed
@@ -177,8 +222,8 @@ fn finish_claim(
             )?;
             store.save_checkpoint(&GateCheckpoint {
                 breadcrumb: breadcrumb.clone(),
-                milestone_id: milestone_id.clone(),
-                subject: id.to_owned(),
+                milestone_id: checkpoint_milestone_id,
+                subject: checkpoint_subject.to_owned(),
                 gate_path: cursor.gate_path.clone(),
                 transition_id: None,
                 git_tree_sha,
@@ -733,16 +778,55 @@ fn manage_inner(root: &Path, p: &mut Manage) -> Result<Value> {
             workspace.envelope(value)
         }
         ManageAction::ExtendScope => {
-            let task = store.inspect(id.context("task_id required")?)?;
-            registry.check_scope(
-                workspace,
-                paths.context("paths required")?,
-                task.worktree.as_deref().map(Path::new),
-            )?;
-            Ok(serde_json::to_value(store.extend_scope(
-                id.context("task_id required")?,
-                paths.context("paths required")?,
+            let task_id = id.context("task_id required")?;
+            let paths = paths.context("paths required")?;
+            let task = store.inspect(task_id)?;
+            registry.check_scope(workspace, paths, task.worktree.as_deref().map(Path::new))?;
+            let milestone_ref = task.milestone_ref.clone();
+            let milestone_path = confined_path(&workspace.root, &milestone_ref)?;
+            let original_manifest = std::fs::read_to_string(&milestone_path)?;
+            let task_ref = task.spec.task_ref.clone();
+            Ok(serde_json::to_value(store.extend_scope_with_pre_commit(
+                task_id,
+                paths,
                 &workspace.root,
+                |updated_task| {
+                    let updated_manifest = render_scope_extension_manifest(
+                        &original_manifest,
+                        &task_ref,
+                        &updated_task.spec.scope,
+                        &updated_task.spec.extended_scope,
+                    )?;
+                    let milestone = registry.parse_milestone_manifest(
+                        workspace,
+                        &milestone_ref,
+                        &updated_manifest,
+                    )?;
+                    let manifest_task = milestone
+                        .tasks
+                        .iter()
+                        .find(|spec| spec.task_ref == task_ref)
+                        .context("TASK_SCOPE_MANIFEST_INVALID: extended task disappeared")?;
+                    if manifest_task.scope != updated_task.spec.scope
+                        || manifest_task.extended_scope != updated_task.spec.extended_scope
+                    {
+                        bail!(
+                            "TASK_SCOPE_MANIFEST_INVALID: parsed scope differs from SQLite scope"
+                        );
+                    }
+                    updated_task.digest = milestone.digest(manifest_task)?;
+                    updated_task.authority_snapshot = Some(
+                        crate::core::tasks::AuthoritySnapshot::capture(&milestone, manifest_task),
+                    );
+                    Ok(Some(
+                        crate::db::tasks_store::recovery::ManifestReplacement::new(
+                            &workspace.root,
+                            &milestone_ref,
+                            original_manifest.as_bytes(),
+                            updated_manifest.as_bytes(),
+                        )?,
+                    ))
+                },
             )?)?)
         }
         ManageAction::SubtaskAdd => {

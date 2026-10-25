@@ -19,3 +19,72 @@ roles:
     models:
       - 'sol-6.1:xhigh'
     guidance: "Use a reviewer worker independent from the builder. Submit review proof across contours, then claim and submit deliver in the same reviewer session."
+  architect:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'sol-6.1:high'
+    guidance: "Repair cross-milestone verification findings within the admitted milestone branch, then return the candidate for a fresh full check and independent review."
+commands:
+  rust-check-and-test:
+    command: "cargo clippy --all-targets --all-features -- -D warnings && cargo test"
+    description: "Run strict Rust checks followed by the repository's test suite."
+    # New readers lift this profile-wide map; older readers ignore this nested extension.
+    scope_args_by_pattern:
+      "src/main.rs": "--bin contextunity-forge-mcp"
+      "src/**/*.rs": "--lib"
+      "tests/*.rs": "--test {file_stem}"
+      "tests/acdd/**/*.rs": "--test acdd"
+      "tests/common/**/*.rs": "--all-targets"
+      "tests/commitment_integrity/**/*.rs": "--test commitment_integrity"
+      "tests/core/**/*.rs": "--test core"
+      "tests/incremental/**/*.rs": "--test incremental"
+      "tests/languages/**/*.rs": "--test languages"
+      "tests/linker/**/*.rs": "--test linker"
+      "tests/mcp/**/*.rs": "--test mcp"
+      "tests/mcp_context/**/*.rs": "--test mcp"
+      "tests/query_context/**/*.rs": "--test query_context"
+      "tests/receivers/**/*.rs": "--test linker"
+  check_full_repo:
+    command: "cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets"
+    description: "Run the milestone handoff verification commands from TESTS.md."
+    timeout_seconds: 1800
+  test:
+    command: "cargo test"
+    description: "Compatibility command for legacy task evidence."
+
+policies:
+  milestone_verification:
+    container:
+      id: milestone_verification
+      gates:
+        - id: verify
+          command: check_full_repo
+          proof: command
+        - id: review
+          role: independent_reviewer
+          proof: review
+          independent_from: verify
+          contours: standard
+      fallback:
+        use: build_review_cycle
+        command: check_full_repo
+        max_attempts: 2
+      deliver:
+        proof: delivery
+        persistence:
+          post: commit
+    templates:
+      build_review_cycle:
+        gates:
+          - id: build
+            role: architect
+            proof: none
+          - id: verify
+            command: check_full_repo
+            proof: command
+          - id: review
+            role: independent_reviewer
+            proof: review
+            independent_from: build
+            contours: standard

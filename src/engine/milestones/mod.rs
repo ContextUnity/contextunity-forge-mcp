@@ -24,9 +24,13 @@ mod synthesis;
 pub(crate) use integration::configure_checkpoint_owners;
 pub mod recovery;
 use contract::{snapshot, Snapshot};
-pub use handoff::{handoff, handoff_context};
+pub use handoff::{
+    execute_milestone_verification, handoff, handoff_context, milestone_verification_build,
+    submit_milestone_verification_review,
+};
 pub use integration::{
     HandoffBinding, IntegrationEvidence, IntegrationReview, IntegrationVerification,
+    MilestoneVerificationReview,
 };
 pub use recovery::db_recover;
 pub(crate) use recovery::obsolete_checkpoint_owners;

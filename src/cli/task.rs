@@ -246,8 +246,8 @@ pub enum TaskCommand {
         /// The action value.
         action: Action,
         #[arg(long)]
-        /// JSON evidence object.
-        evidence: String,
+        /// Optional JSON evidence object; automated gates can infer proof from persisted execution.
+        evidence: Option<String>,
         #[arg(long)]
         /// Optional findings value.
         findings: Option<String>,
@@ -454,18 +454,23 @@ pub fn run(root: &Path, command: TaskCommand) -> Result<Value> {
             evidence,
             findings,
         } => {
-            return tasks::submit(
-                root,
-                Submit {
-                    task_id: task_id
-                        .or(task)
-                        .ok_or_else(|| anyhow::anyhow!("task id is required"))?,
-                    stage,
-                    action,
-                    evidence: serde_json::from_str(&evidence)?,
-                    findings: findings.map(|s| serde_json::from_str(&s)).transpose()?,
-                },
-            )
+            let task_id = task_id
+                .or(task)
+                .ok_or_else(|| anyhow::anyhow!("task id is required"))?;
+            let findings = findings.map(|s| serde_json::from_str(&s)).transpose()?;
+            return match evidence {
+                Some(evidence) => tasks::submit(
+                    root,
+                    Submit {
+                        task_id,
+                        stage,
+                        action,
+                        evidence: serde_json::from_str(&evidence)?,
+                        findings,
+                    },
+                ),
+                None => tasks::submit_zero_arg(root, &task_id, &stage, action, findings),
+            };
         }
         TaskCommand::Reset { task_id } | TaskCommand::Reopen { task_id } => {
             return Ok(serde_json::to_value(tasks::reset(root, &task_id)?)?)

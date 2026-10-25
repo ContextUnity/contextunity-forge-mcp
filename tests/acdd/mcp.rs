@@ -1095,6 +1095,7 @@ scope: [src/]
 #[test]
 fn stdio_tool_catalog_uses_object_schemas_for_every_property() {
     let workspace = Workspace::new();
+    workspace.write("forge-mcp.yaml", "tasks_db: .forge/tasks.sqlite\n");
     let mut client = Client::new(&workspace);
     let (_, response) = client.request("tools/list", json!({}));
     let tools = response["result"]["tools"].as_array().unwrap();
@@ -1145,6 +1146,15 @@ fn stdio_tool_catalog_uses_object_schemas_for_every_property() {
         .find(|tool| tool["name"] == "session_checkpoint")
         .unwrap()["inputSchema"]["properties"]["content"];
     assert!(content.is_object());
+    let checkpoint_tool = tools
+        .iter()
+        .find(|tool| tool["name"] == "session_checkpoint")
+        .unwrap();
+    assert!(checkpoint_tool["description"]
+        .as_str()
+        .unwrap()
+        .contains("full breadcrumb"));
+    let breadcrumb = "forge-mcp/forge-mcp/m-test/tasks.build/checkpoint-sample/build";
     for value in [
         json!(true),
         json!(42),
@@ -1154,12 +1164,12 @@ fn stdio_tool_catalog_uses_object_schemas_for_every_property() {
     ] {
         client.payload(
             "session_checkpoint",
-            json!({"action":"save","name":"sample","content":value}),
+            json!({"action":"save","name":breadcrumb,"content":value}),
         );
         assert_eq!(
             client.payload(
                 "session_checkpoint",
-                json!({"action":"get","name":"sample"})
+                json!({"action":"get","name":breadcrumb})
             ),
             value
         );

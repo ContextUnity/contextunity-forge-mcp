@@ -1,9 +1,20 @@
 //! Content binding for externally reviewed milestone integration evidence.
 
+use crate::{
+    core::tasks::profile::CommandDef,
+    db::tasks_store::{GateExecutionTrace, TasksStore},
+};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::path::Path;
+use std::{
+    io::Read,
+    path::Path,
+    process::{Child, Command, ExitStatus, Stdio},
+    sync::mpsc,
+    thread,
+    time::{Duration, Instant},
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -41,6 +52,18 @@ pub struct IntegrationReview {
     pub scope_findings: Vec<String>,
     /// Unresolved contract or invariant findings.
     pub contract_findings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+/// Content-bound review submitted after the milestone verification command passes.
+pub struct MilestoneVerificationReview {
+    /// Exact handoff binding reviewed by the independent reviewer.
+    pub binding: HandoffBinding,
+    /// Explicit target base against which the bound candidate was prepared.
+    pub target_base: String,
+    /// Independent review outcome.
+    pub review: IntegrationReview,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -155,6 +178,298 @@ pub(super) fn observe_command(
         );
     }
     Ok(observation)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct VerificationCheck {
+    pub command_id: String,
+    pub command: String,
+    pub status: String,
+    pub exit_code: Option<i32>,
+    pub tests_passed: u64,
+    pub tests_failed: u64,
+    pub stdout_sha256: String,
+    pub stderr_sha256: String,
+    pub duration_ms: i64,
+}
+
+impl VerificationCheck {
+    pub fn passed(&self) -> bool {
+        self.status == "completed" && self.exit_code == Some(0)
+    }
+}
+
+/// Run the registered repository-wide check and persist its command trace.
+pub(super) fn run_milestone_check(
+    root: &Path,
+    store: &TasksStore,
+    milestone_identity: &str,
+    attempt_id: i64,
+    gate_path: &str,
+    command: &CommandDef,
+) -> Result<(VerificationCheck, String)> {
+    let (command_str, timeout) = match command {
+        CommandDef::Script(command) => (command.as_str(), Duration::from_secs(300)),
+        CommandDef::Detailed {
+            command,
+            timeout_seconds,
+            ..
+        } => (
+            command.as_str(),
+            Duration::from_secs(timeout_seconds.unwrap_or(300).max(1)),
+        ),
+        CommandDef::Pattern(_) => {
+            bail!("MILESTONE_VERIFICATION_PROFILE_INVALID: check_full_repo must be a single registered command")
+        }
+    };
+    let started = Instant::now();
+    let (status, exit_code, stdout, stderr, duration_ms) =
+        match run_shell(root, command_str, timeout) {
+            Ok(output) => (
+                if output.timed_out {
+                    "timeout"
+                } else {
+                    "completed"
+                }
+                .to_owned(),
+                output.status.code(),
+                output.stdout,
+                output.stderr,
+                output.duration_ms,
+            ),
+            Err(error) => (
+                "spawn_error".to_owned(),
+                None,
+                Vec::new(),
+                error.to_string().into_bytes(),
+                i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX),
+            ),
+        };
+    let mut combined = stdout.clone();
+    if !stderr.is_empty() {
+        if !combined.is_empty() {
+            combined.extend_from_slice(b"\n");
+        }
+        combined.extend_from_slice(b"[stderr]\n");
+        combined.extend_from_slice(&stderr);
+    }
+    let output_snippet = bounded_output(&String::from_utf8_lossy(&combined), 2 * 1024);
+    let (tests_passed, tests_failed) = test_counts(&combined);
+    if status == "timeout" {
+        combined.extend_from_slice(
+            format!(
+                "\n[process timed out after {} seconds]\n",
+                timeout.as_secs()
+            )
+            .as_bytes(),
+        );
+    }
+    let log_path = super::command_gate::persist_log(
+        root,
+        milestone_identity,
+        gate_path,
+        "check_full_repo",
+        attempt_id,
+        &combined,
+    )?;
+    let check = VerificationCheck {
+        command_id: "check_full_repo".to_owned(),
+        command: command_str.to_owned(),
+        status: status.clone(),
+        exit_code,
+        tests_passed,
+        tests_failed,
+        stdout_sha256: hex::encode(Sha256::digest(&stdout)),
+        stderr_sha256: hex::encode(Sha256::digest(&stderr)),
+        duration_ms,
+    };
+    store.record_execution_trace(&GateExecutionTrace {
+        milestone_id: milestone_identity.to_owned(),
+        subject: "milestone".to_owned(),
+        gate_path: gate_path.to_owned(),
+        attempt_id,
+        command_id: check.command_id.clone(),
+        command_str: check.command.clone(),
+        status,
+        exit_code: check.exit_code,
+        log_path: Some(log_path),
+        output_snippet: (!output_snippet.is_empty()).then_some(output_snippet.clone()),
+        stdout_sha256: Some(check.stdout_sha256.clone()),
+        duration_ms: check.duration_ms,
+    })?;
+    Ok((check, output_snippet))
+}
+
+struct ShellOutput {
+    timed_out: bool,
+    status: ExitStatus,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    duration_ms: i64,
+}
+
+fn run_shell(root: &Path, command_str: &str, timeout: Duration) -> Result<ShellOutput> {
+    let mut command = shell_command(command_str);
+    command
+        .current_dir(root)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let started = Instant::now();
+    let mut child = command
+        .spawn()
+        .with_context(|| format!("MILESTONE_VERIFICATION_SPAWN_FAILED: {command_str}"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .context("MILESTONE_VERIFICATION_SPAWN_FAILED: stdout pipe is unavailable")?;
+    let stderr = child
+        .stderr
+        .take()
+        .context("MILESTONE_VERIFICATION_SPAWN_FAILED: stderr pipe is unavailable")?;
+    let (stdout_sender, stdout_receiver) = mpsc::channel();
+    let (stderr_sender, stderr_receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = stdout_sender.send(read_output(stdout));
+    });
+    thread::spawn(move || {
+        let _ = stderr_sender.send(read_output(stderr));
+    });
+
+    let deadline = started.checked_add(timeout).context(
+        "MILESTONE_VERIFICATION_TIMEOUT_INVALID: timeout is outside the supported range",
+    )?;
+    let mut timed_out = false;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            timed_out = true;
+            terminate_process_tree(&mut child);
+            break child.wait()?;
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
+    let stdout = receive_output(&stdout_receiver, child.id())?;
+    let stderr = receive_output(&stderr_receiver, child.id())?;
+    Ok(ShellOutput {
+        timed_out,
+        status,
+        stdout,
+        stderr,
+        duration_ms: i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX),
+    })
+}
+
+#[cfg(unix)]
+fn shell_command(command: &str) -> Command {
+    use std::os::unix::process::CommandExt;
+    let mut process = Command::new("sh");
+    process.args(["-c", command]).process_group(0);
+    process
+}
+
+#[cfg(windows)]
+fn shell_command(command: &str) -> Command {
+    let mut process = Command::new("cmd");
+    process.args(["/C", command]);
+    process
+}
+
+#[cfg(not(any(unix, windows)))]
+fn shell_command(command: &str) -> Command {
+    let mut process = Command::new("sh");
+    process.args(["-c", command]);
+    process
+}
+
+fn read_output(mut reader: impl Read) -> std::io::Result<Vec<u8>> {
+    let mut output = Vec::new();
+    reader.read_to_end(&mut output)?;
+    Ok(output)
+}
+
+fn receive_output(
+    receiver: &mpsc::Receiver<std::io::Result<Vec<u8>>>,
+    process_id: u32,
+) -> Result<Vec<u8>> {
+    match receiver.recv_timeout(Duration::from_millis(500)) {
+        Ok(output) => output.map_err(Into::into),
+        Err(_) => {
+            terminate_process_group(process_id);
+            bail!("MILESTONE_VERIFICATION_OUTPUT_TIMEOUT: command output pipe did not close")
+        }
+    }
+}
+
+fn terminate_process_tree(child: &mut Child) {
+    terminate_process_group(child.id());
+    let _ = child.kill();
+}
+
+#[cfg(unix)]
+fn terminate_process_group(process_id: u32) {
+    if let Ok(process_id) = i32::try_from(process_id) {
+        unsafe {
+            libc::kill(-process_id, libc::SIGKILL);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn terminate_process_group(process_id: u32) {
+    let _ = Command::new("taskkill")
+        .args(["/PID", &process_id.to_string(), "/T", "/F"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+#[cfg(not(any(unix, windows)))]
+fn terminate_process_group(process_id: u32) {
+    let _ = Command::new("kill")
+        .arg(process_id.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+fn bounded_output(output: &str, limit: usize) -> String {
+    if output.len() <= limit {
+        return output.to_owned();
+    }
+    let mut end = limit;
+    while !output.is_char_boundary(end) {
+        end -= 1;
+    }
+    output[..end].to_owned()
+}
+
+fn test_counts(output: &[u8]) -> (u64, u64) {
+    let mut passed = 0_u64;
+    let mut failed = 0_u64;
+    for line in String::from_utf8_lossy(output).lines() {
+        if !line.trim_start().starts_with("test result:") {
+            continue;
+        }
+        for field in line.split(';') {
+            let words = field.split_whitespace().collect::<Vec<_>>();
+            for pair in words.windows(2) {
+                let Some(count) = pair[0].parse::<u64>().ok() else {
+                    continue;
+                };
+                match pair[1] {
+                    "passed" => passed = passed.saturating_add(count),
+                    "failed" => failed = failed.saturating_add(count),
+                    _ => {}
+                }
+            }
+        }
+    }
+    (passed, failed)
 }
 
 pub(super) fn read_passport(

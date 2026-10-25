@@ -1,7 +1,7 @@
 use crate::engine::scanner;
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
-use std::{fs, path::Path};
+use std::path::Path;
 /// The template value.
 pub const TEMPLATE: &str =
     "roots:\n  - .\nignore:\n  - target\n  - node_modules\n  - .venv\n  - .git\n";
@@ -86,72 +86,68 @@ pub fn run(root: &Path, topic: &str, force: bool) -> Result<Value> {
         _ => bail!("unknown guide topic; expected init,adapter,docs,acdd,query,ast,validate"),
     }
 }
-#[derive(serde::Deserialize, serde::Serialize, Default)]
-struct Checkpoints {
-    entries: std::collections::BTreeMap<String, Value>,
-}
 fn checkpoint_name(name: Option<&str>) -> Result<&str> {
-    let name = name.ok_or_else(|| anyhow::anyhow!("checkpoint name required"))?;
-    if name.is_empty() || name.len() > 200 {
-        bail!("checkpoint name must be 1..=200 characters");
+    let breadcrumb = name.ok_or_else(|| anyhow::anyhow!("checkpoint breadcrumb required"))?;
+    if breadcrumb.is_empty() || breadcrumb.len() > 2048 || breadcrumb.contains('\0') {
+        bail!("checkpoint breadcrumb must contain 1..=2048 bytes");
     }
-    if name.contains("..") || name.contains(['/', '\\', '\0']) {
-        bail!("checkpoint name must not contain path traversal characters");
-    }
-    Ok(name)
+    Ok(breadcrumb)
 }
-/// Performs checkpoint.
+
+fn checkpoint_git_tree(root: &Path) -> Result<String> {
+    if root.join(".git").exists() {
+        crate::core::git::git_stdout(
+            root,
+            &["rev-parse", "HEAD^{tree}"],
+            "TASK_CHECKPOINT_GIT_FAILED",
+        )
+    } else {
+        Ok("unversioned".into())
+    }
+}
+
+/// List, save, get, or delete a state payload addressed by its full gate breadcrumb.
 pub fn checkpoint(
     root: &Path,
     action: &str,
     name: Option<&str>,
     content: Option<Value>,
 ) -> Result<Value> {
-    let dir = root.join(".forge");
-    let path = dir.join("checkpoints.json");
-    if path.exists() {
-        scanner::checked_child(root, Path::new(".forge/checkpoints.json"))?;
-    }
-    let mut data: Checkpoints = if path.exists() {
-        serde_json::from_slice(&fs::read(&path)?)?
-    } else {
-        Checkpoints::default()
-    };
+    let store = crate::engine::tasks::store(root)?;
     match action {
         "list" => {
-            let entries = data
-                .entries
+            let entries = store
+                .list_checkpoints()?
                 .iter()
-                .map(|(name, value)| {
+                .map(|checkpoint| {
                     Ok((
-                        name.clone(),
-                        json!({"bytes":serde_json::to_vec(value)?.len()}),
+                        checkpoint.breadcrumb.clone(),
+                        json!({"bytes":serde_json::to_vec(&checkpoint.state_payload)?.len()}),
                     ))
                 })
                 .collect::<Result<serde_json::Map<String, Value>>>()?;
             Ok(Value::Object(entries))
         }
         "get" => {
-            let name = checkpoint_name(name)?;
-            data.entries
-                .get(name)
-                .cloned()
+            let breadcrumb = checkpoint_name(name)?;
+            store
+                .get_checkpoint(breadcrumb)?
+                .map(|checkpoint| checkpoint.state_payload)
                 .ok_or_else(|| anyhow::anyhow!("checkpoint not found"))
         }
         "save" | "delete" => {
-            let name = checkpoint_name(name)?;
+            let breadcrumb = checkpoint_name(name)?;
             if action == "save" {
                 let value =
                     content.ok_or_else(|| anyhow::anyhow!("checkpoint content required"))?;
                 if serde_json::to_vec(&value)?.len() > 1024 * 1024 {
-                    bail!("checkpoint exceeds1MiB");
+                    bail!("checkpoint exceeds 1 MiB");
                 }
-                data.entries.insert(name.into(), value);
-            } else if data.entries.remove(name).is_none() {
+                store.save_checkpoint_payload(breadcrumb, &checkpoint_git_tree(root)?, value)?;
+            } else if !store.delete_checkpoint(breadcrumb)? {
                 bail!("checkpoint not found");
             }
-            crate::core::fs::atomic_write(&path, &serde_json::to_vec_pretty(&data)?, false)?;
-            Ok(json!({"action":action,"name":name}))
+            Ok(json!({"action":action,"name":breadcrumb}))
         }
         _ => bail!("checkpoint action must be list,get,save,delete"),
     }

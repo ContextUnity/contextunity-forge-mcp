@@ -30,7 +30,14 @@ Forge resolves the active profile in the following order:
 
 ## Profile Structure
 
-A complete profile YAML consists of five primary sections:
+Profiles merge with the embedded or workspace base by default. Set `inherit: none`
+to compile a clean-room profile from its own declarations, without inheriting the
+base roles, gates, commands, policies, proofs, guidance, or contours. The profile
+must then declare the roles and gates it needs. An explicit `commands: {}` clears
+an inherited command catalog; omit `commands` to keep the inherited catalog. A
+profile with an empty catalog must not declare gates that require command proof.
+
+A complete profile YAML consists of the primary sections shown below:
 
 ```yaml
 # .forge/acdd/profile.yaml
@@ -107,6 +114,11 @@ commands:
     command: "cargo test"
     description: "Run test suite."
 
+scope_args_by_pattern:
+  "src/main.rs": "--bin contextunity-forge-mcp"
+  "src/**/*.rs": "--lib"
+  "tests/*.rs": "--test {file_stem}"
+
 policies:
   delivery:
     atomic_receipt: true
@@ -120,8 +132,19 @@ policies:
 
 The embedded profile also registers `test: cargo test` for compatibility with
 legacy task evidence. Workflow guidance selects `rust-check-and-test`, the
-canonical strict Clippy-plus-test command. A scoped command appends the
-supported `--test <target>` suffix to its final `cargo test`. Claim context derives
+canonical strict Clippy-plus-test command. Profiles may define
+`scope_args_by_pattern` as project-relative path patterns mapped to command
+arguments. The most specific matching pattern wins, and `{file_stem}` expands
+to the matched path's filename without its extension. For each configured
+command, claim context substitutes those arguments for `{scope_target}` or
+appends them when the command has no placeholder. If no pattern matches, the
+ordinary path is used, which keeps non-Cargo commands such as `pytest` and
+`ruff` scoped to their file paths. The repository workspace profile maps Rust
+source files to Cargo library or binary targets and integration test files to
+their actual Cargo test target. For compatibility with profile readers that do
+not recognize the new top-level field, the same map may be nested under a
+command definition; the current parser lifts it into the profile-wide mapping.
+Claim context derives
 `workflow_guidance.scoped_commands` from the indexed contract seam and covering
 tests, and provides `expected_evidence_template` bound to the active task,
 stage, revisions, worker, and worktree.

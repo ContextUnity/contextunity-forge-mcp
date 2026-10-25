@@ -586,6 +586,16 @@ impl TasksStore {
     }
     /// Performs extend scope.
     pub fn extend_scope(&mut self, id: &str, paths: &[String], root: &Path) -> Result<Task> {
+        self.extend_scope_with_pre_commit(id, paths, root, |_| Ok(None))
+    }
+
+    pub(crate) fn extend_scope_with_pre_commit(
+        &mut self,
+        id: &str,
+        paths: &[String],
+        root: &Path,
+        before_commit: impl FnOnce(&mut Task) -> Result<Option<super::recovery::ManifestReplacement>>,
+    ) -> Result<Task> {
         self.assert_id(id)?;
         if paths.is_empty() {
             bail!("paths must be nonempty");
@@ -702,7 +712,10 @@ impl TasksStore {
             )?;
             let normalized = path.to_string_lossy().into_owned();
             if !task.spec.scope.contains(&normalized) {
-                task.spec.scope.push(normalized);
+                task.spec.scope.push(normalized.clone());
+                if !task.spec.extended_scope.contains(&normalized) {
+                    task.spec.extended_scope.push(normalized);
+                }
             }
         }
         if !blockers.is_empty() {
@@ -719,6 +732,9 @@ impl TasksStore {
                 )?;
             }
             tx.execute("INSERT INTO task_blackboard(milestone_ref,task_id,gate,author,topic,payload,created_at) VALUES(?1,?2,?3,?4,'blockers',?5,?6)", params![format!("{namespace}{}", task.milestone_ref), id, task.stage, task.parked_worker_id, format!("Scope extension parked behind active owners: {}. Resume in {} after their completion.", blockers.into_iter().collect::<Vec<_>>().join(", "), task.parked_worktree.as_deref().unwrap_or_default()), now()])?;
+        }
+        if let Some(replacement) = before_commit(&mut task)? {
+            tx.stage_manifest_replacement(replacement)?;
         }
         save(&tx, &task)?;
         tx.commit()?;

@@ -47,7 +47,7 @@ Active commitments migrate to the `TAG-NNN` standard; archived milestone files a
 
 ## Milestone Authoring and Contract Governance
 
-Every milestone document in `docs/milestones/` is an immutable ACDD execution contract. When authoring or revising milestones, follow the instructions in [`docs/milestones/AGENTS.md`](AGENTS.md) (and [`docs/future/milestones/AGENTS.md`](../future/milestones/AGENTS.md) for target v2 capabilities):
+Every milestone document in `docs/milestones/` is an immutable ACDD execution contract. When authoring or revising milestones, follow [`docs/milestones/AGENTS.md`](AGENTS.md) for the active format and canonical Wave 0 bootstrap template.
 
 ### 1. Frontmatter Format
 
@@ -68,7 +68,7 @@ required_skills:
 ---
 ```
 
-Frontmatter must strictly declare only fields supported by the active engine parser (`id`, `title`, `doc_type`, `status`, `depends_on`, `owners`, `invariants`, `required_skills`, `related_plans`). Unknown fields must not be introduced into active manifests. Target v2 features such as `guidance:` slot binding are specified in [`docs/future/milestones/AGENTS.md`](../future/milestones/AGENTS.md) and enabled upon landing milestone `AC-001`.
+Frontmatter must strictly declare only fields supported by the active engine parser (`id`, `title`, `doc_type`, `status`, `depends_on`, `guidance`, `owners`, `invariants`, `required_skills`, `related_plans`). Task blocks may declare `scope`, `extended_scope`, `symbols`, dependencies, and subtasks as documented in [`docs/milestones/AGENTS.md`](AGENTS.md). Unknown fields fail manifest validation.
 
 ### 2. Task Blocks and Scope Boundaries
 
@@ -97,11 +97,11 @@ subtasks:
 ```
 
 - **`depends_on:` (Topological Waves)**: Waves are purely determined by the dependency DAG `depends_on: [...]`. Tasks without dependencies run in Wave 0; tasks depending solely on Task 0 run concurrently in Wave 1.
-- **`scope:` (Files)**: Physical files mutable by the builder. The builder can extend file boundaries via `task extend-scope` (checked for sibling locks and protected paths).
-- **Target Interface Boundaries & Symbols Confinement**: In the current runtime (`v0.3.x`), interface fidelity is governed through contract seam tests and cognitive review. Declarative `symbols:` validation and universal format (`kind:identifier`) are target v2 capabilities specified in [`docs/future/milestones/AGENTS.md`](../future/milestones/AGENTS.md).
+- **`scope:` and `extended_scope:` (Files)**: `scope` is the admitted baseline. Builders add files through `task extend-scope`, which synchronizes the task store and milestone manifest; review proof must approve the exact extensions before delivery.
+- **`symbols:` (Interfaces)**: Declare public symbol additions or signature changes with the universal `kind:identifier` syntax. The builder keeps public changes within this list; private helpers remain governed by file scope.
 
 ### 3. Review & Verification Governance
 
-- **Current Runtime (`v0.3.x`)**: Progression follows the linear gate sequence `contract` $\to$ `build` $\to$ `review` $\to$ `deliver`. Review defects route back to the builder via `task reject`. Unexpected interface shifts escalate to human operators via structured A/B Decision Cards on `task_blackboard`.
-- **Target v2 Two-Loop Governance**: Declarative `reject_routing: { scope: build, symbols: contract }`, automated synthesis, and 4-tier HITL governance are specified in [`docs/future/milestones/AGENTS.md`](../future/milestones/AGENTS.md) and enabled upon landing milestone `AC-001`.
+- **Gate progression**: The active profile defines task gates and milestone containers. Task dependencies determine execution waves, and review findings route through the configured `reject_routing` policy.
+- **Review and escalation**: Reviewers evaluate every configured contour and explicitly approve non-empty `extended_scope`. Escalate unadmitted public-interface changes through the milestone's architect and HITL guidance.
 

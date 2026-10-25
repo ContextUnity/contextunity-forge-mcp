@@ -60,6 +60,15 @@ struct SeamTestProof {
 struct ReviewProof {
     decision: String,
     contours: std::collections::BTreeMap<String, ContourProof>,
+    #[serde(default)]
+    extended_scope_review: Option<ExtendedScopeReview>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExtendedScopeReview {
+    approved_paths: Vec<String>,
+    reason_verified: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -191,6 +200,21 @@ fn validate_review(
     let expected_decision = if passed { "pass" } else { "reject" };
     if proof.decision != expected_decision {
         bail!("TASK_EVIDENCE_INVALID: review decision must match action");
+    }
+    if let Some(scope_review) = &proof.extended_scope_review {
+        if !scope_review.reason_verified {
+            bail!("TASK_EVIDENCE_INVALID: extended_scope_review must verify the scope-addition reason");
+        }
+        let mut paths = std::collections::BTreeSet::new();
+        if scope_review
+            .approved_paths
+            .iter()
+            .any(|path| path.trim().is_empty() || !paths.insert(path))
+        {
+            bail!(
+                "TASK_EVIDENCE_INVALID: extended_scope_review paths must be non-empty and unique"
+            );
+        }
     }
     validate_review_contours(&proof.contours, contours_expected)
 }

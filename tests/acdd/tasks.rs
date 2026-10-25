@@ -1,6 +1,8 @@
 use super::support::*;
 use contextunity_forge_mcp::engine::milestones::recovery::db_recover;
 
+mod lifecycle;
+
 #[test]
 fn task_mutations_bound_payloads_and_initialized_readers_avoid_writer_locks() {
     use contextunity_forge_mcp::{core::response::ResponsePolicy, mcp::response};
@@ -667,7 +669,11 @@ fn contract_seam_requires_current_indexed_paths_at_every_hop() {
         } else if case == "retargeted_local_alias" {
             local_alias.to_owned()
         } else if matches!(case, "three_hops" | "four_hops") {
-            let helper = if case == "four_hops" { "wrapper" } else { "outer" };
+            let helper = if case == "four_hops" {
+                "wrapper"
+            } else {
+                "outer"
+            };
             direct
                 .replace("api::route", &format!("caller::{helper}"))
                 .replace("route()", &format!("{helper}()"))
@@ -738,9 +744,7 @@ fn contract_seam_requires_current_indexed_paths_at_every_hop() {
                     "TASK_SEAM_STALE"
                 };
                 if !error.contains(expected) {
-                    failures.push(format!(
-                        "{case}: expected {expected}, got: {error}"
-                    ));
+                    failures.push(format!("{case}: expected {expected}, got: {error}"));
                 }
                 for diagnostic in [
                     "Calls discovered:",
@@ -749,11 +753,15 @@ fn contract_seam_requires_current_indexed_paths_at_every_hop() {
                     "Stop reason:",
                 ] {
                     if !error.contains(diagnostic) {
-                        failures.push(format!("{case}: missing '{diagnostic}' diagnostic: {error}"));
+                        failures.push(format!(
+                            "{case}: missing '{diagnostic}' diagnostic: {error}"
+                        ));
                     }
                 }
                 if expected == "TASK_SEAM_STALE" && !error.contains("contextunity-forge-mcp scan") {
-                    failures.push(format!("{case}: stale diagnostic omits refresh action: {error}"));
+                    failures.push(format!(
+                        "{case}: stale diagnostic omits refresh action: {error}"
+                    ));
                 }
                 assert_eq!(
                     tasks::store_for_task(&root.0, "forge-mcp/m-current-boundary:routing")
@@ -1031,6 +1039,10 @@ fn tiered_task_context_enforces_indexed_seams_and_signature_boundaries() {
             "forge-mcp.yaml",
             "roots: [src, tests]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
         );
+        root.write(
+            ".forge/acdd/profile.yaml",
+            include_str!("../../.forge/acdd/profile.yaml"),
+        );
         root.write("docs/adr/001-routing.md", "---\ntitle: Routing invariants\ndoc_type: adr\nstatus: accepted\n---\n# Routing invariants\n- INV-ROUTING: [`src.routing.route_task`](../../src/routing.rs#L1) remains observable through the public seam.\n- Decision: Admit every caller before changing the public signature.\n");
         let caller_scope = if admit_caller {
             ", src/caller.rs, src/possible.rs, src/implements.rs, src/overrides.rs"
@@ -1069,9 +1081,23 @@ fn tiered_task_context_enforces_indexed_seams_and_signature_boundaries() {
         {
             failures.push(format!("{stage}/{seam}: default Rust profile must retain the registered cargo test compatibility command"));
         }
-        if profile.roles.len() != 3 {
+        for (path, expected) in [
+            ("src/main.rs", "--bin contextunity-forge-mcp"),
+            ("src/caller.rs", "--lib"),
+            ("src/routing.rs", "--lib"),
+            ("tests/acdd/tasks.rs", "--test acdd"),
+            ("tests/connected.rs", "--test connected"),
+            ("tests/external.rs", "--test external"),
+        ] {
+            if profile.scope_args_for_path(path).as_deref() != Some(expected) {
+                failures.push(format!(
+                    "{stage}/{seam}: default profile must map {path} to valid Cargo scope args {expected:?}"
+                ));
+            }
+        }
+        if profile.roles.len() != 4 || !profile.roles.contains_key("architect") {
             failures.push(format!(
-                "{stage}/{seam}: default profile must have exactly three execution roles"
+                "{stage}/{seam}: profile must include the three task roles and the milestone architect role"
             ));
         }
         for (gate, role, model) in [
@@ -1201,37 +1227,66 @@ fn tiered_task_context_enforces_indexed_seams_and_signature_boundaries() {
                 ));
             }
             let scoped = &claim["workflow_guidance"]["scoped_commands"];
+            let scoped_command = |name: &str, path: &str| {
+                profile
+                    .commands
+                    .get(name)
+                    .and_then(|definition| definition.command_for_path(path))
+                    .map(|command| {
+                        let scope_target = profile
+                            .scope_args_for_path(path)
+                            .unwrap_or_else(|| path.to_owned());
+                        if command.contains("{scope_target}") {
+                            command.replace("{scope_target}", &scope_target)
+                        } else {
+                            format!("{command} {scope_target}")
+                        }
+                    })
+            };
+            let expected_targets = [
+                "src/caller.rs",
+                "src/routing.rs",
+                "tests/acdd/tasks.rs",
+                "tests/connected.rs",
+                "tests/external.rs",
+            ];
             if scoped.is_null()
-                || !scoped.to_string().contains("connected")
-                || !scoped.to_string().contains("--test acdd")
-                || !scoped.to_string().contains(canonical_command)
                 || !scoped.as_array().is_some_and(|entries| {
                     !entries.is_empty()
                         && entries.iter().all(|entry| {
-                            entry["name"] == "rust-check-and-test"
-                                && entry["command"].as_str().is_some_and(|command| {
-                                    command.starts_with(canonical_command)
-                                        && (command.ends_with("--test connected")
-                                            || command.ends_with("--test acdd")
-                                            || command.ends_with("--test external")
-                                            || command.ends_with("--lib"))
+                            let Some(name) = entry["name"].as_str() else {
+                                return false;
+                            };
+                            let Some(path) = entry["test_path"].as_str() else {
+                                return false;
+                            };
+                            scoped_command(name, path)
+                                .is_some_and(|expected| entry["command"] == expected)
+                        })
+                        && expected_targets.iter().all(|path| {
+                            profile.commands.iter().all(|(name, definition)| {
+                                let Some(command) = definition.command_for_path(path) else {
+                                    return true;
+                                };
+                                let scope_target = profile
+                                    .scope_args_for_path(path)
+                                    .unwrap_or_else(|| (*path).to_owned());
+                                let expected = if command.contains("{scope_target}") {
+                                    command.replace("{scope_target}", &scope_target)
+                                } else {
+                                    format!("{command} {scope_target}")
+                                };
+                                entries.iter().any(|entry| {
+                                    entry["name"] == name.as_str()
+                                        && entry["test_path"] == *path
+                                        && entry["command"] == expected
                                 })
-                        })
-                        && entries.iter().any(|entry| {
-                            entry["test_path"] == "tests/acdd/tasks.rs"
-                                && entry["command"]
-                                    .as_str()
-                                    .is_some_and(|command| command.ends_with("--test acdd"))
-                        })
-                        && entries.iter().any(|entry| {
-                            entry["test_path"] == "tests/external.rs"
-                                && entry["source"] == "covering_test"
-                                && entry["command"]
-                                    == format!("{canonical_command} --test external")
+                            })
                         })
                 })
             {
-                failures.push(format!("{stage}/{seam}: scoped commands must append seam and covering-test suffixes only to the canonical combined command; actual: {scoped}"));
+                failures.push(format!("{stage}/{seam}: scoped commands must include every configured command for each matching seam and covering-test path: {scoped}"));
+            }
             }
         }
         if change_signature {
@@ -2195,7 +2250,7 @@ fn boundary_guards_follow_configured_proof_kinds_and_non_cargo_commands_keep_pat
     root.write("forge-mcp.yaml", "roots: [src, tests]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\nacdd_profile: custom_profile.yaml\n");
     root.write(
         "custom_profile.yaml",
-        "gates:\n  - id: spec\n    role: contract_author\n    proof: contract\n    sha_snapshot: true\n  - id: implement\n    role: builder\n    proof: command\n    sha_snapshot: true\n  - id: inspect\n    role: independent_reviewer\n    proof: review\n    reject_to: implement\n    independent_from: implement\n    contours: standard\n  - id: archive\n    role: independent_reviewer\n    proof: delivery\n    review_sources: [inspect]\n    reject_to: implement\ncommands:\n  rust-check-and-test:\n    command: pytest\n    description: Preserve ordinary scoped paths for non-Cargo profiles.\n",
+        "gates:\n  - id: spec\n    role: contract_author\n    proof: contract\n    sha_snapshot: true\n  - id: implement\n    role: builder\n    proof: command\n    sha_snapshot: true\n  - id: inspect\n    role: independent_reviewer\n    proof: review\n    reject_to: implement\n    independent_from: implement\n    contours: standard\n  - id: archive\n    role: independent_reviewer\n    proof: delivery\n    review_sources: [inspect]\n    reject_to: implement\ncommands:\n  rust-check-and-test:\n    command: pytest\n    description: Preserve ordinary scoped paths for non-Cargo profiles.\n  python-quality: ruff\n",
     );
     let milestone = "---\nid: m-tiered-alias\ntitle: Proof-kind aliases\ndoc_type: contract\nstatus: active\n---\n```yaml\ntask_ref: routing\ntarget: Preserve routing API boundaries\nproof_policy: seam-test-first\nscope: [src/routing.rs, tests/connected.rs]\nscope_roots: [src/, tests/]\n```\n";
     root.write("docs/milestones/010-tiered-alias.md", milestone);
@@ -2250,9 +2305,13 @@ fn boundary_guards_follow_configured_proof_kinds_and_non_cargo_commands_keep_pat
                 entry["name"] == "rust-check-and-test"
                     && entry["test_path"] == "src/routing.rs"
                     && entry["command"] == "pytest src/routing.rs"
+            }) && entries.iter().any(|entry| {
+                entry["name"] == "python-quality"
+                    && entry["test_path"] == "src/routing.rs"
+                    && entry["command"] == "ruff src/routing.rs"
             })
         }),
-        "non-Cargo scoped commands must retain the ordinary test path: {scoped}"
+        "scoped guidance must include every matching configured command with its ordinary test path: {scoped}"
     );
 
     root.write(
@@ -2864,8 +2923,54 @@ fn task_submit_accepts_inline_json_evidence_and_persists_it_in_sqlite() {
 
 #[test]
 fn task_cli_submit_accepts_json_object_and_persists_gate_evidence() {
+    use contextunity_forge_mcp::core::tasks::profile::{self, CommandDef};
+    use contextunity_forge_mcp::engine::milestones::execute_command_gate;
+
     let (root, mut store, milestone) = fixture();
     let task_id = milestone.task_id(&milestone.tasks[0]);
+    let mut profile_override = (*profile::compiled()).clone();
+    let command =
+        "printf 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\\n'";
+    profile_override.commands.insert(
+        "task6-cli-check".into(),
+        CommandDef::Detailed {
+            command: command.into(),
+            timeout_seconds: Some(5),
+            description: Some("Run the zero-argument CLI proof fixture".into()),
+        },
+    );
+    profile_override
+        .gates
+        .iter_mut()
+        .find(|gate| gate.id == "build")
+        .unwrap()
+        .command = Some("task6-cli-check".into());
+    let profile_path = root.0.join(".forge/acdd/profile.yaml");
+    std::fs::create_dir_all(profile_path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &profile_path,
+        serde_yaml::to_string(&profile_override).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(root.0.join(".gitignore"), ".forge/\n").unwrap();
+    let ignore = std::process::Command::new("git")
+        .args(["add", ".gitignore"])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    assert!(ignore.status.success(), "{ignore:?}");
+    let staged = std::process::Command::new("git")
+        .args(["add", "-f", ".forge/acdd/profile.yaml"])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    assert!(staged.status.success(), "{staged:?}");
+    let baseline = std::process::Command::new("git")
+        .args(["commit", "-m", "configure task CLI proof fixture"])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    assert!(baseline.status.success(), "{baseline:?}");
     let claimed = store
         .claim(&task_id, "contract", "cli-worker", root.0.to_str().unwrap())
         .unwrap();
@@ -2933,6 +3038,60 @@ fn task_cli_submit_accepts_json_object_and_persists_gate_evidence() {
     assert_eq!(snapshot_commit.len(), 40);
     assert_eq!(snapshot_commit, result["snapshot"]["commit"]);
     assert_eq!(stored["candidate_baseline_head"], git_head(&root.0));
+
+    store
+        .claim(&task_id, "build", "cli-worker", root.0.to_str().unwrap())
+        .unwrap();
+    let trace = execute_command_gate(
+        &root.0,
+        &task_id,
+        "tasks.build",
+        &profile_override.commands["task6-cli-check"],
+        &["src/lib.rs".to_owned()],
+    )
+    .unwrap();
+    assert_eq!(trace.len(), 1);
+    assert_eq!(trace[0].exit_code, Some(0));
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+        .args([
+            "--format",
+            "json",
+            "--root",
+            root.0.to_str().unwrap(),
+            "task",
+            "submit",
+            &task_id,
+            "--stage",
+            "build",
+            "--action",
+            "pass",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let automatic: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(automatic["status"], "ready");
+    assert_eq!(automatic["stage"], "review");
+    let stored: String = store
+        .connection
+        .query_row(
+            "SELECT evidence FROM task_gates WHERE task_id=?1 AND gate='build' AND state='passed'",
+            [&task_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let stored: serde_json::Value = serde_json::from_str(&stored).unwrap();
+    assert_eq!(
+        stored["proof"]["command_proof"]["command"],
+        "task6-cli-check"
+    );
+    assert_eq!(stored["proof"]["command_proof"]["exit_code"], 0);
+    assert_eq!(stored["proof"]["command_proof"]["tests_passed"], 1);
 }
 
 #[test]
@@ -2940,6 +3099,8 @@ fn typed_task_proofs_pass_through_engine_and_real_store() {
     let (root, mut store, milestone) = fixture();
     let task_id = milestone.task_id(&milestone.tasks[0]);
     let worktree = root.0.to_str().unwrap();
+    let extension = vec!["src/reviewed.rs".to_owned()];
+    store.extend_scope(&task_id, &extension, &root.0).unwrap();
     let contours: serde_json::Map<String, serde_json::Value> =
         contextunity_forge_mcp::core::tasks::gates::REVIEW_CONTOURS
             .iter()
@@ -2976,8 +3137,13 @@ fn typed_task_proofs_pass_through_engine_and_real_store() {
         (
             "review",
             "independent-reviewer",
-            json!({"review_proof":{"decision":"pass","contours":contours.clone()}}),
+            json!({"review_proof":{"decision":"pass","contours":contours.clone(),"extended_scope_review":{"approved_paths":["src/reviewed.rs"],"reason_verified":true}}}),
             vec![
+                json!({"review_proof":{"decision":"pass","contours":contours.clone()}}),
+                json!({"review_proof":{"decision":"pass","contours":contours.clone(),"extended_scope_review":{"approved_paths":["src/reviewed.rs"],"reason_verified":false}}}),
+                json!({"review_proof":{"decision":"pass","contours":contours.clone(),"extended_scope_review":{"approved_paths":["src/reviewed.rs","src/extra.rs"],"reason_verified":true}}}),
+                json!({"review_proof":{"decision":"pass","contours":contours.clone(),"extended_scope_review":{"approved_paths":["src/reviewed.rs","src/reviewed.rs"],"reason_verified":true}}}),
+                json!({"review_proof":{"decision":"pass","contours":contours.clone(),"extended_scope_review":{"approved_paths":["src/mismatched.rs"],"reason_verified":true}}}),
                 json!({"review_proof":{"decision":"pass","contours":{}}}),
                 json!({"decision":"pass","contours":contours}),
             ],
@@ -5835,6 +6001,18 @@ sys.stdout.buffer.write(r.stdout);sys.stderr.buffer.write(r.stderr);sys.exit(r.r
         },
     )
     .unwrap();
+    tasks::manage(
+        &root.0,
+        tasks::Manage {
+            action: tasks::ManageAction::SubtaskUpdate,
+            task_id: Some(task_id.to_string()),
+            subtask_ref: Some("cleanup-followup".into()),
+            subtask_status: Some("cancelled".into()),
+            evidence: Some("Optional cleanup follow-up deferred beyond this task".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
     root.write("src/new_feature.rs", "pub fn new_feature() -> i32 { 42 }\n");
 
     // 1. Claim contract
@@ -8288,10 +8466,22 @@ fn claim_returns_bundle_by_default_with_task_and_milestone_blackboard_messages()
         "the claim sees broadcast and explicitly addressed messages"
     );
     assert!(claim_res["workflow_guidance"].is_object());
-    assert_eq!(claim_res["breadcrumb"], "m-test/tasks/first/contract");
-    assert_eq!(claim_res["workflow_guidance"]["breadcrumb"], claim_res["breadcrumb"]);
-    assert_eq!(claim_res["workflow_guidance"]["gate_cursor"]["gate_path"], "tasks");
-    assert_eq!(claim_res["workflow_guidance"]["gate_cursor"]["stage_id"], "contract");
+    assert_eq!(
+        claim_res["breadcrumb"],
+        "forge-mcp/forge-mcp/m-test/tasks/first/contract"
+    );
+    assert_eq!(
+        claim_res["workflow_guidance"]["breadcrumb"],
+        claim_res["breadcrumb"]
+    );
+    assert_eq!(
+        claim_res["workflow_guidance"]["gate_cursor"]["gate_path"],
+        "tasks"
+    );
+    assert_eq!(
+        claim_res["workflow_guidance"]["gate_cursor"]["stage_id"],
+        "contract"
+    );
     let guidance_messages = claim_res["workflow_guidance"]["blackboard_messages"]
         .as_array()
         .unwrap();
@@ -8305,22 +8495,17 @@ fn claim_returns_bundle_by_default_with_task_and_milestone_blackboard_messages()
         message["recipient_task_id"] == task_id
             && message["payload"] == "RFC addressed to the first task"
     }));
-    assert!(!guidance_messages.iter().any(|message| {
-        message["payload"] == "RFC addressed to the second task"
-    }));
+    assert!(!guidance_messages
+        .iter()
+        .any(|message| { message["payload"] == "RFC addressed to the second task" }));
 
-    let checkpoint: (String, String) = store
-        .connection
-        .query_row(
-            "SELECT breadcrumb, state_payload FROM gate_checkpoints WHERE subject=?1",
-            [task_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .unwrap();
-    assert_eq!(checkpoint.0, claim_res["breadcrumb"]);
-    let state: Value = serde_json::from_str(&checkpoint.1).unwrap();
-    assert_eq!(state["task_id"], task_id);
-    assert_eq!(state["stage"], "contract");
+    let checkpoint = store
+        .get_checkpoint(claim_res["breadcrumb"].as_str().unwrap())
+        .unwrap()
+        .expect("claim checkpoint persisted");
+    assert_eq!(checkpoint.breadcrumb, claim_res["breadcrumb"]);
+    assert_eq!(checkpoint.state_payload["task_id"], task_id);
+    assert_eq!(checkpoint.state_payload["stage"], "contract");
 }
 
 #[test]
@@ -8618,7 +8803,8 @@ fn universal_scope_roots_extend_scope_and_boundary_validation() {
 #[test]
 fn declarative_profile_compiles_defaults_and_respects_role_overrides() {
     use contextunity_forge_mcp::core::tasks::profile::{
-        compiled, load_for_workspace, parse_profile, RoleDef, RoleExecutionMode,
+        compiled, load_for_workspace, parse_profile, validate_profile_document, RoleDef,
+        RoleExecutionMode,
     };
 
     let role_defaults = RoleDef::default();
@@ -8979,6 +9165,67 @@ fn declarative_profile_compiles_defaults_and_respects_role_overrides() {
             .contains("requires a non-empty commands registry"),
         "unexpected empty-registry validation error: {error:#}"
     );
+
+    let compiled_empty_catalog = validate_profile_document(
+        "commands: {}\ngates:\n  - id: build\n    role: builder\n    proof: none\n  - id: review\n    role: independent_reviewer\n    proof: review\n    reject_to: build\n    independent_from: build\n    contours: standard\n  - id: deliver\n    role: independent_reviewer\n    proof: delivery\n    review_sources: [review]\n",
+    )
+    .expect("an explicitly empty catalog should compile when no gate uses a command");
+    assert!(
+        compiled_empty_catalog.commands.is_empty(),
+        "an explicit empty command catalog must clear embedded commands"
+    );
+
+    let clean_room_yaml = r#"
+inherit: none
+version: 2
+roles:
+  worker: {}
+commands: {}
+gates:
+  - id: build
+    role: worker
+    proof: none
+  - id: review
+    role: worker
+    proof: review
+    reject_to: build
+    independent_from: build
+  - id: deliver
+    role: worker
+    proof: delivery
+    receipt_review: review
+    review_sources: [review]
+    reject_to: build
+"#;
+    let clean_room_workspace = crate::common::Workspace::new();
+    clean_room_workspace.write(".forge/acdd/profile.yaml", clean_room_yaml);
+
+    let clean_room = load_for_workspace(clean_room_workspace.root());
+    assert!(
+        clean_room.is_ok(),
+        "inherit: none should compile an isolated profile with an empty commands catalog: {clean_room:?}"
+    );
+    let clean_room = clean_room.unwrap();
+    assert_eq!(
+        clean_room
+            .roles
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["worker"]
+    );
+    assert!(clean_room.commands.is_empty());
+    assert!(clean_room.error_codes.is_empty());
+    assert!(clean_room.proofs.is_empty());
+    assert!(clean_room.guidance.is_empty());
+    assert!(clean_room.policies.is_empty());
+    assert!(clean_room.contours.is_empty());
+    assert!(clean_room.gate_templates.is_empty());
+
+    let compiled_clean_room = validate_profile_document(clean_room_yaml)
+        .expect("the production profile compiler should honor inherit: none");
+    assert!(compiled_clean_room.commands.is_empty());
+    assert!(!compiled_clean_room.roles.contains_key("contract_author"));
 }
 
 #[test]

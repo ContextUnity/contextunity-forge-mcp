@@ -1780,6 +1780,7 @@ fn mcp_document_retrieval_and_explain_output_controls() {
 #[test]
 fn all_mcp_tools_admit_large_inventory_snapshot_without_raising_query_limit() {
     let ws = Workspace::new();
+    ws.write("forge-mcp.yaml", "tasks_db: .forge/tasks.sqlite\n");
     ws.write("main.rs", "pub fn current() {}\n");
     ws.write("docs/intro.md", "# Intro\n\nCurrent documentation.\n");
     let database = ws.db();

@@ -517,7 +517,10 @@ fn mcp_selector_and_source_boundaries() {
             json!({"selector":"guarded.py:guarded","leading_lines":0,"format":"json"}),
         );
         assert_eq!(response["result"]["isError"], true, "{response}");
-        assert!(!response.to_string().contains("must-not-leak"), "{response}");
+        assert!(
+            !response.to_string().contains("must-not-leak"),
+            "{response}"
+        );
     }
 }
 
@@ -1692,6 +1695,7 @@ fn removal_proof_normalizes_file_selector_aliases_before_scoping() {
 fn mcp_analyze_router_checkpoint_and_guide_boundaries() {
     use serde_json::json;
     let w = Workspace::new();
+    w.write("forge-mcp.yaml", "tasks_db: .forge/tasks.sqlite\n");
     w.write("cycle.py", "def a(): b()\ndef b(): a()\n");
     w.write("other.py", "def idle(): pass\n");
     w.build();
@@ -1764,7 +1768,11 @@ fn mcp_analyze_router_checkpoint_and_guide_boundaries() {
         ] {
             let result = m.ok(tool, args);
             let row = result["rows"]["items"][0].as_object().unwrap();
-            assert_eq!(row.values().collect::<Vec<_>>(), vec![&json!(";")], "{tool}: {sql}");
+            assert_eq!(
+                row.values().collect::<Vec<_>>(),
+                vec![&json!(";")],
+                "{tool}: {sql}"
+            );
         }
     }
     let sql = "SELECT 1 AS path_id, 2 AS owner_path_id, 'node' AS node_hash, 'path' AS path_hash, '{\"a\":1}' AS details, 'null' AS invariants, '[\"symbol\"]' AS referenced_symbols, 'raw text' AS note";
@@ -1773,10 +1781,14 @@ fn mcp_analyze_router_checkpoint_and_guide_boundaries() {
         ("code_map_query", json!({"operation":"sql","selector":sql})),
     ] {
         let result = m.ok(tool, args);
-        assert_eq!(result["rows"]["items"][0], json!({
-            "path_id":1,"owner_path_id":2,"node_hash":"node","path_hash":"path",
-            "details":"{\"a\":1}","invariants":"null","referenced_symbols":"[\"symbol\"]","note":"raw text"
-        }), "{tool}");
+        assert_eq!(
+            result["rows"]["items"][0],
+            json!({
+                "path_id":1,"owner_path_id":2,"node_hash":"node","path_hash":"path",
+                "details":"{\"a\":1}","invariants":"null","referenced_symbols":"[\"symbol\"]","note":"raw text"
+            }),
+            "{tool}"
+        );
     }
     let conn = w.open();
     let structural_rows = reader::rows(
@@ -1803,7 +1815,10 @@ fn mcp_analyze_router_checkpoint_and_guide_boundaries() {
             ("code_map_query", json!({"operation":"sql","selector":sql})),
         ] {
             let (_, response) = m.call(tool, args);
-            assert_eq!(response["result"]["isError"], true, "{tool}: {sql}: {response}");
+            assert_eq!(
+                response["result"]["isError"], true,
+                "{tool}: {sql}: {response}"
+            );
             assert_eq!(persisted_state(&w), before, "{tool}: {sql}");
         }
     }
@@ -1873,52 +1888,55 @@ fn mcp_analyze_router_checkpoint_and_guide_boundaries() {
     m.err(
         "session_checkpoint",
         json!({"action":"save","content":{"note":"x"}}),
-        "name",
+        "checkpoint breadcrumb required",
     );
     m.err(
         "session_checkpoint",
-        json!({"action":"save","name":"note"}),
+        json!({"action":"save","name":"forge-mcp/forge-mcp/m-test/tasks/note/build"}),
         "content required",
     );
     m.err(
         "session_checkpoint",
-        json!({"action":"get","name":"missing"}),
+        json!({"action":"get","name":"forge-mcp/forge-mcp/m-test/tasks/missing/build"}),
         "not found",
     );
     m.err(
         "session_checkpoint",
-        json!({"action":"delete","name":"missing"}),
+        json!({"action":"delete","name":"forge-mcp/forge-mcp/m-test/tasks/missing/build"}),
         "not found",
     );
     m.err(
         "session_checkpoint",
         json!({"action":"save","name":"../../etc/passwd","content":{"note":"x"}}),
-        "path traversal",
+        "TASK_CHECKPOINT_SCOPE",
     );
     m.err(
         "session_checkpoint",
         json!({"action":"save","name":"..\n/../etc/passwd","content":{"note":"x"}}),
-        "path traversal",
+        "TASK_CHECKPOINT_SCOPE",
     );
     m.ok(
         "session_checkpoint",
-        json!({"action":"save","name":"note","content":{"state":1}}),
+        json!({"action":"save","name":"forge-mcp/forge-mcp/m-test/tasks/note/build","content":{"state":1}}),
     );
     assert_eq!(
-        m.ok("session_checkpoint", json!({"action":"get","name":"note"}))["state"],
+        m.ok(
+            "session_checkpoint",
+            json!({"action":"get","name":"forge-mcp/forge-mcp/m-test/tasks/note/build"})
+        )["state"],
         1
     );
     assert_eq!(
         m.ok("session_checkpoint", json!({"action":"list"})),
-        json!({"note":{"bytes":11}})
+        json!({"forge-mcp/forge-mcp/m-test/tasks/note/build":{"bytes":11}})
     );
     m.ok(
         "session_checkpoint",
-        json!({"action":"delete","name":"note"}),
+        json!({"action":"delete","name":"forge-mcp/forge-mcp/m-test/tasks/note/build"}),
     );
     m.err(
         "session_checkpoint",
-        json!({"action":"get","name":"note"}),
+        json!({"action":"get","name":"forge-mcp/forge-mcp/m-test/tasks/note/build"}),
         "not found",
     );
     let malformed = run_cli(
@@ -1936,14 +1954,14 @@ fn mcp_analyze_router_checkpoint_and_guide_boundaries() {
     assert!(String::from_utf8_lossy(&malformed.stderr).contains("key must be a string"));
     m.err(
         "session_checkpoint",
-        json!({"action":"get","name":"malformed"}),
+        json!({"action":"get","name":"forge-mcp/forge-mcp/m-test/tasks/malformed/build"}),
         "not found",
     );
     w.write(".forge/checkpoints.json", "{invalid JSON");
-    m.err(
-        "session_checkpoint",
-        json!({"action":"list"}),
-        "key must be a string",
+    assert_eq!(
+        m.ok("session_checkpoint", json!({"action":"list"})),
+        json!({}),
+        "legacy JSON checkpoint files do not affect the SQLite checkpoint store"
     );
 
     let guide = m.ok("forge_guide", json!({"topic":"query"}));

@@ -892,7 +892,7 @@ impl Server {
         })
     }
     #[tool(
-        description = "List, save, get, or delete a JSON checkpoint in .forge/checkpoints.json."
+        description = "List, save, get, or delete SQLite checkpoints in the active task-store project. Supply the full breadcrumb in `name` for save, get, and delete: `{repository}/{project}/{milestone_id}/{gate_path}/{task_id}/{stage_id}`."
     )]
     fn session_checkpoint(&self, Parameters(p): Parameters<Checkpoint>) -> CallToolResult {
         let format = p.format.unwrap_or_default();

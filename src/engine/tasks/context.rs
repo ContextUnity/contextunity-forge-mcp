@@ -345,57 +345,16 @@ fn reference_path(reference: &Value) -> Option<String> {
     (!path.is_empty()).then(|| path.to_owned())
 }
 
-fn cargo_test_target(root: &Path, reference: &Value) -> Option<(String, String)> {
-    let path = reference_path(reference)?;
-    let test_path = Path::new(&path);
-    if test_path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        != Some("rs")
-        || !root.join(test_path).is_file()
-    {
-        return None;
-    }
-    if path.starts_with("src/") {
-        return Some((path, "--lib".to_owned()));
-    }
-
-    let tests_root = test_path
-        .ancestors()
-        .find(|ancestor| ancestor.file_name().and_then(|name| name.to_str()) == Some("tests"))?;
-    let mut directory = test_path.parent()?;
-    while directory != tests_root {
-        let target_root = directory.with_extension("rs");
-        if root.join(&target_root).is_file() {
-            let target = target_root.file_stem()?.to_str()?;
-            return Some((path, format!("--test {target}")));
-        }
-        directory = directory.parent()?;
-    }
-    if test_path.parent()? == tests_root {
-        return Some((
-            path.clone(),
-            format!("--test {}", test_path.file_stem()?.to_str()?),
-        ));
-    }
-    None
-}
-
 fn scoped_commands(
-    root: &Path,
-    commands: &std::collections::BTreeMap<String, crate::core::tasks::profile::CommandDef>,
+    profile: &crate::core::tasks::profile::GateProfile,
     seam: Option<&Value>,
     covering_tests: &[Value],
 ) -> Vec<Value> {
-    let selected_commands = commands
-        .get("rust-check-and-test")
-        .map(|definition| vec![("rust-check-and-test", definition)])
-        .unwrap_or_else(|| {
-            commands
-                .iter()
-                .map(|(name, definition)| (name.as_str(), definition))
-                .collect()
-        });
+    let selected_commands = profile
+        .commands
+        .iter()
+        .map(|(name, definition)| (name.as_str(), definition))
+        .collect::<Vec<_>>();
     let mut targets = BTreeSet::new();
     if let Some(seam) = seam.and_then(reference_path) {
         targets.insert((seam, "contract_seam_test"));
@@ -413,21 +372,13 @@ fn scoped_commands(
                 .iter()
                 .filter_map(move |(name, definition)| {
                     let command = definition.command_for_path(&path)?;
-                    let suffix = if command.contains("{scope_target}") {
-                        path.clone()
-                    } else if command.contains("cargo")
-                        && Path::new(&path).extension().and_then(|ext| ext.to_str()) == Some("rs")
-                    {
-                        cargo_test_target(root, &json!(path))
-                            .map(|(_, target)| target)
-                            .unwrap_or_else(|| path.clone())
-                    } else {
-                        path.clone()
-                    };
+                    let scope_target = profile
+                        .scope_args_for_path(&path)
+                        .unwrap_or_else(|| path.clone());
                     let command = if command.contains("{scope_target}") {
-                        command.replace("{scope_target}", &suffix)
+                        command.replace("{scope_target}", &scope_target)
                     } else {
-                        format!("{command} {suffix}")
+                        format!("{command} {scope_target}")
                     };
                     Some(json!({
                         "name": name,
@@ -957,16 +908,7 @@ pub(super) fn context_bundle(
         guidance_map.insert(
             "scoped_commands".into(),
             json!(if codemap_enabled {
-                scoped_commands(
-                    details
-                        .get("worktree")
-                        .and_then(Value::as_str)
-                        .map(Path::new)
-                        .unwrap_or(&workspace.root),
-                    &profile.commands,
-                    contract_seam_test.as_ref(),
-                    &covering_tests,
-                )
+                scoped_commands(&profile, contract_seam_test.as_ref(), &covering_tests)
             } else {
                 Vec::new()
             }),

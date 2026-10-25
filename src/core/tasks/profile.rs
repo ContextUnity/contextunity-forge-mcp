@@ -984,6 +984,9 @@ pub struct GateProfile {
     /// Registered shell commands usable by command proof gates.
     #[serde(default)]
     pub commands: BTreeMap<String, CommandDef>,
+    /// Optional project-path patterns mapped to arguments for scoped command guidance.
+    #[serde(default)]
+    pub scope_args_by_pattern: BTreeMap<String, String>,
     /// Hierarchical workflow policy values.
     #[serde(default)]
     pub policies: BTreeMap<String, PolicyDef>,
@@ -993,12 +996,38 @@ pub struct GateProfile {
     /// Ordered workflow gates.
     #[serde(default)]
     pub gates: Vec<GateDef>,
+    /// Optional repository-wide milestone verification container, separate from task gates.
+    #[serde(default)]
+    pub milestone_verification: Option<GateDef>,
     /// Guidance displayed after completion.
     #[serde(default)]
     pub completed: CompletedGate,
 }
 
 impl GateProfile {
+    /// Resolve profile-supplied scoped command arguments for one project-relative path.
+    ///
+    /// The `{file_stem}` token expands to the path's filename without its extension.
+    pub fn scope_args_for_path(&self, path: &str) -> Option<String> {
+        let scope_args = self
+            .scope_args_by_pattern
+            .iter()
+            .filter(|(pattern, _)| glob_pattern_matches(pattern, path))
+            .max_by_key(|(pattern, _)| {
+                let literal_bytes = pattern
+                    .bytes()
+                    .filter(|byte| !matches!(*byte, b'*' | b'?' | b'{' | b'}' | b','))
+                    .count();
+                (literal_bytes, pattern.len())
+            })
+            .map(|(_, scope_args)| scope_args.as_str())?;
+        if !scope_args.contains("{file_stem}") {
+            return Some(scope_args.to_owned());
+        }
+        let file_stem = Path::new(path).file_stem()?.to_str()?;
+        Some(scope_args.replace("{file_stem}", file_stem))
+    }
+
     /// Return the gate identifier at a runtime index.
     pub fn gate_id(&self, index: usize) -> &str {
         self.gates
@@ -1104,6 +1133,7 @@ impl GateProfile {
         }
         if self.version.is_some_and(|version| version >= 2)
             || self.gates.iter().any(gate_is_hierarchical)
+            || self.milestone_verification.is_some()
         {
             return self.validate_hierarchical();
         }
@@ -1217,6 +1247,13 @@ impl GateProfile {
     }
 
     fn validate_catalogs(&self) -> Result<()> {
+        if self
+            .scope_args_by_pattern
+            .iter()
+            .any(|(pattern, scope_args)| pattern.trim().is_empty() || scope_args.trim().is_empty())
+        {
+            bail!("ACDD_PROFILE_SCHEMA_INVALID: scope_args_by_pattern patterns and arguments must not be empty");
+        }
         for (name, policy) in &self.policies {
             if name.trim().is_empty() {
                 bail!("ACDD_PROFILE_SCHEMA_INVALID: policies contains an empty name");
@@ -1320,6 +1357,74 @@ impl GateProfile {
             self.validate_gate_sequence(&template.gates, &format!("templates.{name}"), false)?;
         }
         self.validate_template_cycles()?;
+        self.validate_milestone_verification()?;
+        Ok(())
+    }
+
+    fn validate_milestone_verification(&self) -> Result<()> {
+        let Some(container) = &self.milestone_verification else {
+            return Ok(());
+        };
+        if container.id != "milestone_verification"
+            || container.role.is_some()
+            || container.command.is_some()
+            || container.gates.len() != 2
+            || container.gates[0].id != "verify"
+            || container.gates[1].id != "review"
+            || container.tasks.is_some()
+            || container.use_template.is_some()
+        {
+            bail!("MILESTONE_VERIFICATION_PROFILE_INVALID: milestone_verification must contain ordered verify and review gates");
+        }
+        self.validate_gate_fields(container)?;
+        self.validate_gate_sequence(&container.gates, "milestone_verification", false)?;
+
+        let verify = &container.gates[0];
+        if verify.command.as_deref() != Some("check_full_repo")
+            || verify.proof.kind() != Some(ProofKind::Command)
+            || matches!(
+                self.commands.get("check_full_repo"),
+                Some(CommandDef::Pattern(_))
+            )
+        {
+            bail!("MILESTONE_VERIFICATION_PROFILE_INVALID: verify must execute check_full_repo with command proof");
+        }
+        let review = &container.gates[1];
+        if review.role.as_deref() != Some("independent_reviewer")
+            || review.proof.kind() != Some(ProofKind::Review)
+            || review.independent_from.as_deref() != Some("verify")
+        {
+            bail!("MILESTONE_VERIFICATION_PROFILE_INVALID: review must use the independent_reviewer role and depend on verify");
+        }
+        let fallback = container
+            .fallback
+            .as_ref()
+            .context("MILESTONE_VERIFICATION_PROFILE_INVALID: fallback is required")?;
+        if fallback.use_template.as_deref() != Some("build_review_cycle")
+            || fallback.command.as_deref() != Some("check_full_repo")
+            || fallback.max_attempts.unwrap_or(2) != 2
+        {
+            bail!("MILESTONE_VERIFICATION_PROFILE_INVALID: fallback must use build_review_cycle and check_full_repo with max_attempts 2");
+        }
+        let deliver = container
+            .deliver
+            .as_ref()
+            .and_then(serde_yaml::Value::as_mapping)
+            .context("MILESTONE_VERIFICATION_PROFILE_INVALID: deliver must be a mapping")?;
+        let proof = deliver
+            .get(serde_yaml::Value::String("proof".to_owned()))
+            .and_then(serde_yaml::Value::as_str);
+        let persist = deliver
+            .get(serde_yaml::Value::String("persistence".to_owned()))
+            .and_then(serde_yaml::Value::as_mapping);
+        let post = persist.and_then(|policy| {
+            policy
+                .get(serde_yaml::Value::String("post".to_owned()))
+                .and_then(serde_yaml::Value::as_str)
+        });
+        if proof != Some("delivery") || post != Some("commit") {
+            bail!("MILESTONE_VERIFICATION_PROFILE_INVALID: deliver must use delivery proof and persistence.post: commit");
+        }
         Ok(())
     }
 
@@ -1740,6 +1845,8 @@ impl GateProfile {
             }
         }
         self.commands.extend(other.commands);
+        self.scope_args_by_pattern
+            .extend(other.scope_args_by_pattern);
         for (key, value) in other.policies {
             let current = self.policies.entry(key).or_default();
             if value.description.is_some() {
@@ -1752,6 +1859,9 @@ impl GateProfile {
         self.contours.extend(other.contours);
         if !other.gates.is_empty() {
             self.gates = other.gates;
+        }
+        if other.milestone_verification.is_some() {
+            self.milestone_verification = other.milestone_verification;
         }
         if !other.completed.tools.is_empty() {
             self.completed.tools = other.completed.tools;
@@ -1777,18 +1887,145 @@ fn merge_yaml(base: &mut serde_yaml::Value, override_value: serde_yaml::Value) {
     }
 }
 
+struct ParsedProfile {
+    profile: GateProfile,
+    inherit_defaults: bool,
+    commands_declared: bool,
+}
+
+fn parse_profile_document(yaml_str: &str) -> Result<ParsedProfile> {
+    let is_empty_document = yaml_str.lines().all(|line| {
+        let line = line.trim();
+        line.is_empty() || line.starts_with('#') || line == "---"
+    });
+    let mut document: serde_yaml::Value = if is_empty_document {
+        serde_yaml::Value::Mapping(serde_yaml::Mapping::new())
+    } else {
+        serde_yaml::from_str(yaml_str).map_err(|err| {
+            anyhow::anyhow!(
+                "ACDD_PROFILE_SCHEMA_INVALID: {err}\nSupported fields: version, inherit, gates, gate_templates, milestone_verification, roles, commands, scope_args_by_pattern, policies, proofs, error_codes, guidance, guidance_slots, modules, contours, limits, git_commit_note, completed, subtask_dod, review_policy, contract_zero_exit_policies."
+            )
+        })?
+    };
+    let mapping = document
+        .as_mapping_mut()
+        .context("ACDD_PROFILE_SCHEMA_INVALID: profile document must be a YAML mapping")?;
+    let commands_key = serde_yaml::Value::String("commands".to_owned());
+    let scope_args_key = serde_yaml::Value::String("scope_args_by_pattern".to_owned());
+    let mut command_scope_args = BTreeMap::new();
+    if let Some(commands) = mapping
+        .get_mut(&commands_key)
+        .and_then(serde_yaml::Value::as_mapping_mut)
+    {
+        for (name, definition) in commands {
+            let Some(definition) = definition.as_mapping_mut() else {
+                continue;
+            };
+            let Some(scope_args) = definition.remove(&scope_args_key) else {
+                continue;
+            };
+            let scope_args = serde_yaml::from_value::<BTreeMap<String, String>>(scope_args)
+                .with_context(|| {
+                    format!(
+                        "ACDD_PROFILE_SCHEMA_INVALID: commands.{}.scope_args_by_pattern must map paths to strings",
+                        name.as_str().unwrap_or("<unnamed>")
+                    )
+                })?;
+            for (pattern, args) in scope_args {
+                if command_scope_args
+                    .get(&pattern)
+                    .is_some_and(|existing| existing != &args)
+                {
+                    bail!(
+                        "ACDD_PROFILE_SCHEMA_INVALID: conflicting command scope args for path pattern '{pattern}'"
+                    );
+                }
+                command_scope_args.insert(pattern, args);
+            }
+        }
+    }
+    if !command_scope_args.is_empty() {
+        let mut scope_args = mapping
+            .remove(&scope_args_key)
+            .map(serde_yaml::from_value::<BTreeMap<String, String>>)
+            .transpose()
+            .context(
+                "ACDD_PROFILE_SCHEMA_INVALID: scope_args_by_pattern must map paths to strings",
+            )?
+            .unwrap_or_default();
+        scope_args.extend(command_scope_args);
+        mapping.insert(scope_args_key, serde_yaml::to_value(scope_args)?);
+    }
+    let inherit = mapping.remove(serde_yaml::Value::String("inherit".to_owned()));
+    let inherit_defaults = match inherit {
+        None => true,
+        Some(serde_yaml::Value::String(value)) if value == "none" => false,
+        Some(value) => {
+            bail!(
+                "ACDD_PROFILE_SCHEMA_INVALID: inherit must be 'none' when specified, got {value:?}"
+            )
+        }
+    };
+    let commands_declared = mapping.contains_key(serde_yaml::Value::String("commands".to_owned()));
+    let mut profile = serde_yaml::from_value::<GateProfile>(document).map_err(|err| {
+        anyhow::anyhow!(
+            "ACDD_PROFILE_SCHEMA_INVALID: {err}\nSupported fields: version, inherit, gates, gate_templates, milestone_verification, roles, commands, scope_args_by_pattern, policies, proofs, error_codes, guidance, guidance_slots, modules, contours, limits, git_commit_note, completed, subtask_dod, review_policy, contract_zero_exit_policies."
+        )
+    })?;
+    let (milestone_verification, milestone_templates) = profile
+        .policies
+        .get_mut("milestone_verification")
+        .map(|policy| {
+            (
+                policy.settings.remove("container"),
+                policy.settings.remove("templates"),
+            )
+        })
+        .unwrap_or_default();
+    if let Some(container) = milestone_verification {
+        profile.milestone_verification = Some(serde_yaml::from_value(container).context(
+            "ACDD_PROFILE_SCHEMA_INVALID: policies.milestone_verification.container is invalid",
+        )?);
+    }
+    if let Some(templates) = milestone_templates {
+        let templates = serde_yaml::from_value::<BTreeMap<String, GateTemplate>>(templates)
+            .context(
+                "ACDD_PROFILE_SCHEMA_INVALID: policies.milestone_verification.templates is invalid",
+            )?;
+        profile.gate_templates.extend(templates);
+    }
+    Ok(ParsedProfile {
+        profile,
+        inherit_defaults,
+        commands_declared,
+    })
+}
+
+fn merge_profile_document(base: &mut GateProfile, document: ParsedProfile) {
+    if !document.inherit_defaults {
+        *base = document.profile;
+        return;
+    }
+    if document.commands_declared && document.profile.commands.is_empty() {
+        base.commands.clear();
+    }
+    base.merge_override(document.profile);
+}
+
 /// Parse an ACDD profile YAML document. Validation is applied after overrides merge.
 pub fn parse_profile(yaml_str: &str) -> Result<GateProfile> {
-    serde_yaml::from_str(yaml_str).map_err(|err| anyhow::anyhow!(
-        "ACDD_PROFILE_SCHEMA_INVALID: {err}\nSupported fields: version, gates, gate_templates, roles, commands, policies, proofs, error_codes, guidance, guidance_slots, modules, contours, limits, git_commit_note, completed, subtask_dod, review_policy, contract_zero_exit_policies."
-    ))
+    Ok(parse_profile_document(yaml_str)?.profile)
 }
 
 /// Merge and validate one profile document against the embedded base profile.
 pub fn validate_profile_document(yaml_str: &str) -> Result<GateProfile> {
-    let overrides = parse_profile(yaml_str)?;
-    let mut profile = (*compiled()).clone();
-    profile.merge_override(overrides);
+    let document = parse_profile_document(yaml_str)?;
+    let mut profile = if document.inherit_defaults {
+        (*compiled()).clone()
+    } else {
+        GateProfile::default()
+    };
+    merge_profile_document(&mut profile, document);
     profile.validate()?;
     Ok(profile)
 }
@@ -1841,7 +2078,7 @@ pub fn parse_profile_reference(
     Ok((path.to_path_buf(), pin))
 }
 
-fn load_profile_path(root: &Path, reference: &str, require_pin: bool) -> Result<GateProfile> {
+fn load_profile_path(root: &Path, reference: &str, require_pin: bool) -> Result<ParsedProfile> {
     let (relative, pin) = parse_profile_reference(reference, require_pin)?;
     let path = crate::core::tasks::confined_path(root, &relative.to_string_lossy())?;
     let contents = std::fs::read(&path)
@@ -1855,7 +2092,7 @@ fn load_profile_path(root: &Path, reference: &str, require_pin: bool) -> Result<
     }
     let text = std::str::from_utf8(&contents)
         .context("ACDD_PROFILE_SCHEMA_INVALID: profile must be UTF-8 YAML")?;
-    parse_profile(text).with_context(|| format!("invalid profile in {}", path.display()))
+    parse_profile_document(text).with_context(|| format!("invalid profile in {}", path.display()))
 }
 
 /// Load one pinned task or milestone override above the workspace base profile.
@@ -1871,7 +2108,7 @@ pub fn load_pinned_over(
     base_profile: &GateProfile,
 ) -> Result<Arc<GateProfile>> {
     let mut base = base_profile.clone();
-    base.merge_override(load_profile_path(root, reference, true)?);
+    merge_profile_document(&mut base, load_profile_path(root, reference, true)?);
     base.validate()?;
     Ok(Arc::new(base))
 }
@@ -1901,7 +2138,7 @@ pub fn load_for_workspace(root: &Path) -> Result<Arc<GateProfile>> {
             let reference = reference
                 .as_str()
                 .context("acdd_profile in forge-mcp.yaml must be a relative file path string")?;
-            base.merge_override(load_profile_path(root, reference, false)?);
+            merge_profile_document(&mut base, load_profile_path(root, reference, false)?);
             base.validate()?;
             return Ok(Arc::new(base));
         }
@@ -1910,10 +2147,9 @@ pub fn load_for_workspace(root: &Path) -> Result<Arc<GateProfile>> {
     if repository_profile.is_file() {
         let text = std::fs::read_to_string(&repository_profile)
             .with_context(|| format!("failed to read {}", repository_profile.display()))?;
-        base.merge_override(
-            parse_profile(&text)
-                .with_context(|| format!("invalid profile in {}", repository_profile.display()))?,
-        );
+        let document = parse_profile_document(&text)
+            .with_context(|| format!("invalid profile in {}", repository_profile.display()))?;
+        merge_profile_document(&mut base, document);
     }
     base.validate()?;
     Ok(Arc::new(base))

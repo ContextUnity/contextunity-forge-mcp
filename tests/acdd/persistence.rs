@@ -280,9 +280,9 @@ fn task_store_migrates_the_ac001_gate_persistence_contract() {
     );
 
     let checkpoint = contextunity_forge_mcp::db::tasks_store::GateCheckpoint {
-        breadcrumb: "m-test/tasks.build/task:first".into(),
-        milestone_id: "m-test".into(),
-        subject: "task:first".into(),
+        breadcrumb: "forge-mcp/forge-mcp/m-test/tasks.build/first/build".into(),
+        milestone_id: "forge-mcp/forge-mcp/m-test".into(),
+        subject: "first".into(),
         gate_path: "tasks.build".into(),
         transition_id: Some(transition_id),
         git_tree_sha: "tree-sha".into(),
@@ -310,6 +310,16 @@ fn task_store_migrates_the_ac001_gate_persistence_contract() {
     assert_eq!(checkpoint_transition, Some(transition_id));
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&checkpoint_state).unwrap(),
+        serde_json::json!({
+            "_forge_checkpoint_payload_v1": refreshed_checkpoint.state_payload.clone()
+        })
+    );
+    assert_eq!(
+        store
+            .get_checkpoint(&checkpoint.breadcrumb)
+            .unwrap()
+            .unwrap()
+            .state_payload,
         refreshed_checkpoint.state_payload
     );
 

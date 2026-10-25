@@ -17,6 +17,7 @@ mod trace;
 
 use self::blackboard::{insert_milestone_broadcast_in_transaction, validate_milestone_broadcast};
 use self::matrix::replace_contract_matrix_in_transaction;
+use self::trace::prune_milestone_gate_records;
 
 pub(crate) use blackboard::clear_blackboard;
 pub use blackboard::is_canonical_blackboard_topic;
@@ -1616,6 +1617,7 @@ impl TasksStore {
         tx.freeze_handoff(milestone_prefix, &satisfied)?;
         unlink()?;
         if self.handoff_pruning {
+            prune_milestone_gate_records(&tx, &milestone_identity)?;
             for dependency in completed_ids
                 .iter()
                 .cloned()

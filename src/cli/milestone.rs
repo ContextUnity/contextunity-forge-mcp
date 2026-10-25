@@ -51,6 +51,37 @@ pub enum MilestoneCommand {
         #[arg(long)]
         target_base: String,
     },
+    /// Runs the full repository verification container before milestone documentation.
+    Verify {
+        /// The milestone ID or numeric prefix.
+        id: String,
+        /// Explicit integration target base used to bind this verification run.
+        #[arg(long)]
+        target_base: String,
+    },
+    /// Claims or submits the architect build step in milestone verification fallback.
+    VerifyBuild {
+        /// The milestone ID or numeric prefix.
+        id: String,
+        /// Explicit integration target base used to bind this verification run.
+        #[arg(long)]
+        target_base: String,
+        /// Architect worker claiming or submitting the bounded build step.
+        #[arg(long)]
+        worker_id: String,
+        /// Claims before changes or submits after committing a changed candidate.
+        #[arg(long, value_parser = ["claim", "submit"])]
+        action: String,
+    },
+    /// Submits content-bound independent review for a passing milestone verification.
+    #[command(name = "verify-review")]
+    VerifyReview {
+        /// The milestone ID or numeric prefix.
+        id: String,
+        /// JSON file containing the verification binding, target base, and review.
+        #[arg(long)]
+        review_file: PathBuf,
+    },
     /// Validates a milestone manifest, checks required skills, and prepares repository worktrees.
     Init {
         /// Manifest file to initialize; omitted retains the legacy template scaffolding behavior.
@@ -129,6 +160,20 @@ pub fn run(root: &Path, command: MilestoneCommand) -> Result<Value> {
         }
         MilestoneCommand::HandoffContext { id, target_base } => {
             milestones::handoff_context(root, &id, &target_base)
+        }
+        MilestoneCommand::Verify { id, target_base } => {
+            milestones::execute_milestone_verification(root, &id, &target_base)
+        }
+        MilestoneCommand::VerifyBuild {
+            id,
+            target_base,
+            worker_id,
+            action,
+        } => milestones::milestone_verification_build(root, &id, &target_base, &worker_id, &action),
+        MilestoneCommand::VerifyReview { id, review_file } => {
+            let review: milestones::MilestoneVerificationReview =
+                serde_json::from_slice(&std::fs::read(review_file)?)?;
+            milestones::submit_milestone_verification_review(root, &id, &review)
         }
         MilestoneCommand::Init {
             manifest_path: Some(manifest),
