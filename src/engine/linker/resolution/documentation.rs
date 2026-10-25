@@ -54,15 +54,7 @@ where
                         (&doc.doc_id, &target_doc.doc_id, "cites_doc"),
                         (&target_doc.doc_id, &doc.doc_id, "cited_by_doc"),
                     ] {
-                        graph.edges.push(Edge {
-                            src: src.clone(),
-                            dst: dst.clone(),
-                            kind: kind.into(),
-                            path: path.to_owned(),
-                            line,
-                            evidence: target.to_owned(),
-                            confidence: "exact".into(),
-                        });
+                        graph.push_edge(path, src.clone(), dst.clone(), kind, line, target, "exact");
                     }
                 }
             }
@@ -119,15 +111,15 @@ where
                     (&doc.doc_id, &node.id, "documents"),
                     (&node.id, &doc.doc_id, "references_doc"),
                 ] {
-                    graph.edges.push(Edge {
-                        src: src.clone(),
-                        dst: dst.clone(),
-                        kind: kind.into(),
-                        path: path.to_owned(),
-                        line: occurrence_line,
-                        evidence: symbol.clone(),
-                        confidence: "exact".into(),
-                    });
+                    graph.push_edge(
+                        path,
+                        src.clone(),
+                        dst.clone(),
+                        kind,
+                        occurrence_line,
+                        symbol.clone(),
+                        "exact",
+                    );
                 }
             }
         }
@@ -171,15 +163,15 @@ where
                         (&invariant.id, &target_node.id, "governs"),
                         (&target_node.id, &invariant.id, "governed_by"),
                     ] {
-                        graph.edges.push(Edge {
-                            src: src.clone(),
-                            dst: dst.clone(),
-                            kind: kind.into(),
-                            path: path.to_owned(),
-                            line: claim_line,
-                            evidence: name.to_owned(),
-                            confidence: "exact".into(),
-                        });
+                        graph.push_edge(
+                            path,
+                            src.clone(),
+                            dst.clone(),
+                            kind,
+                            claim_line,
+                            name,
+                            "exact",
+                        );
                     }
                 }
             }

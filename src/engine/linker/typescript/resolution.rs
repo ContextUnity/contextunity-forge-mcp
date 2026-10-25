@@ -347,7 +347,7 @@ pub(in crate::engine::linker) fn lexical_this_member<'a, F>(
 
 pub(in crate::engine::linker) fn has_indexed_name(
     interner: &LinkerInterner<'_>,
-    index: &HashMap<SymbolId, HashSet<SymbolId>>,
+    index: &super::super::NodeBindingIndex,
     node: &Node,
     name: &str,
 ) -> bool {
@@ -358,7 +358,7 @@ pub(in crate::engine::linker) fn has_indexed_name(
 
 pub(in crate::engine::linker) fn has_indexed_symbol(
     interner: &LinkerInterner<'_>,
-    index: &HashMap<SymbolId, HashSet<SymbolId>>,
+    index: &super::super::NodeBindingIndex,
     node: &Node,
     name: SymbolId,
 ) -> bool {
@@ -368,9 +368,11 @@ pub(in crate::engine::linker) fn has_indexed_symbol(
 }
 
 pub(in crate::engine::linker) fn has_indexed_symbol_id(
-    index: &HashMap<SymbolId, HashSet<SymbolId>>,
+    index: &super::super::NodeBindingIndex,
     node: SymbolId,
     name: SymbolId,
 ) -> bool {
-    index.get(&node).is_some_and(|names| names.contains(&name))
+    index
+        .get(&node)
+        .is_some_and(|names| names.binary_search(&name).is_ok())
 }

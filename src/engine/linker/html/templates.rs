@@ -1074,18 +1074,18 @@ pub(in crate::engine::linker) fn resolve_reference<F: AsRef<Facts> + Sync>(
         {
             let (status, evidence) = match symbol {
                 value_flow::Symbol::Callable(target) => {
-                    graph.edges.push(Edge {
-                        src: reference.source.clone(),
-                        dst: target.id.clone(),
-                        kind: "references".into(),
-                        path: path.to_owned(),
-                        line: reference.line,
-                        evidence: format!(
+                    graph.push_edge(
+                        path,
+                        reference.source.clone(),
+                        target.id.clone(),
+                        "references",
+                        reference.line,
+                        format!(
                             "configured template {kind} from {}{provenance}",
                             target.path
                         ),
-                        confidence: "exact".into(),
-                    });
+                        "exact",
+                    );
                     (
                         "resolved",
                         format!(
@@ -1125,18 +1125,18 @@ pub(in crate::engine::linker) fn resolve_reference<F: AsRef<Facts> + Sync>(
             let provenance = origin
                 .map(|origin| format!("; rule:{}:{}", origin.pack, origin.rule))
                 .unwrap_or_default();
-            graph.edges.push(Edge {
-                src: reference.source.clone(),
-                dst: symbol.id.clone(),
-                kind: "references".into(),
-                path: path.to_owned(),
-                line: reference.line,
-                evidence: format!(
+            graph.push_edge(
+                path,
+                reference.source.clone(),
+                symbol.id.clone(),
+                "references",
+                reference.line,
+                format!(
                     "template {kind} from {} via {}{provenance}",
                     symbol.path, module.path
                 ),
-                confidence: "exact".into(),
-            });
+                "exact",
+            );
             graph.reference_coverage(
                 path,
                 reference,

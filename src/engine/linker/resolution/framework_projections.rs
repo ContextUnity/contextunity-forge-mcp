@@ -94,15 +94,15 @@ where
                 })
         };
         if let Some(target) = candidate {
-            graph.edges.push(Edge {
-                src: reference.source.clone(),
-                dst: target.id.clone(),
-                kind: reference.kind.as_str().into(),
-                path: path.to_owned(),
-                line: reference.line,
-                evidence: format!("{path}: {} {}", reference.kind, target.path),
-                confidence: "exact".into(),
-            });
+            graph.push_edge(
+                path,
+                reference.source.clone(),
+                target.id.clone(),
+                reference.kind.as_str(),
+                reference.line,
+                format!("{path}: {} {}", reference.kind, target.path),
+                "exact",
+            );
             graph.reference_coverage(
                 path,
                 reference,
@@ -149,18 +149,18 @@ where
                 let provenance = origin
                     .map(|origin| format!("; rule:{}:{}", origin.pack, origin.rule))
                     .unwrap_or_default();
-                graph.edges.push(Edge {
-                    src: load.source.clone(),
-                    dst: module.id.clone(),
-                    kind: "imports".into(),
-                    path: path.to_owned(),
-                    line: load.line,
-                    evidence: format!(
+                graph.push_edge(
+                    path,
+                    load.source.clone(),
+                    module.id.clone(),
+                    "imports",
+                    load.line,
+                    format!(
                         "template library {} from {}{provenance}",
                         load.expression, module.path
                     ),
-                    confidence: "exact".into(),
-                });
+                    "exact",
+                );
                 graph.reference_coverage(
                     path,
                     load,

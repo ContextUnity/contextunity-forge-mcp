@@ -2,6 +2,7 @@ use super::{Coverage as PublicCoverage, Edge as PublicEdge, Graph as PublicGraph
 use serde::{Serialize, Serializer};
 use std::borrow::Cow;
 use std::cmp::Ordering;
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub(crate) enum CompactTag {
@@ -100,21 +101,28 @@ pub(crate) struct Edge {
     pub src: String,
     pub dst: String,
     pub kind: CompactTag,
-    pub path: String,
+    pub path: Arc<str>,
     pub line: usize,
-    pub evidence: String,
+    pub evidence: CompactTag,
     pub confidence: CompactTag,
 }
 
 impl From<&PublicEdge> for Edge {
     fn from(edge: &PublicEdge) -> Self {
+        let path = Arc::from(edge.path.as_str());
+        Self::with_path(edge, &path)
+    }
+}
+
+impl Edge {
+    pub(crate) fn with_path(edge: &PublicEdge, path: &Arc<str>) -> Self {
         Self {
             src: edge.src.clone(),
             dst: edge.dst.clone(),
             kind: edge.kind.as_str().into(),
-            path: edge.path.clone(),
+            path: Arc::clone(path),
             line: edge.line,
-            evidence: edge.evidence.clone(),
+            evidence: edge.evidence.as_str().into(),
             confidence: edge.confidence.as_str().into(),
         }
     }
@@ -126,9 +134,9 @@ impl From<Edge> for PublicEdge {
             src: edge.src,
             dst: edge.dst,
             kind: edge.kind.into_string(),
-            path: edge.path,
+            path: edge.path.as_ref().to_owned(),
             line: edge.line,
-            evidence: edge.evidence,
+            evidence: edge.evidence.into_string(),
             confidence: edge.confidence.into_string(),
         }
     }
@@ -136,7 +144,7 @@ impl From<Edge> for PublicEdge {
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct Coverage {
-    pub path: String,
+    pub path: Arc<str>,
     pub line: usize,
     pub expression: String,
     pub status: CompactTag,
@@ -146,7 +154,7 @@ pub(crate) struct Coverage {
 impl From<Coverage> for PublicCoverage {
     fn from(coverage: Coverage) -> Self {
         Self {
-            path: coverage.path,
+            path: coverage.path.as_ref().to_owned(),
             line: coverage.line,
             expression: coverage.expression,
             status: coverage.status.into_string(),
@@ -159,9 +167,75 @@ impl From<Coverage> for PublicCoverage {
 pub(crate) struct Graph {
     pub edges: Vec<Edge>,
     pub coverage: Vec<Coverage>,
+    pub(crate) path_arc: Option<Arc<str>>,
+    pub(crate) path_pool: hashbrown::HashMap<String, Arc<str>>,
 }
 
 impl Graph {
+    fn shared_path(&mut self, path: &str) -> Arc<str> {
+        if let Some(shared) = self.path_arc.as_ref().filter(|shared| shared.as_ref() == path) {
+            return Arc::clone(shared);
+        }
+        if let Some(shared) = self.path_pool.get(path) {
+            return Arc::clone(shared);
+        }
+        let shared = Arc::from(path);
+        self.path_pool
+            .insert(path.to_owned(), Arc::clone(&shared));
+        shared
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn push_edge<S, D, K, E, C>(
+        &mut self,
+        path: &str,
+        src: S,
+        dst: D,
+        kind: K,
+        line: usize,
+        evidence: E,
+        confidence: C,
+    ) where
+        S: Into<String>,
+        D: Into<String>,
+        K: Into<CompactTag>,
+        E: Into<CompactTag>,
+        C: Into<CompactTag>,
+    {
+        let path = self.shared_path(path);
+        self.edges.push(Edge {
+            src: src.into(),
+            dst: dst.into(),
+            kind: kind.into(),
+            path,
+            line,
+            evidence: evidence.into(),
+            confidence: confidence.into(),
+        });
+    }
+
+    pub(crate) fn push_coverage<P, S, E>(
+        &mut self,
+        path: &str,
+        line: usize,
+        expression: P,
+        status: S,
+        evidence: E,
+    ) where
+        P: Into<String>,
+        S: Into<CompactTag>,
+        E: Into<Cow<'static, str>>,
+    {
+        let path = self.shared_path(path);
+        self.coverage.push(Coverage {
+            path,
+            line,
+            expression: expression.into(),
+            status: status.into(),
+            evidence: evidence.into(),
+        });
+    }
+
     pub(crate) fn reference_edge(
         &mut self,
         path: &str,
@@ -170,15 +244,15 @@ impl Graph {
         kind: &str,
         confidence: &str,
     ) {
-        self.edges.push(Edge {
-            src: reference.source.clone(),
-            dst: target,
-            kind: kind.into(),
-            path: path.to_owned(),
-            line: reference.line,
-            evidence: reference.expression.clone(),
-            confidence: confidence.into(),
-        });
+        self.push_edge(
+            path,
+            reference.source.clone(),
+            target,
+            kind,
+            reference.line,
+            reference.expression.as_str(),
+            confidence,
+        );
     }
 
     pub(crate) fn reference_coverage(
@@ -188,13 +262,13 @@ impl Graph {
         status: &str,
         evidence: Cow<'static, str>,
     ) {
-        self.coverage.push(Coverage {
-            path: path.to_owned(),
-            line: reference.line,
-            expression: reference.expression.clone(),
-            status: status.into(),
+        self.push_coverage(
+            path,
+            reference.line,
+            reference.expression.clone(),
+            status,
             evidence,
-        });
+        );
     }
 }
 

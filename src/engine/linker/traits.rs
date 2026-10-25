@@ -8,7 +8,8 @@ use crate::{
     },
     engine::linker::interner::{LinkerInterner, PathId, SymbolId},
 };
-use hashbrown::{HashMap, HashSet};
+use super::NodeBindingIndex;
+use hashbrown::HashMap;
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::Path,
@@ -236,7 +237,7 @@ pub trait LanguageLinker: Send + Sync {
     fn package_exports<'a>(
         &self,
         _interner: &mut LinkerInterner<'a>,
-        _node_rebindings: &HashMap<SymbolId, HashSet<SymbolId>>,
+        _node_rebindings: &NodeBindingIndex,
         _all: &'a BTreeMap<String, Facts>,
         _modules_by_namespace: &ModulesByNamespace<'a>,
         _by_module: &HashMap<&'a str, Vec<&'a Node>>,
@@ -251,8 +252,8 @@ pub trait LanguageLinker: Send + Sync {
     fn package_exports_borrowed<'a>(
         &self,
         _interner: &mut LinkerInterner<'a>,
-        _node_rebindings: &HashMap<SymbolId, HashSet<SymbolId>>,
-        _all: &BTreeMap<String, &'a Facts>,
+        _node_rebindings: &NodeBindingIndex,
+        _all: &BTreeMap<&'a str, &'a Facts>,
         _modules_by_namespace: &ModulesByNamespace<'a>,
         _by_module: &HashMap<&'a str, Vec<&'a Node>>,
         _root: Option<&Path>,

@@ -1,6 +1,6 @@
 use crate::core::models::{Facts, Node};
 use crate::engine::languages::{self, LanguageFamily};
-use crate::engine::linker::interner::{LinkerInterner, SymbolId};
+use crate::engine::linker::interner::LinkerInterner;
 use crate::engine::linker::traits::{
     ImportContext, ImportResolution, LanguageLinker, PackageExports, insert_package_export,
     package_export, resolve_default_import,
@@ -155,7 +155,7 @@ impl LanguageLinker for PythonLinker {
     fn package_exports<'a>(
         &self,
         interner: &mut LinkerInterner<'a>,
-        node_rebindings: &HashMap<SymbolId, HashSet<SymbolId>>,
+        node_rebindings: &crate::engine::linker::NodeBindingIndex,
         all: &'a BTreeMap<String, Facts>,
         modules_by_namespace: &crate::engine::linker::traits::ModulesByNamespace<'a>,
         by_module: &HashMap<&'a str, Vec<&'a Node>>,
@@ -174,8 +174,8 @@ impl LanguageLinker for PythonLinker {
     fn package_exports_borrowed<'a>(
         &self,
         interner: &mut LinkerInterner<'a>,
-        node_rebindings: &HashMap<SymbolId, HashSet<SymbolId>>,
-        all: &BTreeMap<String, &'a Facts>,
+        node_rebindings: &crate::engine::linker::NodeBindingIndex,
+        all: &BTreeMap<&'a str, &'a Facts>,
         modules_by_namespace: &crate::engine::linker::traits::ModulesByNamespace<'a>,
         by_module: &HashMap<&'a str, Vec<&'a Node>>,
         root: Option<&Path>,
@@ -413,7 +413,7 @@ fn node_rebound(
     module: &Node,
     name: &str,
     interner: &LinkerInterner<'_>,
-    node_rebindings: &HashMap<SymbolId, HashSet<SymbolId>>,
+    node_rebindings: &crate::engine::linker::NodeBindingIndex,
 ) -> bool {
     module.rebinding_names().any(|candidate| candidate == name)
         || interner
@@ -422,7 +422,7 @@ fn node_rebound(
             .is_some_and(|(module_id, name_id)| {
                 node_rebindings
                     .get(&module_id)
-                    .is_some_and(|names| names.contains(&name_id))
+                    .is_some_and(|names| names.binary_search(&name_id).is_ok())
             })
 }
 
@@ -544,7 +544,7 @@ fn register_export<'a>(
 
 pub(super) fn package_exports<'a>(
     interner: &mut LinkerInterner<'a>,
-    node_rebindings: &HashMap<SymbolId, HashSet<SymbolId>>,
+    node_rebindings: &crate::engine::linker::NodeBindingIndex,
     all: impl IntoIterator<Item = &'a Facts>,
     modules_by_namespace: &HashMap<LanguageFamily, HashMap<String, Vec<&'a Node>>>,
     by_module: &HashMap<&str, Vec<&'a Node>>,

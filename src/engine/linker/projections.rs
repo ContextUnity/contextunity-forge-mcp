@@ -5,7 +5,7 @@ use super::{
 use crate::core::{
     models::{
         Node,
-        compact_graph::{Coverage, Edge, Graph},
+        compact_graph::Graph,
     },
     semantic::{NamedBindingRole, StaticString, SymbolOperand, ValueFlowFacts},
 };
@@ -54,27 +54,27 @@ fn emit(
 ) {
     let status = match target {
         Ok(Some(target)) => {
-            graph.edges.push(Edge {
-                src: owner.id.clone(),
-                dst: target.id.clone(),
-                kind: kind.into(),
-                path: owner.path.clone(),
+            graph.push_edge(
+                owner.path.as_str(),
+                owner.id.clone(),
+                target.id.clone(),
+                kind,
                 line,
-                evidence: expression.clone(),
-                confidence: "exact".into(),
-            });
+                expression.as_str(),
+                "exact",
+            );
             "resolved"
         }
         Ok(None) => "unresolved",
         Err(()) => "ambiguous",
     };
-    graph.coverage.push(Coverage {
-        path: owner.path.clone(),
+    graph.push_coverage(
+        owner.path.as_str(),
         line,
         expression,
-        status: status.into(),
-        evidence: "configured projection; unique canonical declaration required".into(),
-    });
+        status,
+        "configured projection; unique canonical declaration required",
+    );
 }
 
 pub(super) fn compose<'a>(

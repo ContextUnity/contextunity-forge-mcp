@@ -22,7 +22,7 @@ impl<'a> Context<'a> {
                 .expect("factory declaration owner is interned");
             let binding_count = owner.binding_count();
             let rebinding_count = owner.rebinding_count();
-            let inherited_names = |count: usize, index: &HashMap<SymbolId, HashSet<SymbolId>>| {
+            let inherited_names = |count: usize, index: &super::super::NodeBindingIndex| {
                 count == 0 && index.get(&owner_id).is_some_and(|names| !names.is_empty())
             };
             let declarations = if self
@@ -35,8 +35,8 @@ impl<'a> Context<'a> {
                 FactoryDeclarations::Raw(owner)
             } else {
                 FactoryDeclarations::Indexed {
-                    bindings: self.node_bindings.get(&owner_id),
-                    rebindings: self.node_rebindings.get(&owner_id),
+                    bindings: self.node_bindings.get(&owner_id).map(Vec::as_slice),
+                    rebindings: self.node_rebindings.get(&owner_id).map(Vec::as_slice),
                 }
             };
             self.factory_declarations.insert(owner_id, declarations);

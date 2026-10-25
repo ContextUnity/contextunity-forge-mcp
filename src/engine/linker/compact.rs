@@ -1,4 +1,6 @@
 use super::{Coverage, Edge, Graph};
+use hashbrown::HashMap;
+use std::sync::Arc;
 
 pub(super) enum GraphPart {
     Resident(Graph),
@@ -20,8 +22,8 @@ impl GraphPart {
                 edge.src.as_str(),
                 &edge.dst,
                 edge.kind.as_str(),
-                &edge.path,
-                &edge.evidence,
+                edge.path.as_ref(),
+                edge.evidence.as_str(),
                 edge.confidence.as_str(),
             ] {
                 write_string(&mut bytes, value);
@@ -30,7 +32,7 @@ impl GraphPart {
         }
         for row in &graph.coverage {
             for value in [
-                row.path.as_str(),
+                row.path.as_ref(),
                 &row.expression,
                 row.status.as_str(),
                 row.evidence.as_ref(),
@@ -68,31 +70,59 @@ impl GraphPart {
         let bytes =
             zstd::stream::decode_all(bytes.as_slice()).expect("graph compression is lossless");
         let mut bytes = bytes.as_slice();
+        let mut path_pool = HashMap::<&str, Arc<str>>::new();
+        let edges = (0..edges)
+            .map(|_| {
+                let src = read_string(&mut bytes);
+                let dst = read_string(&mut bytes);
+                let kind = read_str(&mut bytes).into();
+                let path = intern_path(&mut path_pool, read_str(&mut bytes));
+                let evidence = read_str(&mut bytes).into();
+                let confidence = read_str(&mut bytes).into();
+                let line = read_number(&mut bytes);
+                Edge {
+                    src,
+                    dst,
+                    kind,
+                    path,
+                    line,
+                    evidence,
+                    confidence,
+                }
+            })
+            .collect();
+        let coverage = (0..coverage)
+            .map(|_| {
+                let path = intern_path(&mut path_pool, read_str(&mut bytes));
+                let expression = read_string(&mut bytes);
+                let status = read_str(&mut bytes).into();
+                let evidence = read_string(&mut bytes).into();
+                let line = read_number(&mut bytes);
+                Coverage {
+                    path,
+                    line,
+                    expression,
+                    status,
+                    evidence,
+                }
+            })
+            .collect();
         let graph = Graph {
-            edges: (0..edges)
-                .map(|_| Edge {
-                    src: read_string(&mut bytes),
-                    dst: read_string(&mut bytes),
-                    kind: read_str(&mut bytes).into(),
-                    path: read_string(&mut bytes),
-                    evidence: read_string(&mut bytes),
-                    confidence: read_str(&mut bytes).into(),
-                    line: read_number(&mut bytes),
-                })
-                .collect(),
-            coverage: (0..coverage)
-                .map(|_| Coverage {
-                    path: read_string(&mut bytes),
-                    expression: read_string(&mut bytes),
-                    status: read_str(&mut bytes).into(),
-                    evidence: read_string(&mut bytes).into(),
-                    line: read_number(&mut bytes),
-                })
-                .collect(),
+            edges,
+            coverage,
+            path_arc: None,
+            path_pool: HashMap::new(),
         };
         debug_assert!(bytes.is_empty());
         graph
     }
+}
+
+fn intern_path<'a>(path_pool: &mut HashMap<&'a str, Arc<str>>, path: &'a str) -> Arc<str> {
+    path_pool
+        .entry(path)
+        .or_insert_with(|| Arc::from(path))
+        .clone()
 }
 
 fn write_string(bytes: &mut Vec<u8>, value: &str) {

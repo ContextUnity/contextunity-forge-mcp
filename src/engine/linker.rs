@@ -14,6 +14,10 @@ use rayon::prelude::*;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::Path;
+
+/// Per-node symbol IDs collected for declaration and rebinding lookups.
+pub type NodeBindingIndex = HashMap<interner::SymbolId, Vec<interner::SymbolId>>;
+
 mod compact;
 pub(crate) mod contracts;
 use compact::GraphPart;
@@ -897,12 +901,8 @@ fn link_compact_impl<'a, 'maps, 'uncertainties, F: AsRef<Facts> + Sync>(
                 }
             }
         }
-        let mut node_bindings: HashMap<interner::SymbolId, hashbrown::HashSet<interner::SymbolId>> =
-            HashMap::new();
-        let mut node_rebindings: HashMap<
-            interner::SymbolId,
-            hashbrown::HashSet<interner::SymbolId>,
-        > = HashMap::new();
+        let mut node_bindings: NodeBindingIndex = HashMap::new();
+        let mut node_rebindings: NodeBindingIndex = HashMap::new();
         for n in &nodes {
             if n.binding_count() > 0 {
                 let node_id = interner.lookup_symbol(&n.id).expect("node id is interned");
@@ -949,6 +949,14 @@ fn link_compact_impl<'a, 'maps, 'uncertainties, F: AsRef<Facts> + Sync>(
                 }
             }
         }
+        for names in node_bindings.values_mut() {
+            names.sort_unstable();
+            names.dedup();
+        }
+        for names in node_rebindings.values_mut() {
+            names.sort_unstable();
+            names.dedup();
+        }
         let mut children_by_parent: HashMap<interner::SymbolId, Vec<&Node>> = HashMap::new();
         for f in all.values() {
             let f = f.as_ref();
@@ -973,7 +981,7 @@ fn link_compact_impl<'a, 'maps, 'uncertainties, F: AsRef<Facts> + Sync>(
             indexing::NamespaceIndexes::build(all, &nodes, root, dependency_registry, interner);
         let borrowed_all = public_all.is_none().then(|| {
             all.iter()
-                .map(|(path, facts)| (path.clone(), facts.as_ref()))
+                .map(|(path, facts)| (path.as_str(), facts.as_ref()))
                 .collect::<BTreeMap<_, _>>()
         });
         let package_exports = indexing::package_exports(
@@ -1119,6 +1127,8 @@ fn link_compact_impl<'a, 'maps, 'uncertainties, F: AsRef<Facts> + Sync>(
     let mut result = Graph {
         edges: Vec::with_capacity(parts.iter().map(|g| g.counts().0).sum()),
         coverage: Vec::with_capacity(parts.iter().map(|g| g.counts().1).sum()),
+        path_arc: None,
+        path_pool: HashMap::new(),
     };
     let mut remaining = parts.into_iter();
     loop {

@@ -419,80 +419,80 @@ where
             })
             .unwrap_or(r.source.as_str());
         if modules.len() == 1 {
-            graph.edges.push(Edge {
-                src: import_owner.into(),
-                dst: modules[0].id.clone(),
-                kind: "imports".into(),
-                path: path.to_owned(),
-                line: r.line,
-                evidence: r.expression.clone(),
-                confidence: "exact".into(),
-            });
+            graph.push_edge(
+                path,
+                import_owner,
+                modules[0].id.clone(),
+                "imports",
+                r.line,
+                r.expression.as_str(),
+                "exact",
+            );
             if profile.is_some_and(|profile| profile.id() == "typescript") {
                 if let [declaration] = candidates.as_slice() {
                     if matches!(declaration.kind.as_str(), "type" | "interface")
                         && declaration.path == modules[0].path
                     {
-                        graph.edges.push(Edge {
-                            src: import_owner.into(),
-                            dst: declaration.id.clone(),
-                            kind: "imports".into(),
-                            path: path.to_owned(),
-                            line: r.line,
-                            evidence: r.expression.clone(),
-                            confidence: "exact".into(),
-                        });
+                        graph.push_edge(
+                            path,
+                            import_owner,
+                            declaration.id.clone(),
+                            "imports",
+                            r.line,
+                            r.expression.as_str(),
+                            "exact",
+                        );
                     }
                 }
             }
             if child_module {
-                graph.edges.push(Edge {
-                    src: import_owner.into(),
-                    dst: candidates[0].id.clone(),
-                    kind: "imports".into(),
-                    path: path.to_owned(),
-                    line: r.line,
-                    evidence: r.expression.clone(),
-                    confidence: "exact".into(),
-                });
+                graph.push_edge(
+                    path,
+                    import_owner,
+                    candidates[0].id.clone(),
+                    "imports",
+                    r.line,
+                    r.expression.as_str(),
+                    "exact",
+                );
             }
             if stub_symbol {
                 if let Some(stub) = paired_stub {
-                    graph.edges.push(Edge {
-                        src: import_owner.into(),
-                        dst: stub.id.clone(),
-                        kind: "imports".into(),
-                        path: path.to_owned(),
-                        line: r.line,
-                        evidence: r.expression.clone(),
-                        confidence: "exact".into(),
-                    });
+                    graph.push_edge(
+                        path,
+                        import_owner,
+                        stub.id.clone(),
+                        "imports",
+                        r.line,
+                        r.expression.as_str(),
+                        "exact",
+                    );
                 }
             }
             if reexport_symbol {
-                graph.edges.push(Edge {
-                    src: import_owner.into(),
-                    dst: candidates[0].id.clone(),
-                    kind: "imports".into(),
-                    path: path.to_owned(),
-                    line: r.line,
-                    evidence: r.expression.clone(),
-                    confidence: "exact".into(),
-                });
+                graph.push_edge(
+                    path,
+                    import_owner,
+                    candidates[0].id.clone(),
+                    "imports",
+                    r.line,
+                    r.expression.as_str(),
+                    "exact",
+                );
             } else if profile.is_some_and(|profile| profile.id() == "python")
                 && !child_module
                 && !stub_symbol
                 && imported_targets.len() == 1
             {
-                graph.edges.push(Edge {
-                    src: import_owner.into(),
-                    dst: imported_targets[0].id.clone(),
-                    kind: "imports".into(),
-                    path: path.to_owned(),
-                    line: r.line,
-                    evidence: r.expression.clone(),
-                    confidence: "exact".into(),
-                });
+                graph.push_edge(
+                    path,
+                    import_owner,
+                    imported_targets[0].id.clone(),
+                    "imports",
+                    r.line,
+                    r.expression.as_str(),
+                    "exact",
+                );
             }
         }
     }

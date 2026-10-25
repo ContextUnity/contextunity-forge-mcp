@@ -553,7 +553,7 @@ impl LanguageLinker for RustLinker {
     fn package_exports<'a>(
         &self,
         interner: &mut LinkerInterner<'a>,
-        _node_rebindings: &HashMap<SymbolId, HashSet<SymbolId>>,
+        _node_rebindings: &crate::engine::linker::NodeBindingIndex,
         all: &'a BTreeMap<String, Facts>,
         _modules_by_namespace: &ModulesByNamespace<'a>,
         _by_module: &HashMap<&'a str, Vec<&'a Node>>,
@@ -565,8 +565,8 @@ impl LanguageLinker for RustLinker {
     fn package_exports_borrowed<'a>(
         &self,
         interner: &mut LinkerInterner<'a>,
-        _node_rebindings: &HashMap<SymbolId, HashSet<SymbolId>>,
-        all: &BTreeMap<String, &'a Facts>,
+        _node_rebindings: &crate::engine::linker::NodeBindingIndex,
+        all: &BTreeMap<&'a str, &'a Facts>,
         _modules_by_namespace: &ModulesByNamespace<'a>,
         _by_module: &HashMap<&'a str, Vec<&'a Node>>,
         _root: Option<&std::path::Path>,

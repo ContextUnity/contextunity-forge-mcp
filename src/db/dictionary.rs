@@ -24,10 +24,10 @@ impl PathDictionaryCache {
         Ok(())
     }
 
-    pub fn bulk_insert(
+    pub fn bulk_insert<'a>(
         &mut self,
         conn: &Connection,
-        paths: impl IntoIterator<Item = impl AsRef<str>>,
+        paths: impl IntoIterator<Item = &'a str>,
     ) -> Result<()> {
         self.load_from_db(conn)?;
         let mut next_id: i64 = conn.query_row(
@@ -39,8 +39,7 @@ impl PathDictionaryCache {
             conn,
             "INSERT INTO path_dictionary(path_id,path) VALUES",
         )?;
-        for p in paths {
-            let path_ref = p.as_ref();
+        for path_ref in paths {
             if !self.cache.contains_key(path_ref) {
                 next_id = next_id
                     .checked_add(1)
@@ -48,7 +47,7 @@ impl PathDictionaryCache {
                 self.cache.insert(path_ref.to_owned(), next_id);
                 batch.push([
                     BorrowedSqlValue::Integer(next_id),
-                    BorrowedSqlValue::OwnedText(path_ref.to_owned()),
+                    BorrowedSqlValue::Text(path_ref),
                 ])?;
             }
         }

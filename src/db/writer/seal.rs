@@ -398,7 +398,7 @@ fn project_graph_domains<'a>(
 
     let edges_started = Instant::now();
     for edge in &graph.edges {
-        let owner = edge.path.as_str();
+        let owner = edge.path.as_ref();
         let ordinal = ordinals.entry(owner).or_default();
         let (src_path, src_hash) = node_by_id.get(edge.src.as_str()).with_context(|| {
             format!(
@@ -431,7 +431,7 @@ fn project_graph_domains<'a>(
             occurrence_hasher,
             i64::try_from(edge.line).context("edge line exceeds SQLite range")?,
         );
-        encode_text(occurrence_hasher, &edge.evidence);
+        encode_text(occurrence_hasher, edge.evidence.as_str());
         encode_text(occurrence_hasher, edge.confidence.as_str());
         *ordinal = (*ordinal)
             .checked_add(1)
@@ -454,14 +454,14 @@ fn project_graph_domains<'a>(
 
         let mut first_target_hash = None;
         for target in [*src_path, *dst_path] {
-            if target != edge.path {
+            if target != edge.path.as_ref() {
                 let target_hash = stable_hash64(target);
                 if first_target_hash != Some(target_hash) {
                     dependencies.push(Dependency {
-                        owner: &edge.path,
+                        owner: edge.path.as_ref(),
                         target_hash: Some(target_hash),
                         kind: edge.kind.as_str(),
-                        symbol: &edge.evidence,
+                        symbol: edge.evidence.as_str(),
                         resolution: "resolved",
                     });
                     first_target_hash = Some(target_hash);
@@ -491,7 +491,7 @@ fn project_graph_domains<'a>(
     });
     let mut edge_hashers = OwnerHashers::new();
     for row in unique_edges {
-        let owner = row.edge.path.as_str();
+        let owner = row.edge.path.as_ref();
         let hasher = edge_hashers
             .entry(owner)
             .or_insert_with(|| new_leaf_hasher("edges", owner));
@@ -505,7 +505,7 @@ fn project_graph_domains<'a>(
             hasher,
             i64::try_from(edge.line).context("edge line exceeds SQLite range")?,
         );
-        encode_text(hasher, &edge.evidence);
+        encode_text(hasher, edge.evidence.as_str());
         encode_text(hasher, edge.confidence.as_str());
         encode_integer(hasher, row.count);
     }
@@ -733,7 +733,7 @@ fn project_coverage_domains<'a>(
     let mut language_counts = BTreeMap::<String, BTreeMap<(String, String), i64>>::new();
     let mut unresolved_dependencies = Vec::new();
     for coverage in &coverage_rows {
-        let owner = coverage.path.as_str();
+        let owner = coverage.path.as_ref();
         let line = i64::try_from(coverage.line).context("coverage line exceeds SQLite range")?;
         let expression = coverage.expression.as_str();
         let status = coverage.status.as_str();

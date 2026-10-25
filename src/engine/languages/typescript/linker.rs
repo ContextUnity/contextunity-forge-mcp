@@ -1,7 +1,7 @@
 use super::*;
 use crate::core::semantic::SourcePosition;
 use crate::engine::languages;
-use crate::engine::linker::interner::{LinkerInterner, SymbolId};
+use crate::engine::linker::interner::LinkerInterner;
 use crate::engine::linker::traits::{
     ImportContext, ImportResolution, LanguageLinker, ModulesByNamespace, PackageExports,
     insert_package_export, package_export, resolve_default_import,
@@ -471,7 +471,7 @@ impl LanguageLinker for TypeScriptLinker {
     fn package_exports<'a>(
         &self,
         interner: &mut LinkerInterner<'a>,
-        _node_rebindings: &HashMap<SymbolId, HashSet<SymbolId>>,
+        _node_rebindings: &crate::engine::linker::NodeBindingIndex,
         all: &'a BTreeMap<String, Facts>,
         modules: &ModulesByNamespace<'a>,
         by_module: &HashMap<&'a str, Vec<&'a Node>>,
@@ -482,8 +482,8 @@ impl LanguageLinker for TypeScriptLinker {
     fn package_exports_borrowed<'a>(
         &self,
         interner: &mut LinkerInterner<'a>,
-        _node_rebindings: &HashMap<SymbolId, HashSet<SymbolId>>,
-        all: &BTreeMap<String, &'a Facts>,
+        _node_rebindings: &crate::engine::linker::NodeBindingIndex,
+        all: &BTreeMap<&'a str, &'a Facts>,
         modules: &ModulesByNamespace<'a>,
         by_module: &HashMap<&'a str, Vec<&'a Node>>,
         root: Option<&Path>,

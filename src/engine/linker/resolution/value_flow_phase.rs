@@ -5,7 +5,7 @@ mod relation_edges;
 
 fn has_node_binding(
     interner: &super::super::interner::LinkerInterner<'_>,
-    bindings: &HashMap<super::super::interner::SymbolId, HashSet<super::super::interner::SymbolId>>,
+    bindings: &super::super::NodeBindingIndex,
     owner: &str,
     name: &str,
 ) -> bool {
@@ -15,7 +15,7 @@ fn has_node_binding(
     };
     bindings
         .get(&owner)
-        .is_some_and(|bindings| bindings.contains(&name))
+        .is_some_and(|bindings| bindings.binary_search(&name).is_ok())
 }
 
 pub(super) fn phase_value_flow<'a, 'file, F>(resolver: &mut FileResolver<'a, 'file, F>)
@@ -1787,14 +1787,14 @@ where
                 } else {
                     r.kind.as_str()
                 };
-                graph.edges.push(Edge {
-                    src: src.clone(),
-                    dst: dst.clone(),
-                    kind: kind_str.into(),
-                    path: path.to_owned(),
-                    line: r.line,
-                    evidence: r.expression.clone(),
-                    confidence: if source_heuristic {
+                graph.push_edge(
+                    path,
+                    src.clone(),
+                    dst.clone(),
+                    kind_str,
+                    r.line,
+                    r.expression.as_str(),
+                    if source_heuristic {
                         "heuristic"
                     } else if typed_receiver.is_some()
                         || (receiver_member.is_some() && !exact_same_class_member_reference)
@@ -1802,9 +1802,8 @@ where
                         "inferred"
                     } else {
                         "exact"
-                    }
-                    .into(),
-                });
+                    },
+                );
                 if (kind_str == "implements" || kind_str == "inherits") && r.kind != "decorates" {
                     let source_container_id = if owner.is_some_and(|n| n.kind == "impl") {
                         r.source.as_str()

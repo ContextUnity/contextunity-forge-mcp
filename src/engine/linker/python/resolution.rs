@@ -185,7 +185,7 @@ pub(in crate::engine::linker) fn imported_module_member<'a>(
     profile: Option<&dyn LanguageProfile>,
     module: &'a Node,
     tail: &str,
-    node_rebindings: &HashMap<SymbolId, HashSet<SymbolId>>,
+    node_rebindings: &super::super::NodeBindingIndex,
     interner: &LinkerInterner<'_>,
     by_qual: &HashMap<&'a str, Vec<&'a Node>>,
     lookup_key: &mut String,

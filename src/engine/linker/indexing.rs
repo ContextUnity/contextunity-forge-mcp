@@ -200,9 +200,9 @@ pub(super) fn package_exports<'index, 'a>(
     profiles: &'index HashMap<&'a str, &'static dyn LanguageProfile>,
     modules_by_namespace: &'index ModulesByNamespace<'a>,
     by_module: &'index HashMap<&'a str, Vec<&'a Node>>,
-    node_rebindings: &'index HashMap<SymbolId, HashSet<SymbolId>>,
+    node_rebindings: &'index super::NodeBindingIndex,
     public_all: Option<&'a BTreeMap<String, Facts>>,
-    borrowed: Option<&'index BTreeMap<String, &'a Facts>>,
+    borrowed: Option<&'index BTreeMap<&'a str, &'a Facts>>,
     root: Option<&Path>,
     interner: &mut LinkerInterner<'a>,
     #[cfg(feature = "lang-rust")] rust_forwarding: &'index languages::rust::linker::RustForwarding<
@@ -262,8 +262,8 @@ impl<'a> InheritanceIndexes<'a> {
         >,
         by_id: &'index HashMap<SymbolId, &'a Node>,
         by_qual: &'index HashMap<&'a str, Vec<&'a Node>>,
-        node_bindings: &'index HashMap<SymbolId, HashSet<SymbolId>>,
-        node_rebindings: &'index HashMap<SymbolId, HashSet<SymbolId>>,
+        node_bindings: &'index super::NodeBindingIndex,
+        node_rebindings: &'index super::NodeBindingIndex,
         by_module: &'index HashMap<&'a str, Vec<&'a Node>>,
         namespaces: &'index NamespaceIndexes<'a>,
         package_exports: &'index HashMap<&'static str, PackageExports<'a>>,
@@ -320,7 +320,7 @@ impl<'a> InheritanceIndexes<'a> {
                                 && interner
                                     .lookup_symbol(&node.id)
                                     .and_then(|node_id| node_rebindings.get(&node_id))
-                                    .is_some_and(|bindings| bindings.contains(&head_id))
+                                    .is_some_and(|bindings| bindings.binary_search(&head_id).is_ok())
                         })
                     }) {
                         return super::python::receivers::Base::Unknown;
@@ -353,7 +353,9 @@ impl<'a> InheritanceIndexes<'a> {
                                         && interner
                                             .lookup_symbol(&node.id)
                                             .and_then(|node_id| node_rebindings.get(&node_id))
-                                            .is_some_and(|bindings| bindings.contains(&head_id))
+                                            .is_some_and(|bindings| {
+                                                bindings.binary_search(&head_id).is_ok()
+                                            })
                                 })
                             })
                         {
@@ -454,7 +456,7 @@ impl<'a> InheritanceIndexes<'a> {
                                 && interner
                                     .lookup_symbol(&node.id)
                                     .and_then(|node_id| node_bindings.get(&node_id))
-                                    .is_some_and(|bindings| bindings.contains(&head_id))
+                                    .is_some_and(|bindings| bindings.binary_search(&head_id).is_ok())
                         })
                     }) {
                         return super::python::receivers::Base::Unknown;

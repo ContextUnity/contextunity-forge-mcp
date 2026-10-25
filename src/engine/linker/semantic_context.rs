@@ -116,8 +116,8 @@ enum FactoryBinding<'a> {
 
 enum FactoryDeclarations<'a> {
     Indexed {
-        bindings: Option<&'a HashSet<SymbolId>>,
-        rebindings: Option<&'a HashSet<SymbolId>>,
+        bindings: Option<&'a [SymbolId]>,
+        rebindings: Option<&'a [SymbolId]>,
     },
     Raw(&'a Node),
 }
@@ -129,8 +129,8 @@ pub(super) struct Context<'a> {
     flows: Option<&'a HashMap<SymbolId, &'a crate::core::typed_facts::FlowState>>,
     by_qual: &'a HashMap<&'a str, Vec<&'a Node>>,
     by_id: &'a HashMap<SymbolId, &'a Node>,
-    node_bindings: &'a HashMap<SymbolId, HashSet<SymbolId>>,
-    node_rebindings: &'a HashMap<SymbolId, HashSet<SymbolId>>,
+    node_bindings: &'a super::NodeBindingIndex,
+    node_rebindings: &'a super::NodeBindingIndex,
     exports: &'a HashMap<&'a str, PackageExports<'a>>,
     pub(in crate::engine::linker) imports: HashMap<SymbolId, HashMap<SymbolId, Imported<'a>>>,
     factory_imports: HashMap<(SymbolId, SymbolId), FactoryImport<'a>>,
@@ -247,8 +247,8 @@ impl<'a> Context<'a> {
                 bindings,
                 rebindings,
             }) => name_id.is_some_and(|name_id| {
-                bindings.is_some_and(|names| names.contains(&name_id))
-                    || rebindings.is_some_and(|names| names.contains(&name_id))
+                bindings.is_some_and(|names| names.binary_search(&name_id).is_ok())
+                    || rebindings.is_some_and(|names| names.binary_search(&name_id).is_ok())
             }),
             None => false,
         }
@@ -546,7 +546,7 @@ impl<'a> Context<'a> {
         let alias_id = self.symbol_id(alias)?;
         let rebound = match self.factory_declarations.get(&owner_id) {
             Some(FactoryDeclarations::Indexed { rebindings, .. }) => {
-                rebindings.is_some_and(|names| names.contains(&alias_id))
+                rebindings.is_some_and(|names| names.binary_search(&alias_id).is_ok())
             }
             Some(FactoryDeclarations::Raw(node)) => {
                 node.rebinding_names().any(|name| name == alias)
@@ -624,7 +624,7 @@ impl<'a> Context<'a> {
             .is_some_and(|(owner, alias)| {
                 self.node_rebindings
                     .get(&owner)
-                    .is_some_and(|bindings| bindings.contains(&alias))
+                    .is_some_and(|bindings| bindings.binary_search(&alias).is_ok())
             })
     }
 

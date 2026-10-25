@@ -13,7 +13,7 @@ use crate::core::{
 };
 use crate::db::writer::{
     cache::{self, ExtractionCache},
-    StagedFilePayload,
+    StagedFilePayload, StagedPayloadBlob,
 };
 use crate::engine::{
     ast, docs,
@@ -27,7 +27,7 @@ use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, OpenOptions},
-    io::Read,
+    io::{Read, Seek, SeekFrom},
     panic::{catch_unwind, AssertUnwindSafe},
     path::{Path, PathBuf},
     sync::{
@@ -215,6 +215,7 @@ struct ExtractionWorkerContext {
 
 struct ColdPipelineInputs<'a> {
     root: &'a Path,
+    payload_spool_path: &'a Path,
     adapter: &'a Adapter,
     dependencies: Arc<DependencyRegistry>,
     extraction_cache: Arc<ExtractionCache>,
@@ -500,6 +501,7 @@ fn run_cold_pipeline(
 ) -> Result<(PipelineConsumerOutput, PipelineMetrics)> {
     let ColdPipelineInputs {
         root,
+        payload_spool_path,
         adapter,
         dependencies,
         extraction_cache,
@@ -521,18 +523,24 @@ fn run_cold_pipeline(
     let consumer_control = Arc::clone(&control);
     let consumer_counters = Arc::clone(&counters);
     let consumer_hooks = test_hooks.clone();
+    let consumer_payload_spool_path = payload_spool_path.to_path_buf();
     let consumer = thread::spawn(move || {
         let outcome = catch_unwind(AssertUnwindSafe(|| {
             consume_pipeline_results(
                 connection,
                 result_rx,
+                &consumer_payload_spool_path,
                 consumer_control.as_ref(),
                 consumer_counters.as_ref(),
                 consumer_hooks.as_deref(),
             )
         }));
         match outcome {
-            Ok(result) => result,
+            Ok(Ok(output)) => Ok(output),
+            Ok(Err(error)) => {
+                consumer_control.cancel(format!("cold pipeline SQLite consumer failed: {error}"));
+                Err(error)
+            }
             Err(_) => {
                 consumer_control.cancel("cold pipeline SQLite consumer panicked");
                 Err(anyhow::anyhow!("cold pipeline SQLite consumer panicked"))
@@ -786,13 +794,27 @@ fn extraction_worker(context: ExtractionWorkerContext) {
     }
 }
 
+fn spool_payload_blob(file: &mut std::fs::File, bytes: &[u8]) -> Result<StagedPayloadBlob> {
+    let offset = file.seek(SeekFrom::End(0))?;
+    std::io::Write::write_all(file, bytes)?;
+    Ok(StagedPayloadBlob {
+        offset,
+        length: u64::try_from(bytes.len()).context("staged payload length overflow")?,
+    })
+}
+
 fn consume_pipeline_results(
     mut connection: Connection,
     result_rx: Receiver<std::result::Result<PipelineItem, String>>,
+    payload_spool_path: &Path,
     control: &PipelineControl,
     counters: &PipelineCounters,
     test_hooks: Option<&PipelineTestHooks>,
 ) -> Result<PipelineConsumerOutput> {
+    let mut payload_spool = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(payload_spool_path)?;
     let transaction = connection.transaction()?;
     let mut statement =
         transaction.prepare_cached("INSERT INTO source_inventory VALUES(?1,'indexed',?2,?3)")?;
@@ -835,13 +857,17 @@ fn consume_pipeline_results(
         match inserted {
             Ok(_) => {
                 let path = file.path.clone();
+                let encoded_facts_ref = spool_payload_blob(&mut payload_spool, &encoded_facts)?;
+                let storage_rows_ref = spool_payload_blob(&mut payload_spool, &storage_rows)?;
+                drop(encoded_facts);
+                drop(storage_rows);
                 entries.push(file);
                 catalog.extend(file_catalog);
                 staged_payloads.insert(
                     path,
                     StagedFilePayload {
-                        encoded_facts,
-                        storage_rows: Some(storage_rows),
+                        encoded_facts: encoded_facts_ref,
+                        storage_rows: Some(storage_rows_ref),
                     },
                 );
                 counters.ingested_files.fetch_add(1, Ordering::AcqRel);
@@ -850,6 +876,7 @@ fn consume_pipeline_results(
         }
         drop(permit);
     }
+    std::io::Write::flush(&mut payload_spool)?;
     drop(statement);
     if let Some(failure) = control.failure() {
         transaction.rollback()?;
@@ -1142,6 +1169,7 @@ fn atomic_build(
         fs::create_dir(&stage)?;
     }
     let temporary = stage.join("generation.sqlite");
+    let payload_spool_path = stage.join("payloads.bin");
     let result = (|| {
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
@@ -1151,6 +1179,14 @@ fn atomic_build(
             options.mode(0o600);
         }
         options.open(&temporary)?;
+        let mut payload_options = OpenOptions::new();
+        payload_options.read(true).write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            payload_options.mode(0o600);
+        }
+        payload_options.open(&payload_spool_path)?;
         let mut conn = Connection::open_with_flags(
             &temporary,
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW,
@@ -1163,6 +1199,7 @@ fn atomic_build(
         )?;
         let (mut streamed, pipeline_metrics) = run_cold_pipeline(ColdPipelineInputs {
             root,
+            payload_spool_path: &payload_spool_path,
             adapter,
             dependencies: Arc::clone(&dependencies),
             extraction_cache: Arc::clone(&extraction_cache),
@@ -1217,6 +1254,7 @@ fn atomic_build(
                 schema_ready: true,
             },
             &mut streamed.staged_payloads,
+            Some(&payload_spool_path),
         )?;
         report["link_ms"] = json!(link_ms);
         report["linking_facts_mode"] = json!("symbol-catalog");

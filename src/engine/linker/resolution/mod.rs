@@ -171,9 +171,9 @@ pub(super) struct ResolutionInput<'a, F> {
     pub(super) by_id: &'a HashMap<super::interner::SymbolId, &'a Node>,
     pub(super) by_module: &'a HashMap<&'a str, Vec<&'a Node>>,
     pub(super) node_bindings:
-        &'a HashMap<super::interner::SymbolId, HashSet<super::interner::SymbolId>>,
+        &'a super::NodeBindingIndex,
     pub(super) node_rebindings:
-        &'a HashMap<super::interner::SymbolId, HashSet<super::interner::SymbolId>>,
+        &'a super::NodeBindingIndex,
     pub(super) children_by_parent: &'a HashMap<super::interner::SymbolId, Vec<&'a Node>>,
     pub(super) profiles: &'a HashMap<&'a str, &'static dyn LanguageProfile>,
     pub(super) normalized_imports: &'a HashMap<(&'a str, &'a str), Option<ImportPath>>,
@@ -201,6 +201,7 @@ pub(super) struct FileResolver<'a, 'file, F> {
     input: &'file ResolutionInput<'a, F>,
     linker: &'file LinkerContext<'a>,
     path: &'file str,
+    path_arc: std::sync::Arc<str>,
     facts: &'a Facts,
     references: &'file [Reference],
     file_module: &'file str,
@@ -232,17 +233,32 @@ where
         language_context: &'file languages::LanguageContext,
         linker: &'file LinkerContext<'a>,
     ) -> Self {
+        let path_arc = std::sync::Arc::<str>::from(path);
+        let edges = facts
+            .edges
+            .iter()
+            .map(|edge| {
+                if edge.path == path {
+                    Edge::with_path(edge, &path_arc)
+                } else {
+                    Edge::from(edge)
+                }
+            })
+            .collect();
         Self {
             input,
             linker,
             path,
+            path_arc: std::sync::Arc::clone(&path_arc),
             facts,
             references,
             file_module,
             language_context,
             graph: Graph {
-                edges: facts.edges.iter().map(Edge::from).collect(),
+                edges,
                 coverage: Vec::with_capacity(references.len()),
+                path_arc: Some(path_arc),
+                path_pool: HashMap::new(),
             },
             aliases: HashMap::new(),
             external_aliases: HashMap::new(),
@@ -334,20 +350,23 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
             });
             let references = restored_references.as_deref().unwrap_or(&facts.references);
             let profile = profiles.get(path).copied();
-            let file_module = facts
+            let file_module: Cow<'_, str> = facts
                 .nodes
                 .iter()
                 .find(|node| node.kind == "module")
-                .map(|node| node.qualname.clone())
+                .map(|node| Cow::Borrowed(node.qualname.as_str()))
                 .unwrap_or_else(|| {
-                    profile.map_or_else(|| module_name(path), |profile| profile.module_name(path))
+                    Cow::Owned(profile.map_or_else(
+                        || module_name(path),
+                        |profile| profile.module_name(path),
+                    ))
                 });
             let mut file_resolver = FileResolver::new(
                 &input,
                 path,
                 facts,
                 references,
-                &file_module,
+                file_module.as_ref(),
                 file_language_context.as_ref(),
                 &linker_context,
             );
@@ -372,6 +391,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
             if sort_per_file {
                 sort_graph(&mut file_resolver.graph);
             }
+            debug_assert_eq!(file_resolver.path_arc.as_ref(), path);
             std::mem::take(&mut file_resolver.graph)
         })
         .map(|graph| GraphPart::new(graph, occurrences.is_some()))

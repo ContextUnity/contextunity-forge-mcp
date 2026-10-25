@@ -35,6 +35,17 @@ invariants:
   - INV-PERF-SQLITE-INGESTION-PRAGMAS
   - INV-PERF-DETERMINISTIC-MERKLE-SEALING
   - INV-PERF-CACHE-KEY-BINDING
+  - INV-PERF-STAGE-PAYLOAD-SPOOLING
+  - INV-PERF-ZERO-CLONE-BATCHED-NODES
+  - INV-PERF-DEFERRED-TRANSIENT-NODE-PATHS
+  - INV-PERF-OCCURRENCE-ENDPOINT-HASH-REUSE
+  - INV-PERF-IN-MEMORY-FILE-LANGUAGE-FALLBACK
+  - INV-PERF-COMPACT-EDGE-COVERAGE-MODELS
+  - INV-PERF-COMPACT-GRAPH-PATH-POOLING
+  - INV-PERF-NORMALIZED-NODE-BINDING-VECTORS
+  - INV-PERF-BORROWED-MAP-KEY-EXPORT-INDEXING
+  - INV-PERF-ZERO-CLONE-PARALLEL-MODULE-NAME
+  - INV-PERF-BORROWED-PATH-DICTIONARY-BULK-INSERT
 ---
 
 # Performance Guidance, Search Architecture, and Storage Compaction
@@ -198,6 +209,7 @@ During Milestone 031, multiple plausible optimization hypotheses were empiricall
 | **Leaf-Count Pre-check Guard (`named_child_count() == 0`)** | `src/engine/ast/visitor.rs` (`walk`) | **`5.89% slower`** (`1.89s` vs `1.78s`) | Calling `ts_node_named_child_count` before `goto_first_child` adds a redundant C FFI transition per node. |
 | **Lazy `symbol_name` Parent Node Lookup** | `src/engine/ast/mod.rs` | Wall: **`+1.47%`**, User CPU: **`+2.33%`** | Deferring parent lookup via `or_else` did not eliminate AST traversal and disrupted branch prediction in extraction hot loops. |
 | **Filtering Python Initializers (`__init__.py`) or Config Files** | `src/engine/scanner/mod.rs` | Broken re-exports and Merkle root divergence | Commerce contains 202 `__init__.py` files containing package exports and module docstrings; skipping them breaks 130,079 graph edges. |
+| **Parallelizing Initial `evaluate` in `ValueFlowIndex`** | `src/engine/linker/value_flow/initialize.rs` | Order-dependent state divergence & non-deterministic resolution | Later bindings observe earlier writes and parent scope mutations in source order, and update shared state (`collection_elements`). The subsequent epoch reducer has a bounded iteration limit and cannot recover altered initial evaluation states. |
 
 ---
 
@@ -337,3 +349,80 @@ Autonomous agents, builders, and language models modifying Forge indexing or sto
 > Benchmarks and cold-build latency measurements reflect real algorithmic performance only when the host OS operates in `performance` platform profile (`powerprofilesctl set performance`, `energy_performance_preference: performance`). Running benchmarks under `power-saver` caps CPU clocks to low base frequencies (e.g. 400 MHz – 1.9 GHz instead of 4.5 GHz boost) and artificially inflates wall-clock and persistence timings by 1.8x–2.0x.
 
 - INV-PERF-HOST-POWER-GOVERNOR-FOR-BENCHMARKS: Benchmark runs require verification that the host platform profile is not set to `power-saver` before attributing measured wall-clock regressions to code changes. [`cold_test_coverage_benchmark.py`](../../benchmarks/cold_test_coverage_benchmark.py).
+
+> [!IMPORTANT]
+> Invariant: Stage Payload Disk Spooling
+>
+> In `src/engine/pipeline.rs` (`consume_pipeline_results`) and `src/db/writer.rs` (`populate_owned`), cold-build extraction payloads (`encoded_facts` and `storage_rows`) must be spooled directly to stage-private temporary disk storage (`payloads.bin` under `.forge-stage-*`) during consumer ingestion rather than accumulated in heap memory as raw byte vectors (`StagedFilePayload`). `StagedFilePayload` retains only lightweight offset/length references (`StagedPayloadBlob`), releasing 50–60 MB of heap memory during the cross-file linker phase. The final persistence pass reads blobs sequentially in bounded 500-file chunks, preserving route composition invalidation, Merkle leaf commitments, and atomic stage cleanup.
+
+- INV-PERF-STAGE-PAYLOAD-SPOOLING: Spool extraction payload blobs to stage-private disk storage during consumer ingestion and read by chunk during persistence to keep heap memory bounded during linking. [`consume_pipeline_results`](../../src/engine/pipeline.rs) [`populate_owned`](../../src/db/writer.rs).
+
+> [!IMPORTANT]
+> Invariant: Zero-Clone Ingestion for Batched Node Attributes
+>
+> In `src/db/ingest.rs` (`persist_files_impl`), `node_batch` rows must borrow string attributes (`id`, `kind`, `name`, `qualname`, `language`) as `&str` (`BorrowedSqlValue::Text`) directly from the active loaded chunk rather than allocating owned `String`s (`BorrowedSqlValue::OwnedText`). The lifetime of `node_batch` is strictly bounded by the loaded chunk, flushing before the chunk is dropped to eliminate hundreds of thousands of heap string clones while keeping dynamic details in `BorrowedSqlValue::OwnedJsonText`.
+
+- INV-PERF-ZERO-CLONE-BATCHED-NODES: Borrow node string attributes directly from loaded file chunks in batch insertion loops without heap-cloning strings. [`persist_files_impl`](../../src/db/ingest.rs) [`BorrowedSqlValue`](../../src/db/batch.rs).
+
+> [!IMPORTANT]
+> Invariant: Deferred Transient Node Paths Cache
+>
+> In `src/db/writer.rs` (`populate_owned`) and `src/db/delta.rs` (`persist_delta`), the `node_paths` lookup cache must be constructed immediately before `persist_graph` using `Cow<'a, str>` borrowed keys from in-memory facts rather than cloning owning `String` node IDs across the entire workspace. The cache must be explicitly dropped immediately after graph persistence to reclaim memory before index and Merkle sealing.
+
+- INV-PERF-DEFERRED-TRANSIENT-NODE-PATHS: Construct the `node_paths` cache immediately before graph persistence with borrowed `Cow<'a, str>` keys and drop it immediately after use. [`populate_owned`](../../src/db/writer.rs) [`persist_graph`](../../src/db/ingest.rs).
+
+> [!IMPORTANT]
+> Invariant: Edge Occurrence Endpoint Hash Reuse
+>
+> In `src/db/ingest.rs` (`persist_graph`, `persist_dependencies`), resolved endpoint hashes `(src_target, dst_target)` computed during the occurrence pass must be retained in an occurrence-aligned vector (`resolved_edge_paths`) and forwarded directly to `persist_dependencies`. Dependencies must reuse these pre-resolved endpoint path hashes rather than repeating `graph_endpoint_hashes` lookups or executing redundant SQLite queries.
+
+- INV-PERF-OCCURRENCE-ENDPOINT-HASH-REUSE: Reuse resolved endpoint hashes from edge occurrence passes in dependency persistence to eliminate redundant hash-map lookups. [`persist_graph`](../../src/db/ingest.rs) [`persist_dependencies`](../../src/db/ingest.rs).
+
+> [!IMPORTANT]
+> Invariant: In-Memory File Language Fallback for Coverage
+>
+> In `src/db/ingest.rs` (`persist_graph`), resolution coverage owner languages must be resolved from known in-memory file entries (`known_file_entries`) before falling back to SQLite queries. Cold builds must avoid round-tripping missing owners through JSON serialization and SQLite `json_each(?1)` subqueries whenever file metadata is available in memory.
+
+- INV-PERF-IN-MEMORY-FILE-LANGUAGE-FALLBACK: Resolve coverage owner languages from in-memory file entries to eliminate JSON-encoded SQLite subqueries. [`persist_graph`](../../src/db/ingest.rs).
+
+> [!IMPORTANT]
+> Invariant: Compact Edge and Coverage Models with Shared Paths and Tags
+>
+> In `src/core/models/compact_graph.rs`, internal `Edge` and `Coverage` graph models must store file paths as shared `Arc<str>` handles and evidence as `CompactTag` (with static strings for recurring diagnostics such as `"exact"`, `"inferred"`, `"references"`). Graph construction must share a single `path_arc` across all edges and coverage generated within each file resolver to eliminate millions of redundant heap string allocations while preserving public model representations, sort ordering, and bit-for-bit Merkle commitments.
+
+- INV-PERF-COMPACT-EDGE-COVERAGE-MODELS: Compact internal edge and coverage models with shared `Arc<str>` paths and `CompactTag` evidence. [`Edge`](../../src/core/models/compact_graph.rs) [`Coverage`](../../src/core/models/compact_graph.rs).
+
+> [!IMPORTANT]
+> Invariant: Content-Keyed Path Pooling during Compact Graph Restoration
+>
+> In `src/engine/linker/compact.rs` (`GraphPart::into_graph`), restoring packed compressed graph parts must use a local content-keyed path pool (`HashMap<&str, Arc<str>>`) to reconstruct shared `Arc<str>` handles without re-allocating duplicate path strings across decoded edge and coverage records.
+
+- INV-PERF-COMPACT-GRAPH-PATH-POOLING: Pool restored path strings into shared `Arc<str>` handles when unpacking compressed graph parts. [`GraphPart::into_graph`](../../src/engine/linker/compact.rs).
+
+> [!IMPORTANT]
+> Invariant: Normalized Vector Storage for Node Binding Indexes
+>
+> In `src/engine/linker.rs` and downstream resolution modules, `NodeBindingIndex` must store per-node symbol identifiers in a sorted, deduplicated `Vec<SymbolId>` rather than separate heap hash tables (`hashbrown::HashSet<SymbolId>`). Membership checks must perform binary searches (`binary_search(&id).is_ok()`). Normalization (`sort_unstable()` and `dedup()`) must occur once after collecting declarations, Python flow bindings, and branch joins before publishing immutable indexes.
+
+- INV-PERF-NORMALIZED-NODE-BINDING-VECTORS: Store per-node binding identifiers in sorted, deduplicated vectors with binary search membership checks. [`NodeBindingIndex`](../../src/engine/linker.rs) [`has_indexed_symbol_id`](../../src/engine/linker/typescript/resolution.rs).
+
+> [!IMPORTANT]
+> Invariant: Borrowed Map Keys in Package Export Indexing
+>
+> In `src/engine/linker/traits.rs` (`LanguageLinker::package_exports_borrowed`) and `src/engine/linker/indexing.rs`, package export indexing across language linkers must accept borrowed map references (`&BTreeMap<&'a str, &'a Facts>`), eliminating redundant cloning of all workspace file paths into temporary maps.
+
+- INV-PERF-BORROWED-MAP-KEY-EXPORT-INDEXING: Accept borrowed map keys in borrowed package export indexing to avoid workspace path string cloning. [`LanguageLinker::package_exports_borrowed`](../../src/engine/linker/traits.rs) [`package_exports`](../../src/engine/linker/indexing.rs).
+
+> [!IMPORTANT]
+> Invariant: Zero-Clone Parallel File Module Resolution
+>
+> In `src/engine/linker/resolution/mod.rs`, extracting file module qualified names for `FileResolver` must borrow `&'a str` directly (`Cow::Borrowed`) when a `"module"` node is present, allocating an owned string (`Cow::Owned`) only in dynamic fallback branches.
+
+- INV-PERF-ZERO-CLONE-PARALLEL-MODULE-NAME: Borrow module names directly from module nodes without heap allocation during parallel file resolution. [`resolve`](../../src/engine/linker/resolution/mod.rs).
+
+> [!IMPORTANT]
+> Invariant: Zero-Clone Dictionary Bulk Ingestion
+>
+> In `src/db/dictionary.rs`, `PathDictionaryCache::bulk_insert` must accept `impl IntoIterator<Item = &'a str>` and push `BorrowedSqlValue::Text(path_ref)` into multi-value insertion batches, cloning strings only once for the in-memory dictionary cache.
+
+- INV-PERF-BORROWED-PATH-DICTIONARY-BULK-INSERT: Borrow path string references in dictionary bulk insertion batches to avoid duplicate SQL string cloning. [`PathDictionaryCache::bulk_insert`](../../src/db/dictionary.rs).

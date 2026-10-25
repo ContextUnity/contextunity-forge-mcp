@@ -16,7 +16,15 @@ use rusqlite::{
     OptionalExtension, ToSql,
 };
 use serde_json::{json, Value};
-use std::{collections::BTreeMap, fmt::Write as _, path::Path, sync::Arc, time::Instant};
+use std::{
+    collections::BTreeMap,
+    fmt::Write as _,
+    fs::File,
+    io::{Read, Seek, SeekFrom},
+    path::Path,
+    sync::Arc,
+    time::Instant,
+};
 
 #[path = "batch.rs"]
 mod batch;
@@ -37,9 +45,27 @@ use ingest::*;
 
 const MAX_MULTI_VALUE_BATCH_ROWS: usize = 500;
 
+#[derive(Clone, Copy)]
+pub(crate) struct StagedPayloadBlob {
+    pub(crate) offset: u64,
+    pub(crate) length: u64,
+}
+
 pub(crate) struct StagedFilePayload {
-    pub(crate) encoded_facts: Vec<u8>,
-    pub(crate) storage_rows: Option<Vec<u8>>,
+    pub(crate) encoded_facts: StagedPayloadBlob,
+    pub(crate) storage_rows: Option<StagedPayloadBlob>,
+}
+
+fn read_staged_payload(file: &mut File, payload: StagedPayloadBlob) -> Result<Vec<u8>> {
+    file.seek(SeekFrom::Start(payload.offset))?;
+    let length = usize::try_from(payload.length).context("staged payload length overflow")?;
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(length)
+        .context("cannot reserve memory for staged payload")?;
+    bytes.resize(length, 0);
+    file.read_exact(&mut bytes)?;
+    Ok(bytes)
 }
 
 fn decode_prepared_storage(bytes: &[u8]) -> Result<PreparedCatalogStorage> {
@@ -203,6 +229,7 @@ pub(crate) fn populate(
         graph,
         build_inputs,
         &mut BTreeMap::new(),
+        None,
     )
 }
 
@@ -216,8 +243,16 @@ pub(crate) fn populate_owned(
     graph: &CompactGraph,
     build_inputs: BuildInputs<'_>,
     staged_payloads: &mut BTreeMap<String, StagedFilePayload>,
+    payload_spool_path: Option<&Path>,
 ) -> Result<Value> {
     let streamed_payloads = !staged_payloads.is_empty();
+    let mut payload_spool = if streamed_payloads {
+        Some(File::open(
+            payload_spool_path.context("missing staged payload spool path")?,
+        )?)
+    } else {
+        None
+    };
     let cache_kb = sqlite_cache_size_kib(build_inputs.memory_budget);
     conn.execute_batch(&format!(
         "PRAGMA journal_mode=MEMORY; PRAGMA synchronous=OFF; PRAGMA temp_store=MEMORY; PRAGMA cache_size=-{cache_kb}; PRAGMA cache_spill=ON;"
@@ -293,8 +328,8 @@ pub(crate) fn populate_owned(
         let all_paths = entries
             .iter()
             .map(|e| e.path.as_str())
-            .chain(graph.edges.iter().map(|e| e.path.as_str()))
-            .chain(graph.coverage.iter().map(|c| c.path.as_str()))
+            .chain(graph.edges.iter().map(|e| e.path.as_ref()))
+            .chain(graph.coverage.iter().map(|c| c.path.as_ref()))
             .chain(
                 entries
                     .iter()
@@ -304,21 +339,6 @@ pub(crate) fn populate_owned(
         let t_bulk = Instant::now();
         path_cache.bulk_insert(&tx, all_paths)?;
         let bulk_paths_ms = t_bulk.elapsed().as_secs_f64() * 1000.;
-        let mut node_paths: hashbrown::HashMap<String, Option<CachedNodePath>> =
-            hashbrown::HashMap::with_capacity(facts.values().map(|f| f.nodes.len()).sum());
-        let mut shared_paths = hashbrown::HashMap::<&str, Arc<str>>::new();
-        for f in facts.values() {
-            for n in &f.nodes {
-                let shared_path = shared_paths
-                    .entry(n.path.as_str())
-                    .or_insert_with(|| Arc::<str>::from(n.path.as_str()));
-                node_paths.insert(
-                    n.id.clone(),
-                    Some(CachedNodePath::from_shared(&n.id, Arc::clone(shared_path))),
-                );
-            }
-        }
-
         let t_files = Instant::now();
         let mut restore_payload_ms = 0.0;
         let composed_sources = facts
@@ -333,10 +353,13 @@ pub(crate) fn populate_owned(
                 let staged = staged_payloads
                     .get(path)
                     .context("missing composed source payload")?;
-                Ok((
-                    path.to_owned(),
-                    catalog_payload(path, &staged.encoded_facts)?,
-                ))
+                let encoded_facts = read_staged_payload(
+                    payload_spool
+                        .as_mut()
+                        .context("missing staged payload spool")?,
+                    staged.encoded_facts,
+                )?;
+                Ok((path.to_owned(), catalog_payload(path, &encoded_facts)?))
             })
             .collect::<Result<BTreeMap<_, _>>>()?;
         let file_timings = if streamed_payloads {
@@ -358,18 +381,32 @@ pub(crate) fn populate_owned(
                             ))
                         })
                         .collect::<Result<Vec<_>>>()?;
-                    let prepared = staged
-                        .into_par_iter()
+                    let spool = payload_spool
+                        .as_mut()
+                        .context("missing staged payload spool")?;
+                    let hydrated = staged
+                        .into_iter()
                         .map(|(file, lean, staged)| {
+                            let encoded_facts = read_staged_payload(spool, staged.encoded_facts)?;
+                            let storage_rows = staged
+                                .storage_rows
+                                .map(|payload| read_staged_payload(spool, payload))
+                                .transpose()?;
+                            Ok((file, lean, encoded_facts, storage_rows))
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+                    let prepared = hydrated
+                        .into_par_iter()
+                        .map(|(file, lean, encoded_facts, storage_rows)| {
                             let restoring = Instant::now();
-                            let (storage, encoded) = if let Some(storage) = staged.storage_rows {
+                            let (storage, encoded) = if let Some(storage) = storage_rows {
                                 let storage = decode_prepared_storage(&storage)?;
-                                (storage, staged.encoded_facts)
+                                (storage, encoded_facts)
                             } else {
                                 let full = restore_catalog_file(
                                     file,
                                     lean,
-                                    &staged.encoded_facts,
+                                    &encoded_facts,
                                     &composed_sources,
                                 )?;
                                 let encoded = encode_facts(&full)?;
@@ -438,7 +475,6 @@ pub(crate) fn populate_owned(
         }
         let doc_fts_insert_ms = t_doc_fts.elapsed().as_secs_f64() * 1000.;
 
-        drop(shared_paths);
         if streamed_payloads {
             for file_facts in facts.values_mut() {
                 retain_graph_storage_facts(file_facts);
@@ -467,6 +503,31 @@ pub(crate) fn populate_owned(
                     }
                     (domains, started.elapsed().as_secs_f64() * 1000.)
                 });
+                let mut node_paths: hashbrown::HashMap<
+                    std::borrow::Cow<'_, str>,
+                    Option<CachedNodePath>,
+                > = hashbrown::HashMap::with_capacity(
+                    facts
+                        .values()
+                        .map(|file_facts| file_facts.nodes.len())
+                        .sum(),
+                );
+                let mut shared_paths = hashbrown::HashMap::<&str, Arc<str>>::new();
+                for file_facts in facts.values() {
+                    for node in &file_facts.nodes {
+                        let shared_path = shared_paths
+                            .entry(node.path.as_str())
+                            .or_insert_with(|| Arc::<str>::from(node.path.as_str()));
+                        node_paths.insert(
+                            std::borrow::Cow::Borrowed(node.id.as_str()),
+                            Some(CachedNodePath::from_shared(
+                                &node.id,
+                                Arc::clone(shared_path),
+                            )),
+                        );
+                    }
+                }
+                drop(shared_paths);
                 let started = Instant::now();
                 let stored = persist_graph(
                     &tx,
@@ -474,9 +535,11 @@ pub(crate) fn populate_owned(
                     graph,
                     &facts,
                     None,
+                    Some(entries),
                     &mut node_paths,
                     true,
                 );
+                drop(node_paths);
                 let persist_ms = started.elapsed().as_secs_f64() * 1000.;
                 let (domains, projection_ms) = projection
                     .join()

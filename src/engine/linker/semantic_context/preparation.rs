@@ -80,8 +80,8 @@ impl<'a> Context<'a> {
         by_module: &'a HashMap<&'a str, Vec<&'a Node>>,
         by_qual: &'a HashMap<&'a str, Vec<&'a Node>>,
         by_id: &'a HashMap<SymbolId, &'a Node>,
-        node_bindings: &'a HashMap<SymbolId, HashSet<SymbolId>>,
-        node_rebindings: &'a HashMap<SymbolId, HashSet<SymbolId>>,
+        node_bindings: &'a super::super::NodeBindingIndex,
+        node_rebindings: &'a super::super::NodeBindingIndex,
         exports: &'a HashMap<&'a str, PackageExports<'a>>,
         normalized_imports: &'a HashMap<(&'a str, &'a str), Option<ImportPath>>,
         #[cfg(feature = "lang-rust")] rust_forwarding: &'a languages::rust::linker::RustForwarding<

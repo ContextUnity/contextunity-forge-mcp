@@ -52,18 +52,18 @@ pub(in crate::engine::linker) fn emit_render_targets(
     graph: &mut Graph,
 ) {
     for (provider, target) in render_contexts.targets(path) {
-        graph.edges.push(Edge {
-            src: provider.source.id.clone(),
-            dst: target.id.clone(),
-            kind: "renders".into(),
-            path: path.to_owned(),
-            line: provider.context.position.line,
-            evidence: format!(
+        graph.push_edge(
+            path,
+            provider.source.id.clone(),
+            target.id.clone(),
+            "renders",
+            provider.context.position.line,
+            format!(
                 "render target: {} from {}",
                 target.path, provider.source.path
             ),
-            confidence: "exact".into(),
-        });
+            "exact",
+        );
     }
 }
 
@@ -92,20 +92,20 @@ pub(in crate::engine::linker) fn emit_request_routes(
         let (method, url) = node.name.split_once(' ').unwrap_or(("GET", &node.name));
         let status = node.details["url_status"].as_str().unwrap_or("");
         match status {
-            "remote" => graph.coverage.push(Coverage {
-                path: path.to_owned(),
-                line: node.line,
-                expression: node.name.clone(),
-                status: "external".into(),
-                evidence: "remote HTTP endpoint".into(),
-            }),
-            "current_page" => graph.coverage.push(Coverage {
-                path: path.to_owned(),
-                line: node.line,
-                expression: node.name.clone(),
-                status: "resolved".into(),
-                evidence: "current page form/action".into(),
-            }),
+            "remote" => graph.push_coverage(
+                path,
+                node.line,
+                node.name.clone(),
+                "external",
+                "remote HTTP endpoint",
+            ),
+            "current_page" => graph.push_coverage(
+                path,
+                node.line,
+                node.name.clone(),
+                "resolved",
+                "current page form/action",
+            ),
             "local_unverified" => {
                 super::super::framework_relations::emit_route_match(
                     graph,
@@ -119,13 +119,13 @@ pub(in crate::engine::linker) fn emit_request_routes(
                     &node.name,
                 );
             }
-            _ => graph.coverage.push(Coverage {
-                path: path.to_owned(),
-                line: node.line,
-                expression: node.name.clone(),
-                status: "unresolved".into(),
-                evidence: format!("unverified HTTP endpoint: {}", node.name).into(),
-            }),
+            _ => graph.push_coverage(
+                path,
+                node.line,
+                node.name.clone(),
+                "unresolved",
+                format!("unverified HTTP endpoint: {}", node.name),
+            ),
         }
     }
 }
@@ -150,15 +150,15 @@ pub(in crate::engine::linker) fn emit_template_references(
     }) {
         match expressions.resolve_with_context(path, reference, &context) {
             Match::Unique { module, symbol, .. } => {
-                graph.edges.push(Edge {
-                    src: reference.source.clone(),
-                    dst: symbol.id.clone(),
-                    kind: "references".into(),
-                    path: path.to_owned(),
-                    line: reference.line,
-                    evidence: format!("template binding from {} via {}", symbol.path, module.path),
-                    confidence: "exact".into(),
-                });
+                graph.push_edge(
+                    path,
+                    reference.source.clone(),
+                    symbol.id.clone(),
+                    "references",
+                    reference.line,
+                    format!("template binding from {} via {}", symbol.path, module.path),
+                    "exact",
+                );
                 graph.reference_coverage(
                     path,
                     reference,
@@ -182,15 +182,15 @@ pub(in crate::engine::linker) fn emit_template_references(
                 let (status, evidence): (&str, std::borrow::Cow<'static, str>) =
                     match (providers.as_slice(), has_matching) {
                         ([provider], true) => {
-                            graph.edges.push(Edge {
-                                src: reference.source.clone(),
-                                dst: provider.source.id.clone(),
-                                kind: "context_provider".into(),
-                                path: path.to_owned(),
-                                line: reference.line,
-                                evidence: format!("render context: {}", provider.source.path),
-                                confidence: "exact".into(),
-                            });
+                            graph.push_edge(
+                                path,
+                                reference.source.clone(),
+                                provider.source.id.clone(),
+                                "context_provider",
+                                reference.line,
+                                format!("render context: {}", provider.source.path),
+                                "exact",
+                            );
                             (
                                 "resolved",
                                 format!("render context: {}", provider.source.path).into(),

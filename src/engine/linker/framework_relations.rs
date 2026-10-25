@@ -201,25 +201,17 @@ fn emit_occurrence(
         "resolved"
     };
     if status == "resolved" {
-        graph.edges.push(Edge {
-            src: interner.resolve_symbol(owner_id).to_owned(),
-            dst: interner
-                .resolve_symbol(targets.into_iter().next().expect("resolved target"))
-                .to_owned(),
-            kind: kind.into(),
-            path: path.to_owned(),
+        graph.push_edge(
+            path,
+            interner.resolve_symbol(owner_id),
+            interner.resolve_symbol(targets.into_iter().next().expect("resolved target")),
+            kind,
             line,
-            evidence: expression.clone(),
-            confidence: "exact".into(),
-        });
+            expression.as_str(),
+            "exact",
+        );
     }
-    graph.coverage.push(Coverage {
-        path: path.to_owned(),
-        line,
-        expression,
-        status: status.into(),
-        evidence: evidence.into(),
-    });
+    graph.push_coverage(path, line, expression, status, evidence);
 }
 
 pub(super) const ENDPOINT_ROUTE_PRIMITIVE: DeclarativeRulePrimitive =
@@ -260,15 +252,7 @@ pub(super) fn emit_route_match(
     };
     let (status, evidence) = match matched {
         Ok(Some(route)) => {
-            graph.edges.push(Edge {
-                src: src.to_owned(),
-                dst: route.id.clone(),
-                kind: kind.into(),
-                path: path.to_owned(),
-                line,
-                evidence: expression.to_owned(),
-                confidence: "exact".into(),
-            });
+            graph.push_edge(path, src, route.id.clone(), kind, line, expression, "exact");
             (
                 "resolved",
                 format!(
@@ -280,13 +264,7 @@ pub(super) fn emit_route_match(
         Ok(None) => ("unresolved", format!("{unmatched_prefix}: {error_value}")),
         Err(()) => ("ambiguous", format!("{ambiguous_prefix}: {error_value}")),
     };
-    graph.coverage.push(Coverage {
-        path: path.to_owned(),
-        line,
-        expression: expression.to_owned(),
-        status: status.into(),
-        evidence: evidence.into(),
-    });
+    graph.push_coverage(path, line, expression, status, evidence);
 }
 
 pub(super) fn project_scope(
@@ -372,9 +350,12 @@ pub(super) fn compose<'a, F: AsRef<Facts> + Sync>(
         .filter(|(path, _)| owners.is_none_or(|owners| owners.contains(*path)))
         .map(|(path, source)| {
             let facts = source.as_ref();
+            let path_arc = std::sync::Arc::<str>::from(path.as_str());
             let mut graph = Graph {
                 edges: Vec::new(),
                 coverage: Vec::new(),
+                path_arc: Some(std::sync::Arc::clone(&path_arc)),
+                path_pool: HashMap::new(),
             };
             for owner in &facts.nodes {
                 if let Some(FlowState::Valid { facts: flow, .. }) = interner
@@ -388,7 +369,7 @@ pub(super) fn compose<'a, F: AsRef<Facts> + Sync>(
                 interner.lookup_path(path).and_then(|path| semantic_errors.get(&path)).into_iter().flatten()
             {
                 graph.coverage.push(Coverage {
-                    path: path.clone(),
+                    path: std::sync::Arc::clone(&path_arc),
                     line: *line,
                     expression: expression.clone(),
                     status: "unresolved".into(),

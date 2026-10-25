@@ -193,29 +193,45 @@ pub(crate) fn persist_delta(
         .filter(|f| replace_files.contains(&f.path))
         .cloned()
         .collect();
-    let mut node_paths: hashbrown::HashMap<String, Option<CachedNodePath>> =
-        hashbrown::HashMap::with_capacity(facts.values().map(|f| f.nodes.len()).sum());
-    for f in facts.values() {
-        for n in &f.nodes {
-            node_paths.insert(
-                n.id.clone(),
-                Some(CachedNodePath::new(&n.id, n.path.clone())),
-            );
-        }
-    }
     let files_writing = Instant::now();
     persist_files(&tx, &mut path_cache, &changed_entries, facts, false)?;
     let files_ms = files_writing.elapsed().as_secs_f64() * 1000.;
+    let mut node_paths: hashbrown::HashMap<std::borrow::Cow<'_, str>, Option<CachedNodePath>> =
+        hashbrown::HashMap::with_capacity(
+            facts
+                .values()
+                .map(|file_facts| file_facts.nodes.len())
+                .sum(),
+        );
+    let mut shared_paths = hashbrown::HashMap::<&str, std::sync::Arc<str>>::new();
+    for file_facts in facts.values() {
+        for node in &file_facts.nodes {
+            let shared_path = shared_paths
+                .entry(node.path.as_str())
+                .or_insert_with(|| std::sync::Arc::<str>::from(node.path.as_str()));
+            node_paths.insert(
+                std::borrow::Cow::Borrowed(node.id.as_str()),
+                Some(CachedNodePath::from_shared(
+                    &node.id,
+                    std::sync::Arc::clone(shared_path),
+                )),
+            );
+        }
+    }
+    drop(shared_paths);
     let graph_writing = Instant::now();
-    persist_graph(
+    let graph_result = persist_graph(
         &tx,
         &mut path_cache,
         graph,
         facts,
         Some(affected),
+        None,
         &mut node_paths,
         false,
-    )?;
+    );
+    drop(node_paths);
+    graph_result?;
     tx.execute(
         "DELETE FROM coverage_evidence WHERE evidence_id NOT IN(SELECT evidence_id FROM resolution_coverage UNION SELECT evidence_id FROM edges UNION SELECT confidence_id FROM edges UNION SELECT evidence_id FROM edge_occurrences UNION SELECT confidence_id FROM edge_occurrences)",
         [],

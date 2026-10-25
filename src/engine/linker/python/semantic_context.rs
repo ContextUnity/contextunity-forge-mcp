@@ -5,7 +5,7 @@ use crate::core::semantic::{SourcePosition, TypeExpr};
 use crate::engine::languages::{
     LanguageFamily, LanguageProfile, dependency_registry::DependencyRegistry,
 };
-use crate::engine::linker::interner::{LinkerInterner, SymbolId};
+use crate::engine::linker::interner::LinkerInterner;
 use crate::engine::linker::traits::ModulesByNamespace;
 
 pub(in crate::engine::linker) fn receiver_access(owner: &Node, head: &str) -> Option<(bool, bool)> {
@@ -216,7 +216,7 @@ pub(in crate::engine::linker) fn has_proven_type_checking(
     dependencies: &DependencyRegistry,
     family: LanguageFamily,
     interner: &LinkerInterner<'_>,
-    node_rebindings: &hashbrown::HashMap<SymbolId, hashbrown::HashSet<SymbolId>>,
+    node_rebindings: &crate::engine::linker::NodeBindingIndex,
 ) -> bool {
     let rebound = facts
         .nodes
@@ -275,7 +275,7 @@ pub(in crate::engine::linker) fn type_only_import_is_unproven(
     modules_by_namespace: &ModulesByNamespace<'_>,
     dependencies: &DependencyRegistry,
     interner: &LinkerInterner<'_>,
-    node_rebindings: &hashbrown::HashMap<SymbolId, hashbrown::HashSet<SymbolId>>,
+    node_rebindings: &crate::engine::linker::NodeBindingIndex,
 ) -> bool {
     profile.id() == "python"
         && !has_proven_type_checking(

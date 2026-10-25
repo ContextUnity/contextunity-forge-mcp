@@ -1,7 +1,7 @@
 use super::super::semantic_context::LanguageMemberLookup;
 use crate::core::models::{
     Node, Reference,
-    compact_graph::{Coverage, Graph},
+    compact_graph::Graph,
 };
 use crate::engine::languages::LanguageProfile;
 use hashbrown::HashMap;
@@ -162,17 +162,16 @@ pub(in crate::engine::linker) fn trait_object_call<'a>(
         return false;
     }
 
-    graph.coverage.push(Coverage {
-        path: path.to_owned(),
-        line: reference.line,
-        expression: "trait_object_dispatch".into(),
-        status: "unresolved".into(),
-        evidence: format!(
+    graph.push_coverage(
+        path,
+        reference.line,
+        "trait_object_dispatch",
+        "unresolved",
+        format!(
             "analysis gap: Rust trait-object call through {} may dispatch to multiple implementations; concrete runtime target is unknown",
             receiver
-        )
-        .into(),
-    });
+        ),
+    );
     if let Some((declaration, implementors)) = flow_trait_object
         .and_then(|trait_node| semantic_context.dynamic_dispatch(trait_node, member))
     {
@@ -204,17 +203,16 @@ pub(in crate::engine::linker) fn macro_analysis_gap(
     {
         return;
     }
-    graph.coverage.push(Coverage {
-        path: path.to_owned(),
-        line: reference.line,
-        expression: "macro_expansion_not_analyzed".into(),
-        status: "unresolved".into(),
-        evidence: format!(
+    graph.push_coverage(
+        path,
+        reference.line,
+        "macro_expansion_not_analyzed",
+        "unresolved",
+        format!(
             "analysis gap: Rust macro invocation {} is linked to its declaration, but its expansion is not analyzed",
             reference.expression
-        )
-        .into(),
-    });
+        ),
+    );
 }
 
 pub(in crate::engine::linker) fn macro_reference_candidate(

@@ -37,21 +37,21 @@ pub(super) fn emit_inherited_method_edges<F>(
             method.name == source_method.name
                 && matches!(method.kind.as_str(), "function" | "method")
         }) {
-            graph.edges.push(Edge {
-                src: source_method.id.clone(),
-                dst: target_method.id.clone(),
-                kind: method_kind.into(),
-                path: path.to_owned(),
-                line: source_method.line,
-                evidence: format!(
+            graph.push_edge(
+                path,
+                source_method.id.clone(),
+                target_method.id.clone(),
+                method_kind,
+                source_method.line,
+                format!(
                     "{}::{}: {method_kind} {}::{}",
                     source_method.qualname,
                     source_method.name,
                     target_method.qualname,
                     target_method.name
                 ),
-                confidence: "exact".into(),
-            });
+                "exact",
+            );
         }
     }
 }

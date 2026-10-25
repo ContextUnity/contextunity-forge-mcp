@@ -14,7 +14,7 @@ use crate::{
 };
 use rusqlite::{limits::Limit, types::Value as SqlValue, Connection};
 use serde_json::json;
-use std::collections::BTreeMap;
+use std::{borrow::Cow, collections::BTreeMap};
 
 fn entries_and_facts(count: usize) -> (Vec<FileEntry>, BTreeMap<String, TypedFacts>) {
     let mut entries = Vec::with_capacity(count);
@@ -295,7 +295,7 @@ fn graph_owner_and_commitment_batches_preserve_rows_across_variable_limits() {
             src: f.nodes[0].id.clone(),
             dst: format!("function:{}", entries[(index + 1) % entries.len()].path),
             kind: "calls".into(),
-            path: file.path.clone(),
+            path: file.path.clone().into(),
             line: 2,
             evidence: "cross-file call λ'\0".into(),
             confidence: "exact".into(),
@@ -308,7 +308,7 @@ fn graph_owner_and_commitment_batches_preserve_rows_across_variable_limits() {
             "external",
         ] {
             graph.coverage.push(Coverage {
-                path: file.path.clone(),
+                path: file.path.clone().into(),
                 line: 3,
                 expression: format!("call_{status}_λ'\0"),
                 status: status.into(),
@@ -330,7 +330,7 @@ fn graph_owner_and_commitment_batches_preserve_rows_across_variable_limits() {
             .flat_map(|f| f.nodes.iter())
             .map(|n| {
                 (
-                    n.id.clone(),
+                    Cow::Borrowed(n.id.as_str()),
                     Some(super::CachedNodePath::new(&n.id, n.path.clone())),
                 )
             })
@@ -341,6 +341,7 @@ fn graph_owner_and_commitment_batches_preserve_rows_across_variable_limits() {
             &graph,
             &facts,
             None,
+            Some(&entries),
             &mut node_paths,
             true,
         )
