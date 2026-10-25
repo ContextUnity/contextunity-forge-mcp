@@ -40,7 +40,7 @@ The codebase operates on a 5-layer hierarchy:
 
 - **`src/core`**: Foundational domain models, cryptographic commitments, response pagination budgets, and OS/filesystem primitives. Strict leaf.
 - **`src/db`**: SQLite persistence, schema migrations, reader snapshot isolation, FTS5 symbol indexing, and graph traversal caches. Depends on `src/core`. Legacy imports from `src/engine` are frozen.
-- **`src/engine`**: AST fact extraction, language profiles, cross-file symbol linking, filesystem scanner, and ACDD task/milestone execution policies. Depends on `src/core` and `src/db`.
+- **`src/engine`**: AST fact extraction ([`engine/languages/AGENTS.md`](engine/languages/AGENTS.md)), language profiles, cross-file symbol linking ([`engine/linker/AGENTS.md`](engine/linker/AGENTS.md)), filesystem scanner, and ACDD task/milestone execution policies. Depends on `src/core` and `src/db`.
 - **`src/mcp`**: JSON-RPC Model Context Protocol server, tool dispatch, and schema generation. Depends on `src/engine`, `src/db`, and `src/core`.
 - **`src/cli`**: Command-line entry points and subcommand routing. Depends on `src/engine`, `src/db`, and `src/core`.
 
@@ -93,7 +93,16 @@ The codebase operates on a 5-layer hierarchy:
 - When decomposing an oversized module, convert it into an idiomatic directory module (`<name>/mod.rs` with sibling submodules `<name>/<submodule>.rs`).
 - `build.rs` generates language profile registrations into `OUT_DIR/language_profiles.rs`. Modifying language profile file discovery requires updating `build.rs` in the same scope.
 
-## 5. Verification Gates
+## 5. Performance Invariants for Source Changes
+
+See [Performance Architecture](../docs/architecture/performance.md) for complete invariant definitions and empirical baselines. When modifying `src/db/` or `src/engine/`:
+
+1. **No Nested Parallel Iteration**: Do not nest Rayon `.par_iter()` inside already parallelized file chunk workers. Use sequential `.iter()` in `prepare_catalog_rows`.
+2. **Zero Ingestion Node Clones**: Do not clone `Node` or heap strings in `flush_node_batch`. Use borrowed serializers (`NavigationDetails`) directly.
+3. **Intern Manifest Rules**: Intern declarative rules at language context scope, never per file.
+4. **Allocator Trimming**: Preserve all 10 explicit `libc::malloc_trim(0)` sites at batch boundaries to keep Peak RSS < 800 MB.
+
+## 6. Verification Gates
 
 Before delivering any source code change, verify the required gates from [TESTS.md](../TESTS.md):
 

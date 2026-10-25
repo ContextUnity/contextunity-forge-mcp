@@ -1,8 +1,4 @@
 # Verified receiver type from grid_view_spec.types.spec.GridViewSpec.
-receivers = ["GridViewSpec=grid_view_spec.types.spec.GridViewSpec"]
-builtins = []
-filters = []
-routes = []
 
 [[semantic_rules]]
 id = "table-datasource"

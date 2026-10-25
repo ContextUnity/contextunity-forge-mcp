@@ -78,6 +78,15 @@ fn binding_event<'source>(
     source: &'source str,
     emit: &mut impl FnMut(Option<&'source str>),
 ) -> bool {
+    binding_event_with_kind(node, node.kind(), source, emit)
+}
+
+fn binding_event_with_kind<'source>(
+    node: Node<'_>,
+    kind: &str,
+    source: &'source str,
+    emit: &mut impl FnMut(Option<&'source str>),
+) -> bool {
     // A match pattern's names are bindings only in capture positions. Class
     // heads, mapping keys, keyword labels and dotted value patterns are reads.
     fn captures<'source>(
@@ -137,7 +146,7 @@ fn binding_event<'source>(
             }
         }
     }
-    match node.kind() {
+    match kind {
         "case_pattern" => {
             captures(node, source, emit);
             false
@@ -229,10 +238,10 @@ impl<'source, 'tree> BindingWriteCollector<'source, 'tree> {
         }
     }
 
-    pub(crate) fn enter(&mut self, node: Node<'tree>) {
+    pub(crate) fn enter(&mut self, node: Node<'tree>, kind: &str) {
         let active = node == self.body || self.states.last().copied().unwrap_or(false);
         let descend = active
-            && binding_event(node, self.source, &mut |name| {
+            && binding_event_with_kind(node, kind, self.source, &mut |name| {
                 if let Some(name) = name {
                     *self.writes.names.entry(name.to_owned()).or_default() += 1;
                 } else {
@@ -266,6 +275,26 @@ pub(super) fn binding_count(root: Node<'_>, source: &str, name: &str) -> usize {
         count
     }
     visit(root, source, name)
+}
+
+pub(super) fn binding_counts(root: Node<'_>, source: &str) -> BindingWrites {
+    fn visit(node: Node<'_>, source: &str, writes: &mut BindingWrites) {
+        if binding_event(node, source, &mut |bound| {
+            if let Some(name) = bound {
+                *writes.names.entry(name.to_owned()).or_default() += 1;
+            } else {
+                writes.wildcards += 1;
+            }
+        }) {
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                visit(child, source, writes);
+            }
+        }
+    }
+    let mut writes = BindingWrites::default();
+    visit(root, source, &mut writes);
+    writes
 }
 
 pub(super) fn imported(
@@ -556,9 +585,16 @@ fn static_path(
 }
 
 pub(super) fn extract(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
-    for rule in super::render_context::syntax_rules() {
-        extract_configured(ctx, facts, &rule);
-    }
+    let Some(function) = ctx
+        .node
+        .child_by_field_name("function")
+        .filter(|node| node.kind() == "identifier")
+    else {
+        return;
+    };
+    super::syntax_operations::for_each_loader_rule(text(function, ctx.source), |rule| {
+        extract_configured(ctx, facts, rule);
+    });
 }
 
 fn extract_configured(
@@ -689,7 +725,9 @@ fn extract_configured(
     else {
         return;
     };
+    facts.pending_flow_nodes.push(facts.nodes.len());
     facts.nodes.push(IndexedNode {
+        native_semantic: None,
         id: format!("py:{}:{}:template_loader_root:{}", module.path, ctx.line(), path),
         kind: "template_loader_root".into(),
         name: path.clone(),
@@ -700,6 +738,6 @@ fn extract_configured(
         is_test: false,
         language: "python".into(),
         generated: false,
-        details: serde_json::json!({"provider":provider_module,"pack":pack,"rule":rule,"import_modules":[provider_module,"pathlib"],"value_flow":crate::core::semantic::ValueFlowFacts { rule_origins: vec![crate::core::semantic::ExtractionRuleOrigin { pack: pack.clone(), rule: rule.clone() }], ..Default::default() }}),
+        details: serde_json::json!({"provider":provider_module,"pack":pack,"rule":rule,"import_modules":[provider_module,"pathlib"],"value_flow":crate::core::semantic::ValueFlowFacts { framework: Some(Box::new(crate::core::semantic::FrameworkScopeFacts { facts: vec![crate::core::semantic::FrameworkFact::RuleOrigin(crate::core::semantic::ExtractionRuleOrigin { pack: pack.clone(), rule: rule.clone() })], ..Default::default() })), ..Default::default() }}),
     });
 }

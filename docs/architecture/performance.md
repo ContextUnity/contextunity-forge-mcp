@@ -1,6 +1,40 @@
 ---
+id: arch-performance-guidance
 title: "Performance Guidance, Search Architecture, and Storage Compaction"
 doc_type: architecture
+status: active
+owners:
+  - src/core/semantic.rs
+  - src/core/typed_facts.rs
+  - src/db/writer.rs
+  - src/db/writer/cache.rs
+  - src/db/writer/seal.rs
+  - src/engine/ast/mod.rs
+  - src/engine/ast/routes.rs
+  - src/engine/ast/visitor.rs
+  - src/engine/languages/dependency_registry.rs
+  - src/engine/languages/mod.rs
+  - src/engine/languages/python/projections.rs
+  - src/engine/languages/python/syntax_operations.rs
+  - src/engine/languages/typescript/projections.rs
+  - src/engine/linker.rs
+  - src/engine/linker/resolution/mod.rs
+  - src/engine/linker/resolution/value_flow_phase.rs
+  - src/engine/linker/semantic_context.rs
+  - src/engine/pipeline.rs
+invariants:
+  - INV-PERF-CATALOG-FACT-STRIPPING
+  - INV-PERF-BOUNDED-STAGING-AND-TRIM
+  - INV-PERF-FLAT-TREE-CURSOR-WALK
+  - INV-PERF-SINGLE-PASS-AST-EXTRACTION
+  - INV-PERF-TYPED-SIDECAR-FACTS
+  - INV-PERF-SHARED-RULE-CONTEXT-AND-DISPATCH
+  - INV-PERF-ZERO-ALLOC-PROJECTION-PROOFS
+  - INV-PERF-LANGUAGE-GATED-LINKER-RESOLUTION
+  - INV-PERF-RELEASE-SINGLE-CGU
+  - INV-PERF-SQLITE-INGESTION-PRAGMAS
+  - INV-PERF-DETERMINISTIC-MERKLE-SEALING
+  - INV-PERF-CACHE-KEY-BINDING
 ---
 
 # Performance Guidance, Search Architecture, and Storage Compaction
@@ -67,7 +101,7 @@ Around 45 KiB per source file or 3 KiB per node are useful reference values when
 
 ### 5. Serialization and Throughput Guidance (ADR 0012)
 See [ADR 0012: Lean Serialization and Measured Performance](../adr/0012-zero-regression-serialization-and-cold-build-latency.md):
-- **Lean Node Details**: Restrict `nodes.details` to directly indexed navigation fields (`signature`, `doc`, `receiver_name`, explicit decorators). Around 120 bytes per node is a recommended payload reference. Report `rows_ms` according to its actual phase scope; it includes broader persistence work rather than only node insertion.
+- **Lean Node Details**: Restrict `nodes.details` to directly indexed navigation fields (`signature`, `doc`, `receiver_name`, explicit decorators). Report `rows_ms` according to its actual phase scope; it includes broader persistence work rather than only node insertion.
 - **Bulk SQLite Ingestion Pragmas**: Cold indexing uses `PRAGMA synchronous = OFF; PRAGMA journal_mode = MEMORY;` on an isolated candidate database. It seals and commits the candidate, restores WAL mode, verifies SQLite integrity, and checkpoints WAL before atomic publication.
 - **Bounded cold fact writes**: Cold builds serialize each complete `local_facts` payload in parallel chunks instead of retaining a workspace-wide second map of compressed payloads. The writer holds at most 500 compressed facts per chunk and inserts each row batch in the existing write transaction, bounded by SQLite's live parameter limit; secondary indexes are created after the bulk load. `sqlite_ingestion` reports the active mode, deferred-index behavior, and effective row-batch size. Graph endpoint caching shares one path allocation across nodes in the same file, avoiding per-node path string copies.
 - **Cold-build phase timing**: `encode_facts_ms` totals the per-file serialization and compression time performed while `local_facts` rows are batched. `batch_rows` reports the effective local-facts row cap, not the size of every other table's row batch.
@@ -83,7 +117,7 @@ Milestone 031 (`m-cold-indexing-throughput-and-memory-optimization`) addressed c
 
 ### 2. Lean SymbolCatalog Decomposition and Streaming Storage Payloads
 - **Decoupled Linking State**: Historically, `TypedFacts` retained full AST details (`value_flow`, `bindings`, `rebindings`, `param_types`, and span details) in a workspace-wide map during global cross-file linking. Milestone 031 replaced this with `SymbolCatalog` and `CatalogSymbol` (`src/core/semantic.rs`, `src/engine/linker/compact.rs`, `src/engine/linker.rs`).
-- **One-Way Stripping**: Workers invoke `SymbolCatalog::insert_typed(..., false)`, preserving only essential navigation symbols and reference targets for `link_compact_graph`.
+- **Catalog Admission**: Workers invoke `SymbolCatalog::insert_typed(..., false)` to omit storage-only detail fields and duplicate storage payloads. The linking catalog retains native binding metadata and typed flows needed for resolution.
 - **Precomputed Staged Storage**: Heavyweight storage rows are precomputed during extraction and Zstd-compressed into `PreparedCatalogStorage` within `StagedFilePayload` (`src/db/writer.rs`).
 - **Bounded Chunk Hydration**: In `populate_owned` (`src/db/writer.rs`, `src/db/ingest.rs`), `LoadedCatalogFile` structures are loaded and persisted in bounded parallel chunks of up to 500 files (`MAX_MULTI_VALUE_BATCH_ROWS = 500`). Each payload chunk is dropped immediately after SQLite insertion, preventing simultaneous coexistence of raw ASTs and database rows.
 
@@ -126,8 +160,26 @@ better request latency.
 ### 6. Cross-Worktree Content-Addressed Binary Extraction Cache
 - **Extraction Cache v3**: `src/db/writer/cache.rs` provides cross-worktree AST and typed-facts reuse for unmodified files.
 - **Cache Key Identity**: Keys are strictly derived from source SHA-256 digest, relative path, Tree-sitter grammar ID, `INDEX_SEMANTICS_VERSION`, and `effective_ruleset_hash` (including bundled framework manifests via `build.rs` and `src/engine/languages/dependency_registry.rs`).
-- **Binary DTO Format**: Custom binary serialization eliminates JSON encoding and Zstd decompression overhead during cache hits.
+- **Direct Binary Codecs**: [`BinaryEncode`](../../src/db/writer/cache.rs) and [`BinaryDecode`](../../src/db/writer/cache.rs) encode borrowed record fields without intermediate cloned DTOs. V4 cache frames carry the extraction key, payload length, checksum, and typed facts; non-V4 or corrupt entries are cache misses and are re-extracted.
 - **Empirical Impact**: On warm re-indexing of 3,990 files, user CPU drops by **63%** (`44.49s` $\to$ `16.34s`, CPU load `374%` $\to$ `215%`) and wall-clock time drops to **`8.57s`** at `746 MB` Peak RSS.
+
+### 7. Single-Pass AST Extraction and Native Typed Sidecar Facts
+- **Incremental Lexical Route Binding**: [`RouteContextBuilder`](../../src/engine/ast/routes.rs) and [`SinglePassExtractor`](../../src/engine/ast/visitor.rs) collect lexical bindings, string/list/dict tables, and Python write assignments directly inside the primary `visitor::walk` pass instead of running a standalone `collect_lexical_bindings` pre-pass or recursive subtree walks per file.
+- **Native Typed Fact Stores**: [`SemanticStore`](../../src/core/typed_facts.rs) and [`FlowStore`](../../src/core/typed_facts.rs) hold [`SemanticFact`](../../src/core/semantic.rs) and [`ValueFlowFacts`](../../src/core/semantic.rs) in native Rust structs (`TypedFacts`) during extraction and [`SymbolCatalog`](../../src/core/semantic.rs) linking. The local extraction cache stores typed facts directly in its V4 binary frame; public JSON projection remains a separate storage boundary.
+- **Optional Scope Storage**: [`FrameworkScopeFacts`](../../src/core/semantic.rs) groups less common framework, template and collection vectors in an optional box. [`NodeSemanticEntry`](../../src/core/typed_facts.rs) holds admitted bindings, rebindings and parameter types natively. Public JSON remains flat, retains parameter order and preserves malformed raw metadata.
+- **Single-Pass Linker Post-Processing**: [`link_compact_with_typed_registry`](../../src/engine/linker.rs) fuses value-flow propagation, uncertainty collection, and fault aggregation into a single pass over `all.values()`.
+
+### 8. Shared Rule-IR Dispatch and Zero-Allocation Proof Lookups
+- **Workspace-Scoped `Arc<LanguageContext>`**: [`DependencyRegistry`](../../src/engine/languages/dependency_registry.rs) builds [`LanguageContext`](../../src/engine/languages/mod.rs) per effective workspace/manifest scope and shares it via `Arc` across files without cloning `Vec<SyntaxRule>` per file. Python [`prepare_file`](../../src/engine/languages/python/syntax_operations.rs) prepares per-file render/import candidates while borrowing that shared context.
+- **Grammar-Sized Tables**: [`CompiledSyntaxGrammar`](../../src/engine/languages/mod.rs) and [`CompiledRuleIR`](../../src/engine/languages/manifests.rs) dispatch by numeric kind ID through vectors sized by the actual grammar's node-kind count. Warm parser reuse also covers Vue script islands and HTML JavaScript fragment import scans through [`with_warm_parser`](../../src/engine/languages/mod.rs).
+- **Indexed AST Kind & Callee Dispatch**: [`extract_projections`](../../src/engine/languages/typescript/projections.rs) and [`prepare`](../../src/engine/languages/python/projections.rs) pre-index declarative projection rules by AST node `kind` (`call_expression`, `jsx_Element`, `pair`, `decorator`) and callee/member name instead of scanning all rules linearly on every AST node.
+- **Zero-Allocation Proof Maps**: Python projection proofs in [`observe_import`](../../src/engine/languages/python/projections.rs) and [`prepare`](../../src/engine/languages/python/projections.rs) store imported statement lines as `HashMap<String, HashSet<usize>>` and constructors as `HashMap<usize, HashMap<String, Constructor>>` so per-call and per-attribute `Proof::imported` / `Proof::api` checks query borrowed `&str` keys without allocating `String`s on the heap.
+
+### 9. Language-Gated Linker Resolution and Semantic Context Memoization
+- **Per-File Language Context Binding**: [`resolve`](../../src/engine/linker/resolution/mod.rs) binds `file_language_context = dependency_registry.language_context_for_path(path)` once at the top of the per-file `all.par_iter()` closure and reuses it across all candidate resolutions in that file.
+- **Strict Language Profile Gating**: HTML template rule vectors and builtin template evidence construction in [`phase_value_flow`](../../src/engine/linker/resolution/value_flow_phase.rs) are gated on the active HTML profile so non-HTML files and non-HTML references incur no template-rule preparation or evidence formatting.
+- **Shared Semantic Context Rule Tables**: [`Context`](../../src/engine/linker/semantic_context.rs) memoizes `Arc<ReceiverTypes>`, `Arc<ArgumentFactories>`, and `implicit_builtins` (`Arc<ImplicitBuiltinMap>`) per `(Arc::as_ptr(&rules), language)` key and Python `hierarchy_results` per `Arc::as_ptr(&rules)` (retaining pinned `Arc<LanguageContext>` clones for the pass lifetime to prevent ABA pointer reuse) instead of rescanning `syntax_rules` and cloning `HashMap<String, String>` for every file path in the workspace.
+- **Single Codegen Unit Release Profile**: `Cargo.toml` configures `[profile.release]` with `codegen-units = 1` and `lto = "thin"` so hot loops across `ast`, `languages`, and `linker` inline across module boundaries.
 
 ---
 
@@ -156,29 +208,132 @@ Autonomous agents, builders, and language models modifying Forge indexing or sto
 > [!IMPORTANT]
 > Invariant: Symbol Catalog Fact Stripping
 >
-> In `src/engine/pipeline.rs` (`run_cold_pipeline`) and `src/core/semantic.rs` (`SymbolCatalog::insert_typed`), agents must never retain whole-workspace `TypedFacts` during the linking phase. Extraction workers must strip AST details (`value_flow`, `bindings`, `rebindings`, `param_types`) by passing `retain_extended = false` to `insert_typed`. Full facts must only be encoded into `PreparedCatalogStorage` within worker tasks and dropped immediately.
+> In `src/engine/pipeline.rs` (`run_cold_pipeline`) and `src/core/semantic.rs` (`SymbolCatalog::insert_typed`), encode full storage facts into compressed `PreparedCatalogStorage` within extraction workers. Pass `retain_storage = false` for cold catalog admission to remove storage-only details and omit duplicate storage payloads. Preserve native binding metadata and typed flows required for linking; retain no additional workspace-wide full-facts copy.
+
+- INV-PERF-CATALOG-FACT-STRIPPING: Remove storage-only details and duplicate storage payloads during cold catalog admission while retaining typed resolution facts. [`run_cold_pipeline`](../../src/engine/pipeline.rs) [`SymbolCatalog`](../../src/core/semantic.rs).
 
 > [!IMPORTANT]
 > Invariant: Bounded Chunk Persistence and Allocator Trimming
 >
-> In `src/db/writer.rs` (`populate_owned`), `StagedFilePayload.storage_rows` must remain compressed with level-1 Zstandard during staging. Ingestion must process files in bounded batches of at most 500 rows (`MAX_MULTI_VALUE_BATCH_ROWS = 500`), removing payloads from memory prior to database insertion. Agents must preserve the explicit calls to `trim_allocator` (`libc::malloc_trim(0)`) after extraction and after persistence to prevent glibc multi-arena fragmentation from exceeding the 800 MB RSS ceiling.
+> In `src/db/writer.rs` (`populate_owned`), keep `StagedFilePayload.storage_rows` Zstandard-compressed during staging; `prepare_catalog_storage` uses compression level -3. Ingestion must process files in bounded batches of at most 500 rows (`MAX_MULTI_VALUE_BATCH_ROWS = 500`), removing payloads from memory prior to database insertion. Agents must preserve the explicit calls to `trim_allocator` (`libc::malloc_trim(0)`) after extraction and after persistence to prevent glibc multi-arena fragmentation from exceeding the 800 MB RSS ceiling.
+
+- INV-PERF-BOUNDED-STAGING-AND-TRIM: Keep staged file rows Zstandard-compressed, drain payloads in bounded batches, and invoke `trim_allocator` at extraction and persistence boundaries to stay within the 800 MB RSS budget. [`StagedFilePayload`](../../src/db/writer.rs) [`populate_owned`](../../src/db/writer.rs).
 
 > [!IMPORTANT]
 > Invariant: Tree-Sitter AST Traversal Loop Integrity
 >
 > In `src/engine/ast/visitor.rs` (`walk`), tree traversal must remain a flat iterative loop over `tree_sitter::TreeCursor` (`goto_first_child`, `goto_next_sibling`, `goto_parent`). Agents must not replace `walk()` with `tree_sitter::QueryCursor` or introduce per-node FFI guards like `named_child_count() == 0`. The traversal must yield balanced `(node, entering)` events required by `SinglePassExtractor` and `ScopeAnalysis`.
 
+- INV-PERF-FLAT-TREE-CURSOR-WALK: Traverse syntax trees with a flat iterative `TreeCursor` loop yielding balanced `(node, entering)` events without `QueryCursor` state machines or per-node `named_child_count` FFI pre-checks. [`walk`](../../src/engine/ast/visitor.rs) [`SinglePassExtractor`](../../src/engine/ast/visitor.rs).
+
+> [!IMPORTANT]
+> Invariant: Single-Pass AST Extraction Without Pre-Pass Walks
+>
+> In `src/engine/ast/visitor.rs` (`SinglePassExtractor`) and `src/engine/ast/routes.rs` (`RouteContextBuilder`, `RouteContext`), lexical route bindings, string/list/dict tables, and local write targets must be accumulated incrementally during the primary `visitor::walk` pass and finalized on exit via `RouteContextBuilder::finish`. Agents must never introduce standalone full-file AST pre-passes or recursive subtree walks per file or per node.
+
+- INV-PERF-SINGLE-PASS-AST-EXTRACTION: Accumulate lexical route bindings and local write targets incrementally inside `SinglePassExtractor` via `RouteContextBuilder` rather than running separate full-tree AST pre-passes. [`SinglePassExtractor`](../../src/engine/ast/visitor.rs) [`RouteContextBuilder`](../../src/engine/ast/routes.rs) [`RouteContext`](../../src/engine/ast/routes.rs).
+
+> [!IMPORTANT]
+> Invariant: Native Typed Sidecar Facts Without Intermediate JSON
+>
+> In `src/core/typed_facts.rs` (`SemanticStore`, `FlowStore`, `TypedFacts`), keep semantic and value-flow facts in native typed stores during extraction and linking. Preserve the existing V3 JSON-value overlays at the binary cache boundary in `src/db/writer/cache.rs` and hydrate typed stores when loading. Public and legacy compatibility views retain their existing serialization and malformed-evidence behavior.
+
+- INV-PERF-TYPED-SIDECAR-FACTS: Use native typed stores for in-memory extraction and linking, preserving the V3 cache and public compatibility boundaries. [`SemanticStore`](../../src/core/typed_facts.rs) [`FlowStore`](../../src/core/typed_facts.rs) [`TypedFacts`](../../src/core/typed_facts.rs).
+
+> [!IMPORTANT]
+> Invariant: Shared Workspace Rule-IR Context and Indexed AST Dispatch
+>
+> Share effective rule tables through `Arc<LanguageContext>` per workspace/manifest scope and index declarative candidates by AST kind and callee/member name. Keep source-dependent render/import preparation per file through `prepare_file`. Reuse the shared rule vectors rather than cloning `Vec<SyntaxRule>` per file or scanning all rules on every AST node.
+
+- INV-PERF-SHARED-RULE-CONTEXT-AND-DISPATCH: Share compiled rule tables via `Arc<LanguageContext>` per workspace scope and index declarative projection rules by AST node kind and callee/member name instead of scanning all rules per node. [`DependencyRegistry`](../../src/engine/languages/dependency_registry.rs) [`LanguageContext`](../../src/engine/languages/mod.rs) [`extract_projections`](../../src/engine/languages/typescript/projections.rs).
+
+> [!IMPORTANT]
+> Invariant: Zero-Allocation Projection Proof Lookups
+>
+> In `src/engine/languages/python/projections.rs` (`observe_import`, `prepare`), per-call and per-attribute projection proofs (`Proof::imported`, `Proof::api`) must query two-level borrowed-key maps (`HashMap<String, HashSet<usize>>` for statement lines and `HashMap<usize, HashMap<String, Constructor>>` for constructors) and pre-indexed import heads. Agents must never allocate temporary owned `String` keys (`to_owned()`, `format!`) inside per-node or per-reference proof predicates.
+
+- INV-PERF-ZERO-ALLOC-PROJECTION-PROOFS: Query two-level borrowed-key maps (`HashMap<String, HashSet<usize>>` and `HashMap<usize, HashMap<String, Constructor>>`) in extractor proof predicates without allocating owned `String` keys per call or reference. [`observe_import`](../../src/engine/languages/python/projections.rs) [`prepare`](../../src/engine/languages/python/projections.rs).
+
+> [!IMPORTANT]
+> Invariant: Language-Gated Linker Resolution and Memoized Semantic Context
+>
+> In `src/engine/linker/resolution/mod.rs` (`resolve`) and `resolution/value_flow_phase.rs` (`phase_value_flow`), `src/engine/linker/semantic_context.rs` (`Context`), and `src/engine/linker.rs` (`link_compact_with_typed_registry`), the linker must bind `language_context_for_path` once per file, gate language-specific template rules and evidence builders behind the active language profile, memoize `ReceiverTypes`, `ArgumentFactories`, and `implicit_builtins` per shared `Arc<LanguageContext>` (retaining pinned `Arc<LanguageContext>` clones for the pass lifetime), and fuse post-resolution `all.values()` passes.
+
+- INV-PERF-LANGUAGE-GATED-LINKER-RESOLUTION: Bind `language_context_for_path` once per file in `resolve`, gate HTML template rule vectors and `template_evidence` behind active HTML guards, memoize `Context` rule tables per pinned `Arc<LanguageContext>`, and fuse post-resolution `all.values()` passes in `link_compact_with_typed_registry`. [`resolve`](../../src/engine/linker/resolution/mod.rs) [`phase_value_flow`](../../src/engine/linker/resolution/value_flow_phase.rs) [`Context`](../../src/engine/linker/semantic_context.rs) [`link_compact_with_typed_registry`](../../src/engine/linker.rs).
+
+> [!IMPORTANT]
+> Invariant: Single Codegen Unit Release Optimization
+>
+> In `Cargo.toml` (`[profile.release]`), production builds must keep `codegen-units = 1` and `lto = "thin"` enabled so cross-module hot paths in `SinglePassExtractor`, `DependencyRegistry`, and `resolution::resolve` inline fully. Increasing `codegen-units` degrades cold-build indexing throughput and inflates CPU cycles across AST and linker loops.
+
+- INV-PERF-RELEASE-SINGLE-CGU: Keep `codegen-units = 1` and `lto = "thin"` in `[profile.release]` so cross-module AST extraction and linker resolution loops inline in release binaries. [`run_cold_pipeline`](../../src/engine/pipeline.rs) [`resolve`](../../src/engine/linker/resolution/mod.rs).
+
 > [!IMPORTANT]
 > Invariant: SQLite Ingestion PRAGMAs and WAL Restoration Order
 >
 > In `src/db/writer.rs` (`prepare_pipeline_schema` and `populate_owned`), cold-indexing candidate databases must initialize with `journal_mode = MEMORY; synchronous = OFF; temp_store = MEMORY; cache_spill = ON;` and defer secondary index creation until after row ingestion (`sqlite_ingestion.mode = deferred-index-batched`). Before atomic publication, the writer must restore `journal_mode = WAL; synchronous = NORMAL;` and execute `PRAGMA wal_checkpoint(TRUNCATE);`. Changing pragma ordering or omitting WAL restoration causes reader lockouts and database corruption.
+
+- INV-PERF-SQLITE-INGESTION-PRAGMAS: Initialize staged SQLite databases with in-memory journal and deferred secondary indexes during bulk ingestion, then restore `WAL` mode and checkpoint before atomic publication. [`prepare_pipeline_schema`](../../src/db/writer.rs) [`populate_owned`](../../src/db/writer.rs).
 
 > [!IMPORTANT]
 > Invariant: Deterministic 17-Domain Merkle Commitments
 >
 > In `src/db/writer/seal.rs` (`seal::file_domain_leaves`, `seal::logical_domain_leaves`) and `src/core/commitments.rs`, in-memory leaf hashing for the 13 logical domains and C-API tokenizer hashing for the 4 FTS domains must yield 100% bit-identical digests matching SQLite table scans (`forge-owner-sha256-v2`). Tokens must be ordered canonically by `(term, docid, col, pos)` using `term_map`. Any modification must pass `tests/commitment_integrity.rs`.
 
+- INV-PERF-DETERMINISTIC-MERKLE-SEALING: Compute 13 logical domain commitments from in-memory projections and 4 FTS5 domain commitments via the native C-API tokenizer with canonical `(term, docid, col, pos)` ordering so `forge-owner-sha256-v2` roots remain bit-identical. [`file_domain_leaves`](../../src/db/writer/seal.rs) [`logical_domain_leaves`](../../src/db/writer/seal.rs).
+
 > [!IMPORTANT]
 > Invariant: Strict Extraction Cache Key Binding
 >
 > In `src/db/writer/cache.rs` (`ExtractionCache`) and `src/engine/languages/dependency_registry.rs`, cache keys must strictly bind source SHA-256 digest, normalized relative path, Tree-sitter grammar ID, `INDEX_SEMANTICS_VERSION`, and `effective_ruleset_hash` (which incorporates bundled framework manifests via `build.rs`). Agents must never omit the ruleset hash or grammar identity from the cache key, as doing so leads to stale, invalid extraction across manifest or grammar upgrades.
+
+- INV-PERF-CACHE-KEY-BINDING: Bind `ExtractionCache` keys to source SHA-256, normalized path, Tree-sitter grammar ID, `INDEX_SEMANTICS_VERSION`, and `effective_ruleset_hash`. [`ExtractionCache`](../../src/db/writer/cache.rs) [`DependencyRegistry`](../../src/engine/languages/dependency_registry.rs).
+
+> [!IMPORTANT]
+> Invariant: Interned Linker Keys Preserve Semantic Proof
+>
+> Build one borrowed `LinkerInterner` per linking pass. Use its `SymbolId` and `PathId` keys in prepared semantic tables and restore canonical strings when emitting graph results. Preserve declared-package activation and lexical import proof; file-import presence does not replace dependency activation.
+
+- INV-PERF-INTERNER-KEYS: Preserve canonical graph identities and semantic proof while interning prepared linker keys. [`LinkerInterner`](../../src/engine/linker/interner.rs).
+
+> [!IMPORTANT]
+> Invariant: Binary Catalog Storage and Reference Occurrences Without JSON Round-Trips
+>
+> In `src/db/writer.rs` (`PreparedCatalogStorage`) and `src/core/semantic.rs` (`SymbolCatalog::insert_typed`, `decode_catalog_references`), persisted catalog payloads and reference occurrence blobs must use compact binary encoding (`encode_references` / `decode_references`) compressed with Zstd rather than `serde_json::to_vec` / `serde_json::from_slice`.
+
+- INV-PERF-BINARY-CATALOG-STORAGE: Encode `PreparedCatalogStorage` and `SymbolCatalog` reference occurrences in binary format before Zstd compression instead of round-tripping through `serde_json`. [`SymbolCatalog`](../../src/core/semantic.rs) [`encode_references`](../../src/db/writer/cache.rs) [`decode_references`](../../src/db/writer/cache.rs).
+
+> [!IMPORTANT]
+> Invariant: Bounded Rust Receiver and Module Proof
+>
+> Resolve Rust receivers and module imports through indexed declarations, visible imports and bounded value flow. Explicit standard-wrapper projections and proven nominal `Deref::Target` implementations retain their own contracts. Missing, ambiguous, cyclic, inaccessible or exhausted proofs remain uncertain; imports and receiver names alone do not establish exact edges.
+
+- INV-PERF-BOUNDED-RUST-PROOF: Preserve visibility, uniqueness and exhaustion boundaries for Rust receiver and module resolution. [`RustMembers`](../../src/engine/languages/rust/linker.rs) [`resolve_type`](../../src/engine/languages/rust/linker.rs).
+
+> [!IMPORTANT]
+> Invariant: No Nested Parallel Iterators Inside Chunked Pipelines
+>
+> In `src/db/writer.rs` (`prepare_catalog_rows`), file chunks are already dispatched across Rayon worker threads. Agents must never nest Rayon parallel iterators (`.par_iter()`) inside individual chunk workers. Inner loops must use standard sequential iteration (`.iter()`) to avoid thread pool starvation, thread parking, futex contention, and massive system CPU spikes.
+
+- INV-PERF-NO-NESTED-PAR-ITER: Never nest Rayon `.par_iter()` inside already parallelized pipeline chunks; use sequential `.iter()` within worker tasks. [`prepare_catalog_rows`](../../src/db/writer.rs) [`persist_catalog_files`](../../src/db/ingest.rs).
+
+> [!IMPORTANT]
+> Invariant: Zero-Clone Ingestion for Navigation Details
+>
+> In `src/db/ingest.rs` (`flush_node_batch`), database batch writes must never clone `Node` instances or allocate intermediate JSON maps to strip transient fields (`"doc"`, `"docstring"`). Filter fields on-the-fly during serialization through borrowed adapters (`NavigationDetails`) directly referencing source nodes.
+
+- INV-PERF-ZERO-NODE-CLONES-ON-INGEST: Filter navigation details during serialization through borrowed wrappers without cloning `Node` instances in batch write loops. [`flush_node_batch`](../../src/db/ingest.rs) [`NavigationDetails`](../../src/core/models.rs).
+
+> [!IMPORTANT]
+> Invariant: Manifest Syntax Rule Interning
+>
+> In `src/engine/linker/interner.rs` (`LinkerInterner`) and `src/engine/linker.rs`, declarative framework manifest rules must be interned once per language context rather than re-evaluating or cloning rules on every file path in the workspace.
+
+- INV-PERF-MANIFEST-SYNTAX-INTERNING: Intern manifest syntax rules at language context scope instead of re-evaluating or allocating rules per file. [`LinkerInterner`](../../src/engine/linker/interner.rs).
+
+> [!IMPORTANT]
+> Invariant: Host Performance Profile and Governor Precondition
+>
+> Benchmarks and cold-build latency measurements reflect real algorithmic performance only when the host OS operates in `performance` platform profile (`powerprofilesctl set performance`, `energy_performance_preference: performance`). Running benchmarks under `power-saver` caps CPU clocks to low base frequencies (e.g. 400 MHz – 1.9 GHz instead of 4.5 GHz boost) and artificially inflates wall-clock and persistence timings by 1.8x–2.0x.
+
+- INV-PERF-HOST-POWER-GOVERNOR-FOR-BENCHMARKS: Benchmark runs require verification that the host platform profile is not set to `power-saver` before attributing measured wall-clock regressions to code changes. [`cold_test_coverage_benchmark.py`](../../benchmarks/cold_test_coverage_benchmark.py).

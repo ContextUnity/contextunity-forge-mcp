@@ -293,7 +293,10 @@ fn next_nul_field<'a>(bytes: &'a [u8], offset: &mut usize) -> Option<&'a [u8]> {
         return None;
     }
     let rest = &bytes[*offset..];
-    let length = rest.iter().position(|byte| *byte == 0).unwrap_or(rest.len());
+    let length = rest
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(rest.len());
     *offset += length.saturating_add(1);
     Some(&rest[..length])
 }
@@ -344,9 +347,7 @@ fn parse_hunk_ranges(patch: &[u8]) -> Vec<ParsedHunk> {
                 continue;
             };
             let old_range = old_range.split_whitespace().next().unwrap_or_default();
-            let (_, old_count) = old_range
-                .split_once(',')
-                .unwrap_or((old_range, "1"));
+            let (_, old_count) = old_range.split_once(',').unwrap_or((old_range, "1"));
             let Ok(old_remaining) = old_count.parse::<usize>() else {
                 continue;
             };
@@ -354,16 +355,13 @@ fn parse_hunk_ranges(patch: &[u8]) -> Vec<ParsedHunk> {
             let (start, count) = new_range
                 .split_once(',')
                 .map_or((new_range, "1"), |(start, count)| (start, count));
-            let (Ok(start), Ok(new_remaining)) =
-                (start.parse::<usize>(), count.parse::<usize>())
+            let (Ok(start), Ok(new_remaining)) = (start.parse::<usize>(), count.parse::<usize>())
             else {
                 continue;
             };
             current = Some(HunkState {
                 added_range: if new_remaining > 0 {
-                    start
-                        .checked_add(new_remaining - 1)
-                        .map(|end| (start, end))
+                    start.checked_add(new_remaining - 1).map(|end| (start, end))
                 } else {
                     None
                 },
@@ -427,11 +425,18 @@ fn unmapped_change(path: &str, reason: &str, old_path: Option<&str>) -> Value {
 
 fn indexed_file_digest(conn: &Connection, path: &str) -> Result<Option<String>> {
     Ok(conn
-        .query_row("SELECT digest FROM files WHERE path=?1", [path], |row| row.get(0))
+        .query_row("SELECT digest FROM files WHERE path=?1", [path], |row| {
+            row.get(0)
+        })
         .optional()?)
 }
 
-fn range_has_indexed_symbol(conn: &Connection, path: &str, start: usize, end: usize) -> Result<bool> {
+fn range_has_indexed_symbol(
+    conn: &Connection,
+    path: &str,
+    start: usize,
+    end: usize,
+) -> Result<bool> {
     let found: i64 = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path=?1 AND n.kind NOT IN('module','file') AND n.line<=?3 AND n.end_line>=?2)",
         rusqlite::params![path, i64::try_from(start)?, i64::try_from(end)?],
@@ -468,7 +473,10 @@ fn collect_change_snapshot(
             "path must be workspace-relative"
         );
     }
-    anyhow::ensure!(root.join(".git").exists(), "Git change views require a Git repository");
+    anyhow::ensure!(
+        root.join(".git").exists(),
+        "Git change views require a Git repository"
+    );
 
     let mut status_args = git_diff_prefix(mode);
     status_args.extend([
@@ -532,8 +540,12 @@ fn collect_change_snapshot(
             .iter()
             .filter_map(|hunk| hunk.added_range)
             .collect::<Vec<_>>();
-        let is_binary = patch.windows(b"GIT binary patch".len()).any(|window| window == b"GIT binary patch")
-            || patch.windows(b"Binary files".len()).any(|window| window == b"Binary files");
+        let is_binary = patch
+            .windows(b"GIT binary patch".len())
+            .any(|window| window == b"GIT binary patch")
+            || patch
+                .windows(b"Binary files".len())
+                .any(|window| window == b"Binary files");
         let postimage = if status.starts_with('D') {
             None
         } else if mode == "staged" {
@@ -545,7 +557,10 @@ fn collect_change_snapshot(
         };
         append_fingerprint(&mut fingerprint, status.as_bytes());
         append_fingerprint(&mut fingerprint, path.as_bytes());
-        append_fingerprint(&mut fingerprint, old_path.as_deref().unwrap_or("").as_bytes());
+        append_fingerprint(
+            &mut fingerprint,
+            old_path.as_deref().unwrap_or("").as_bytes(),
+        );
         append_fingerprint(&mut fingerprint, &patch);
         append_fingerprint(&mut fingerprint, postimage.as_deref().unwrap_or_default());
 
@@ -566,9 +581,13 @@ fn collect_change_snapshot(
         let postimage_digest = postimage.as_deref().map(commitments::hash);
         let reason = if status.starts_with('D') {
             Some("deleted_range")
-        } else if is_binary || postimage.as_ref().is_some_and(|bytes| std::str::from_utf8(bytes).is_err()) {
+        } else if is_binary
+            || postimage
+                .as_ref()
+                .is_some_and(|bytes| std::str::from_utf8(bytes).is_err())
+        {
             Some("binary")
-            } else if status.starts_with('R') && hunks.is_empty() {
+        } else if status.starts_with('R') && hunks.is_empty() {
             Some("rename_only")
         } else if hunks.is_empty() {
             Some("no_changed_lines")
@@ -649,7 +668,9 @@ fn changed_symbols_page(
     let columns = paging::nodes_with_path("n", options.detail, "p.path");
     let page = reader::rows(
         conn,
-        &format!("SELECT DISTINCT {columns} FROM {from} ORDER BY p.path,n.line,n.id LIMIT ?2 OFFSET ?3"),
+        &format!(
+            "SELECT DISTINCT {columns} FROM {from} ORDER BY p.path,n.line,n.id LIMIT ?2 OFFSET ?3"
+        ),
         &[&ranges_json, &limit, &offset],
         options.limit,
     )?;
@@ -734,16 +755,10 @@ fn changed_nodes_page(
         return Ok(paging::value(Vec::new(), 0, request.page, generation));
     }
     let depth = request.depth;
-    let (forward, reverse) =
-        resolve_traversal_kinds(request.mode, request.edge_types, true);
+    let (forward, reverse) = resolve_traversal_kinds(request.mode, request.edge_types, true);
     if depth > 0 {
-        let immediate = changed_first_frontier(
-            conn,
-            seed_hashes,
-            request.inbound,
-            &forward,
-            &reverse,
-        )?;
+        let immediate =
+            changed_first_frontier(conn, seed_hashes, request.inbound, &forward, &reverse)?;
         if immediate > MAX_DEEP_TRAVERSAL_FRONTIER {
             bail!("Git change view has {immediate} immediate graph links; narrow the changed files or use depth=1 before paging");
         }
@@ -855,13 +870,7 @@ fn changed_tests_page(
                 detail: options.detail,
                 generation: index_generation.clone(),
             };
-            let page = symbols::tests_paged_with_path(
-                conn,
-                seed,
-                None,
-                "inbound",
-                &page_options,
-            )?;
+            let page = symbols::tests_paged_with_path(conn, seed, None, "inbound", &page_options)?;
             let nodes = &page["nodes"];
             let total = nodes["total"]
                 .as_u64()
@@ -942,12 +951,8 @@ fn changed_impact_with_path_options(
     if request.page.offset > 0 && request.page.generation.is_none() {
         bail!("continuation requires generation from the previous page");
     }
-    let (changed_symbols, mut seed_ids, mut seed_hashes) = changed_symbols_page(
-        conn,
-        &snapshot.ranges,
-        request.page,
-        &snapshot.fingerprint,
-    )?;
+    let (changed_symbols, mut seed_ids, mut seed_hashes) =
+        changed_symbols_page(conn, &snapshot.ranges, request.page, &snapshot.fingerprint)?;
     let seed_overflow = seed_ids.len() > MAX_CHANGE_SEEDS;
     seed_ids.truncate(MAX_CHANGE_SEEDS);
     seed_hashes.truncate(MAX_CHANGE_SEEDS);
@@ -962,12 +967,7 @@ fn changed_impact_with_path_options(
         request,
         &snapshot.fingerprint,
     )?;
-    let tests = changed_tests_page(
-        conn,
-        &seed_ids,
-        request.page,
-        &snapshot.fingerprint,
-    )?;
+    let tests = changed_tests_page(conn, &seed_ids, request.page, &snapshot.fingerprint)?;
     let file_values = snapshot
         .files
         .iter()

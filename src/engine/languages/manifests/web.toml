@@ -1,8 +1,3 @@
-receivers = []
-builtins = ["template.tag.block", "template.tag.include", "template.tag.extends", "template.tag.if", "template.tag.elif", "template.tag.else", "template.tag.endif", "template.tag.for", "template.tag.endfor", "template.tag.with", "template.tag.endwith", "template.tag.endblock"]
-filters = ["template.filter.default", "template.filter.length", "template.filter.safe", "template.filter.urlencode"]
-routes = []
-
 [[syntax_rules]]
 id = "template-dialect"
 language = "html"
@@ -12,7 +7,7 @@ operation = { kind = "template_dialect", dialect = { directory = "templates", as
 id = "template-symbols"
 display = { builtin = "builtin:shared_template" }
 language = "html"
-operation = { kind = "template_symbols", requires_loader = false }
+operation = { kind = "template_symbols", requires_loader = false, tags = ["block", "include", "extends", "if", "elif", "else", "endif", "for", "endfor", "with", "endwith", "endblock"], filters = ["default", "length", "safe", "urlencode"], libraries = [], library_routes = {} }
 
 [[syntax_rules]]
 id = "http-client-python"
@@ -38,3 +33,23 @@ operation = { kind = "http_client_call", callee = "fetch", receivers = ["axios",
 id = "route-object-typescript"
 language = "typescript"
 operation = { kind = "route_object", collection = "routes", path_key = "path", handler_key = "component", method = "ANY" }
+
+[[syntax_rules]]
+id = "literal-input-javascript"
+language = "javascript"
+operation = { kind = "receiver_type", receiver = { name = "HTMLInputElement", members = [], properties = { value = "string" }, callback_callees = [], generic = false, argument_factories = [{ callee = { kind = "global_member", receiver = "document", member = "createElement" }, argument = 0, literals = ["input"] }] } }
+
+[[syntax_rules]]
+id = "literal-script-javascript"
+language = "javascript"
+operation = { kind = "receiver_type", receiver = { name = "HTMLScriptElement", members = [], properties = { src = "string" }, callback_callees = [], generic = false, argument_factories = [{ callee = { kind = "global_member", receiver = "document", member = "createElement" }, argument = 0, literals = ["script"] }] } }
+
+[[syntax_rules]]
+id = "literal-input-typescript"
+language = "typescript"
+operation = { kind = "receiver_type", receiver = { name = "HTMLInputElement", members = [], properties = { value = "string" }, callback_callees = [], generic = false, argument_factories = [{ callee = { kind = "global_member", receiver = "document", member = "createElement" }, argument = 0, literals = ["input"] }] } }
+
+[[syntax_rules]]
+id = "literal-script-typescript"
+language = "typescript"
+operation = { kind = "receiver_type", receiver = { name = "HTMLScriptElement", members = [], properties = { src = "string" }, callback_callees = [], generic = false, argument_factories = [{ callee = { kind = "global_member", receiver = "document", member = "createElement" }, argument = 0, literals = ["script"] }] } }

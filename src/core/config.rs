@@ -594,15 +594,14 @@ pub fn read_policy(root: &Path, conn: &Connection) -> Result<Adapter> {
             }
         })
         .collect::<Result<Vec<_>>>()?;
-    let limits: ScannerLimits = serde_json::from_value(value["limits"].clone())
-        .context("invalid persisted limits")?;
+    let limits: ScannerLimits =
+        serde_json::from_value(value["limits"].clone()).context("invalid persisted limits")?;
     let ignored_names: BTreeSet<String> = serde_json::from_value(value["ignored_names"].clone())
         .context("invalid persisted ignored names")?;
     let adapter_version = value["adapter_version"].as_str().map(ToOwned::to_owned);
     let digest = value["digest"].as_str().unwrap_or_default().to_owned();
     let linked_workspaces: Vec<LinkedWorkspace> =
-        serde_json::from_value(value["linked_workspaces"].clone())
-            .unwrap_or_default();
+        serde_json::from_value(value["linked_workspaces"].clone()).unwrap_or_default();
     let owners: BTreeMap<String, String> =
         serde_json::from_value(value["owners"].clone()).unwrap_or_default();
     let aliases: BTreeMap<String, String> =
@@ -632,7 +631,7 @@ pub const ENGINE_SCHEMA_VERSION: &str = "15";
 
 /// Current index semantics version stored in database metadata.
 pub const INDEX_SEMANTICS_VERSION: &str = concat!(
-    "9:compact-storage-v8:",
+    "10:compact-storage-v8:",
     env!("FORGE_LANGUAGE_PROFILE_DIGEST")
 );
 

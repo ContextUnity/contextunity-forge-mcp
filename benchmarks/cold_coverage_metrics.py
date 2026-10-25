@@ -36,7 +36,12 @@ def evidence(db: pathlib.Path) -> dict[str, Any]:
             nodes[node_hash] = key
             if is_test:
                 test_nodes.add(key)
-            if json.loads(details).get("test_role") == "test_case":
+            decoded_details = json.loads(details) if details is not None else None
+            is_test_case = (
+                isinstance(decoded_details, dict)
+                and decoded_details.get("test_role") == "test_case"
+            )
+            if is_test_case:
                 test_cases.add(key)
         if len(set(nodes.values())) != len(nodes):
             raise ValueError("canonical node identity collision; refine identity before comparing coverage")

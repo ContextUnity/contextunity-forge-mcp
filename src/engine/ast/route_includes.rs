@@ -5,10 +5,8 @@ use crate::engine::languages;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-/// Materializes Django include prefixes from extracted route facts without rereading source.
-pub(crate) fn compose_django_route_includes(
-    all: &mut BTreeMap<String, TypedFacts>,
-) -> BTreeSet<String> {
+/// Materializes configured include prefixes from extracted route facts without rereading source.
+pub(crate) fn compose_route_includes(all: &mut BTreeMap<String, TypedFacts>) -> BTreeSet<String> {
     const MAX_INCLUDE_DEPTH: usize = 16;
     const MAX_COMPOSED_ROUTES: usize = 10_000;
 
@@ -265,7 +263,7 @@ pub(crate) fn compose_django_route_includes(
                 kind: "contains".into(),
                 path: owner_path.clone(),
                 line: include.line,
-                evidence: "composed Django include route".into(),
+                evidence: "composed configured route include".into(),
                 confidence: "exact".into(),
             });
             for mut edge in child_edges {

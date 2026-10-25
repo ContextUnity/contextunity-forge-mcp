@@ -1,19 +1,8 @@
-receivers = []
-builtins = [
-  "computed",
-  "ref",
-  "ClientOnly",
-  "NuxtLayout",
-  "NuxtPage",
-]
-filters = []
-routes = ["components/**/*.vue"]
-
 [[syntax_rules]]
 id = "components"
 display = { autoimport = "builtin:nuxt_autoimport", component = "builtin:nuxt" }
 language = "typescript"
-operation = { kind = "component_environment", package = "nuxt", config_file = "nuxt.config.ts", config_callee = "defineNuxtConfig", enabled_key = "components", modules_key = "modules", directory = "components", extension = ".vue", virtual_module = "#components", autoimports = ["computed", "ref", "useFetch", "useAsyncData", "$fetch", "useRuntimeConfig", "createError", "defineEventHandler", "readBody", "setHeader", "defineNuxtConfig", "watch", "reactive", "onBeforeUnmount", "onUnmounted", "navigateTo"], builtins = ["ClientOnly", "NuxtLayout", "NuxtPage"], modules = { "radix-vue/nuxt" = { package = "radix-vue", components = ["DialogRoot", "DialogPortal", "DialogOverlay", "DialogContent", "DialogTitle", "DialogDescription", "DialogClose", "DropdownMenuRoot", "DropdownMenuTrigger", "DropdownMenuContent", "DropdownMenuItem", "DropdownMenuPortal", "DropdownMenuSeparator", "DropdownMenuSub", "DropdownMenuSubTrigger", "DropdownMenuSubContent", "TabsRoot", "TabsList", "TabsTrigger", "TabsContent", "ToggleGroupRoot", "ToggleGroupItem", "SliderRoot", "SliderTrack", "SliderRange", "SliderThumb", "ToastProvider", "ToastRoot", "ToastTitle", "ToastDescription", "ToastClose", "ToastViewport", "HoverCardRoot", "HoverCardTrigger", "HoverCardPortal", "HoverCardContent", "HoverCardArrow"] }, "@pinia/nuxt" = { package = "pinia", components = [], exports = [{ directory = "stores", extension = ".ts" }] }, "@nuxtjs/i18n" = { package = "@nuxtjs/i18n", components = [], call_results = { useI18n = ["t"] } } } }
+operation = { kind = "component_environment", package = "nuxt", config_file = "nuxt.config.ts", config_callee = "defineNuxtConfig", enabled_key = "components", modules_key = "modules", directory = "components", extension = ".vue", virtual_module = "#components", callable_imports = { exports = [{ directory = "composables", extension = ".ts" }], aliases = ["~/", "@/"], options_key = "imports", enabled_key = "autoImport", scan_key = "scan", unsupported_keys = ["srcDir", "rootDir", "extends", "alias", "future", "imports.dirs", "imports.imports", "imports.presets"] }, autoimports = ["computed", "ref", "useFetch", "useAsyncData", "$fetch", "useRuntimeConfig", "createError", "defineEventHandler", "readBody", "setHeader", "defineNuxtConfig", "watch", "reactive", "onBeforeUnmount", "onUnmounted", "navigateTo"], builtins = ["ClientOnly", "NuxtLayout", "NuxtPage"], modules = { "radix-vue/nuxt" = { package = "radix-vue", components = ["DialogRoot", "DialogPortal", "DialogOverlay", "DialogContent", "DialogTitle", "DialogDescription", "DialogClose", "DropdownMenuRoot", "DropdownMenuTrigger", "DropdownMenuContent", "DropdownMenuItem", "DropdownMenuPortal", "DropdownMenuSeparator", "DropdownMenuSub", "DropdownMenuSubTrigger", "DropdownMenuSubContent", "TabsRoot", "TabsList", "TabsTrigger", "TabsContent", "ToggleGroupRoot", "ToggleGroupItem", "SliderRoot", "SliderTrack", "SliderRange", "SliderThumb", "ToastProvider", "ToastRoot", "ToastTitle", "ToastDescription", "ToastClose", "ToastViewport", "HoverCardRoot", "HoverCardTrigger", "HoverCardPortal", "HoverCardContent", "HoverCardArrow"] }, "@pinia/nuxt" = { package = "pinia", components = [], exports = [{ directory = "stores", extension = ".ts" }] }, "@nuxtjs/i18n" = { package = "@nuxtjs/i18n", components = [], call_results = { useI18n = ["t"] } } } }
 
 [[syntax_rules]]
 id = "configured-setup-store"

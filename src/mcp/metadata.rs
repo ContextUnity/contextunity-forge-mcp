@@ -238,11 +238,9 @@ mod tests {
             extended_freshness["freshness"]["corpus_hash"],
             "abcdef0123456789"
         );
-        assert!(
-            extended_freshness["freshness"]
-                .get("checked_at_unix_ms")
-                .is_some()
-        );
+        assert!(extended_freshness["freshness"]
+            .get("checked_at_unix_ms")
+            .is_some());
     }
 
     #[test]

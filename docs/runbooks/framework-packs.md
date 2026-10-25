@@ -13,11 +13,11 @@ operations; it does not add a parser or execute framework code.
 
 1. Copy a verified example into the workspace's `.forge/frameworks/` directory,
    retaining the intended filename stem. Use `vue-runtime`, not `vue`, for the
-   bundled Vue rules. Keep all four required arrays in every complete file.
+   bundled Vue rules. Add only supported typed rule sections.
 2. Default merging retains other bundled rules and replaces matching identities
    with local entries. Use `replace = true` only for an intentional full pack
-   replacement. To disable an effective pack, add `enabled = false` to a complete,
-   valid manifest; its rules may remain nonempty. Removing that file restores
+   replacement. To disable an effective pack, add `enabled = false` to a valid
+   manifest; its rules may remain nonempty. Removing that file restores
    ordinary bundled eligibility. Linked workspaces have independent overrides.
 3. Refresh the index with the ordinary CLI `build` or `delta` command, or let MCP
    freshness admission refresh it. Invalid manifests abort publication. Inspect

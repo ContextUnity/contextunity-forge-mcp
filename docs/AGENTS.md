@@ -89,7 +89,7 @@ to code symbols in the SQLite code map. Follow these structural standards:
    on the same line. The linked declaration must resolve uniquely for Forge to
    create a verified governance edge. This guide declares the resolver's actual
    priority rule:
-   - INV-DOC-FIRST-MATCH-TIER: Candidate resolution returns the first non-empty eligible declaration tier. [`document_symbol_candidates`](../src/engine/linker/resolution.rs#L23-L62).
+   - INV-DOC-FIRST-MATCH-TIER: Candidate resolution returns the first non-empty eligible declaration tier. [`document_symbol_candidates`](../src/engine/linker/resolution/mod.rs#L105-L143).
    The identifier remains documentation authority; the code link identifies
    the governed declaration. See [documentation queries](reference/mcp-tools.md#documentation-queries)
    for the distinction between invariant discovery and verified governance.

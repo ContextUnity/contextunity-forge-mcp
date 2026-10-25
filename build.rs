@@ -108,7 +108,10 @@ fn generate_profiles() {
                 .is_dir()
             {
                 pending.push(path);
-            } else if matches!(path.extension().and_then(|e| e.to_str()), Some("rs" | "toml")) {
+            } else if matches!(
+                path.extension().and_then(|e| e.to_str()),
+                Some("rs" | "toml")
+            ) {
                 fingerprint_files.push(path);
             }
         }

@@ -161,6 +161,43 @@ pub(crate) struct Graph {
     pub coverage: Vec<Coverage>,
 }
 
+impl Graph {
+    pub(crate) fn reference_edge(
+        &mut self,
+        path: &str,
+        reference: &super::Reference,
+        target: String,
+        kind: &str,
+        confidence: &str,
+    ) {
+        self.edges.push(Edge {
+            src: reference.source.clone(),
+            dst: target,
+            kind: kind.into(),
+            path: path.to_owned(),
+            line: reference.line,
+            evidence: reference.expression.clone(),
+            confidence: confidence.into(),
+        });
+    }
+
+    pub(crate) fn reference_coverage(
+        &mut self,
+        path: &str,
+        reference: &super::Reference,
+        status: &str,
+        evidence: Cow<'static, str>,
+    ) {
+        self.coverage.push(Coverage {
+            path: path.to_owned(),
+            line: reference.line,
+            expression: reference.expression.clone(),
+            status: status.into(),
+            evidence,
+        });
+    }
+}
+
 impl From<Graph> for PublicGraph {
     fn from(graph: Graph) -> Self {
         Self {

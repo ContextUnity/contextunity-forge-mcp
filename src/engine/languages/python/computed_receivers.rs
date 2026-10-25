@@ -47,6 +47,15 @@ pub(super) fn receiver_hint(call: Node<'_>, source: &str) -> Option<ReceiverHint
         }
         "call" => {
             let callee = receiver.child_by_field_name("function")?;
+            if !(callee.kind() == "identifier" && text(callee, source) == "super") {
+                let value = super::value_flow::call_value(receiver, source);
+                if matches!(value, crate::core::semantic::ValueExpr::Call { .. }) {
+                    return Some(ReceiverHint::TypedCallResult {
+                        value,
+                        member: text(member, source).to_owned(),
+                    });
+                }
+            }
             if callee.kind() == "call" {
                 let inner = callee.child_by_field_name("function")?;
                 let arguments = callee.child_by_field_name("arguments")?;

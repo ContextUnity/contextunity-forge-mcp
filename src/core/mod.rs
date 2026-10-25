@@ -1,9 +1,9 @@
 /// Implements adapter support.
 pub mod adapter;
-/// Implements workspace configuration and limits support.
-pub mod config;
 /// Implements commitments support.
 pub mod commitments;
+/// Implements workspace configuration and limits support.
+pub mod config;
 /// Implements debug log support.
 pub mod debug_log;
 /// Shared operation presentation and metadata compaction.

@@ -2,9 +2,9 @@ use super::{paging, reader};
 use crate::core::models::stable_hash64;
 use crate::core::response::QueryOptions;
 use crate::db::traversal;
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 
 const MAX_CALL_GRAPH_NODES: usize = 20_000;

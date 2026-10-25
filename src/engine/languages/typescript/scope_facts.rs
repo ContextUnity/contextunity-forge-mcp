@@ -1,5 +1,75 @@
 use super::*;
 
+fn pattern_binds_name(pattern: Syntax<'_>, source: &str, name: &str) -> bool {
+    match pattern.kind() {
+        "identifier" | "shorthand_property_identifier_pattern" => {
+            text(pattern, source).trim() == name
+        }
+        "pair_pattern" => pattern
+            .child_by_field_name("value")
+            .is_some_and(|value| pattern_binds_name(value, source, name)),
+        "assignment_pattern" => pattern
+            .child_by_field_name("left")
+            .is_some_and(|left| pattern_binds_name(left, source, name)),
+        "formal_parameters" | "object_pattern" | "array_pattern" | "rest_pattern"
+        | "required_parameter" | "optional_parameter" | "formal_parameter" => {
+            let candidate = pattern
+                .child_by_field_name("name")
+                .or_else(|| pattern.child_by_field_name("pattern"));
+            if let Some(candidate) = candidate {
+                return pattern_binds_name(candidate, source, name);
+            }
+            let mut cursor = pattern.walk();
+            let binds = pattern
+                .named_children(&mut cursor)
+                .any(|child| pattern_binds_name(child, source, name));
+            binds
+        }
+        _ => false,
+    }
+}
+
+pub(super) fn pattern_binds_require(pattern: Syntax<'_>, source: &str) -> bool {
+    pattern_binds_name(pattern, source, "require")
+}
+
+pub(super) fn collect_pattern_binding_names(
+    pattern: Syntax<'_>,
+    source: &str,
+    names: &mut Vec<String>,
+) {
+    match pattern.kind() {
+        "identifier" | "shorthand_property_identifier_pattern" => {
+            names.push(text(pattern, source).to_owned());
+        }
+        "pair_pattern" => {
+            if let Some(value) = pattern.child_by_field_name("value") {
+                collect_pattern_binding_names(value, source, names);
+            }
+        }
+        "assignment_pattern" => {
+            if let Some(left) = pattern.child_by_field_name("left") {
+                collect_pattern_binding_names(left, source, names);
+            }
+        }
+        "formal_parameters" | "object_pattern" | "array_pattern" | "rest_pattern"
+        | "required_parameter" | "optional_parameter" | "formal_parameter" => {
+            if let Some(candidate) = pattern
+                .child_by_field_name("name")
+                .or_else(|| pattern.child_by_field_name("pattern"))
+            {
+                collect_pattern_binding_names(candidate, source, names);
+                return;
+            }
+            let mut cursor = pattern.walk();
+            for child in pattern.named_children(&mut cursor) {
+                collect_pattern_binding_names(child, source, names);
+            }
+        }
+        _ => {}
+    }
+}
+
 #[derive(Default)]
 pub(super) struct ScopeFactNeeds {
     pub dom_scope_facts: bool,
@@ -220,11 +290,7 @@ fn dom_listener_receiver_expression(
             let Some((method, class)) = lexical_this_method(node) else {
                 return DomListenerReceiverExpression::Unsupported;
             };
-            let static_method = (0..method.child_count()).any(|index| {
-                method
-                    .child(index)
-                    .is_some_and(|child| child.kind() == "static")
-            });
+            let static_method = has_static_child(method);
             DomListenerReceiverExpression::ThisField {
                 name: text(name, source).to_owned(),
                 class_scope: class.id(),

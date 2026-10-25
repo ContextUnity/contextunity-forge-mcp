@@ -43,7 +43,7 @@ def run_build(
 ) -> dict[str, Any]:
     stdout_path = work / "build.stdout"
     stderr_path = work / "build.stderr"
-    command = [str(binary), "--root", str(repo), "--db", str(db), "build"]
+    command = [str(binary), "--root", str(repo), "--db", str(db), "--format", "json", "build"]
     environment = os.environ.copy()
     if extra_env:
         environment.update(extra_env)
@@ -83,7 +83,7 @@ def run_build(
 
 
 def query_overview(binary: pathlib.Path, repo: pathlib.Path, db: pathlib.Path) -> dict[str, Any]:
-    command = [str(binary), "--root", str(repo), "--db", str(db), "query", "overview"]
+    command = [str(binary), "--root", str(repo), "--db", str(db), "--format", "json", "query", "overview"]
     result = subprocess.run(command, cwd=repo, check=False, capture_output=True, text=True)
     if result.returncode:
         raise RuntimeError(

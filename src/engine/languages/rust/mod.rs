@@ -1,11 +1,8 @@
 use super::*;
 use crate::core::models::ReceiverHint;
 use crate::engine::ast::relations;
-#[path = "rust/linker.rs"]
 pub(crate) mod linker;
-#[path = "rust/patterns.rs"]
 pub(crate) mod patterns;
-#[path = "rust/value_flow.rs"]
 pub(crate) mod value_flow;
 /// Performs language.
 pub fn language() -> tree_sitter::Language {
@@ -47,8 +44,7 @@ fn has_cfg_test(node: Syntax<'_>, source: &str) -> bool {
             if text(attribute, source)
                 .chars()
                 .filter(|character| !character.is_whitespace())
-                .collect::<String>()
-                == "#[cfg(test)]"
+                .eq("#[cfg(test)]".chars())
             {
                 return true;
             }
@@ -80,10 +76,7 @@ fn has_unproven_bounds(node: Syntax<'_>, source: &str) -> bool {
 }
 
 fn uniform_generic_impl(node: Syntax<'_>, source: &str) -> bool {
-    let (Some(parameters), Some(receiver)) = (
-        node.child_by_field_name("type_parameters"),
-        node.child_by_field_name("type"),
-    ) else {
+    let Some(receiver) = node.child_by_field_name("type") else {
         return false;
     };
     if receiver.kind() != "generic_type" || has_unproven_bounds(node, source) {
@@ -92,21 +85,34 @@ fn uniform_generic_impl(node: Syntax<'_>, source: &str) -> bool {
     let Some(arguments) = receiver.child_by_field_name("type_arguments") else {
         return false;
     };
-    let mut names: Vec<_> = parameters
-        .named_children(&mut parameters.walk())
-        .map(|parameter| text(parameter, source))
-        .collect();
-    if names.is_empty()
-        || names.iter().any(|name| {
-            !name.starts_with(|ch: char| ch.is_ascii_alphabetic() || ch == '_')
-                || !name
-                    .chars()
-                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    let is_lifetime = |n: Syntax<'_>| {
+        matches!(n.kind(), "lifetime" | "lifetime_parameter")
+            || text(n, source).trim_start().starts_with('\'')
+    };
+    let mut names: Vec<_> = node
+        .child_by_field_name("type_parameters")
+        .map(|parameters| {
+            parameters
+                .named_children(&mut parameters.walk())
+                .filter(|parameter| !is_lifetime(*parameter))
+                .map(|parameter| text(parameter, source))
+                .collect()
         })
-    {
+        .unwrap_or_default();
+    if names.iter().any(|name| {
+        !name.starts_with(|ch: char| ch.is_ascii_alphabetic() || ch == '_')
+            || !name
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    }) {
         return false;
     }
+    let mut saw_any_arg = false;
     for argument in arguments.named_children(&mut arguments.walk()) {
+        saw_any_arg = true;
+        if is_lifetime(argument) {
+            continue;
+        }
         if argument.kind() != "type_identifier" {
             return false;
         }
@@ -118,7 +124,7 @@ fn uniform_generic_impl(node: Syntax<'_>, source: &str) -> bool {
         };
         names.swap_remove(index);
     }
-    names.is_empty()
+    saw_any_arg && names.is_empty()
 }
 
 fn call_result_hint(node: Syntax<'_>, source: &str) -> Option<ReceiverHint> {
@@ -393,8 +399,29 @@ impl LanguageProfile for Rust {
         let mut cursor = root.walk();
         for declaration in root
             .named_children(&mut cursor)
-            .filter(|node| node.kind() == "use_declaration")
+            .filter(|node| matches!(node.kind(), "use_declaration" | "mod_item"))
         {
+            if declaration.kind() == "mod_item" {
+                if unrestricted_public(declaration, source)
+                    && declaration.child_by_field_name("body").is_none()
+                    && !declaration.has_error()
+                    && !declaration
+                        .prev_named_sibling()
+                        .is_some_and(|previous| previous.kind() == "attribute_item")
+                {
+                    if let Some(name) = declaration.child_by_field_name("name") {
+                        let name = text(name, source).to_owned();
+                        exports.push(crate::core::semantic::ExportBinding {
+                            local: Some(name.clone()),
+                            name,
+                            module: None,
+                            type_only: false,
+                            star: false,
+                        });
+                    }
+                }
+                continue;
+            }
             let mut cursor = declaration.walk();
             let is_public = declaration
                 .named_children(&mut cursor)
@@ -409,14 +436,15 @@ impl LanguageProfile for Rust {
             };
             let mut imports = Vec::new();
             collect_use(argument, source, "", &mut imports);
-            exports.extend(imports.into_iter().map(|(_target, name)| {
-                let local = name.clone();
+            exports.extend(imports.into_iter().map(|(target, name)| {
+                let star = name == "*";
+                let local = (!star).then(|| name.clone());
                 crate::core::semantic::ExportBinding {
                     name,
-                    local: Some(local),
-                    module: None,
+                    local,
+                    module: star.then_some(target),
                     type_only: false,
-                    star: false,
+                    star,
                 }
             }));
         }
@@ -663,6 +691,8 @@ impl LanguageProfile for Rust {
                     | "retain"
                     | "truncate"
             ),
+            "Iterator" => matches!(member, "next" | "cloned" | "copied"),
+            "Slice" => matches!(member, "iter" | "into_iter"),
             "Path" | "PathBuf" => matches!(
                 member,
                 "new"
@@ -724,6 +754,7 @@ impl LanguageProfile for Rust {
                     | "copied"
                     | "as_ref"
                     | "as_mut"
+                    | "as_deref"
                     | "take"
                     | "replace"
             ),
@@ -745,6 +776,7 @@ impl LanguageProfile for Rust {
                     | "err"
                     | "as_ref"
                     | "as_mut"
+                    | "as_deref"
             ),
             _ => false,
         }
@@ -842,7 +874,49 @@ impl LanguageProfile for Rust {
         })
     }
     fn extract_relations(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
-        if ctx.node.kind() == "impl_item" {
+        if ctx.node.kind() == "mod_item"
+            && ctx.node.child_by_field_name("body").is_none()
+            && ctx
+                .node
+                .parent()
+                .is_some_and(|parent| parent.kind() == "source_file")
+            && !ctx.node.has_error()
+            && !ctx
+                .node
+                .prev_named_sibling()
+                .is_some_and(|previous| previous.kind() == "attribute_item")
+        {
+            let Some(declaration) = facts.nodes.iter().find(|node| node.id == ctx.owner) else {
+                return;
+            };
+            let Some(parent) = facts
+                .edges
+                .iter()
+                .find(|edge| edge.kind == "contains" && edge.dst == declaration.id)
+                .map(|edge| edge.src.clone())
+            else {
+                return;
+            };
+            let root = declaration.path.ends_with("/src/lib.rs")
+                || declaration.path.ends_with("/src/main.rs")
+                || matches!(declaration.path.as_str(), "src/lib.rs" | "src/main.rs");
+            let module = format!(
+                "{}::{}",
+                if root { "crate" } else { "self" },
+                declaration.name
+            );
+            facts.references.push(crate::core::models::Reference {
+                source: parent,
+                expression: module.clone(),
+                kind: "imports".into(),
+                line: ctx.line(),
+                column: ctx.node.start_position().column,
+                alias: Some(declaration.name.clone()),
+                module: Some(module),
+                dynamic: false,
+                receiver_hint: None,
+            });
+        } else if ctx.node.kind() == "impl_item" {
             if let Some(owner) = facts.nodes.iter_mut().find(|node| node.id == ctx.owner) {
                 owner.details["generic_impl"] =
                     serde_json::json!(ctx.node.child_by_field_name("type_parameters").is_some());
@@ -851,6 +925,26 @@ impl LanguageProfile for Rust {
                 }
                 if let Some(trait_name) = field(ctx.node, ctx.source, "trait") {
                     owner.details["impl_trait"] = serde_json::json!(trait_name);
+                    if matches!(
+                        trait_name.trim_start_matches("::"),
+                        "std::ops::Deref" | "core::ops::Deref"
+                    ) || !trait_name.contains("::")
+                    {
+                        let mut ancestor = Some(ctx.node);
+                        let mut attributed = false;
+                        while let Some(node) = ancestor {
+                            attributed |= node
+                                .prev_named_sibling()
+                                .is_some_and(|previous| previous.kind() == "attribute_item");
+                            ancestor = node.parent();
+                        }
+                        if attributed
+                            || ctx.node.has_error()
+                            || has_unproven_bounds(ctx.node, ctx.source)
+                        {
+                            owner.details["deref_unproven"] = serde_json::json!(true);
+                        }
+                    }
                 }
                 if let Some(receiver) = field(ctx.node, ctx.source, "type") {
                     owner.details["receiver_type"] = serde_json::json!(receiver);
@@ -866,16 +960,17 @@ impl LanguageProfile for Rust {
                 );
             }
         } else if matches!(ctx.node.kind(), "function_item" | "function_signature_item") {
-            if has_unproven_bounds(ctx.node, ctx.source) {
+            let unproven = has_unproven_bounds(ctx.node, ctx.source);
+            let trait_default = ctx.node.kind() == "function_item"
+                && method_owner(ctx.node).is_some_and(|owner| owner.kind() == "trait_item");
+            if unproven || trait_default {
                 if let Some(method) = facts.nodes.iter_mut().find(|node| node.id == ctx.owner) {
-                    method.details["unproven_bounds"] = serde_json::json!(true);
-                }
-            }
-            if ctx.node.kind() == "function_item"
-                && method_owner(ctx.node).is_some_and(|owner| owner.kind() == "trait_item")
-            {
-                if let Some(method) = facts.nodes.iter_mut().find(|node| node.id == ctx.owner) {
-                    method.details["trait_default"] = serde_json::json!(true);
+                    if unproven {
+                        method.details["unproven_bounds"] = serde_json::json!(true);
+                    }
+                    if trait_default {
+                        method.details["trait_default"] = serde_json::json!(true);
+                    }
                 }
             }
             if let Some(parameters) = ctx.node.child_by_field_name("parameters") {
@@ -902,8 +997,25 @@ impl LanguageProfile for Rust {
                 }
             }
         } else if ctx.node.kind() == "type_item" {
+            if ctx.node.child_by_field_name("type_parameters").is_some()
+                || ctx.node.has_error()
+                || ctx
+                    .node
+                    .prev_named_sibling()
+                    .is_some_and(|previous| previous.kind() == "attribute_item")
+            {
+                if let Some(owner) = facts.nodes.iter_mut().find(|node| node.id == ctx.owner) {
+                    owner.details["deref_unproven"] = serde_json::json!(true);
+                }
+            }
             if let Some(ty) = ctx.node.child_by_field_name("type") {
                 value_flow::type_references(facts, ctx.owner, ty, ctx.source, ctx.line());
+            }
+        } else if ctx.node.kind() == "struct_item"
+            && ctx.node.child_by_field_name("type_parameters").is_some()
+        {
+            if let Some(owner) = facts.nodes.iter_mut().find(|node| node.id == ctx.owner) {
+                owner.details["deref_unproven"] = serde_json::json!(true);
             }
         }
     }
@@ -931,13 +1043,14 @@ impl LanguageProfile for Rust {
                         .or_else(|| pattern_text.strip_prefix("ref "))
                         .unwrap_or(pattern_text)
                         .trim();
-                    if !matches!(
-                        value_flow::type_expr(ty, source),
-                        crate::core::semantic::TypeExpr::Unknown
-                    ) && name
-                        .chars()
-                        .all(|character| character.is_alphanumeric() || character == '_')
-                        && !name.is_empty()
+                    if !name.is_empty()
+                        && name
+                            .chars()
+                            .all(|character| character.is_alphanumeric() || character == '_')
+                        && !matches!(
+                            value_flow::type_expr(ty, source),
+                            crate::core::semantic::TypeExpr::Unknown
+                        )
                     {
                         param_types.insert(name.to_owned(), text(ty, source).trim().to_owned());
                     }
@@ -1001,12 +1114,15 @@ impl LanguageProfile for Rust {
     fn test_attribute(&self, node: Syntax<'_>, source: &str) -> bool {
         let mut previous = node.prev_named_sibling();
         while let Some(attr) = previous.filter(|n| n.kind() == "attribute_item") {
-            let value = text(attr, source).replace(' ', "");
-            if value == "#[test]"
-                || value.starts_with("#[tokio::test")
-                || value.starts_with("#[async_std::test")
-            {
-                return true;
+            let raw = text(attr, source);
+            if raw.contains("test") {
+                let value = raw.replace(' ', "");
+                if value == "#[test]"
+                    || value.starts_with("#[tokio::test")
+                    || value.starts_with("#[async_std::test")
+                {
+                    return true;
+                }
             }
             previous = attr.prev_named_sibling();
         }

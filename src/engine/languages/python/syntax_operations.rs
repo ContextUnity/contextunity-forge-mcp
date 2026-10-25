@@ -1,18 +1,21 @@
-use crate::core::models::{Facts, Reference};
+use crate::core::models::Facts;
 use crate::core::semantic::{SourcePosition, TemplateContextFact};
 use crate::engine::ast::{field, text};
 use crate::engine::languages::manifests::syntax::{SyntaxOperation, SyntaxRule};
-use crate::engine::languages::LanguageProfile;
+use crate::engine::languages::LanguageContext;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use tree_sitter::Node;
 
 #[derive(Default)]
 struct PreparedSyntaxContext {
-    rules: Vec<SyntaxRule>,
-    reverse_aliases: HashSet<String>,
-    receiver_registration_candidates: HashMap<(usize, String), usize>,
-    receiver_registration_conflicts: HashSet<(usize, String)>,
+    language_context: Arc<LanguageContext>,
+    render_candidates: HashMap<String, Vec<usize>>,
+    loader_candidates: HashMap<String, Vec<usize>>,
+    named_route_candidates: HashMap<String, Vec<usize>>,
+    receiver_registration_candidates: HashMap<usize, HashMap<String, usize>>,
+    receiver_registration_conflicts: HashMap<usize, HashSet<String>>,
     receiver_fact_node_cursor: usize,
     receiver_fact_reference_cursor: usize,
     receiver_class_ids: HashSet<String>,
@@ -23,49 +26,82 @@ thread_local! {
     static PREPARED_SYNTAX_CONTEXT: RefCell<Option<PreparedSyntaxContext>> = const { RefCell::new(None) };
 }
 
-pub(super) fn prepare_file(root: Node<'_>, source: &str, rules: &[SyntaxRule]) {
-    let reverse_aliases = rules
-        .iter()
-        .flat_map(|rule| {
-            let SyntaxOperation::NamedRouteCall { module, export, .. } = &rule.operation else {
-                return HashSet::new();
-            };
-            imported_reverse_aliases(root, source, module, export)
+pub(super) fn prepare_file(root: Node<'_>, source: &str, language_context: &Arc<LanguageContext>) {
+    let rules = &language_context.syntax_rules;
+    let imports = module_imports(root, source);
+    let candidates = |indices: &[usize]| {
+        super::super::manifests::semantic::imported_rule_candidates(rules, indices, &imports)
+    };
+    let compiled = language_context.prepared_projections("python");
+    let (render_candidates, loader_candidates, named_route_candidates) = compiled
+        .map(|prepared| {
+            (
+                candidates(&prepared.render_rules),
+                candidates(&prepared.loader_rules),
+                candidates(&prepared.named_route_rules),
+            )
         })
-        .collect();
-    let mut receiver_registration_candidates = HashMap::new();
-    let mut receiver_registration_conflicts = HashSet::new();
-    for rule in rules {
-        if let SyntaxOperation::ReceiverRegistration {
-            module,
-            constructors,
-            member,
-            path_argument,
-            handler_argument,
-            name_keyword,
-        } = &rule.operation
-        {
-            let (candidates, conflicts) = prepare_receiver_registrations(
-                root,
-                source,
+        .unwrap_or_default();
+    let mut receiver_registration_candidates: HashMap<usize, HashMap<String, usize>> =
+        HashMap::new();
+    let mut receiver_registration_conflicts: HashMap<usize, HashSet<String>> = HashMap::new();
+    if !imports.is_empty() {
+        let mut raw_registrations = HashMap::new();
+        let mut module_proof = None;
+        for rule in rules {
+            if let SyntaxOperation::ReceiverRegistration {
                 module,
                 constructors,
                 member,
-                *path_argument,
-                *handler_argument,
+                path_argument,
+                handler_argument,
                 name_keyword,
-            );
-            for candidate in candidates {
-                receiver_registration_candidates.insert((candidate, rule.key()), *handler_argument);
+            } = &rule.operation
+            {
+                let raw = raw_registrations
+                    .entry((member.as_str(), *path_argument, name_keyword.as_str()))
+                    .or_insert_with(|| {
+                        collect_receiver_registrations(
+                            root,
+                            source,
+                            member,
+                            *path_argument,
+                            name_keyword,
+                        )
+                    });
+                let (candidates, conflicts) = prepare_receiver_registrations(
+                    root,
+                    source,
+                    module,
+                    constructors,
+                    *path_argument,
+                    *handler_argument,
+                    name_keyword,
+                    raw,
+                    &imports,
+                    &mut module_proof,
+                );
+                for candidate in candidates {
+                    receiver_registration_candidates
+                        .entry(candidate)
+                        .or_default()
+                        .insert(rule.key(), *handler_argument);
+                }
+                for id in conflicts {
+                    receiver_registration_conflicts
+                        .entry(id)
+                        .or_default()
+                        .insert(rule.key());
+                }
             }
-            receiver_registration_conflicts
-                .extend(conflicts.into_iter().map(|id| (id, rule.key())));
         }
     }
     PREPARED_SYNTAX_CONTEXT.with(|context| {
         *context.borrow_mut() = Some(PreparedSyntaxContext {
-            rules: rules.to_vec(),
-            reverse_aliases,
+            language_context: Arc::clone(language_context),
+            render_candidates,
+            loader_candidates,
+            named_route_candidates,
             receiver_registration_candidates,
             receiver_registration_conflicts,
             receiver_fact_node_cursor: 0,
@@ -76,181 +112,60 @@ pub(super) fn prepare_file(root: Node<'_>, source: &str, rules: &[SyntaxRule]) {
     });
 }
 
-pub(super) fn syntax_rules() -> Vec<SyntaxRule> {
+pub(super) fn with_syntax_rules<R>(visit: impl FnOnce(&[SyntaxRule]) -> R) -> R {
     PREPARED_SYNTAX_CONTEXT.with(|context| {
-        context
-            .borrow()
-            .as_ref()
-            .map(|context| context.rules.clone())
-            .unwrap_or_default()
+        let context = context.borrow();
+        visit(context.as_ref().map_or(&[], |context| {
+            context.language_context.syntax_rules.as_slice()
+        }))
     })
+}
+
+pub(super) fn for_each_loader_rule(alias: &str, mut visit: impl FnMut(&SyntaxRule)) {
+    PREPARED_SYNTAX_CONTEXT.with(|context| {
+        let context = context.borrow();
+        if let Some(context) = context.as_ref() {
+            if let Some(indices) = context.loader_candidates.get(alias) {
+                for (_, rule) in super::super::manifests::semantic::indexed_rules(
+                    &context.language_context.syntax_rules,
+                    indices.iter().copied(),
+                ) {
+                    visit(rule);
+                }
+            }
+        }
+    });
+}
+
+pub(super) fn for_each_decorated_registration_rule(mut visit: impl FnMut(&SyntaxRule)) {
+    PREPARED_SYNTAX_CONTEXT.with(|context| {
+        let context = context.borrow();
+        if let Some(context) = context.as_ref() {
+            let indices = context
+                .language_context
+                .prepared_projections("python")
+                .map_or(&[][..], |prepared| {
+                    prepared.decorated_registration_rules.as_slice()
+                });
+            for (_, rule) in super::super::manifests::semantic::indexed_rules(
+                &context.language_context.syntax_rules,
+                indices.iter().copied(),
+            ) {
+                visit(rule);
+            }
+        }
+    });
 }
 
 pub(super) fn clear_file_context() {
     PREPARED_SYNTAX_CONTEXT.with(|context| *context.borrow_mut() = None);
 }
 
-fn imported_reverse_aliases(
+fn module_imports<'a>(
     root: Node<'_>,
-    source: &str,
-    module: &str,
-    export: &str,
-) -> HashSet<String> {
-    let mut aliases = HashSet::new();
-    let mut cursor = root.walk();
-    for statement in root.named_children(&mut cursor).filter(|statement| {
-        statement.kind() == "import_from_statement"
-            && field(*statement, source, "module_name") == Some(module)
-    }) {
-        let mut imports = statement.walk();
-        for name in statement.children_by_field_name("name", &mut imports) {
-            let imported = field(name, source, "name").unwrap_or_else(|| text(name, source));
-            if imported == export {
-                aliases.insert(field(name, source, "alias").unwrap_or(imported).to_owned());
-            }
-        }
-    }
-    aliases
-}
-
-#[derive(Default)]
-struct ModuleBindingCounts {
-    names: HashMap<String, usize>,
-    wildcard_imports: usize,
-}
-
-impl ModuleBindingCounts {
-    fn count(&self, name: &str) -> usize {
-        self.names.get(name).copied().unwrap_or_default() + self.wildcard_imports
-    }
-}
-
-fn module_binding_counts(root: Node<'_>, source: &str) -> ModuleBindingCounts {
-    fn record(node: Node<'_>, source: &str, counts: &mut ModuleBindingCounts) {
-        *counts
-            .names
-            .entry(text(node, source).to_owned())
-            .or_default() += 1;
-    }
-
-    fn targets(node: Node<'_>, source: &str, counts: &mut ModuleBindingCounts) {
-        match node.kind() {
-            "identifier" => record(node, source, counts),
-            "attribute" | "subscript" => {}
-            _ => {
-                let mut cursor = node.walk();
-                for child in node.named_children(&mut cursor) {
-                    targets(child, source, counts);
-                }
-            }
-        }
-    }
-
-    fn captures(node: Node<'_>, source: &str, counts: &mut ModuleBindingCounts) {
-        match node.kind() {
-            "identifier" => record(node, source, counts),
-            "dotted_name" if node.named_child_count() == 1 => record(node, source, counts),
-            "dict_pattern" => {
-                let mut values = node.walk();
-                for value in node.children_by_field_name("value", &mut values) {
-                    captures(value, source, counts);
-                }
-                let mut rest = node.walk();
-                for child in node.named_children(&mut rest) {
-                    if child.kind() == "splat_pattern" {
-                        captures(child, source, counts);
-                    }
-                }
-            }
-            "class_pattern" | "keyword_pattern" => {
-                let mut cursor = node.walk();
-                for child in node.named_children(&mut cursor).skip(1) {
-                    captures(child, source, counts);
-                }
-            }
-            "case_pattern" | "list_pattern" | "tuple_pattern" | "union_pattern" | "as_pattern"
-            | "splat_pattern" => {
-                let mut cursor = node.walk();
-                for child in node.named_children(&mut cursor) {
-                    captures(child, source, counts);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn visit(node: Node<'_>, source: &str, counts: &mut ModuleBindingCounts) {
-        match node.kind() {
-            "case_pattern" => captures(node, source, counts),
-            "type_alias_statement" => {
-                if let Some(name) = super::Python.symbol_name(node, source) {
-                    *counts.names.entry(name.to_owned()).or_default() += 1;
-                }
-            }
-            "assignment" | "annotated_assignment" | "augmented_assignment" | "for_statement" => {
-                if let Some(left) = node.child_by_field_name("left") {
-                    targets(left, source, counts);
-                }
-                let mut cursor = node.walk();
-                for child in node.named_children(&mut cursor) {
-                    visit(child, source, counts);
-                }
-            }
-            "named_expression" | "as_pattern" => {
-                if let Some(target) = node
-                    .child_by_field_name("name")
-                    .or_else(|| node.child_by_field_name("alias"))
-                {
-                    targets(target, source, counts);
-                }
-                let mut cursor = node.walk();
-                for child in node.named_children(&mut cursor) {
-                    visit(child, source, counts);
-                }
-            }
-            "import_from_statement" | "import_statement" => {
-                let mut imports = node.walk();
-                for child in node.children_by_field_name("name", &mut imports) {
-                    let imported =
-                        field(child, source, "name").unwrap_or_else(|| text(child, source));
-                    let bound = field(child, source, "alias").unwrap_or(imported);
-                    *counts.names.entry(bound.to_owned()).or_default() += 1;
-                }
-                let mut wildcard = node.walk();
-                if node
-                    .named_children(&mut wildcard)
-                    .any(|child| child.kind() == "wildcard_import")
-                {
-                    counts.wildcard_imports += 1;
-                }
-            }
-            "function_definition" | "class_definition" => {
-                if let Some(name) = field(node, source, "name") {
-                    *counts.names.entry(name.to_owned()).or_default() += 1;
-                }
-            }
-            "delete_statement" => {
-                let mut cursor = node.walk();
-                for target in node.named_children(&mut cursor) {
-                    targets(target, source, counts);
-                }
-            }
-            _ => {
-                let mut cursor = node.walk();
-                for child in node.named_children(&mut cursor) {
-                    visit(child, source, counts);
-                }
-            }
-        }
-    }
-
-    let mut counts = ModuleBindingCounts::default();
-    visit(root, source, &mut counts);
-    counts
-}
-
-fn module_imports(root: Node<'_>, source: &str) -> HashMap<(String, String, String), usize> {
-    let mut imports: HashMap<(String, String, String), usize> = HashMap::new();
+    source: &'a str,
+) -> HashMap<(&'a str, &'a str), Vec<(&'a str, usize)>> {
+    let mut imports: HashMap<(&'a str, &'a str), Vec<(&'a str, usize)>> = HashMap::new();
     let mut cursor = root.walk();
     for statement in root
         .named_children(&mut cursor)
@@ -263,11 +178,15 @@ fn module_imports(root: Node<'_>, source: &str) -> HashMap<(String, String, Stri
         for name in statement.children_by_field_name("name", &mut import_cursor) {
             let imported = field(name, source, "name").unwrap_or_else(|| text(name, source));
             let alias = field(name, source, "alias").unwrap_or(imported);
-            let key = (alias.to_owned(), module.to_owned(), imported.to_owned());
-            imports
-                .entry(key)
-                .and_modify(|end| *end = (*end).min(statement.end_byte()))
-                .or_insert(statement.end_byte());
+            let entries = imports.entry((module, imported)).or_default();
+            if let Some(existing) = entries
+                .iter_mut()
+                .find(|(existing_alias, _)| *existing_alias == alias)
+            {
+                existing.1 = existing.1.min(statement.end_byte());
+            } else {
+                entries.push((alias, statement.end_byte()));
+            }
         }
     }
     imports
@@ -315,7 +234,7 @@ fn module_router_initializers(
 }
 
 fn router_constructor_imported(
-    imports: &HashMap<(String, String, String), usize>,
+    imports: &HashMap<(&str, &str), Vec<(&str, usize)>>,
     alias: &str,
     before: usize,
     module: &str,
@@ -323,27 +242,35 @@ fn router_constructor_imported(
 ) -> bool {
     constructors.iter().any(|name| {
         alias == name
-            && imports
-                .get(&(alias.to_owned(), module.to_owned(), name.to_string()))
-                .is_some_and(|end| *end < before)
+            && imports.get(&(module, alias)).is_some_and(|entries| {
+                entries
+                    .iter()
+                    .any(|(imported_alias, end)| *imported_alias == alias && *end < before)
+            })
     })
 }
 
-fn binding_count(counts: &ModuleBindingCounts, name: &str) -> usize {
-    counts.count(name)
+#[derive(Default)]
+struct ReceiverRegistrations<'tree> {
+    calls: Vec<Node<'tree>>,
+    conflicts: HashSet<usize>,
 }
 
-#[allow(clippy::too_many_arguments)]
-fn prepare_receiver_registrations(
-    root: Node<'_>,
+struct ReceiverModuleProof {
+    binding_counts: super::template_loaders::BindingWrites,
+    router_initializers: HashMap<String, (usize, usize, String)>,
+}
+
+fn collect_receiver_registrations<'tree>(
+    root: Node<'tree>,
     source: &str,
-    module: &str,
-    constructors: &[String],
     member: &str,
     path_argument: usize,
-    handler_argument: usize,
     name_keyword: &str,
-) -> (HashSet<usize>, HashSet<usize>) {
+) -> ReceiverRegistrations<'tree> {
+    if !source.contains(member) {
+        return ReceiverRegistrations::default();
+    }
     let mut by_prefix: std::collections::HashMap<(String, String), Vec<usize>> =
         std::collections::HashMap::new();
     let mut by_basename: std::collections::HashMap<(String, String), Vec<usize>> =
@@ -367,11 +294,47 @@ fn prepare_receiver_registrations(
         conflicts.extend(registrations.iter().copied());
     }
 
-    let binding_counts = module_binding_counts(root, source);
-    let imports = module_imports(root, source);
-    let router_initializers = module_router_initializers(root, source);
+    ReceiverRegistrations {
+        calls: registrations,
+        conflicts,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_receiver_registrations(
+    root: Node<'_>,
+    source: &str,
+    module: &str,
+    constructors: &[String],
+    path_argument: usize,
+    handler_argument: usize,
+    name_keyword: &str,
+    registrations: &ReceiverRegistrations<'_>,
+    imports: &HashMap<(&str, &str), Vec<(&str, usize)>>,
+    module_proof: &mut Option<ReceiverModuleProof>,
+) -> (HashSet<usize>, HashSet<usize>) {
+    if registrations.calls.is_empty()
+        || !constructors.iter().any(|constructor| {
+            imports
+                .get(&(module, constructor.as_str()))
+                .is_some_and(|entries| {
+                    entries
+                        .iter()
+                        .any(|(alias, _)| *alias == constructor.as_str())
+                })
+        })
+    {
+        return (HashSet::new(), registrations.conflicts.clone());
+    }
+    let ReceiverModuleProof {
+        binding_counts,
+        router_initializers,
+    } = module_proof.get_or_insert_with(|| ReceiverModuleProof {
+        binding_counts: super::template_loaders::binding_counts(root, source),
+        router_initializers: module_router_initializers(root, source),
+    });
     let mut candidates = HashSet::new();
-    for registration in registrations {
+    for &registration in &registrations.calls {
         let router = text(
             registration
                 .child_by_field_name("function")
@@ -379,7 +342,7 @@ fn prepare_receiver_registrations(
                 .expect("collected router registration has an identifier object"),
             source,
         );
-        if binding_count(&binding_counts, router) != 1 {
+        if binding_counts.count(router) != 1 {
             continue;
         }
         let Some((assignment_end, assignment_start, constructor)) = router_initializers.get(router)
@@ -387,9 +350,9 @@ fn prepare_receiver_registrations(
             continue;
         };
         if *assignment_end >= registration.start_byte()
-            || binding_count(&binding_counts, constructor) != 1
+            || binding_counts.count(constructor) != 1
             || !router_constructor_imported(
-                &imports,
+                imports,
                 constructor,
                 *assignment_start,
                 module,
@@ -409,7 +372,7 @@ fn prepare_receiver_registrations(
         }
         candidates.insert(registration.id());
     }
-    (candidates, conflicts)
+    (candidates, registrations.conflicts.clone())
 }
 
 fn collect_module_router_registrations<'tree>(
@@ -479,7 +442,7 @@ fn has_prepared_reverse_alias(alias: &str) -> bool {
         context
             .borrow()
             .as_ref()
-            .is_some_and(|prepared| prepared.reverse_aliases.contains(alias))
+            .is_some_and(|prepared| prepared.named_route_candidates.contains_key(alias))
     })
 }
 
@@ -489,8 +452,7 @@ fn is_prepared_receiver_registration_candidate(call_id: usize) -> bool {
         context.borrow().as_ref().is_some_and(|prepared| {
             prepared
                 .receiver_registration_candidates
-                .keys()
-                .any(|(id, _)| *id == call_id)
+                .contains_key(&call_id)
         })
     })
 }
@@ -501,8 +463,7 @@ fn is_prepared_receiver_registration_conflict(call_id: usize) -> bool {
         context.borrow().as_ref().is_some_and(|prepared| {
             prepared
                 .receiver_registration_conflicts
-                .iter()
-                .any(|(id, _)| *id == call_id)
+                .contains_key(&call_id)
         })
     })
 }
@@ -563,6 +524,15 @@ pub(super) fn lexical_import_owner<'a>(
 }
 
 pub(super) fn extract(node: Node<'_>, source: &str) -> Option<TemplateContextFact> {
+    PREPARED_SYNTAX_CONTEXT
+        .with(|context| extract_prepared(node, source, context.borrow().as_ref()?))
+}
+
+fn extract_prepared(
+    node: Node<'_>,
+    source: &str,
+    prepared: &PreparedSyntaxContext,
+) -> Option<TemplateContextFact> {
     if node.kind() != "call" {
         return None;
     }
@@ -572,92 +542,55 @@ pub(super) fn extract(node: Node<'_>, source: &str) -> Option<TemplateContextFac
     }
     let alias = text(callee, source);
     let arguments = node.child_by_field_name("arguments")?;
-    let root = lexical_import_owner(node, source, alias)?;
-    let rules = syntax_rules();
-    let (rule, target_index, context_index) = rules.iter().find_map(|rule| {
-        let SyntaxOperation::RenderContext {
-            module,
-            export,
-            target_argument,
-            context_argument,
-            argument_count,
-            ..
-        } = &rule.operation
-        else {
-            return None;
-        };
-        (arguments.named_child_count() == *argument_count
-            && super::template_loaders::imported(
-                root,
-                source,
-                alias,
-                module,
-                export,
-                node.start_byte(),
-            ))
-        .then_some((rule, *target_argument, *context_argument))
-    })?;
-    let target = arguments.named_child(target_index)?;
-    let context = arguments.named_child(context_index)?;
-    if context.kind() != "dictionary" {
-        return None;
-    }
-    let target = super::template_loaders::literal(target, source)?;
-    if target.is_empty() || target.len() > 256 {
-        return None;
-    }
-    let mut keys = Vec::new();
-    let mut unique = HashSet::new();
-    if context.named_child_count() > 32 {
-        return None;
-    }
-    let mut cursor = context.walk();
-    for pair in context.named_children(&mut cursor) {
-        if pair.kind() != "pair" {
-            return None;
-        }
-        let key = super::template_loaders::literal(pair.child_by_field_name("key")?, source)?;
-        if key.is_empty()
-            || key.len() > 128
-            || !key.chars().enumerate().all(|(index, ch)| {
-                ch == '_'
-                    || if index == 0 {
-                        ch.is_alphabetic()
-                    } else {
-                        ch.is_alphanumeric()
-                    }
-            })
-            || !unique.insert(key)
-        {
-            return None;
-        }
-        keys.push(key.to_owned());
-    }
-    if keys.is_empty() {
-        return None;
-    }
-    let start = node.start_position();
-    Some(TemplateContextFact {
-        origin: Some(crate::core::semantic::ExtractionRuleOrigin {
-            pack: rule.pack.clone(),
-            rule: rule.id.clone(),
-        }),
-        import_alias: alias.to_owned(),
-        target: target.to_owned(),
-        target_path: None,
-        keys,
-        position: SourcePosition {
-            line: start.row + 1,
-            column: start.column,
+    let candidates = prepared.render_candidates.get(alias)?;
+    let root = std::cell::OnceCell::new();
+    crate::engine::languages::manifests::semantic::project_context_key(
+        &prepared.language_context.syntax_rules,
+        candidates,
+        arguments.named_child_count(),
+        alias,
+        SourcePosition {
+            line: node.start_position().row + 1,
+            column: node.start_position().column,
         },
-    })
-}
-
-fn route_name(value: &str) -> bool {
-    !value.is_empty()
-        && value
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | ':'))
+        |index| {
+            arguments.named_child(index).is_some_and(|context| {
+                context.kind() == "dictionary" && context.named_child_count() <= 32
+            })
+        },
+        |index| {
+            arguments
+                .named_child(index)
+                .and_then(|target| super::template_loaders::literal(target, source))
+                .map(str::to_owned)
+        },
+        |module, export| {
+            root.get_or_init(|| lexical_import_owner(node, source, alias))
+                .is_some_and(|root| {
+                    super::template_loaders::imported(
+                        root,
+                        source,
+                        alias,
+                        module,
+                        export,
+                        node.start_byte(),
+                    )
+                })
+        },
+        |index| {
+            let context = arguments.named_child(index)?;
+            context
+                .named_children(&mut context.walk())
+                .map(|pair| {
+                    if pair.kind() != "pair" {
+                        return None;
+                    }
+                    super::template_loaders::literal(pair.child_by_field_name("key")?, source)
+                        .map(str::to_owned)
+                })
+                .collect()
+        },
+    )
 }
 
 fn imported_module(
@@ -751,50 +684,76 @@ pub(super) fn extract_reverse_route(
     offset: usize,
     facts: &mut Facts,
 ) {
-    for rule in syntax_rules() {
-        if let SyntaxOperation::NamedRouteCall {
-            module,
-            export,
-            argument,
-            expression_prefix,
-        } = &rule.operation
-        {
-            extract_named_route(
-                node,
-                source,
+    PREPARED_SYNTAX_CONTEXT.with(|context| {
+        let context = context.borrow();
+        let Some(context) = context.as_ref() else {
+            return;
+        };
+        let Some(callee) = node.child_by_field_name("function") else {
+            return;
+        };
+        let indices = if callee.kind() == "identifier" {
+            let Some(indices) = context.named_route_candidates.get(text(callee, source)) else {
+                return;
+            };
+            indices
+        } else if callee.kind() == "attribute" {
+            let Some(member) = callee.child_by_field_name("attribute") else {
+                return;
+            };
+            let Some(indices) = context
+                .language_context
+                .prepared_projections("python")
+                .and_then(|prepared| prepared.named_route_members.get(text(member, source)))
+            else {
+                return;
+            };
+            indices
+        } else {
+            return;
+        };
+        for (_, rule) in super::super::manifests::semantic::indexed_rules(
+            &context.language_context.syntax_rules,
+            indices.iter().copied(),
+        ) {
+            super::super::manifests::semantic::execute_named_route_rule(
+                rule,
                 owner,
-                offset,
+                SourcePosition {
+                    line: node.start_position().row + offset + 1,
+                    column: node.start_position().column,
+                },
+                |module, export, argument| named_route_key(node, source, module, export, argument),
                 facts,
-                module,
-                export,
-                *argument,
-                expression_prefix,
-                &rule,
             );
         }
-    }
+    });
 }
 
-#[allow(clippy::too_many_arguments)]
-fn extract_named_route(
+fn named_route_key(
     node: Node<'_>,
     source: &str,
-    owner: &str,
-    offset: usize,
-    facts: &mut Facts,
     module: &str,
     export: &str,
     argument: usize,
-    expression_prefix: &str,
-    rule: &SyntaxRule,
-) {
+) -> Option<String> {
     if node.kind() != "call" {
-        return;
+        return None;
     }
-    let Some((direct_alias, module_expression)) = reverse_call_candidate(node, source, export)
-    else {
-        return;
-    };
+    let (direct_alias, module_expression) = reverse_call_candidate(node, source, export)?;
+    let arguments = node.child_by_field_name("arguments")?;
+    let mut cursor = arguments.walk();
+    let first = arguments
+        .named_children(&mut cursor)
+        .filter(|argument| argument.kind() != "comment")
+        .nth(argument)?;
+    if matches!(
+        first.kind(),
+        "keyword_argument" | "list_splat" | "dictionary_splat"
+    ) {
+        return None;
+    }
+    let name = super::template_loaders::literal(first, source)?;
     let root = direct_alias
         .and_then(|alias| lexical_import_owner(node, source, alias))
         .or_else(|| {
@@ -802,9 +761,7 @@ fn extract_named_route(
             let binding = expression.split('.').next()?;
             lexical_import_owner(node, source, binding)
         });
-    let Some(root) = root else {
-        return;
-    };
+    let root = root?;
     let imported = direct_alias.is_some_and(|alias| {
         super::template_loaders::imported(root, source, alias, module, export, node.start_byte())
     });
@@ -813,48 +770,9 @@ fn extract_named_route(
         imported_module(root, source, binding, expression, node.start_byte(), module)
     });
     if !imported && !module_imported {
-        return;
+        return None;
     }
-    let Some(arguments) = node.child_by_field_name("arguments") else {
-        return;
-    };
-    let mut cursor = arguments.walk();
-    let Some(first) = arguments
-        .named_children(&mut cursor)
-        .filter(|argument| argument.kind() != "comment")
-        .nth(argument)
-    else {
-        return;
-    };
-    if matches!(
-        first.kind(),
-        "keyword_argument" | "list_splat" | "dictionary_splat"
-    ) {
-        return;
-    }
-    let Some(name) =
-        super::template_loaders::literal(first, source).filter(|name| route_name(name))
-    else {
-        return;
-    };
-    let position = node.start_position();
-    facts.references.push(Reference {
-        source: owner.to_owned(),
-        dynamic: false,
-        expression: format!("{expression_prefix}{name}"),
-        kind: "references_route".into(),
-        line: position.row + offset + 1,
-        column: position.column,
-        alias: None,
-        module: None,
-        receiver_hint: Some(crate::core::models::ReceiverHint::NamedRoute {
-            origin: crate::core::semantic::ExtractionRuleOrigin {
-                pack: rule.pack.clone(),
-                rule: rule.id.clone(),
-            },
-            key: name.to_owned(),
-        }),
-    });
+    Some(name.to_owned())
 }
 
 fn reverse_call_candidate<'source>(
@@ -905,6 +823,22 @@ pub(super) fn extract_class_attribute(
     if !matches!(node.kind(), "assignment" | "annotated_assignment") {
         return;
     }
+    let (Some(left), Some(value)) = (
+        node.child_by_field_name("left"),
+        node.child_by_field_name("right"),
+    ) else {
+        return;
+    };
+    if left.kind() != "identifier" {
+        return;
+    }
+    let attribute = text(left, source);
+    let Some(indices) = context
+        .prepared_projections("python")
+        .and_then(|prepared| prepared.class_attributes.get(attribute))
+    else {
+        return;
+    };
     let statement = if node
         .parent()
         .is_some_and(|parent| parent.kind() == "expression_statement")
@@ -921,64 +855,24 @@ pub(super) fn extract_class_attribute(
     if !is_class_body {
         return;
     }
-    let (Some(left), Some(value)) = (
-        node.child_by_field_name("left"),
-        node.child_by_field_name("right"),
-    ) else {
-        return;
-    };
-    if left.kind() != "identifier" {
-        return;
-    }
-    let attribute = text(left, source);
     let position = node.start_position();
-    for effective in context.semantic_rules.iter().filter(|rule| rule.active) {
-        let (expression, identity_path, role) = match &effective.rule.operation {
-            super::super::manifests::SemanticOperation::ClassAttributeToFile {
-                language,
-                attribute: expected,
-                target: _,
-                relation,
-            } if language == "python" && expected == attribute => {
-                let literal = super::template_loaders::literal(value, source)
-                    .filter(|value| super::super::manifests::semantic::normal_relative_path(value));
-                (
-                    text(value, source).to_owned(),
-                    literal.unwrap_or("").to_owned(),
-                    super::super::semantic::SemanticFactRole::ClassAttributeToFile {
-                        attribute: attribute.to_owned(),
-                        relation: *relation,
-                    },
-                )
-            }
-            super::super::manifests::SemanticOperation::ClassAttributeToSymbol {
-                language,
-                attribute: expected,
-                target: _,
-                relation,
-            } if language == "python" && expected == attribute => {
-                let expression = static_symbol(value, source).unwrap_or_default();
-                (
-                    text(value, source).to_owned(),
-                    expression,
-                    super::super::semantic::SemanticFactRole::ClassAttributeToSymbol {
-                        attribute: attribute.to_owned(),
-                        relation: *relation,
-                    },
-                )
-            }
-            _ => continue,
-        };
-        super::super::semantic::push(
+    for (_, effective) in super::super::manifests::semantic::indexed_rules(
+        &context.semantic_rules,
+        indices.iter().copied(),
+    ) {
+        super::super::manifests::semantic::execute_class_attribute_rule(
+            effective,
+            "python",
+            attribute,
+            owner,
+            SourcePosition {
+                line: position.row + offset + 1,
+                column: position.column,
+            },
+            text(value, source),
+            || super::template_loaders::literal(value, source).map(str::to_owned),
+            || static_symbol(value, source),
             facts,
-            effective.fact(
-                owner,
-                position.row + offset + 1,
-                position.column,
-                identity_path,
-                expression,
-                role,
-            ),
         );
     }
 }
@@ -1018,29 +912,33 @@ pub(super) fn is_receiver_registration(
     facts: &Facts,
     guard: &str,
 ) -> bool {
-    if node.kind() != "call"
-        || !super::module_scope(node)
-        || PREPARED_SYNTAX_CONTEXT.with(|context| {
-            context.borrow().as_ref().is_none_or(|context| {
-                context
-                    .receiver_registration_conflicts
-                    .contains(&(node.id(), guard.to_owned()))
-            })
-        })
-    {
+    if node.kind() != "call" {
         return false;
     }
     let handler_argument = PREPARED_SYNTAX_CONTEXT.with(|context| {
         context.borrow().as_ref().and_then(|context| {
+            if context
+                .receiver_registration_conflicts
+                .get(&node.id())
+                .is_some_and(|guards| guards.contains(guard))
+            {
+                return None;
+            }
             context
                 .receiver_registration_candidates
-                .get(&(node.id(), guard.to_owned()))
+                .get(&node.id())
+                .and_then(|guards| guards.get(guard))
                 .copied()
         })
     });
-    let Some(handler) = handler_argument
-        .and_then(|index| positional_argument(node, index))
-        .filter(|value| value.kind() == "identifier")
+    let Some(handler_argument) = handler_argument else {
+        return false;
+    };
+    if !super::module_scope(node) {
+        return false;
+    }
+    let Some(handler) =
+        positional_argument(node, handler_argument).filter(|value| value.kind() == "identifier")
     else {
         return false;
     };
@@ -1065,7 +963,7 @@ fn reverse_call_candidate_rejects_unrelated_identifier_calls() {
     parser.set_language(&super::language()).unwrap();
     let tree = parser.parse(source, None).unwrap();
     let root = tree.root_node();
-    prepare_file(root, source, &crate::engine::languages::dependency_registry::DependencyRegistry::bundled_framework_rules().language_context_for_path("test.py").syntax_rules);
+    prepare_file(root, source, &crate::engine::languages::dependency_registry::DependencyRegistry::bundled_framework_rules().language_context_for_path("test.py"));
     let mut cursor = root.walk();
     let calls = root
         .named_children(&mut cursor)
@@ -1099,7 +997,7 @@ fn imported_reverse_alias_remains_a_candidate() {
     parser.set_language(&super::language()).unwrap();
     let tree = parser.parse(source, None).unwrap();
     let root = tree.root_node();
-    prepare_file(root, source, &crate::engine::languages::dependency_registry::DependencyRegistry::bundled_framework_rules().language_context_for_path("test.py").syntax_rules);
+    prepare_file(root, source, &crate::engine::languages::dependency_registry::DependencyRegistry::bundled_framework_rules().language_context_for_path("test.py"));
     let call = root.named_child(1).unwrap().named_child(0).unwrap();
     let mut facts = crate::core::models::Facts::default();
 
@@ -1118,11 +1016,11 @@ fn receiver_registration_conflicts_are_prepared_once_per_module_scope() {
     parser.set_language(&super::language()).unwrap();
     let tree = parser.parse(source, None).unwrap();
     let root = tree.root_node();
-    prepare_file(root, source, &crate::engine::languages::dependency_registry::DependencyRegistry::bundled_framework_rules().language_context_for_path("test.py").syntax_rules);
-    let binding_counts = module_binding_counts(root, source);
+    prepare_file(root, source, &crate::engine::languages::dependency_registry::DependencyRegistry::bundled_framework_rules().language_context_for_path("test.py"));
+    let binding_counts = super::template_loaders::binding_counts(root, source);
     for name in ["DefaultRouter", "router", "First", "Nested", "missing"] {
         assert_eq!(
-            binding_count(&binding_counts, name),
+            binding_counts.count(name),
             super::template_loaders::binding_count(root, source, name),
             "binding count for {name}"
         );

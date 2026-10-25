@@ -1,6 +1,5 @@
 use super::{text, Syntax};
 use crate::core::models::{Edge, Facts, Node, Reference};
-use serde_json::json;
 
 pub(crate) fn reference(facts: &mut Facts, owner: &str, expression: &str, kind: &str, line: usize) {
     if expression.is_empty() || expression == "_" {
@@ -36,16 +35,6 @@ pub(crate) fn type_name<'a>(node: Syntax<'_>, source: &'a str) -> &'a str {
     }
 }
 
-pub(crate) fn type_references(
-    facts: &mut Facts,
-    owner: &str,
-    type_node: Syntax<'_>,
-    source: &str,
-    line: usize,
-) {
-    type_references_impl(facts, owner, type_node, source, line, false);
-}
-
 pub(crate) fn type_references_at(
     facts: &mut Facts,
     owner: &str,
@@ -53,7 +42,18 @@ pub(crate) fn type_references_at(
     source: &str,
     line_offset: usize,
 ) {
-    type_references_impl(facts, owner, type_node, source, line_offset, true);
+    type_references_impl(facts, owner, type_node, source, line_offset, None);
+}
+
+pub(crate) fn type_references_with_value_queries(
+    facts: &mut Facts,
+    owner: &str,
+    type_node: Syntax<'_>,
+    source: &str,
+    line: usize,
+    line_offset: usize,
+) {
+    type_references_impl(facts, owner, type_node, source, line_offset, Some(line));
 }
 
 fn type_references_impl(
@@ -61,16 +61,17 @@ fn type_references_impl(
     owner: &str,
     type_node: Syntax<'_>,
     source: &str,
-    line: usize,
-    exact_position: bool,
+    line_offset: usize,
+    legacy_line: Option<usize>,
 ) {
-    let mut stack = vec![type_node];
-    while let Some(n) = stack.pop() {
+    let mut stack = vec![(type_node, false)];
+    while let Some((n, value_query)) = stack.pop() {
         let position = n.start_position();
+        let exact_position = legacy_line.is_none() || value_query;
         let line = if exact_position {
-            position.row + line + 1
+            position.row + line_offset + 1
         } else {
-            line
+            legacy_line.unwrap_or(line_offset)
         };
         match n.kind() {
             "scoped_type_identifier" | "attribute" => {
@@ -112,9 +113,11 @@ fn type_references_impl(
                 }
             }
             _ => {
+                let direct_query =
+                    n.kind() == "type_query" && !n.has_error() && n.named_child_count() == 1;
                 let mut cursor = n.walk();
                 for child in n.named_children(&mut cursor) {
-                    stack.push(child);
+                    stack.push((child, direct_query && child.kind() == "identifier"));
                 }
             }
         }
@@ -225,6 +228,7 @@ fn add_field(
     }
     let id = format!("field:{}:{line}:{qualname}", owner.path);
     facts.nodes.push(Node {
+        native_semantic: None,
         id: id.clone(),
         kind: "field".into(),
         name: name.into(),
@@ -235,7 +239,7 @@ fn add_field(
         is_test: owner.is_test,
         language: owner.language.into(),
         generated: false,
-        details: json!({}),
+        details: serde_json::Value::Null,
     });
     facts.edges.push(Edge {
         src: owner.id.into(),

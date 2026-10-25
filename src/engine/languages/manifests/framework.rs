@@ -4,27 +4,7 @@ use std::collections::BTreeSet;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
-/// A typed value retained inside one framework rule.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum FrameworkManifestValue {
-    /// Decoded string.
-    String(String),
-    /// Signed integer.
-    Integer(i64),
-    /// Floating-point number.
-    Float(f64),
-    /// Boolean.
-    Boolean(bool),
-    /// TOML date or time value.
-    DateTime(toml::value::Datetime),
-    /// Ordered array values.
-    Array(Vec<FrameworkManifestValue>),
-    /// Table fields in deterministic key order.
-    Table(BTreeMap<String, FrameworkManifestValue>),
-}
-
-/// Framework rules separated by the linker-owned rule domain.
+/// Validated framework rule data consumed by generic language operations.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FrameworkManifest {
@@ -40,14 +20,6 @@ pub struct FrameworkManifest {
     /// Selects replacement of the bundled table when true.
     #[serde(default, skip_serializing)]
     replace: bool,
-    /// Receiver rules consumed by the language linker.
-    pub receivers: Vec<FrameworkManifestValue>,
-    /// Builtin rules consumed by the language linker.
-    pub builtins: Vec<FrameworkManifestValue>,
-    /// Template-filter rules consumed by the language linker.
-    pub filters: Vec<FrameworkManifestValue>,
-    /// Route-pattern rules consumed by the language linker.
-    pub routes: Vec<FrameworkManifestValue>,
     /// Members inherited from known external class hierarchies.
     #[serde(default)]
     pub class_hierarchy_receivers: Vec<ClassHierarchyReceiverRule>,
@@ -76,6 +48,56 @@ pub struct ClassHierarchyReceiverRule {
     pub provider: String,
     /// Member paths supplied by the base.
     pub members: Vec<String>,
+    /// Finite result policies for declared complete member paths.
+    #[serde(default, deserialize_with = "deserialize_returns")]
+    pub returns: BTreeMap<String, ReturnPolicy>,
+}
+
+/// A result admitted by one effective hierarchy member rule.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", deny_unknown_fields)]
+pub enum ReturnPolicy {
+    /// Preserve the proven original receiver, including local subclass identity.
+    #[serde(rename = "self")]
+    SelfReceiver,
+    /// Select a unique effective hierarchy row in the same pack.
+    #[serde(rename = "receiver")]
+    Receiver {
+        /// One declared base identity on the target row.
+        base: String,
+    },
+}
+
+fn deserialize_returns<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<BTreeMap<String, ReturnPolicy>, D::Error> {
+    struct Returns;
+    impl<'de> serde::de::Visitor<'de> for Returns {
+        type Value = BTreeMap<String, ReturnPolicy>;
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("unique hierarchy return-policy member keys")
+        }
+        fn visit_map<A: serde::de::MapAccess<'de>>(
+            self,
+            mut map: A,
+        ) -> std::result::Result<Self::Value, A::Error> {
+            let mut values = BTreeMap::new();
+            while let Some((key, value)) = map.next_entry::<String, ReturnPolicy>()? {
+                if values.insert(key, value).is_some() {
+                    return Err(serde::de::Error::custom(
+                        "duplicate hierarchy return-policy member",
+                    ));
+                }
+                if values.len() > 256 {
+                    return Err(serde::de::Error::custom(
+                        "hierarchy returns exceed 256 entries",
+                    ));
+                }
+            }
+            Ok(values)
+        }
+    }
+    deserializer.deserialize_map(Returns)
 }
 
 /// Route metadata extracted from a decorator call.
@@ -259,6 +281,31 @@ pub struct RuleCoverageDiagnostic {
 }
 
 impl ClassHierarchyReceiverRule {
+    /// Validates new policy payload without restricting legacy member-only rows.
+    pub(crate) fn validate_returns(&self, name_bytes: usize) -> Result<()> {
+        anyhow::ensure!(
+            self.returns.len() <= 256,
+            "hierarchy returns exceed 256 entries"
+        );
+        let valid = |name: &str| {
+            !name.trim().is_empty()
+                && name.len() <= name_bytes
+                && !name.chars().any(char::is_control)
+        };
+        for (member, policy) in &self.returns {
+            anyhow::ensure!(
+                valid(member) && self.members.contains(member),
+                "hierarchy return key must name a declared member within name_bytes"
+            );
+            if let ReturnPolicy::Receiver { base } = policy {
+                anyhow::ensure!(
+                    valid(base),
+                    "hierarchy return base exceeds name_bytes or is malformed"
+                );
+            }
+        }
+        Ok(())
+    }
     fn identity(&self) -> RuleIdentity {
         RuleIdentity::ClassHierarchy {
             bases: self.bases.clone(),
@@ -334,23 +381,6 @@ impl FrameworkManifest {
         }
     }
 
-    fn merge_rules(
-        project: &[FrameworkManifestValue],
-        bundled: &[FrameworkManifestValue],
-        identity: impl Fn(&str) -> String,
-    ) -> Vec<FrameworkManifestValue> {
-        let mut seen = BTreeSet::new();
-        project
-            .iter()
-            .chain(bundled)
-            .filter(|rule| match rule {
-                FrameworkManifestValue::String(value) => seen.insert(identity(value)),
-                _ => true,
-            })
-            .cloned()
-            .collect()
-    }
-
     /// Merges project rules before bundled rules, unless replacement is explicit.
     pub(crate) fn with_bundled_rules(self, bundled: &Self) -> Self {
         if self.replace {
@@ -361,20 +391,11 @@ impl FrameworkManifest {
             };
         }
 
-        let source_identity = |rule: &str| {
-            rule.split_once('=')
-                .map_or(rule, |(source, _)| source)
-                .to_owned()
-        };
         Self {
             name: self.name,
             enabled: self.enabled,
             extend: false,
             replace: false,
-            receivers: Self::merge_rules(&self.receivers, &bundled.receivers, source_identity),
-            builtins: Self::merge_rules(&self.builtins, &bundled.builtins, str::to_owned),
-            filters: Self::merge_rules(&self.filters, &bundled.filters, str::to_owned),
-            routes: Self::merge_rules(&self.routes, &bundled.routes, source_identity),
             class_hierarchy_receivers: merge_typed_rules(
                 self.class_hierarchy_receivers,
                 &bundled.class_hierarchy_receivers,
@@ -410,6 +431,7 @@ impl FrameworkManifest {
     /// Checks typed rules against the shape needed by extraction.
     fn validate(&self) -> Result<()> {
         for rule in &self.class_hierarchy_receivers {
+            rule.validate_returns(4096)?;
             anyhow::ensure!(
                 !rule.bases.is_empty()
                     && rule.bases.iter().all(|base| !base.trim().is_empty())
@@ -479,58 +501,15 @@ impl FrameworkManifest {
         Ok(())
     }
 
-    fn contains_rule(rules: &[FrameworkManifestValue], rule: &str) -> bool {
-        rules
-            .iter()
-            .any(|value| matches!(value, FrameworkManifestValue::String(value) if value == rule))
-    }
-
-    /// Returns whether a receiver rule is present in this framework table.
-    pub(crate) fn has_receiver(&self, rule: &str) -> bool {
-        Self::contains_rule(&self.receivers, rule)
-    }
-
-    /// Returns whether a builtin rule is present in this framework table.
-    pub(crate) fn has_builtin(&self, rule: &str) -> bool {
-        Self::contains_rule(&self.builtins, rule)
-    }
-
-    /// Returns whether a template-filter rule is present in this framework table.
-    pub(crate) fn has_filter(&self, rule: &str) -> bool {
-        Self::contains_rule(&self.filters, rule)
-    }
-
-    /// Resolves a route rule encoded as `source=target`.
-    #[cfg(test)]
-    pub(crate) fn receiver_target(&self, source: &str) -> Option<&str> {
-        Self::mapping_target(&self.receivers, source)
-    }
-
-    /// Resolves a route rule encoded as `source=target`.
-    pub(crate) fn route_target(&self, source: &str) -> Option<&str> {
-        Self::mapping_target(&self.routes, source)
-    }
-
-    fn mapping_target<'a>(rules: &'a [FrameworkManifestValue], source: &str) -> Option<&'a str> {
-        rules.iter().find_map(|rule| {
-            let FrameworkManifestValue::String(rule) = rule else {
-                return None;
-            };
-            let (candidate, target) = rule.split_once('=')?;
-            (candidate == source).then_some(target)
-        })
-    }
-
     /// Parses one framework manifest according to its filename extension.
     ///
-    /// All four rule arrays are required by the type, so missing or non-array
-    /// sections fail during deserialization. TOML semantic validation is
-    /// delegated to the TOML parser and YAML shape validation to serde_yaml.
+    /// TOML semantic validation is delegated to the TOML parser and YAML shape
+    /// validation to serde_yaml. Unknown top-level fields remain errors.
     ///
     /// # Errors
     ///
-    /// Returns an error for unsupported extensions, malformed input, missing
-    /// or wrongly typed sections, invalid typed rules, or unknown sections.
+    /// Returns an error for unsupported extensions, malformed input, invalid
+    /// typed rules, or unknown sections.
     pub(crate) fn parse(name: String, extension: &str, source: &str) -> Result<Self> {
         let mut manifest = match extension {
             "toml" => toml::from_str::<Self>(source)

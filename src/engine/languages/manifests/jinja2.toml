@@ -1,58 +1,3 @@
-receivers = []
-builtins = [
-  "template.tag.block",
-  "template.tag.include",
-  "template.tag.extends",
-  "template.tag.import",
-  "template.tag.from",
-  "template.tag.with",
-  "template.tag.endwith",
-  "template.tag.endblock",
-  "template.tag.if",
-  "template.tag.elif",
-  "template.tag.else",
-  "template.tag.endif",
-  "template.tag.for",
-  "template.tag.empty",
-  "template.tag.endfor",
-  "template.tag.macro",
-  "template.tag.endmacro",
-  "template.tag.set",
-  "template.tag.autoescape",
-  "template.tag.endautoescape",
-  "template.tag.filter",
-  "template.tag.endfilter",
-  "template.tag.call",
-  "template.tag.endcall",
-  "template.tag.trans",
-  "template.tag.endtrans",
-  "template.tag.raw",
-  "template.tag.endraw",
-  "template.tag.endset",
-]
-filters = [
-  "template.filter.default",
-  "template.filter.date",
-  "template.filter.length",
-  "template.filter.escape",
-  "template.filter.safe",
-  "template.filter.upper",
-  "template.filter.lower",
-  "template.filter.urlencode",
-  "template.filter.e",
-  "template.filter.selectattr",
-  "template.filter.list",
-  "template.filter.first",
-  "template.filter.last",
-  "template.filter.join",
-  "template.filter.tojson",
-  "template.filter.int",
-  "template.filter.float",
-  "template.filter.round",
-  "template.filter.sum",
-]
-routes = []
-
 [[syntax_rules]]
 id = "template-loader"
 language = "python"
@@ -62,4 +7,6 @@ operation = { kind = "template_loader", package = "jinja2", module = "jinja2", e
 id = "template-symbols"
 display = { builtin = "builtin:jinja_template" }
 language = "html"
-operation = { kind = "template_symbols", package = "jinja2", requires_loader = true }
+package_family = "python"
+activation = [{ kind = "package", name = "jinja2" }]
+operation = { kind = "template_symbols", requires_loader = true, tags = ["block", "include", "extends", "import", "from", "with", "endwith", "endblock", "if", "elif", "else", "endif", "for", "empty", "endfor", "macro", "endmacro", "set", "autoescape", "endautoescape", "filter", "endfilter", "call", "endcall", "trans", "endtrans", "raw", "endraw", "endset"], filters = ["default", "date", "length", "escape", "safe", "upper", "lower", "urlencode", "e", "selectattr", "list", "first", "last", "join", "tojson", "int", "float", "round", "sum"], libraries = [], library_routes = {} }

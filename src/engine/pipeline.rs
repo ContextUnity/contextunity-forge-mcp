@@ -354,6 +354,7 @@ fn extract_typed_source_with_digest(
                 details.as_object_mut().unwrap().remove("status");
             }
             nodes.push(Node {
+                native_semantic: None,
                 id: doc.doc_id.clone(),
                 kind: "document".into(),
                 name: doc.section_title.clone(),
@@ -373,6 +374,7 @@ fn extract_typed_source_with_digest(
                     };
                     let invariant_line = invariant["line"].as_u64().unwrap_or(line as u64) as usize;
                     nodes.push(Node {
+                        native_semantic: None,
                         id: format!("invariant:{}:{invariant_line}:{name}", doc.path),
                         kind: "invariant".into(),
                         name: name.to_owned(),
@@ -409,7 +411,7 @@ fn sanitize_extracted_facts(facts: &mut TypedFacts) {
         if node.details.get("classic_global") == Some(&serde_json::Value::Bool(true)) {
             if facts.flows.state(node).is_some() {
                 if let Some(details) = node.details.as_object_mut() {
-                    details.insert("value_flow".into(), serde_json::Value::Null);
+                    details.remove("value_flow");
                 }
             } else if let Some(details) = node.details.as_object_mut() {
                 details.remove("value_flow");
@@ -425,6 +427,7 @@ fn extract_candidate(
     dependencies: &DependencyRegistry,
     extraction_cache: &ExtractionCache,
     effective_ruleset_hash: &str,
+    source: &mut String,
 ) -> Result<(FileEntry, TypedFacts, bool)> {
     let path = resolve_file_path(root, adapter, &candidate.path)?;
     let mut options = OpenOptions::new();
@@ -444,12 +447,12 @@ fn extract_candidate(
     }
     let source_capacity =
         usize::try_from(candidate.bytes).context("source size exceeds addressable memory")?;
-    let mut source = String::new();
+    source.clear();
     source.try_reserve_exact(source_capacity)?;
     source_file
         .by_ref()
         .take(adapter.limits.max_file_bytes.saturating_add(1))
-        .read_to_string(&mut source)?;
+        .read_to_string(source)?;
     if source.len() as u64 > adapter.limits.max_file_bytes || source.len() as u64 != candidate.bytes
     {
         return Err(SourceSnapshotMismatch(format!(
@@ -487,7 +490,7 @@ fn extract_candidate(
         sanitize_extracted_facts(&mut facts);
         return Ok((file, facts, true));
     }
-    let facts = extract_typed_source_with_digest(&file, &source, &source_digest, dependencies)?;
+    let facts = extract_typed_source_with_digest(&file, source, &source_digest, dependencies)?;
     extraction_cache.store(&key, &facts);
     Ok((file, facts, false))
 }
@@ -699,6 +702,7 @@ fn extraction_worker(context: ExtractionWorkerContext) {
         counters,
         test_hooks,
     } = context;
+    let mut source = String::new();
     loop {
         let next = {
             let receiver = work_rx.lock().unwrap_or_else(|error| error.into_inner());
@@ -727,11 +731,19 @@ fn extraction_worker(context: ExtractionWorkerContext) {
             &dependencies,
             &extraction_cache,
             &effective_ruleset_hash,
+            &mut source,
         )
         .and_then(|(file, facts, cache_hit)| {
             let mut files = BTreeMap::from([(file.path.clone(), facts)]);
             assign_components(&mut files, &BTreeMap::new());
-            let storage_rows = crate::db::writer::prepare_catalog_storage(&file, &files)?;
+            let prepared_facts = files
+                .get(&file.path)
+                .context("single extracted file missing after component assignment")?;
+            let storage_rows = crate::db::writer::prepare_catalog_storage_with_facts(
+                &file,
+                &files,
+                Some(prepared_facts),
+            )?;
             let facts = files.remove(&file.path).expect("single extracted file");
             let encoded_facts = crate::core::typed_facts::encode_facts(&facts)?;
             let mut catalog = SymbolCatalog::default();
@@ -881,7 +893,7 @@ fn component_owners<'a>(paths: impl Iterator<Item = &'a str>) -> BTreeMap<String
 
 fn assign_components(facts: &mut BTreeMap<String, TypedFacts>, owners: &BTreeMap<String, String>) {
     for (path, f) in facts {
-        f.nodes.retain(|n| n.kind != "component");
+        f.facts.retain_nodes(|n| n.kind != "component");
         f.edges.retain(|e| !e.src.starts_with("component:"));
         if !f.nodes.iter().any(|n| n.kind == "module") {
             continue;
@@ -890,6 +902,7 @@ fn assign_components(facts: &mut BTreeMap<String, TypedFacts>, owners: &BTreeMap
         let id = format!("component:{root}");
         if owners.get(root) == Some(path) {
             f.nodes.push(Node {
+                native_semantic: None,
                 id: id.clone(),
                 kind: "component".into(),
                 name: root.into(),
@@ -900,7 +913,7 @@ fn assign_components(facts: &mut BTreeMap<String, TypedFacts>, owners: &BTreeMap
                 is_test: false,
                 language: "workspace".into(),
                 generated: false,
-                details: json!({}),
+                details: serde_json::Value::Null,
             });
         }
         f.edges.push(Edge {
@@ -1018,7 +1031,10 @@ pub fn validate_code_map_target(root: &Path, output: &Path) -> Result<()> {
                     .downcast_ref::<std::io::Error>()
                     .is_some_and(|error| error.kind() != std::io::ErrorKind::UnexpectedEof)
                 {
-                    bail!("TASK_DATABASE_COLLISION: Cannot read database at '{}' ({error}). Refusing to overwrite potentially active task database.", output.display());
+                    bail!(
+                        "TASK_DATABASE_COLLISION: Cannot read database at '{}' ({error}). Refusing to overwrite potentially active task database.",
+                        output.display()
+                    );
                 }
             }
             if header.is_ok() {
@@ -1163,7 +1179,7 @@ fn atomic_build(
             .sort_by(|left, right| left.path.cmp(&right.path));
         let preparing_components = Instant::now();
         let mut changed_paths =
-            ast::route_includes::compose_django_route_includes(&mut streamed.catalog.files);
+            ast::route_includes::compose_route_includes(&mut streamed.catalog.files);
         changed_paths.extend(components(&mut streamed.catalog.files));
         for path in changed_paths {
             if let Some(payload) = streamed.staged_payloads.get_mut(&path) {
@@ -1427,7 +1443,7 @@ fn rust_impl_shapes(facts: &Facts) -> Result<RustImplShapes> {
             "is_static": method.details["is_static"],
             "unproven_bounds": method.details["unproven_bounds"],
             "signature": method.details["signature"],
-            "param_types": method.details["param_types"],
+            "param_types": method.parameter_types_value(),
             "return_type": method.details["return_type"],
         });
         shapes
@@ -1487,7 +1503,7 @@ fn changed_rust_impl_methods(
     Ok(changed_methods)
 }
 
-fn django_route_include_closure(
+fn route_include_closure(
     conn: &Connection,
     facts: &BTreeMap<String, TypedFacts>,
     modified: &BTreeSet<String>,
@@ -1582,11 +1598,31 @@ fn semantic_fact_owners(
 ) -> Result<BTreeSet<String>> {
     let mut keys = BTreeSet::new();
     for (_, typed) in facts.iter().filter(|(path, _)| seeds.contains(*path)) {
-        for node in &typed.facts.nodes {
-            for fact in crate::engine::languages::semantic::decode(node)? {
+        for (_, entry) in typed.facts.semantic.entries() {
+            let crate::core::typed_facts::SemanticState::Valid { facts: values, .. } = &entry.state
+            else {
+                if let crate::core::typed_facts::SemanticState::Invalid { error, .. } = &entry.state
+                {
+                    anyhow::bail!("{error}");
+                }
+                unreachable!();
+            };
+            for fact in values {
                 keys.insert(crate::engine::languages::semantic::dependency_key(
                     &fact.identity,
                 ));
+            }
+        }
+        if !typed.facts.semantic.is_complete() {
+            for (index, node) in typed.facts.nodes.iter().enumerate() {
+                if typed.facts.semantic.state(index).is_some() {
+                    continue;
+                }
+                for fact in crate::engine::languages::semantic::decode(node)? {
+                    keys.insert(crate::engine::languages::semantic::dependency_key(
+                        &fact.identity,
+                    ));
+                }
             }
         }
     }
@@ -1606,6 +1642,98 @@ fn semantic_fact_owners(
         .into_iter()
         .filter(|path| inventory.contains_key(path.as_str()))
         .collect())
+}
+
+fn named_projection_candidates(
+    conn: &Connection,
+    facts: &BTreeMap<String, TypedFacts>,
+    seeds: &BTreeSet<String>,
+    inventory: &BTreeMap<&str, &FileEntry>,
+    dependencies: &crate::engine::languages::dependency_registry::DependencyRegistry,
+    changed_resolution: &BTreeSet<String>,
+    previous_owners: Option<&BTreeSet<String>>,
+) -> Result<BTreeSet<String>> {
+    let mut selectors = BTreeSet::new();
+    let mut unavailable_scopes = BTreeSet::new();
+    let mut unavailable_owners = BTreeSet::new();
+    let mut collect = |path: &str, file: &TypedFacts| {
+        if file.flows.named_uncertainty_faults().next().is_some() {
+            unavailable_scopes.insert(linker::named_binding_scope(path, dependencies));
+            unavailable_owners.insert(path.to_owned());
+        }
+        for reference in file.references.iter().filter(|reference| {
+            reference.kind == "semantic_named_reference"
+                || (reference.kind == "semantic_named_definition"
+                    && changed_resolution.contains(path))
+        }) {
+            if let Some(domain) = &reference.module {
+                selectors.insert((
+                    path.to_owned(),
+                    domain.clone(),
+                    reference.expression.clone(),
+                    reference.kind == "semantic_named_definition",
+                ));
+            }
+        }
+    };
+    for (path, file) in facts.iter().filter(|(path, _)| seeds.contains(*path)) {
+        collect(path, file);
+    }
+    // Only modified/deleted inputs need an old snapshot comparison. Unchanged
+    // affected providers contribute selectors after their one canonical load.
+    if let Some(previous_owners) = previous_owners {
+        let mut old = conn.prepare(
+        "SELECT path,facts_blob FROM local_facts WHERE path IN(SELECT value FROM json_each(?1))",
+    )?;
+        for row in old.query_map([serde_json::to_string(previous_owners)?], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })? {
+            let (path, blob) = row?;
+            collect(&path, &decode_facts(&blob)?);
+        }
+    }
+    let mut selected = BTreeSet::new();
+    // A bounded carrier can explicitly make configured named authority unavailable
+    // for its project without enumerating every affected domain. Revisit that same
+    // scope on both appearance and removal, including consumers previously unknown.
+    if !unavailable_scopes.is_empty() {
+        for path in inventory.keys() {
+            let admitted = unavailable_scopes
+                .contains(&linker::named_binding_scope(path, dependencies))
+                || dependencies.language_context_for_path(path).syntax_rules.iter().any(|rule| {
+                    matches!(&rule.operation, crate::engine::languages::manifests::syntax::SyntaxOperation::NamedBinding { domain, .. }
+                        if unavailable_owners.iter().any(|owner| dependencies.named_scope_admits(path, owner, domain)))
+                });
+            if admitted {
+                selected.insert((*path).to_owned());
+            }
+        }
+    }
+    let mut query = conn.prepare("SELECT DISTINCT p.path FROM shared_owners domain JOIN shared_keys dk ON dk.key_hash=domain.key_hash JOIN path_dictionary p ON p.path_id=domain.owner_id WHERE domain.kind_id=1 AND domain.key_hash=?1 AND dk.key=?2 AND (?3='' OR EXISTS(SELECT 1 FROM shared_owners key_owner JOIN shared_keys kk ON kk.key_hash=key_owner.key_hash WHERE key_owner.owner_id=domain.owner_id AND key_owner.kind_id=1 AND key_owner.key_hash IN(?4,?5) AND kk.key IN(?3,'')))")?;
+    for (owner, domain, key, definition) in selectors {
+        for row in query.query_map(
+            params![
+                stable_hash64(&domain),
+                domain,
+                key,
+                stable_hash64(&key),
+                stable_hash64("")
+            ],
+            |row| row.get::<_, String>(0),
+        )? {
+            let path = row?;
+            if inventory.contains_key(path.as_str())
+                && if definition {
+                    dependencies.named_scope_admits(&path, &owner, &domain)
+                } else {
+                    dependencies.named_scope_admits(&owner, &path, &domain)
+                }
+            {
+                selected.insert(path);
+            }
+        }
+    }
+    Ok(selected)
 }
 
 fn persisted_possible_call_owners(
@@ -1824,7 +1952,7 @@ fn module_exposes_provider_contract(
         if !exported {
             continue;
         }
-        let details = contracts.details(node);
+        let details = contracts.details(node, None);
         let return_contract = &details["value_flow"]["return_contract"];
         if return_contract.is_null()
             || contract_mentions_import(return_contract, &imported_names, &qualified_aliases)
@@ -2010,6 +2138,30 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
         }
     }
     let mut names = BTreeSet::new();
+    let callable_providers = linker::configured_callable_provider_paths(
+        &changed_resolution,
+        inventory
+            .iter()
+            .chain(previous.iter())
+            .map(|(path, file)| (*path, file.language.as_str())),
+        &dependencies,
+    );
+    if !callable_providers.is_empty() {
+        // Configuration-only changes seed old exports before unchanged consumer
+        // selection. These indexed names grant no callable resolution authority.
+        let mut st = admitted.prepare(
+            "SELECT json_extract(binding.value,'$.name'),json_extract(binding.value,'$.local') FROM path_dictionary p JOIN nodes n INDEXED BY idx_nodes_path ON n.path_id=p.path_id JOIN json_each(n.details,'$.exports') binding WHERE p.path IN(SELECT value FROM json_each(?1)) AND n.kind='module'",
+        )?;
+        for row in st.query_map([serde_json::to_string(&callable_providers)?], |row| {
+            Ok((
+                row.get::<_, Option<String>>(0)?,
+                row.get::<_, Option<String>>(1)?,
+            ))
+        })? {
+            let (public, local) = row?;
+            names.extend(public.into_iter().chain(local));
+        }
+    }
     let encoded = serde_json::to_string(&changed_resolution)?;
     {
         let mut st = admitted.prepare(
@@ -2025,6 +2177,9 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
         })? {
             let (owner, name, qual, kind) = row?;
             names.insert(qual.clone());
+            if kind == "route" {
+                names.insert(name.clone());
+            }
             if !matches!(kind.as_str(), "field" | "method" | "route" | "document") {
                 let mod_name = module_name(&owner);
                 let (_, local_path) = crate::core::config::workspace_path(&owner);
@@ -2053,6 +2208,15 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
             }
         }
     }
+    {
+        let mut st = admitted.prepare(
+            "SELECT facts_blob FROM local_facts WHERE path IN(SELECT value FROM json_each(?1))",
+        )?;
+        for row in st.query_map([&encoded], |row| row.get::<_, Vec<u8>>(0))? {
+            let old = decode_facts(&row?)?;
+            names.extend(linker::configured_result_names(&old, &dependencies));
+        }
+    }
     for path in &changed_resolution {
         let mod_name = module_name(path);
         names.insert(mod_name.clone());
@@ -2068,6 +2232,7 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
         }
         let mut stable_module = false;
         if let Some(f) = facts.get(path) {
+            names.extend(linker::configured_result_names(f, &dependencies));
             let previous_module: Option<(String, String, String)> = admitted
                 .prepare_cached("SELECT n.id,n.qualname,n.language FROM nodes n JOIN path_dictionary owner ON owner.path_id=n.owner_path_id WHERE owner.path=?1 AND n.kind='module'")?
                 .query_row([path], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
@@ -2084,6 +2249,9 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
                 });
             for n in &f.nodes {
                 names.insert(n.qualname.clone());
+                if n.kind == "route" {
+                    names.insert(n.name.clone());
+                }
                 if !matches!(n.kind.as_str(), "field" | "method" | "route" | "document") {
                     let is_top = n.qualname == n.name
                         || n.qualname
@@ -2157,8 +2325,11 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
                     ))
                 })? {
                     let (owner, symbol, hash) = row?;
-                    let Some(target) = crate::core::config::local_template_target(&owner, &symbol)
-                    else {
+                    let Some(target) = crate::engine::languages::html::local_template_target(
+                        &owner,
+                        &symbol,
+                        &dependencies.language_context_for_path(&owner),
+                    ) else {
                         continue;
                     };
                     if inventory
@@ -2261,8 +2432,7 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
         import_frontier = next;
     }
     drop(importing_owners);
-    let route_include_paths =
-        django_route_include_closure(&admitted, &facts, &modified, &inventory)?;
+    let route_include_paths = route_include_closure(&admitted, &facts, &modified, &inventory)?;
     let mut replace_files = modified.clone();
     replace_files.extend(route_include_paths.iter().cloned());
     affected.extend(route_include_paths);
@@ -2307,9 +2477,6 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
             let Some(scope) = dependencies.nearest_manifest_scope_for_path(family, provider) else {
                 continue;
             };
-            if !dependencies.declares_for_path(family, provider, "jinja2") {
-                continue;
-            }
             for (path, file) in &inventory {
                 if file.language == "html"
                     && path
@@ -2353,9 +2520,6 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
                 let Some(provider_facts) = facts.get(provider.as_str()) else {
                     continue;
                 };
-                if !dependencies.declares_for_path(family, provider, "django") {
-                    continue;
-                }
                 let scope = dependencies.nearest_manifest_scope_for_path(family, provider);
                 let workspace = crate::core::config::workspace_path(provider).0;
                 for node in provider_facts
@@ -2366,10 +2530,8 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
                     let Some(flow) = provider_facts.flows.get(node) else {
                         continue;
                     };
-                    for context in &flow.template_contexts {
-                        let Some(target) =
-                            crate::core::config::local_template_target(provider, &context.target)
-                        else {
+                    for context in flow.template_contexts() {
+                        let Some(target) = context.target_path.clone() else {
                             continue;
                         };
                         if inventory
@@ -2429,9 +2591,11 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
                     .iter()
                     .filter(|reference| reference.kind == "includes")
                 {
-                    let Some(target) =
-                        crate::core::config::local_template_target(owner, &reference.expression)
-                    else {
+                    let Some(target) = crate::engine::languages::html::local_template_target(
+                        owner,
+                        &reference.expression,
+                        &dependencies.language_context_for_path(owner),
+                    ) else {
                         continue;
                     };
                     if inventory
@@ -2454,8 +2618,20 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
     affected.extend(semantic_fact_owners(
         &admitted, &facts, &affected, &inventory,
     )?);
+    let mut named_candidates = named_projection_candidates(
+        &admitted,
+        &facts,
+        &affected,
+        &inventory,
+        &dependencies,
+        &changed_resolution,
+        Some(&modified),
+    )?;
+    let previously_affected = affected.clone();
+    affected.extend(named_candidates.iter().cloned());
     let mut load_owners: BTreeSet<_> = affected
         .difference(&modified)
+        .filter(|path| !named_candidates.contains(*path) || previously_affected.contains(*path))
         .filter(|path| inventory.contains_key(path.as_str()) && !facts.contains_key(path.as_str()))
         .cloned()
         .collect();
@@ -2556,11 +2732,66 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
             .iter()
             .map(|entry| (entry.path.as_str(), entry.language.as_str()))
             .collect();
+        // Borrow compact route metadata for endpoint provider selection. Full
+        // provider facts still enter through the canonical convergence below.
+        let route_catalog = {
+            let mut routes = admitted.prepare("SELECT n.id,n.name,n.qualname,p.path,n.line,n.end_line,n.is_test,n.language,n.generated,n.details FROM nodes n INDEXED BY idx_nodes_kind JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.kind='route'")?;
+            let selected = routes
+                .query_map([], |row| {
+                    let details: String = row.get(9)?;
+                    Ok(Node {
+                        native_semantic: None,
+                        id: row.get(0)?,
+                        kind: "route".into(),
+                        name: row.get(1)?,
+                        qualname: row.get(2)?,
+                        path: row.get(3)?,
+                        line: row.get(4)?,
+                        end_line: row.get(5)?,
+                        is_test: row.get(6)?,
+                        language: row.get(7)?,
+                        generated: row.get(8)?,
+                        details: serde_json::from_str(&details).map_err(|error| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                9,
+                                rusqlite::types::Type::Text,
+                                Box::new(error),
+                            )
+                        })?,
+                    })
+                })?
+                .filter(|node| {
+                    node.as_ref().map_or(true, |node| {
+                        !modified.contains(&node.path) && inventory.contains_key(node.path.as_str())
+                    })
+                })
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            selected
+        };
         let mut st = admitted.prepare("SELECT facts_blob FROM local_facts WHERE path=?1")?;
         let mut attempted = BTreeSet::new();
+        let mut named_frontier = facts.keys().cloned().collect();
         loop {
-            let mut loaded = false;
-            for path in linker::required_full_typed_facts(&facts, &affected, &catalog) {
+            // Cached providers can themselves reference another named definition.
+            // Query each newly hydrated frontier through the same compact index.
+            named_candidates.extend(named_projection_candidates(
+                &admitted,
+                &facts,
+                &named_frontier,
+                &inventory,
+                &dependencies,
+                &changed_resolution,
+                None,
+            )?);
+            named_frontier.clear();
+            for path in linker::required_full_typed_facts(
+                &facts,
+                &affected,
+                &catalog,
+                &dependencies,
+                &named_candidates,
+                &route_catalog,
+            ) {
                 if facts.contains_key(&path) || !attempted.insert(path.clone()) {
                     continue;
                 }
@@ -2568,18 +2799,17 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
                     .query_row([&path], |row| row.get::<_, Vec<u8>>(0))
                     .optional()?
                 {
-                    facts.insert(path, decode_facts(&raw)?);
+                    facts.insert(path.clone(), decode_facts(&raw)?);
+                    named_frontier.insert(path);
                     loaded_fact_files += 1;
-                    loaded = true;
                 }
             }
-            if !loaded {
+            if named_frontier.is_empty() {
                 break;
             }
         }
     }
-    let composed_routes =
-        crate::engine::ast::route_includes::compose_django_route_includes(&mut facts);
+    let composed_routes = crate::engine::ast::route_includes::compose_route_includes(&mut facts);
     affected.extend(composed_routes.iter().cloned());
     replace_files.extend(composed_routes);
     assign_components(&mut facts, &component_owners);
@@ -2651,6 +2881,7 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
         let mut st = admitted.prepare(sql)?;
         let nodes = st.query_map(params![encoded, suffix_ids], |r| {
             Ok(Node {
+                native_semantic: None,
                 id: r.get(0)?,
                 kind: r.get(1)?,
                 name: r.get(2)?,
@@ -2811,8 +3042,14 @@ mod tests {
         fs::create_dir(root.0.join("src")).unwrap();
         for (path, source) in [
             ("defs.rs", "pub trait Work { fn run(&self); }\n"),
-            ("alpha.rs", "use crate::defs::Work; pub struct Alpha; impl Work for Alpha { fn run(&self) {} }\n"),
-            ("caller.rs", "use crate::defs::Work; pub fn caller(value: &dyn Work) { value.run(); }\n"),
+            (
+                "alpha.rs",
+                "use crate::defs::Work; pub struct Alpha; impl Work for Alpha { fn run(&self) {} }\n",
+            ),
+            (
+                "caller.rs",
+                "use crate::defs::Work; pub fn caller(value: &dyn Work) { value.run(); }\n",
+            ),
         ] {
             fs::write(root.0.join("src").join(path), source).unwrap();
         }
@@ -2939,6 +3176,7 @@ mod tests {
             )
             .unwrap();
         let module = Node {
+            native_semantic: None,
             id: "module:middle.py".to_owned(),
             kind: "module".to_owned(),
             name: "middle".to_owned(),
@@ -2999,6 +3237,7 @@ mod tests {
         .unwrap();
 
         let module = Node {
+            native_semantic: None,
             id: "module:middle.py".to_owned(),
             kind: "module".to_owned(),
             name: "middle".to_owned(),
@@ -3015,6 +3254,7 @@ mod tests {
             }),
         };
         let function = Node {
+            native_semantic: None,
             id: "function:middle.py:visible".to_owned(),
             kind: "function".to_owned(),
             name: "visible".to_owned(),
@@ -3025,7 +3265,7 @@ mod tests {
             is_test: false,
             language: "python".to_owned(),
             generated: false,
-            details: serde_json::json!({}),
+            details: serde_json::Value::Null,
         };
         let import = Reference {
             source: module.id.clone(),

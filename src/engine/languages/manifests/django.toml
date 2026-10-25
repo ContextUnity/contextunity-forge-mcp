@@ -1,59 +1,3 @@
-receivers = ["template_context=django.shortcuts.render"]
-builtins = [
-  "template.tag.block",
-  "template.tag.include",
-  "template.tag.extends",
-  "template.tag.with",
-  "template.tag.endwith",
-  "template.tag.endblock",
-  "template.tag.if",
-  "template.tag.elif",
-  "template.tag.else",
-  "template.tag.endif",
-  "template.tag.for",
-  "template.tag.empty",
-  "template.tag.endfor",
-  "template.tag.autoescape",
-  "template.tag.endautoescape",
-  "template.tag.filter",
-  "template.tag.endfilter",
-  "template.tag.csrf_token",
-  "template.tag.url",
-  "template.tag.load",
-  "template.library.i18n",
-  "template.library.static",
-  "template.library.l10n",
-  "template.library.tz",
-]
-filters = [
-  "template.filter.default",
-  "template.filter.date",
-  "template.filter.length",
-  "template.filter.json_script",
-  "template.filter.slugify",
-  "template.filter.escape",
-  "template.filter.escapejs",
-  "template.filter.safe",
-  "template.filter.upper",
-  "template.filter.lower",
-  "template.filter.urlencode",
-  "template.filter.linebreaks",
-  "template.filter.linebreaksbr",
-  "template.filter.truncatechars",
-  "template.filter.truncatewords",
-  "template.filter.striptags",
-  "template.filter.floatformat",
-  "template.filter.pluralize",
-  "template.filter.first",
-  "template.filter.last",
-  "template.filter.join",
-]
-routes = [
-  "template.tag.static=static",
-  "template.tag.trans=i18n",
-  "template.tag.translate=i18n",
-]
-
 [[syntax_rules]]
 id = "render-context"
 language = "python"
@@ -63,7 +7,9 @@ operation = { kind = "render_context", package = "django", module = "django.shor
 id = "template-symbols"
 display = { builtin = "builtin:django_template", library = "builtin:django_template_library" }
 language = "html"
-operation = { kind = "template_symbols", package = "django", requires_loader = false }
+package_family = "python"
+activation = [{ kind = "package", name = "django" }]
+operation = { kind = "template_symbols", requires_loader = false, tags = ["block", "include", "extends", "with", "endwith", "endblock", "if", "elif", "else", "endif", "for", "empty", "endfor", "autoescape", "endautoescape", "filter", "endfilter", "csrf_token", "url", "load"], filters = ["default", "date", "length", "json_script", "slugify", "escape", "escapejs", "safe", "upper", "lower", "urlencode", "linebreaks", "linebreaksbr", "truncatechars", "truncatewords", "striptags", "floatformat", "pluralize", "first", "last", "join"], libraries = ["i18n", "static", "l10n", "tz"], library_routes = { static = "static", trans = "i18n", translate = "i18n" } }
 
 [[syntax_rules]]
 id = "template-library"
@@ -104,16 +50,19 @@ members = ["assertEqual", "assertNotEqual", "assertTrue", "assertFalse", "assert
 [[class_hierarchy_receivers]]
 bases = ["django.db.models.Model", "django.db.models.base.Model"]
 provider = "django.db.models.Model"
+returns = { "objects.all" = { kind = "receiver", base = "django.db.models.QuerySet" }, "objects.filter" = { kind = "receiver", base = "django.db.models.QuerySet" }, "objects.exclude" = { kind = "receiver", base = "django.db.models.QuerySet" }, "objects.order_by" = { kind = "receiver", base = "django.db.models.QuerySet" }, "objects.select_related" = { kind = "receiver", base = "django.db.models.QuerySet" }, "objects.prefetch_related" = { kind = "receiver", base = "django.db.models.QuerySet" } }
 members = ["objects.all", "objects.filter", "objects.exclude", "objects.get", "objects.create", "objects.get_or_create", "objects.update_or_create", "objects.bulk_create", "objects.bulk_update", "objects.count", "objects.exists", "objects.first", "objects.last", "objects.order_by", "objects.values", "objects.values_list", "objects.select_related", "objects.prefetch_related", "objects.aggregate", "objects.annotate", "objects.none", "objects.update", "objects.delete", "objects.using"]
 
 [[class_hierarchy_receivers]]
 bases = ["django.db.models.QuerySet", "django.db.models.query.QuerySet"]
 provider = "django.db.models.QuerySet"
+returns = { all = { kind = "self" }, filter = { kind = "self" }, exclude = { kind = "self" }, order_by = { kind = "self" }, select_related = { kind = "self" }, prefetch_related = { kind = "self" } }
 members = ["all", "filter", "exclude", "get", "create", "get_or_create", "update_or_create", "bulk_create", "bulk_update", "count", "exists", "first", "last", "order_by", "values", "values_list", "select_related", "prefetch_related", "aggregate", "annotate", "none", "update", "delete", "using", "distinct", "reverse", "latest", "earliest", "iterator", "select_for_update"]
 
 [[class_hierarchy_receivers]]
 bases = ["django.db.models.Manager", "django.db.models.manager.Manager"]
 provider = "django.db.models.Manager"
+returns = { all = { kind = "receiver", base = "django.db.models.QuerySet" }, filter = { kind = "receiver", base = "django.db.models.QuerySet" }, exclude = { kind = "receiver", base = "django.db.models.QuerySet" }, order_by = { kind = "receiver", base = "django.db.models.QuerySet" }, select_related = { kind = "receiver", base = "django.db.models.QuerySet" }, prefetch_related = { kind = "receiver", base = "django.db.models.QuerySet" } }
 members = ["all", "filter", "exclude", "get", "create", "get_or_create", "update_or_create", "bulk_create", "bulk_update", "count", "exists", "first", "last", "order_by", "values", "values_list", "select_related", "prefetch_related", "aggregate", "annotate", "none", "update", "delete", "using", "db_manager", "get_queryset", "latest", "earliest"]
 
 [[class_hierarchy_receivers]]

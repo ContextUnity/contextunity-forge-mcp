@@ -114,11 +114,7 @@ fn position(node: Node<'_>) -> SourcePosition {
     crate::engine::languages::source_end(node)
 }
 
-fn annotation_reference_positions(
-    node: Node<'_>,
-    source: &str,
-    output: &mut Vec<AnnotationReferenceFact>,
-) {
+fn annotation_reference_positions(node: Node<'_>, source: &str, facts: &mut ValueFlowFacts) {
     let mut stack = vec![node];
     while let Some(current) = stack.pop() {
         let is_reference = match current.kind() {
@@ -133,8 +129,9 @@ fn annotation_reference_positions(
         };
         if is_reference {
             let start = current.start_position();
-            output.push(AnnotationReferenceFact {
+            facts.push_annotation_reference(AnnotationReferenceFact {
                 expression: text(current, source).to_owned(),
+                value_query: false,
                 position: SourcePosition {
                     line: start.row + 1,
                     column: start.column,
@@ -622,6 +619,52 @@ fn literal_value(node: Node<'_>) -> Option<ValueExpr> {
     })
 }
 
+pub(super) fn call_value(node: Node<'_>, source: &str) -> ValueExpr {
+    call_value_depth(node, source, 0)
+}
+
+fn call_value_depth(node: Node<'_>, source: &str, depth: usize) -> ValueExpr {
+    if depth >= crate::engine::languages::MAX_VALUE_FLOW_TYPE_DEPTH {
+        return ValueExpr::Unknown;
+    }
+    let Some(callee) = node.child_by_field_name("function") else {
+        return ValueExpr::Unknown;
+    };
+    if static_name(callee) {
+        return ValueExpr::Call {
+            callee: text(callee, source).to_owned(),
+            site: None,
+        };
+    }
+    if callee.kind() != "attribute" {
+        return ValueExpr::Unknown;
+    }
+    let Some(receiver) = callee
+        .child_by_field_name("object")
+        .filter(|receiver| receiver.kind() == "call")
+    else {
+        return ValueExpr::Unknown;
+    };
+    let Some(member) = callee
+        .child_by_field_name("attribute")
+        .filter(|member| member.kind() == "identifier")
+    else {
+        return ValueExpr::Unknown;
+    };
+    let receiver = call_value_depth(receiver, source, depth + 1);
+    if matches!(receiver, ValueExpr::Unknown) {
+        return ValueExpr::Unknown;
+    }
+    ValueExpr::Call {
+        callee: text(member, source).to_owned(),
+        site: Some(crate::core::semantic::CallSiteEvidence {
+            position: crate::engine::languages::source_start(node),
+            receiver: Some(Box::new(receiver)),
+            arguments: Vec::new(),
+        }),
+    }
+}
+
 fn value(node: Node<'_>, source: &str) -> ValueExpr {
     if let Some(literal) = literal_value(node) {
         return literal;
@@ -635,12 +678,7 @@ fn value(node: Node<'_>, source: &str) -> ValueExpr {
             .map_or(ValueExpr::Unknown, |expression| ValueExpr::Await {
                 value: Box::new(value(expression, source)),
             }),
-        "call" => node
-            .child_by_field_name("function")
-            .filter(|callee| static_name(*callee))
-            .map_or(ValueExpr::Unknown, |callee| ValueExpr::Call {
-                callee: text(callee, source).to_owned(),
-            }),
+        "call" => call_value(node, source),
         "attribute" => {
             let Some(receiver) = node
                 .child_by_field_name("object")
@@ -983,8 +1021,8 @@ impl<'a, 'tree> Collector<'a, 'tree> {
         if collect_facts {
             match node.kind() {
                 "call" => {
-                    if let Some(context) = super::render_context::extract(node, self.source) {
-                        self.facts.template_contexts.push(context);
+                    if let Some(context) = super::syntax_operations::extract(node, self.source) {
+                        self.facts.push_template_context(context);
                     }
                 }
                 "assignment" => {
@@ -1000,7 +1038,7 @@ impl<'a, 'tree> Collector<'a, 'tree> {
                                     "list" | "List" | "Sequence" | "Iterable"
                                 ) && args.len() == 1
                                 {
-                                    self.facts.collection_elements.push(CollectionElementFact {
+                                    self.facts.push_collection_element(CollectionElementFact {
                                         name: text(left, self.source).to_owned(),
                                         position: position(node),
                                         element_type: args[0].clone(),
@@ -1220,15 +1258,14 @@ impl<'a, 'tree> Collector<'a, 'tree> {
                     }
                 })
                 .unwrap_or(TypeExpr::Unknown);
-            return Self::empty(
-                node,
-                source,
-                collect_aliases,
-                ValueFlowFacts {
+            let facts = ValueFlowFacts {
+                framework: Some(Box::new(crate::core::semantic::FrameworkScopeFacts {
                     alias_type: Some(alias_type),
-                    ..ValueFlowFacts::default()
-                },
-            );
+                    ..Default::default()
+                })),
+                ..Default::default()
+            };
+            return Self::empty(node, source, collect_aliases, facts);
         }
         if !matches!(
             node.kind(),
@@ -1293,11 +1330,7 @@ impl<'a, 'tree> Collector<'a, 'tree> {
                 let mut cursor = parameters.walk();
                 for parameter in parameters.named_children(&mut cursor) {
                     if let Some(ty) = parameter.child_by_field_name("type") {
-                        annotation_reference_positions(
-                            ty,
-                            source,
-                            &mut collector.facts.annotation_references,
-                        );
+                        annotation_reference_positions(ty, source, &mut collector.facts);
                         let param_name = if parameter.kind() == "identifier" {
                             Some(text(parameter, source))
                         } else {
@@ -1316,7 +1349,7 @@ impl<'a, 'tree> Collector<'a, 'tree> {
                                     "list" | "List" | "Sequence" | "Iterable"
                                 ) && args.len() == 1
                                 {
-                                    collector.facts.collection_elements.push(
+                                    collector.facts.push_collection_element(
                                         CollectionElementFact {
                                             name: name.to_owned(),
                                             position: crate::engine::languages::source_start(node),
@@ -1330,11 +1363,7 @@ impl<'a, 'tree> Collector<'a, 'tree> {
                 }
             }
             if let Some(ret) = node.child_by_field_name("return_type") {
-                annotation_reference_positions(
-                    ret,
-                    source,
-                    &mut collector.facts.annotation_references,
-                );
+                annotation_reference_positions(ret, source, &mut collector.facts);
             }
         }
         collector
@@ -1427,7 +1456,10 @@ impl<'a, 'tree> Collector<'a, 'tree> {
             }
         }
         if node.kind() == "module" {
-            self.facts.type_only_imports = type_only_imports(node, source);
+            let imports = type_only_imports(node, source);
+            for import in imports {
+                self.facts.push_type_only_import(import);
+            }
         }
         self.facts.bindings.sort_by_key(|a| a.position);
         self.facts.fields.sort_by_key(|a| a.position);
@@ -1458,17 +1490,49 @@ mod tests {
         parser
             .set_language(&tree_sitter_python::language())
             .unwrap();
+        for ordinary in ["", "value = 1\n", "def plain():\n    pass\n"] {
+            let tree = parser.parse(ordinary, None).unwrap();
+            let facts = extract(tree.root_node(), ordinary);
+            assert!(
+                facts.framework.is_none(),
+                "ordinary module needs no framework allocation: {ordinary:?}"
+            );
+        }
+        for source in [
+            "def plain() -> None:\n    pass\n",
+            "def plain(value: None):\n    pass\n",
+        ] {
+            let tree = parser.parse(source, None).unwrap();
+            let function = tree.root_node().named_child(0).unwrap();
+            let facts = extract(function, source);
+            assert!(
+                facts.framework.is_none(),
+                "None annotation needs no framework allocation: {source:?}"
+            );
+        }
+        let annotated = "def plain(value: Input) -> Output:\n    pass\n";
+        let tree = parser.parse(annotated, None).unwrap();
+        let facts = extract(tree.root_node().named_child(0).unwrap(), annotated);
+        assert!(facts.framework.is_some());
+        let annotation_references: Vec<_> = facts.annotation_references().collect();
+        assert_eq!(annotation_references.len(), 2);
+        assert_eq!(annotation_references[0].expression, "Input");
+        assert_eq!(annotation_references[1].expression, "Output");
         let tree = parser.parse(source, None).unwrap();
         let facts = extract(tree.root_node(), source);
-        assert_eq!(facts.type_only_imports.len(), 1);
-        assert_eq!(facts.type_only_imports[0].alias, "GraphEntry");
+        assert!(facts.framework.is_some());
+        let type_only_imports: Vec<_> = facts.type_only_imports().collect();
+        assert_eq!(type_only_imports.len(), 1);
+        assert_eq!(type_only_imports[0].alias, "GraphEntry");
         let ast_facts = crate::engine::ast::extract("persistence.py", "python", source).unwrap();
-        let module = ast_facts
-            .nodes
+        let ast_facts = serde_json::to_value(&ast_facts).unwrap();
+        let module = ast_facts["nodes"]
+            .as_array()
+            .unwrap()
             .iter()
-            .find(|n| n.id == "module:persistence.py")
+            .find(|n| n["id"] == "module:persistence.py")
             .unwrap();
-        let type_only = &module.details["value_flow"]["type_only_imports"];
+        let type_only = &module["details"]["value_flow"]["type_only_imports"];
         assert_eq!(type_only[0]["alias"], "GraphEntry");
     }
 }

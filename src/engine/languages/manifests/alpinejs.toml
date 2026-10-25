@@ -1,27 +1,3 @@
-receivers = [
-  "$el",
-  "$refs",
-  "$event",
-  "$dispatch",
-  "$nextTick",
-  "$watch",
-  "$store",
-  "$data",
-  "$id",
-  "$root",
-  "$parent",
-  "$root.querySelector",
-  "$root.querySelectorAll",
-  "$root.closest",
-  "$root.contains",
-  "$root.getAttribute",
-  "$root.addEventListener",
-  "$el.addEventListener",
-]
-builtins = []
-filters = []
-routes = []
-
 [[syntax_rules]]
 id = "store-definition"
 language = "javascript"
@@ -46,7 +22,8 @@ operation = { kind = "named_binding", domain = "event", binding = { kind = "call
 id = "implicit-receivers"
 display = { builtin = "framework builtin: Alpine magic" }
 language = "javascript"
-operation = { kind = "implicit_receivers", package = "alpinejs" }
+activation = [{ kind = "package", name = "alpinejs" }]
+operation = { kind = "implicit_receivers", names = ["$el", "$refs", "$event", "$dispatch", "$nextTick", "$watch", "$store", "$data", "$id", "$root", "$parent", "$root.querySelector", "$root.querySelectorAll", "$root.closest", "$root.contains", "$root.getAttribute", "$root.addEventListener", "$el.addEventListener"] }
 
 [[syntax_rules]]
 id = "object-factory"

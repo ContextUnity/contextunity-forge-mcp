@@ -31,31 +31,28 @@ mod ingest;
 mod seal;
 
 use batch::*;
+use cache::PreparedCatalogStorage;
 use dictionary::*;
 use ingest::*;
 
 const MAX_MULTI_VALUE_BATCH_ROWS: usize = 500;
-
-#[derive(serde::Serialize, serde::Deserialize)]
-struct PreparedCatalogStorage {
-    facts: TypedFacts,
-    details_json: Vec<String>,
-    search_texts: Vec<String>,
-    reference_keys: Vec<String>,
-    leaves: BTreeMap<String, BTreeMap<String, String>>,
-}
 
 pub(crate) struct StagedFilePayload {
     pub(crate) encoded_facts: Vec<u8>,
     pub(crate) storage_rows: Option<Vec<u8>>,
 }
 
-pub(crate) fn prepare_catalog_storage(
+fn decode_prepared_storage(bytes: &[u8]) -> Result<PreparedCatalogStorage> {
+    cache::decode_prepared_catalog_storage_payload(bytes)
+}
+
+pub(crate) fn prepare_catalog_storage_with_facts(
     file: &FileEntry,
     single: &BTreeMap<String, TypedFacts>,
+    extracted_facts: Option<&TypedFacts>,
 ) -> Result<Vec<u8>> {
-    let prepared = prepare_catalog_rows(file, single)?;
-    let mut bytes = zstd::stream::encode_all(serde_json::to_vec(&prepared)?.as_slice(), -3)?;
+    let prepared = prepare_catalog_rows(file, single, extracted_facts)?;
+    let mut bytes = cache::encode_prepared_catalog_storage_payload(&prepared)?;
     bytes.shrink_to_fit();
     Ok(bytes)
 }
@@ -63,15 +60,12 @@ pub(crate) fn prepare_catalog_storage(
 fn prepare_catalog_rows(
     file: &FileEntry,
     single: &BTreeMap<String, TypedFacts>,
+    extracted_facts: Option<&TypedFacts>,
 ) -> Result<PreparedCatalogStorage> {
-    let facts = single
-        .get(&file.path)
+    let facts = extracted_facts
+        .or_else(|| single.get(&file.path))
         .context("missing prepared storage file")?;
-    let details_json = facts
-        .nodes
-        .iter()
-        .map(|node| serde_json::to_string(&node.navigation_details()))
-        .collect::<std::result::Result<Vec<_>, _>>()?;
+
     let search_texts = facts
         .nodes
         .iter()
@@ -80,27 +74,34 @@ fn prepare_catalog_rows(
             write_node_search_text(&mut text, node, facts);
             text
         })
-        .collect();
-    let reference_keys = reference_keys(facts)
+        .collect::<Vec<_>>();
+    let reference_keys = facts
+        .reference_keys()
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    let leaves = seal::file_domain_leaves(
-        std::slice::from_ref(file),
-        single,
-        &details_json,
-        &reference_keys,
-    )?;
+    let leaves = seal::file_domain_leaves(std::slice::from_ref(file), single, &reference_keys)?;
     let nodes = facts
         .nodes
         .iter()
         .map(|node| {
-            let details = if node.details["default_export"] == true {
-                json!({"default_export": true})
-            } else {
-                Value::Null
-            };
-            let storage = Node {
+            let details = node.details.as_object().map_or(Value::Null, |details| {
+                let details = details
+                    .iter()
+                    .filter(|(key, value)| {
+                        (key.as_str() == "default_export" && *value == true)
+                            || matches!(key.as_str(), "doc" | "docstring")
+                    })
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect::<serde_json::Map<_, _>>();
+                if details.is_empty() {
+                    Value::Null
+                } else {
+                    Value::Object(details)
+                }
+            });
+            Node {
+                native_semantic: None,
                 id: node.id.clone(),
                 kind: node.kind.clone(),
                 name: node.name.clone(),
@@ -112,19 +113,22 @@ fn prepare_catalog_rows(
                 language: node.language.clone(),
                 generated: node.generated,
                 details,
-            };
-            Ok(storage)
+            }
         })
-        .collect::<Result<Vec<_>>>()?;
-    let storage = TypedFacts::from_public(Facts {
+        .collect::<Vec<_>>();
+    let mut storage_facts = Facts {
         nodes,
         docs: facts.docs.clone(),
         errors: facts.errors.clone(),
         ..Default::default()
-    });
+    };
+    storage_facts.semantic.mark_complete();
+    let storage = TypedFacts {
+        facts: storage_facts,
+        flows: Default::default(),
+    };
     let prepared = PreparedCatalogStorage {
         facts: storage,
-        details_json,
         search_texts,
         reference_keys,
         leaves: leaves
@@ -225,7 +229,7 @@ pub(crate) fn populate_owned(
     if !build_inputs.schema_ready {
         conn.execute_batch(tables)?;
     }
-    (|| -> Result<Value> {
+    {
         let mut projection_timings = seal::ProjectionTimings::default();
         let mut logical_commitments = BTreeMap::from([
             ("nodes", BTreeMap::new()),
@@ -359,9 +363,7 @@ pub(crate) fn populate_owned(
                         .map(|(file, lean, staged)| {
                             let restoring = Instant::now();
                             let (storage, encoded) = if let Some(storage) = staged.storage_rows {
-                                let bytes = zstd::stream::decode_all(storage.as_slice())?;
-                                let storage: PreparedCatalogStorage =
-                                    serde_json::from_slice(&bytes)?;
+                                let storage = decode_prepared_storage(&storage)?;
                                 (storage, staged.encoded_facts)
                             } else {
                                 let full = restore_catalog_file(
@@ -372,7 +374,7 @@ pub(crate) fn populate_owned(
                                 )?;
                                 let encoded = encode_facts(&full)?;
                                 let single = BTreeMap::from([(file.path.clone(), full)]);
-                                (prepare_catalog_rows(file, &single)?, encoded)
+                                (prepare_catalog_rows(file, &single, None)?, encoded)
                             };
                             let local_facts_leaf = seal::local_facts_leaf(
                                 &file.path,
@@ -386,7 +388,6 @@ pub(crate) fn populate_owned(
                                     facts: storage.facts,
                                     encoded,
                                     local_facts_leaf,
-                                    details_json: storage.details_json,
                                     search_texts: storage.search_texts,
                                     reference_keys: storage.reference_keys,
                                 },
@@ -397,7 +398,7 @@ pub(crate) fn populate_owned(
                         .collect::<Result<Vec<_>>>()?;
                     let mut loaded = Vec::with_capacity(prepared.len());
                     for (file, mut leaves, elapsed_ms) in prepared {
-                        for domain in ["nodes", "doc_sections", "shared_owners"] {
+                        for domain in ["doc_sections", "shared_owners"] {
                             logical_commitments
                                 .get_mut(domain)
                                 .context("missing storage commitment domain")?
@@ -414,8 +415,9 @@ pub(crate) fn populate_owned(
                 },
             )?
         } else {
-            persist_files(&tx, &mut path_cache, entries, &facts, None, true)?
+            persist_files(&tx, &mut path_cache, entries, &facts, true)?
         };
+        logical_commitments.insert("nodes", file_timings.node_leaves);
         drop(composed_sources);
         let node_id = file_timings.node_id;
         let node_row_count = file_timings.node_row_count;
@@ -486,6 +488,13 @@ pub(crate) fn populate_owned(
             for (domain, leaves) in logical_commitments {
                 domains.insert(domain, leaves);
             }
+        } else {
+            domains.insert(
+                "nodes",
+                logical_commitments
+                    .remove("nodes")
+                    .context("missing persisted node commitments")?,
+            );
         }
         let mut logical_commitments = domains;
 
@@ -534,7 +543,7 @@ pub(crate) fn populate_owned(
         report["restore_payload_ms"] = json!(restore_payload_ms);
         report["commitment_seal_mode"] = json!("in-memory-projection");
         Ok(report)
-    })()
+    }
 }
 
 fn restore_catalog_file(
@@ -571,17 +580,34 @@ fn retain_graph_storage_facts(facts: &mut TypedFacts) {
     let mut flows = crate::core::typed_facts::FlowStore::default();
     for node in &mut facts.facts.nodes {
         if let Some(flow) = facts.flows.get_mut(&node.id) {
-            if !flow.template_contexts.is_empty() {
+            let template_contexts: Vec<_> = flow
+                .framework
+                .take()
+                .into_iter()
+                .flat_map(|framework| framework.facts)
+                .filter_map(|fact| match fact {
+                    crate::core::semantic::FrameworkFact::TemplateContext(context) => Some(context),
+                    _ => None,
+                })
+                .collect();
+            if !template_contexts.is_empty() {
                 flows.insert(
                     node.id.clone(),
                     crate::core::semantic::ValueFlowFacts {
-                        template_contexts: std::mem::take(&mut flow.template_contexts),
+                        framework: Some(Box::new(crate::core::semantic::FrameworkScopeFacts {
+                            facts: template_contexts
+                                .into_iter()
+                                .map(crate::core::semantic::FrameworkFact::TemplateContext)
+                                .collect(),
+                            ..Default::default()
+                        })),
                         ..Default::default()
                     },
                 );
             }
         }
         node.details = Value::Null;
+        node.native_semantic = None;
         node.name = String::new();
         node.qualname = String::new();
     }
@@ -595,10 +621,6 @@ fn retain_graph_storage_facts(facts: &mut TypedFacts) {
 
 fn cached(conn: &Connection, sql: &str, params: impl rusqlite::Params) -> rusqlite::Result<usize> {
     conn.prepare_cached(sql)?.execute(params)
-}
-
-fn reference_keys(facts: &TypedFacts) -> Vec<&str> {
-    facts.reference_keys()
 }
 
 #[cfg(test)]

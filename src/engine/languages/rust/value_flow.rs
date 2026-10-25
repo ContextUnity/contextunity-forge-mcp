@@ -22,12 +22,40 @@ fn type_expr_inner(
     if depth >= crate::engine::languages::MAX_VALUE_FLOW_TYPE_DEPTH {
         return TypeExpr::Unknown;
     }
-    let mut node = node;
-    while node.kind() == "reference_type" {
+    if node.kind() == "reference_type" {
         let Some(inner) = node.child_by_field_name("type") else {
             return TypeExpr::Unknown;
         };
-        node = inner;
+        let mut cursor = node.walk();
+        let mutable = node
+            .named_children(&mut cursor)
+            .any(|child| child.kind() == "mutable_specifier")
+            || text(node, source)
+                .split_whitespace()
+                .any(|part| part == "mut");
+        return TypeExpr::Applied {
+            base: if mutable { "&mut" } else { "&" }.to_owned(),
+            args: vec![type_expr_inner(inner, source, generic_names, depth + 1)],
+        };
+    }
+    if matches!(node.kind(), "array_type" | "slice_type") {
+        let Some(element) = node
+            .child_by_field_name("element")
+            .or_else(|| node.named_child(0))
+        else {
+            return TypeExpr::Unknown;
+        };
+        let fixed_array =
+            node.kind() == "array_type" && node.child_by_field_name("length").is_some();
+        return TypeExpr::Applied {
+            base: if fixed_array {
+                "__rust_array_type"
+            } else {
+                "[]"
+            }
+            .to_owned(),
+            args: vec![type_expr_inner(element, source, generic_names, depth + 1)],
+        };
     }
     if let Some(name) = trait_object_name(node, source) {
         return TypeExpr::Named { name };
@@ -240,7 +268,20 @@ pub(super) fn value(node: Node<'_>, source: &str) -> ValueExpr {
                     function.child_by_field_name("value"),
                     function.child_by_field_name("field"),
                 ) {
-                    if matches!(text(member, source), "unwrap" | "expect") {
+                    if matches!(
+                        text(member, source),
+                        "unwrap"
+                            | "expect"
+                            | "ok"
+                            | "as_ref"
+                            | "as_mut"
+                            | "as_deref"
+                            | "cloned"
+                            | "copied"
+                            | "iter"
+                            | "into_iter"
+                            | "next"
+                    ) {
                         return ValueExpr::Project {
                             value: Box::new(value(receiver, source)),
                             member: text(member, source).to_owned(),
@@ -250,6 +291,7 @@ pub(super) fn value(node: Node<'_>, source: &str) -> ValueExpr {
             }
             callee_name(function, source).map_or(ValueExpr::Unknown, |callee| ValueExpr::Call {
                 callee: callee.into_owned(),
+                site: None,
             })
         }
         "identifier" | "scoped_identifier" => ValueExpr::Alias {
@@ -297,21 +339,19 @@ impl<'source, 'tree> Collector<'source, 'tree> {
                         continue;
                     };
                     let resolved = resolve(annotation);
+                    let mut nominal = annotation;
+                    while nominal.kind() == "reference_type" {
+                        let Some(inner) = nominal.child_by_field_name("type") else {
+                            break;
+                        };
+                        nominal = inner;
+                    }
+                    if nominal.kind() == "primitive_type" && text(nominal, source) != "str" {
+                        continue;
+                    }
                     match &resolved {
                         TypeExpr::Applied { .. } => {}
-                        TypeExpr::Named { .. } => {
-                            let mut nominal = annotation;
-                            while nominal.kind() == "reference_type" {
-                                let Some(inner) = nominal.child_by_field_name("type") else {
-                                    break;
-                                };
-                                nominal = inner;
-                            }
-                            if nominal.kind() == "primitive_type" && text(nominal, source) != "str"
-                            {
-                                continue;
-                            }
-                        }
+                        TypeExpr::Named { .. } => {}
                         TypeExpr::Unknown => continue,
                     }
                     let pattern = if pattern.kind() == "mut_pattern" {

@@ -13,3 +13,11 @@ The `docs/plans/` directory holds active design documents, architectural proposa
 - **Admission to Milestones**: Once a plan reaches consensus and satisfies architectural review, its commitments and tasks are admitted into [`docs/milestones/`](../milestones/README.md).
 - **Durable Knowledge**: Architectural invariants and verified topologies migrate to [`docs/architecture/`](../architecture/README.md), while accepted structural choices are recorded in [`docs/adr/`](../adr/README.md).
 - **Index Scope**: Plans remain outside the default active MCP code index to preserve high signal-to-noise ratio in code search, while remaining accessible through direct file reads.
+
+## Active Plans
+
+- [Milestone 022 Architectural De-bloat, Zero-Allocation Linker, and Resolution Health Overhaul](022-architectural-debloat-and-resolution-overhaul.md)
+- [Universal AST search and path-scoped code navigation](042-universal-ast-search-and-tool-navigation.md)
+- [Declarative Tree-sitter Queries Study](declarative-tree-sitter-queries-study.md)
+- [Forge MCP Audit and Architecture](forge-mcp-audit-and-architecture.md)
+- [Universal Multi-Worktree Resolution](universal-multi-worktree-resolution.md)

@@ -3,7 +3,6 @@ use super::{
     manifests::{SemanticOperation, SemanticRule},
     Facts,
 };
-use serde::{Deserialize, Serialize};
 
 pub(crate) use super::manifests::semantic::{SemanticRelation, SemanticTarget};
 
@@ -15,58 +14,12 @@ pub(crate) struct EffectiveSemanticRule {
     pub(crate) active: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct SemanticIdentity {
-    pub(crate) scope: String,
-    pub(crate) namespace: String,
-    pub(crate) target: SemanticTarget,
-    pub(crate) path: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct SemanticOccurrence {
-    pub(crate) owner_id: String,
-    pub(crate) line: usize,
-    pub(crate) column: usize,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub(crate) enum SemanticFactRole {
-    FileProvider {
-        target: String,
-    },
-    CallToFile {
-        import_owner: String,
-        alias: String,
-        module: String,
-        export: String,
-        relation: SemanticRelation,
-    },
-    ClassAttributeToFile {
-        attribute: String,
-        relation: SemanticRelation,
-    },
-    ClassAttributeToSymbol {
-        attribute: String,
-        relation: SemanticRelation,
-    },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct SemanticFact {
-    pub(crate) pack: String,
-    pub(crate) rule: String,
-    pub(crate) identity: SemanticIdentity,
-    pub(crate) occurrence: SemanticOccurrence,
-    pub(crate) expression: String,
-    pub(crate) role: SemanticFactRole,
-}
+pub(crate) use crate::core::semantic::{
+    SemanticFact, SemanticFactRole, SemanticIdentity, SemanticOccurrence,
+};
 
 impl EffectiveSemanticRule {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn fact(
         &self,
         owner: &str,
@@ -74,24 +27,16 @@ impl EffectiveSemanticRule {
         column: usize,
         path: String,
         expression: String,
+        target: &SemanticTarget,
         role: SemanticFactRole,
     ) -> SemanticFact {
-        let target = match &self.rule.operation {
-            SemanticOperation::CallToFile { target, .. }
-            | SemanticOperation::ClassAttributeToFile { target, .. }
-            | SemanticOperation::ClassAttributeToSymbol { target, .. } => target.clone(),
-            SemanticOperation::SymbolAttachment { .. }
-            | SemanticOperation::EndpointProjection { .. } => SemanticTarget::ImportedSymbol {
-                language: "python".into(),
-            },
-        };
         SemanticFact {
             pack: self.pack.clone(),
             rule: self.rule.id.clone(),
             identity: SemanticIdentity {
                 scope: self.scope.clone(),
                 namespace: self.rule.namespace.clone(),
-                target,
+                target: target.clone(),
                 path,
             },
             occurrence: SemanticOccurrence {
@@ -115,11 +60,24 @@ pub(crate) fn file_providers(facts: &mut Facts, context: &super::LanguageContext
         module.path.clone(),
         module.language.clone(),
     );
-    for effective in context.semantic_rules.iter().filter(|rule| rule.active) {
+    let prepared = context.file_provider_rules_for_language(&language);
+    let indices = prepared.into_iter().flatten().copied().chain(
+        0..if prepared.is_none() {
+            context.semantic_rules.len()
+        } else {
+            0
+        },
+    );
+    for index in indices {
+        let effective = &context.semantic_rules[index];
+        if !effective.active {
+            continue;
+        }
         let target = match &effective.rule.operation {
             SemanticOperation::CallToFile { target, .. }
             | SemanticOperation::ClassAttributeToFile { target, .. } => target,
-            SemanticOperation::ClassAttributeToSymbol { .. }
+            SemanticOperation::CallToSymbol { .. }
+            | SemanticOperation::ClassAttributeToSymbol { .. }
             | SemanticOperation::SymbolAttachment { .. }
             | SemanticOperation::EndpointProjection { .. } => continue,
         };
@@ -132,6 +90,7 @@ pub(crate) fn file_providers(facts: &mut Facts, context: &super::LanguageContext
                     0,
                     literal,
                     path.clone(),
+                    target,
                     SemanticFactRole::FileProvider { target: id.clone() },
                 ),
             );
@@ -145,29 +104,18 @@ pub(crate) fn push(facts: &mut Facts, fact: SemanticFact) {
     }
     let key = dependency_key(&fact.identity);
     let occurrence = fact.occurrence.clone();
-    if let Some(owner) = facts
-        .nodes
-        .iter_mut()
-        .find(|node| node.id == occurrence.owner_id)
-    {
-        let slot = &mut owner.details["semantic_facts"];
-        if slot.is_null() {
-            *slot = serde_json::json!([]);
-        }
-        if let Some(values) = slot.as_array_mut() {
-            values.push(serde_json::to_value(fact).expect("semantic DTO serializes"));
-            facts.references.push(super::Reference {
-                source: occurrence.owner_id,
-                expression: key,
-                kind: "semantic_key".into(),
-                line: occurrence.line,
-                column: occurrence.column,
-                alias: None,
-                module: None,
-                dynamic: false,
-                receiver_hint: None,
-            });
-        }
+    if facts.semantic.push(&mut facts.nodes, fact) {
+        facts.references.push(super::Reference {
+            source: occurrence.owner_id,
+            expression: key,
+            kind: "semantic_key".into(),
+            line: occurrence.line,
+            column: occurrence.column,
+            alias: None,
+            module: None,
+            dynamic: false,
+            receiver_hint: None,
+        });
     }
 }
 

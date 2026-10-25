@@ -19,17 +19,21 @@ pub(super) fn decorator_candidates(ctx: &SyntaxContext<'_, '_>, facts: &mut Fact
     if ctx.node.kind() != "function_definition" {
         return;
     }
+    let decorators = relations::decorators(ctx.node);
+    if decorators.is_empty() {
+        return;
+    }
     let mut candidates = Vec::new();
-    for rule in super::render_context::syntax_rules() {
+    super::syntax_operations::for_each_decorated_registration_rule(|rule| {
         let super::super::manifests::syntax::SyntaxOperation::DecoratedRegistration {
             member,
             name_keyword,
             ..
         } = &rule.operation
         else {
-            continue;
+            return;
         };
-        for decorator in relations::decorators(ctx.node) {
+        for &decorator in &decorators {
             let Some(expression) = decorator.named_child(0) else {
                 continue;
             };
@@ -86,10 +90,10 @@ pub(super) fn decorator_candidates(ctx: &SyntaxContext<'_, '_>, facts: &mut Fact
             }
             candidates.push(json!({"pack":rule.pack,"rule":rule.id,"receiver":receiver,"line":decorator.start_position().row + ctx.offset + 1,"name":name,"name_status":name_status}));
         }
-    }
+    });
     if !candidates.is_empty() {
         if let Some(function) = facts.nodes.iter_mut().find(|node| node.id == ctx.owner) {
-            function.details["tool_decorators"] = json!(candidates);
+            function.details["decorated_registrations"] = json!(candidates);
         }
     }
 }
@@ -232,6 +236,13 @@ fn confirmed_instance(
 }
 
 pub(super) fn registrations(facts: &mut Facts) {
+    super::syntax_operations::with_syntax_rules(|rules| registrations_with_rules(facts, rules));
+}
+
+fn registrations_with_rules(
+    facts: &mut Facts,
+    rules: &[super::super::manifests::syntax::SyntaxRule],
+) {
     let Some(module) = facts
         .nodes
         .iter()
@@ -243,7 +254,9 @@ pub(super) fn registrations(facts: &mut Facts) {
     let functions: Vec<_> = facts
         .nodes
         .iter()
-        .filter(|node| node.kind == "function" && node.details["tool_decorators"].is_array())
+        .filter(|node| {
+            node.kind == "function" && node.details["decorated_registrations"].is_array()
+        })
         .cloned()
         .collect();
     for function in functions {
@@ -257,11 +270,10 @@ pub(super) fn registrations(facts: &mut Facts) {
         }) {
             continue;
         }
-        let Some(candidates) = function.details["tool_decorators"].as_array() else {
+        let Some(candidates) = function.details["decorated_registrations"].as_array() else {
             continue;
         };
         for candidate in candidates {
-            let rules = super::render_context::syntax_rules();
             let Some(rule) = rules.iter().find(|rule| {
                 candidate["pack"].as_str() == Some(rule.pack.as_str())
                     && candidate["rule"].as_str() == Some(rule.id.as_str())
@@ -297,12 +309,17 @@ pub(super) fn registrations(facts: &mut Facts) {
             let name = advertised_name
                 .map(str::to_owned)
                 .unwrap_or_else(|| format!("tool@{line}"));
-            let id = format!("mcp-tool:{}:{line}:{}", function.path, function.name);
+            let id = format!(
+                "tool-registration:{}:{line}:{}",
+                function.path, function.name
+            );
+            facts.pending_flow_nodes.push(facts.nodes.len());
             facts.nodes.push(Node {
+    native_semantic: None,
                 id: id.clone(), kind: "tool_registration".into(), name: name.clone(),
                 qualname: format!("{}.tool.{name}", module.qualname), path: function.path.clone(),
                 line, end_line: line, is_test: function.is_test, language: "python".into(), generated: false,
-                details: json!({"framework":provider,"pack":rule.pack,"rule":rule.id,"receiver":receiver,"advertised_name":advertised_name,"name_status":name_status,"handler":function.id,"value_flow":crate::core::semantic::ValueFlowFacts { rule_origins: vec![crate::core::semantic::ExtractionRuleOrigin { pack: rule.pack.clone(), rule: rule.id.clone() }], ..Default::default() }}),
+                details: json!({"framework":provider,"pack":rule.pack,"rule":rule.id,"receiver":receiver,"advertised_name":advertised_name,"name_status":name_status,"handler":function.id,"value_flow":crate::core::semantic::ValueFlowFacts { framework: Some(Box::new(crate::core::semantic::FrameworkScopeFacts { facts: vec![crate::core::semantic::FrameworkFact::RuleOrigin(crate::core::semantic::ExtractionRuleOrigin { pack: rule.pack.clone(), rule: rule.id.clone() })], ..Default::default() })), ..Default::default() }}),
             });
             facts.edges.push(Edge {
                 src: module.id.clone(),

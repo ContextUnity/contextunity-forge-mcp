@@ -200,8 +200,9 @@ fn cold_build_reads_source_once_and_preserves_durable_facts() {
     let digest = scanner::digest(source.as_bytes());
     assert_eq!(inventory_digest, digest);
     assert_eq!(facts_digest, digest);
-    let durable_json = zstd::stream::decode_all(blob.as_slice()).unwrap();
-    let facts: Facts = serde_json::from_slice(&durable_json).unwrap();
+    let facts: Facts = crate::core::typed_facts::decode_facts(&blob)
+        .unwrap()
+        .into_public();
     assert!(facts
         .nodes
         .iter()
@@ -682,7 +683,13 @@ fn html_script_cache_preserves_linking_coverage() {
         .prepare(query)
         .unwrap()
         .query_map([], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
         })
         .unwrap()
         .collect::<Result<_, _>>()
@@ -692,7 +699,13 @@ fn html_script_cache_preserves_linking_coverage() {
         .prepare(query)
         .unwrap()
         .query_map([], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
         })
         .unwrap()
         .collect::<Result<_, _>>()

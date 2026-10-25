@@ -9,6 +9,8 @@ use super::*;
 use crate::engine::ast::relations;
 use std::collections::BTreeSet;
 
+#[cfg(any(feature = "lang-c", feature = "lang-cpp"))]
+pub(crate) mod c_family;
 pub(super) fn child<'tree>(node: Syntax<'tree>, kinds: &[&str]) -> Option<Syntax<'tree>> {
     let mut cursor = node.walk();
     let found = node

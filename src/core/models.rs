@@ -1,8 +1,12 @@
+#[doc(hidden)]
+pub use super::typed_facts::NodeSemanticEntry;
+#[doc(hidden)]
+pub use super::typed_facts::SemanticStore;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 pub(crate) mod compact_graph;
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 /// Indexed source declaration with a stable identity and compact metadata projection.
 pub struct Node {
     /// Stable symbol identifier used by graph edges and selectors.
@@ -27,6 +31,9 @@ pub struct Node {
     pub generated: bool,
     /// Small JSON projection needed for navigation; full AST facts stay separate.
     pub details: Value,
+    #[serde(skip)]
+    #[doc(hidden)]
+    pub native_semantic: Option<Box<NodeSemanticEntry>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -72,23 +79,144 @@ pub struct FileEntry {
     pub is_doc: bool,
 }
 
+impl Serialize for Node {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        super::typed_facts::NodeView::new(self, &super::typed_facts::FlowStore::default(), None)
+            .serialize(serializer)
+    }
+}
+
 impl Node {
+    fn semantic_entry(&self, key: &str) -> Option<&NodeSemanticEntry> {
+        self.native_semantic
+            .as_deref()
+            .filter(|entry| entry.has(key))
+    }
+
+    pub(crate) fn has_binding_names(&self) -> bool {
+        self.semantic_entry("bindings").is_some() || self.details["bindings"].is_array()
+    }
+    pub(crate) fn binding_count(&self) -> usize {
+        self.semantic_entry("bindings").map_or_else(
+            || self.details["bindings"].as_array().map_or(0, Vec::len),
+            |entry| entry.bindings.len(),
+        )
+    }
+    pub(crate) fn rebinding_count(&self) -> usize {
+        self.semantic_entry("rebindings").map_or_else(
+            || self.details["rebindings"].as_array().map_or(0, Vec::len),
+            |entry| entry.rebindings.len(),
+        )
+    }
+    pub(crate) fn parameter_count(&self) -> usize {
+        self.semantic_entry("param_types").map_or_else(
+            || {
+                self.details["param_types"]
+                    .as_object()
+                    .map_or(0, serde_json::Map::len)
+            },
+            |entry| entry.param_types.len(),
+        )
+    }
+    pub(crate) fn has_parameter(&self, name: &str) -> bool {
+        self.semantic_entry("param_types").map_or_else(
+            || self.details["param_types"].get(name).is_some(),
+            |entry| entry.param_types.iter().any(|(key, _)| key == name),
+        )
+    }
+    pub(crate) fn binding_names(&self) -> impl Iterator<Item = &str> {
+        self.semantic_entry("bindings")
+            .into_iter()
+            .flat_map(|entry| entry.bindings.iter().map(String::as_str))
+            .chain(
+                self.details["bindings"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str),
+            )
+    }
+    pub(crate) fn rebinding_names(&self) -> impl Iterator<Item = &str> {
+        self.semantic_entry("rebindings")
+            .into_iter()
+            .flat_map(|entry| entry.rebindings.iter().map(String::as_str))
+            .chain(
+                self.details["rebindings"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str),
+            )
+    }
+    pub(crate) fn parameter_types(&self) -> impl Iterator<Item = (&str, Option<&str>)> {
+        self.semantic_entry("param_types")
+            .into_iter()
+            .flat_map(|entry| entry.parameters().map(|(name, ty)| (name, Some(ty))))
+            .chain(
+                self.details["param_types"]
+                    .as_object()
+                    .into_iter()
+                    .flatten()
+                    .map(|(name, ty)| (name.as_str(), ty.as_str())),
+            )
+    }
+    pub(crate) fn parameter_type(&self, name: &str) -> Option<&str> {
+        if let Some(entry) = self.semantic_entry("param_types") {
+            entry
+                .parameters()
+                .find_map(|(key, ty)| (key == name).then_some(ty))
+        } else {
+            self.details["param_types"]
+                .get(name)
+                .and_then(Value::as_str)
+        }
+    }
+    pub(crate) fn parameter_types_value(&self) -> Value {
+        if let Some(entry) = self.semantic_entry("param_types") {
+            serde_json::to_value(super::typed_facts::ParameterTypesView(entry))
+                .expect("typed parameters serialize")
+        } else {
+            self.details["param_types"].clone()
+        }
+    }
+}
+
+impl Node {
+    #[allow(dead_code)]
     pub(crate) fn navigation_details(&self) -> NavigationDetails<'_> {
-        NavigationDetails(&self.details)
+        NavigationDetails {
+            node: self,
+            documentation: None,
+        }
+    }
+
+    pub(crate) fn navigation_details_with_documentation<'a>(
+        &'a self,
+        documentation: &'a Value,
+    ) -> NavigationDetails<'a> {
+        NavigationDetails {
+            node: self,
+            documentation: Some(documentation),
+        }
+    }
+
+    fn semantic_field<T: serde::de::DeserializeOwned + Default>(&self, key: &str) -> T {
+        self.details
+            .get(key)
+            .and_then(|value| serde_json::from_value(value.clone()).ok())
+            .unwrap_or_default()
     }
 
     /// Extracts typed semantic metadata from node details.
     pub fn semantic_meta(&self) -> NodeSemanticMeta {
         let bindings = self
-            .details
-            .get("bindings")
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .unwrap_or_default();
+            .semantic_entry("bindings")
+            .map(|entry| entry.bindings.clone())
+            .unwrap_or_else(|| self.semantic_field("bindings"));
         let rebindings = self
-            .details
-            .get("rebindings")
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .unwrap_or_default();
+            .semantic_entry("rebindings")
+            .map(|entry| entry.rebindings.clone())
+            .unwrap_or_else(|| self.semantic_field("rebindings"));
         let receiver = self
             .details
             .get("receiver")
@@ -102,10 +230,9 @@ impl Node {
             .get("receiver_hint")
             .and_then(|v| v.as_str().map(str::to_owned));
         let param_types = self
-            .details
-            .get("param_types")
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .unwrap_or_default();
+            .semantic_entry("param_types")
+            .map(|entry| entry.param_types.iter().cloned().collect())
+            .unwrap_or_else(|| self.semantic_field("param_types"));
         NodeSemanticMeta {
             bindings,
             rebindings,
@@ -118,74 +245,110 @@ impl Node {
 
     /// Applies typed semantic metadata into node details.
     pub fn apply_semantic_meta(&mut self, meta: NodeSemanticMeta) {
+        self.native_semantic = None;
         if !self.details.is_object() {
             self.details = serde_json::json!({});
         }
         if let Some(details) = self.details.as_object_mut() {
-            if meta.bindings.is_empty() {
-                details.remove("bindings");
-            } else {
-                details.insert("bindings".into(), serde_json::json!(meta.bindings));
-            }
-
-            if meta.rebindings.is_empty() {
-                details.remove("rebindings");
-            } else {
-                details.insert("rebindings".into(), serde_json::json!(meta.rebindings));
-            }
-
-            if meta.param_types.is_empty() {
-                details.remove("param_types");
-            } else {
-                details.insert("param_types".into(), serde_json::json!(meta.param_types));
-            }
-
-            if let Some(ref r) = meta.receiver {
-                details.insert("receiver".into(), serde_json::json!(r));
-            } else {
-                details.remove("receiver");
-            }
-
-            if let Some(ref rt) = meta.receiver_type {
-                details.insert("receiver_type".into(), serde_json::json!(rt));
-            } else {
-                details.remove("receiver_type");
-            }
-
-            if let Some(ref rh) = meta.receiver_hint {
-                details.insert("receiver_hint".into(), serde_json::json!(rh));
-            } else {
-                details.remove("receiver_hint");
+            for (key, value) in [
+                (
+                    "bindings",
+                    (!meta.bindings.is_empty()).then(|| serde_json::json!(meta.bindings)),
+                ),
+                (
+                    "rebindings",
+                    (!meta.rebindings.is_empty()).then(|| serde_json::json!(meta.rebindings)),
+                ),
+                (
+                    "param_types",
+                    (!meta.param_types.is_empty()).then(|| serde_json::json!(meta.param_types)),
+                ),
+                ("receiver", meta.receiver.map(Value::String)),
+                ("receiver_type", meta.receiver_type.map(Value::String)),
+                ("receiver_hint", meta.receiver_hint.map(Value::String)),
+            ] {
+                if let Some(value) = value {
+                    details.insert(key.into(), value);
+                } else {
+                    details.remove(key);
+                }
             }
         }
     }
 }
 
-pub(crate) struct NavigationDetails<'a>(&'a Value);
+pub(crate) struct NavigationDetails<'a> {
+    node: &'a Node,
+    documentation: Option<&'a Value>,
+}
 
 impl Serialize for NavigationDetails<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
-        let Some(details) = self.0.as_object() else {
-            return self.0.serialize(serializer);
-        };
+        let details = self.node.details.as_object();
+        let documentation = self.documentation.and_then(Value::as_object);
+        let semantic = self.node.native_semantic.as_deref();
+        if details.is_none() && documentation.is_none() && semantic.is_none() {
+            return self.node.details.serialize(serializer);
+        }
         let mut map = serializer.serialize_map(None)?;
-        for (key, value) in details {
-            if matches!(
-                key.as_str(),
-                "value_flow" | "bindings" | "rebindings" | "param_types" | "column"
-            ) || value.is_null()
-                || value.as_str().is_some_and(str::is_empty)
-                || value.as_array().is_some_and(Vec::is_empty)
-                || (matches!(key.as_str(), "async" | "default_export")
-                    && value == &Value::Bool(false))
-            {
-                continue;
+        if let Some(details) = details {
+            for (key, value) in details {
+                if self.documentation.is_some() && matches!(key.as_str(), "doc" | "docstring") {
+                    continue;
+                }
+                if !matches!(key.as_str(), "bindings" | "rebindings" | "param_types")
+                    && !include_navigation_detail(key, value)
+                {
+                    continue;
+                }
+                map.serialize_entry(key, value)?;
             }
-            map.serialize_entry(key, value)?;
+        }
+        if let Some(semantic) = semantic {
+            let has_detail = |key: &str| details.is_some_and(|details| details.contains_key(key));
+            if semantic.has("bindings") && !has_detail("bindings") {
+                map.serialize_entry("bindings", &semantic.bindings)?;
+            }
+            if semantic.has("rebindings") && !has_detail("rebindings") {
+                map.serialize_entry("rebindings", &semantic.rebindings)?;
+            }
+            if semantic.has("param_types") && !has_detail("param_types") {
+                map.serialize_entry(
+                    "param_types",
+                    &super::typed_facts::ParameterTypesView(semantic),
+                )?;
+            }
+        }
+        if let Some(documentation) = documentation {
+            for key in ["doc", "docstring"] {
+                if let Some(value) = documentation
+                    .get(key)
+                    .filter(|value| include_navigation_detail(key, value))
+                {
+                    map.serialize_entry(key, value)?;
+                }
+            }
         }
         map.end()
     }
+}
+
+fn include_navigation_detail(key: &str, value: &Value) -> bool {
+    !matches!(
+        key,
+        "value_flow"
+            | "bindings"
+            | "rebindings"
+            | "param_types"
+            | "column"
+            | "semantic_facts"
+            | "named_definition_uncertainties"
+            | "named_definition_uncertainty_fault"
+    ) && !value.is_null()
+        && !value.as_str().is_some_and(str::is_empty)
+        && !value.as_array().is_some_and(Vec::is_empty)
+        && !(matches!(key, "async" | "default_export") && value == &Value::Bool(false))
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 /// Directed relationship between two indexed declarations.
@@ -247,6 +410,14 @@ pub enum ReceiverHint {
         /// Accessed member name.
         member: String,
     },
+    /// Member access on a bounded, canonical typed call result.
+    TypedCallResult {
+        /// Canonical call expression and its original source evidence.
+        #[serde(deserialize_with = "crate::core::semantic::deserialize_typed_call")]
+        value: crate::core::semantic::ValueExpr,
+        /// Accessed member.
+        member: String,
+    },
     /// Member access on an object constructed by a call.
     ConstructorResult {
         /// Constructor expression that supplies the receiver.
@@ -302,6 +473,15 @@ pub struct Reference {
     /// Syntax-derived receiver evidence, if available.
     pub receiver_hint: Option<ReceiverHint>,
 }
+impl Reference {
+    pub(crate) fn position(&self) -> super::semantic::SourcePosition {
+        super::semantic::SourcePosition {
+            line: self.line,
+            column: self.column,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 /// Source-scoped extraction or linking diagnostic.
 pub struct Diagnostic {
@@ -336,9 +516,15 @@ pub struct DocSection {
     /// Whether the section expresses an invariant.
     pub is_invariant: bool,
 }
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 /// Extracted per-file facts before cross-file linking and persistence.
 pub struct Facts {
+    #[serde(skip)]
+    #[doc(hidden)]
+    pub semantic: SemanticStore,
+    #[serde(skip)]
+    #[doc(hidden)]
+    pub pending_flow_nodes: Vec<usize>,
     /// Declarations found in the file.
     pub nodes: Vec<Node>,
     /// Relationships resolved within the file.
@@ -350,6 +536,103 @@ pub struct Facts {
     /// Extraction diagnostics.
     pub errors: Vec<Diagnostic>,
 }
+impl Serialize for Facts {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("Facts", 5)?;
+        state.serialize_field(
+            "nodes",
+            &super::typed_facts::PublicNodesView::new(self, &self.semantic.flows),
+        )?;
+        state.serialize_field("edges", &self.edges)?;
+        state.serialize_field("references", &self.references)?;
+        state.serialize_field("docs", &self.docs)?;
+        state.serialize_field("errors", &self.errors)?;
+        state.end()
+    }
+}
+
+impl Facts {
+    pub(crate) fn retain_nodes(&mut self, mut keep: impl FnMut(&Node) -> bool) {
+        let tracked: std::collections::HashSet<_> = self
+            .pending_flow_nodes
+            .iter()
+            .copied()
+            .chain(self.semantic.entries().map(|(i, _)| *i))
+            .collect();
+        if tracked.is_empty() {
+            self.nodes.retain(keep);
+            let ids = self.nodes.iter().map(|node| node.id.clone()).collect();
+            self.semantic.flows.retain_nodes(&ids);
+            return;
+        }
+        let mut mapping = std::collections::HashMap::new();
+        let (mut old, mut new) = (0, 0);
+        self.nodes.retain(|node| {
+            let retained = keep(node);
+            if retained {
+                if tracked.contains(&old) {
+                    mapping.insert(old, new);
+                }
+                new += 1;
+            }
+            old += 1;
+            retained
+        });
+        self.pending_flow_nodes.retain_mut(|index| {
+            if let Some(new) = mapping.get(index) {
+                *index = *new;
+                true
+            } else {
+                false
+            }
+        });
+        self.semantic.retain_remapped(&mapping);
+        let ids = self.nodes.iter().map(|node| node.id.clone()).collect();
+        self.semantic.flows.retain_nodes(&ids);
+    }
+    pub(crate) fn remap_deferred_nodes(&mut self, base: usize, batches: &[(usize, usize)]) {
+        let mut mapping = std::collections::HashMap::new();
+        for old in self
+            .pending_flow_nodes
+            .iter()
+            .copied()
+            .chain(self.semantic.entries().map(|(i, _)| *i))
+        {
+            let mut appended = 0;
+            let mut mapped = None;
+            for &(frontier, count) in batches {
+                if old < base {
+                    if frontier <= old {
+                        appended += count;
+                    }
+                } else if old - base >= appended && old - base < appended + count {
+                    mapped = Some(frontier + appended + (old - base - appended));
+                    break;
+                } else {
+                    appended += count;
+                }
+            }
+            mapping.insert(
+                old,
+                mapped.unwrap_or(old + if old < base { appended } else { 0 }),
+            );
+        }
+        self.remap_node_order(&mapping);
+    }
+    pub(crate) fn remap_node_order(
+        &mut self,
+        old_to_new: &std::collections::HashMap<usize, usize>,
+    ) {
+        for index in &mut self.pending_flow_nodes {
+            if let Some(new) = old_to_new.get(index) {
+                *index = *new;
+            }
+        }
+        self.semantic.remap_order(old_to_new);
+    }
+}
+
 impl AsRef<Facts> for Facts {
     fn as_ref(&self) -> &Facts {
         self

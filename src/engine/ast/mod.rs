@@ -74,6 +74,7 @@ pub(crate) fn doc_comment(node: Syntax<'_>, source: &str) -> String {
     comments.join("\n")
 }
 /// Represents scope bindings data.
+#[derive(Debug)]
 pub struct ScopeBindings {
     /// The all value.
     pub all: Vec<String>,
@@ -98,6 +99,37 @@ fn declaration_signature(node: Syntax<'_>, source: &str) -> String {
         .chars()
         .take(512)
         .collect()
+}
+fn declaration_signature_is_informative(node: Syntax<'_>) -> bool {
+    let parameters = node
+        .child_by_field_name("parameters")
+        .or_else(|| node.child_by_field_name("formal_parameters"));
+    let has_parameters = parameters.is_none_or(|parameters| parameters.named_child_count() > 0);
+    if has_parameters
+        || ["return_type", "type", "type_parameters", "type_arguments"]
+            .into_iter()
+            .any(|field| node.child_by_field_name(field).is_some())
+    {
+        return true;
+    }
+    let Some(body) = node.child_by_field_name("body") else {
+        return true;
+    };
+    if !matches!(
+        body.kind(),
+        "block" | "statement_block" | "function_body" | "compound_statement"
+    ) {
+        return true;
+    }
+    let mut cursor = body.walk();
+    let has_body = body.named_children(&mut cursor).any(|child| {
+        !child.kind().contains("comment")
+            && !matches!(child.kind(), "pass_statement" | "empty_statement")
+    });
+    has_body
+}
+fn declaration_signature_if_informative(node: Syntax<'_>, source: &str) -> Option<String> {
+    declaration_signature_is_informative(node).then(|| declaration_signature(node, source))
 }
 pub(crate) fn bounded_expression(value: &str) -> String {
     if value.len() <= 512 {
@@ -151,6 +183,51 @@ fn is_trivial_source(source: &str, language: &str) -> bool {
     }
 }
 
+fn compact_node_details(facts: &mut Facts, path: &str) {
+    let mut declarations_per_line = HashMap::new();
+    for node in facts
+        .nodes
+        .iter()
+        .filter(|node| node.path == path && node.kind != "module")
+    {
+        *declarations_per_line.entry(node.line).or_insert(0usize) += 1;
+    }
+    for node in facts.nodes.iter_mut().filter(|node| node.path == path) {
+        let empty = if let Some(details) = node.details.as_object_mut() {
+            details.retain(|key, value| match key.as_str() {
+                "value_flow" => !value.is_null(),
+                "bindings" | "rebindings" => {
+                    !value.as_array().is_some_and(|values| values.is_empty())
+                }
+                "async" | "default_export" | "is_method" | "is_public" => {
+                    value != &serde_json::Value::Bool(false)
+                }
+                "is_static" => value != &serde_json::Value::Bool(false),
+                _ => true,
+            });
+            let has_other_details = details.keys().any(|key| key != "column");
+            let keep_column = !matches!(node.kind.as_str(), "function" | "method")
+                || has_other_details
+                || details
+                    .get("column")
+                    .and_then(serde_json::Value::as_u64)
+                    .is_some_and(|column| column > 0)
+                || declarations_per_line
+                    .get(&node.line)
+                    .is_some_and(|count| *count > 1);
+            if !keep_column {
+                details.remove("column");
+            }
+            details.is_empty()
+        } else {
+            false
+        };
+        if empty && node.native_semantic.is_none() {
+            node.details = serde_json::Value::Null;
+        }
+    }
+}
+
 pub(crate) fn extract_typed(path: &str, language: &str, source: &str) -> Result<TypedFacts> {
     let registry = languages::dependency_registry::DependencyRegistry::bundled_framework_rules();
     extract_typed_with_registry(path, language, source, &registry)
@@ -167,6 +244,7 @@ pub(crate) fn extract_typed_with_registry(
     let module = profile.module_name_for_source(path, source);
     let mut facts = Facts::default();
     facts.nodes.push(Node {
+        native_semantic: None,
         id: format!("module:{path}"),
         kind: "module".into(),
         name: path.rsplit('/').next().unwrap_or(path).into(),
@@ -177,7 +255,7 @@ pub(crate) fn extract_typed_with_registry(
         is_test: is_test(path),
         language: language.into(),
         generated: false,
-        details: json!({}),
+        details: serde_json::Value::Null,
     });
 
     let bytes = source.len();
@@ -194,6 +272,8 @@ pub(crate) fn extract_typed_with_registry(
     if is_trivial_source(source, language) {
         profile.finish(&mut typed.facts);
         languages::semantic::file_providers(&mut typed.facts, &language_context);
+        typed.facts.semantic.mark_complete();
+        compact_node_details(&mut typed.facts, path);
         return Ok(typed);
     }
     match language {
@@ -223,19 +303,30 @@ pub(crate) fn extract_typed_with_registry(
         _ => {
             profile.extract_file(path, source, &module, &mut typed.facts)?;
             profile.finish(&mut typed.facts);
-            for node in &mut typed.facts.nodes {
+            for (index, node) in typed.facts.nodes.iter_mut().enumerate() {
                 typed.flows.ingest(node);
+                typed.facts.semantic.ingest(index, node);
             }
         }
     }
     languages::semantic::file_providers(&mut typed.facts, &language_context);
-    // Hydrate parser-produced projections for generated non-body declarations once.
-    // Body scopes already own native FlowStore entries and have null projections.
-    for node in &mut typed.facts.nodes {
+    // Only generated declarations retain a parser-owned JSON flow projection.
+    // Body scopes publish directly into their canonical native store.
+    for index in std::mem::take(&mut typed.facts.pending_flow_nodes) {
+        let node = typed
+            .facts
+            .nodes
+            .get_mut(index)
+            .expect("generated flow target follows node remapping");
         if typed.flows.state(node).is_none() {
             typed.flows.ingest(node);
         }
     }
+    for node in &mut typed.facts.nodes {
+        crate::core::typed_facts::NodeSemanticEntry::ingest(node);
+    }
+    typed.facts.semantic.mark_complete();
+    compact_node_details(&mut typed.facts, path);
     Ok(typed)
 }
 
@@ -260,6 +351,8 @@ pub(crate) fn extract_tree(
         None,
         &language_context,
     );
+    facts.semantic.mark_complete();
+    compact_node_details(facts, path);
 }
 
 pub(crate) fn parse_island(
@@ -294,15 +387,15 @@ pub(crate) fn extract_tree_with_language_context(
     owner: &str,
     facts: &mut Facts,
     flows: Option<&mut FlowStore>,
-    language_context: &languages::LanguageContext,
+    language_context: &std::sync::Arc<languages::LanguageContext>,
 ) -> ScopeBindings {
     let rule_ir = language_context.bind_rule_ir(&root.language());
     let route_context = if profile.route_extraction_enabled() {
-        routes::RouteContext::build(root, source, language_context)
+        routes::RouteContext::prepare(root, source, language_context)
     } else {
         routes::RouteContext::default()
     };
-    visitor::SinglePassExtractor {
+    let bindings = visitor::SinglePassExtractor {
         source,
         path,
         profile,
@@ -316,5 +409,6 @@ pub(crate) fn extract_tree_with_language_context(
         ids: facts.nodes.iter().map(|n| n.id.clone()).collect(),
         flows,
     }
-    .visit(root, &mut Vec::new(), owner, facts)
+    .visit(root, &mut Vec::new(), owner, facts);
+    bindings
 }

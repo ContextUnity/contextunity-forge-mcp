@@ -69,7 +69,10 @@ fn invalidate_rebound_event<'a>(
             }
         }
     }
-    if matches!(node.kind(), "function_definition" | "class_definition" | "lambda") {
+    if matches!(
+        node.kind(),
+        "function_definition" | "class_definition" | "lambda"
+    ) {
         if let Some(name) = field(node, source, "name").filter(|name| originals.contains_key(name))
         {
             sets.insert(name, None);
@@ -263,7 +266,13 @@ fn branch_exports(
                 .iter()
                 .map(|name| {
                     let (target, relative_to_module) = if value.kind() == "identifier" {
-                        (bindings.get(text(value, source)).or_else(|| module_bindings.get(text(value, source))).cloned(), false)
+                        (
+                            bindings
+                                .get(text(value, source))
+                                .or_else(|| module_bindings.get(text(value, source)))
+                                .cloned(),
+                            false,
+                        )
                     } else if value.kind() == "call"
                         && field(value, source, "function") == Some("getattr")
                         && !getattr_bound

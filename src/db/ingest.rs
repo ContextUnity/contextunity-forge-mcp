@@ -38,6 +38,7 @@ pub(super) struct FilePersistenceTimings {
     pub(super) encode_facts_ms: f64,
     pub(super) local_facts_batch_rows: usize,
     pub(super) local_facts_leaves: std::collections::BTreeMap<String, String>,
+    pub(super) node_leaves: std::collections::BTreeMap<String, String>,
 }
 
 pub(super) fn persist_files(
@@ -45,7 +46,6 @@ pub(super) fn persist_files(
     path_cache: &mut PathDictionaryCache,
     entries: &[FileEntry],
     facts: &BTreeMap<String, TypedFacts>,
-    _encoded_facts: Option<&hashbrown::HashMap<String, Vec<u8>>>,
     bulk_search: bool,
 ) -> Result<FilePersistenceTimings> {
     persist_files_impl(tx, path_cache, entries, facts, bulk_search, None)
@@ -55,7 +55,6 @@ pub(super) struct LoadedCatalogFile {
     pub(super) facts: TypedFacts,
     pub(super) encoded: Vec<u8>,
     pub(super) local_facts_leaf: (String, String),
-    pub(super) details_json: Vec<String>,
     pub(super) search_texts: Vec<String>,
     pub(super) reference_keys: Vec<String>,
 }
@@ -158,6 +157,7 @@ fn persist_files_impl(
         })
         .transpose()?;
     let mut shared_owner_rows = Vec::<[i64; 4]>::new();
+    let mut node_domain = seal::NodeDomain::new();
     let (file_batch_rows, node_batch_rows, owned_search_batch_rows) = if bulk_search {
         (
             Some(multi_value_batch_rows::<8>(tx)?),
@@ -212,23 +212,55 @@ fn persist_files_impl(
             } else {
                 Vec::new()
             };
+        let mut prepared_node_details = file_chunk
+            .par_iter()
+            .enumerate()
+            .map(|(chunk_index, file)| -> Result<Vec<(usize, Vec<u8>)>> {
+                let f = loaded
+                    .as_ref()
+                    .map(|loaded| &loaded[chunk_index].facts)
+                    .or_else(|| facts.get(&file.path))
+                    .context("missing catalog facts for node details")?;
+                let detail_facts = facts
+                    .get(&file.path)
+                    .context("missing navigation facts for node details")?;
+                let mut node_order = (0..f.nodes.len()).collect::<Vec<_>>();
+                node_order.par_sort_unstable_by(|left, right| {
+                    f.nodes[*left]
+                        .id
+                        .cmp(&f.nodes[*right].id)
+                        .then_with(|| left.cmp(right))
+                });
+                node_order
+                    .par_iter()
+                    .map(|&node_index| -> Result<(usize, Vec<u8>)> {
+                        let n = &f.nodes[node_index];
+                        let navigation_node = detail_facts
+                            .nodes
+                            .get(node_index)
+                            .filter(|node| node.id == n.id)
+                            .or_else(|| detail_facts.nodes.iter().find(|node| node.id == n.id))
+                            .context("staged node is missing matching navigation facts")?;
+                        let details = serde_json::to_vec(
+                            &navigation_node.navigation_details_with_documentation(&n.details),
+                        )?;
+                        Ok((node_index, details))
+                    })
+                    .collect::<Result<Vec<_>>>()
+            })
+            .collect::<Result<Vec<_>>>()?;
         for (chunk_index, file) in file_chunk.iter().enumerate() {
-            let (f, mut details_json, mut search_texts, prepared_references) =
+            let (f, mut search_texts, prepared_references) =
                 if let Some(loaded) = loaded.as_mut() {
                     let loaded = &mut loaded[chunk_index];
                     (
                         &loaded.facts,
-                        Some(&mut loaded.details_json),
                         Some(&mut loaded.search_texts),
                         Some(&loaded.reference_keys),
                     )
                 } else {
-                    (
-                        facts.get(&file.path).context("missing extracted facts")?,
-                        None,
-                        None,
-                        None,
-                    )
+                    let extracted = facts.get(&file.path).context("missing extracted facts")?;
+                    (extracted, None, None)
                 };
             let owner_id = path_cache.get_or_insert(tx, &file.path)?;
             if let Some(batch) = source_inventory_batch.as_mut() {
@@ -303,8 +335,23 @@ fn persist_files_impl(
                         blob.as_slice()
                     ])?;
             }
-            for (node_index, n) in f.nodes.iter().enumerate() {
-                node_id += 1;
+            let node_id_start = node_id;
+            node_id = node_id
+                .checked_add(i64::try_from(f.nodes.len())?)
+                .context("node ID overflow")?;
+            if search_texts
+                .as_ref()
+                .is_some_and(|search| search.len() != f.nodes.len())
+            {
+                search_texts = None;
+            }
+            for (node_index, details_bytes) in
+                std::mem::take(&mut prepared_node_details[chunk_index])
+            {
+                let n = &f.nodes[node_index];
+                let row_node_id = node_id_start
+                    .checked_add(i64::try_from(node_index + 1)?)
+                    .context("node ID overflow")?;
                 let search_id = stable_hash64(&n.id);
                 let node_path_id = if n.path == file.path {
                     owner_id
@@ -312,17 +359,9 @@ fn persist_files_impl(
                     path_cache.get_or_insert(tx, &n.path)?
                 };
                 if bulk_search {
-                    let details = if let Some(prepared) = details_json.as_mut() {
-                        reusable_detail_buffers.pop();
-                        std::mem::take(&mut prepared[node_index]).into_bytes()
-                    } else {
-                        let mut details = reusable_detail_buffers.pop().unwrap_or_default();
-                        details.clear();
-                        serde_json::to_writer(&mut details, &n.navigation_details())?;
-                        details
-                    };
+                    node_domain.push(&file.path, n, &details_bytes)?;
                     node_batch.push([
-                        BorrowedSqlValue::Integer(node_id),
+                        BorrowedSqlValue::Integer(row_node_id),
                         BorrowedSqlValue::OwnedText(n.id.clone()),
                         BorrowedSqlValue::OwnedText(n.kind.clone()),
                         BorrowedSqlValue::OwnedText(n.name.clone()),
@@ -333,7 +372,7 @@ fn persist_files_impl(
                         BorrowedSqlValue::Integer(i64::from(n.is_test)),
                         BorrowedSqlValue::OwnedText(n.language.clone()),
                         BorrowedSqlValue::Integer(i64::from(n.generated)),
-                        BorrowedSqlValue::OwnedJsonText(details),
+                        BorrowedSqlValue::OwnedJsonText(details_bytes),
                         BorrowedSqlValue::Integer(search_id),
                         BorrowedSqlValue::Integer(owner_id),
                     ]);
@@ -347,12 +386,14 @@ fn persist_files_impl(
                         }
                     }
                 } else {
-                    let details = serde_json::to_string(&n.navigation_details())?;
+                    node_domain.push(&file.path, n, &details_bytes)?;
+                    let details = std::str::from_utf8(&details_bytes)
+                        .context("serialized node details are not UTF-8")?;
                     stmt_nodes
                         .as_mut()
                         .context("missing incremental node insert")?
                         .execute(params![
-                            node_id,
+                            row_node_id,
                             n.id,
                             n.kind,
                             n.name,
@@ -397,11 +438,11 @@ fn persist_files_impl(
                     }
                     incremental_search_buffer.clear();
                 }
-                let key_hash = shared_key_cache.get_or_insert_node(&n.qualname, node_id)?;
-                shared_owner_rows.push([0, key_hash, owner_id, node_id]);
+                let key_hash = shared_key_cache.get_or_insert_node(&n.qualname, row_node_id)?;
+                shared_owner_rows.push([0, key_hash, owner_id, row_node_id]);
             }
             let keys = prepared_references.map_or_else(
-                || reference_keys(f),
+                || f.reference_keys(),
                 |keys| keys.iter().map(String::as_str).collect(),
             );
             for key in keys {
@@ -474,6 +515,7 @@ fn persist_files_impl(
     if let Some(total_ms) = node_row_insert_ms.as_mut() {
         *total_ms += insert_ms;
     }
+    let node_leaves = node_domain.finish()?;
     insert_multi_value_batch(tx, "INSERT INTO files VALUES", &file_batch)?;
     fts_insert_ms +=
         flush_owned_search_batch(tx, &mut owned_search_batch, &mut reusable_search_buffers)?;
@@ -492,6 +534,7 @@ fn persist_files_impl(
         encode_facts_ms,
         local_facts_batch_rows: local_facts_batch_rows.unwrap_or(1),
         local_facts_leaves,
+        node_leaves,
     })
 }
 
@@ -716,20 +759,18 @@ fn persist_dependencies(
                     let Some(flow) = file_facts.flows.get(node) else {
                         continue;
                     };
-                    for context in &flow.template_contexts {
-                        let Some(target) =
-                            crate::core::config::local_template_target(path, &context.target)
-                        else {
+                    for context in flow.template_contexts() {
+                        let Some(target) = context.target_path.as_ref() else {
                             continue;
                         };
                         if crate::core::config::workspace_path(path).0
-                            != crate::core::config::workspace_path(&target).0
+                            != crate::core::config::workspace_path(target).0
                         {
                             continue;
                         }
                         dependencies.push(StoredDependency {
                             owner,
-                            target: Some(stable_hash64(&target)),
+                            target: Some(stable_hash64(target)),
                             kind: "renders",
                             symbol: &context.target,
                             resolution: "resolved",
@@ -833,7 +874,8 @@ pub(super) fn persist_graph(
     let mut stmt_select_path = tx.prepare_cached(
         "SELECT p.path FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.id=?1",
     )?;
-    let mut coverage_batch = MultiValueBatch::<5, BorrowedSqlValue<'_>>::new(tx,
+    let mut coverage_batch = MultiValueBatch::<5, BorrowedSqlValue<'_>>::new(
+        tx,
         "INSERT OR IGNORE INTO resolution_coverage(path_id,line,expression_id,status,evidence_id) VALUES",
     )?;
     let mut owner_language_batch = MultiValueBatch::<6, BorrowedSqlValue<'_>>::new(
@@ -903,7 +945,10 @@ pub(super) fn persist_graph(
     let occurrences = phase.elapsed().as_secs_f64() * 1000.;
     let phase = Instant::now();
     if materialize_edges {
-        let mut edge_batch = MultiValueBatch::<8, BorrowedSqlValue<'_>>::new(tx, "INSERT INTO edges(src_hash,kind,dst_hash,path_id,line,evidence_id,confidence_id,occurrence_count) VALUES")?;
+        let mut edge_batch = MultiValueBatch::<8, BorrowedSqlValue<'_>>::new(
+            tx,
+            "INSERT INTO edges(src_hash,kind,dst_hash,path_id,line,evidence_id,confidence_id,occurrence_count) VALUES",
+        )?;
         if unique_edges.len() >= 8192 {
             unique_edges
                 .par_sort_unstable_by_key(|edge| (edge.src, edge.kind, edge.dst, edge.first));

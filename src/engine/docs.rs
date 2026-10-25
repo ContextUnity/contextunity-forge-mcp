@@ -68,6 +68,9 @@ pub(crate) fn extract_with_details(
         headings.insert(0, (0, meta.title.clone().unwrap_or_else(|| path.into())));
     }
 
+    let line_starts: Vec<usize> = std::iter::once(0)
+        .chain(source.match_indices('\n').map(|(i, _)| i + 1))
+        .collect();
     let mut output = Vec::new();
     for (index, (start, title)) in headings.iter().enumerate() {
         let end = headings
@@ -77,12 +80,9 @@ pub(crate) fn extract_with_details(
         if content.trim().is_empty() {
             continue;
         }
-        let line_at = |offset: usize| {
-            source[..body_offset + *start + offset]
-                .bytes()
-                .filter(|byte| *byte == b'\n')
-                .count()
-                + 1
+        let line_at = |offset: usize| -> usize {
+            let pos = body_offset + *start + offset;
+            line_starts.partition_point(|&start_pos| start_pos <= pos)
         };
         let section_line = line_at(0);
         let section_end_line = section_line + content.lines().count().saturating_sub(1);

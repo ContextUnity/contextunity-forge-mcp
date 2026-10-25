@@ -34,6 +34,7 @@ fn entries_and_facts(count: usize) -> (Vec<FileEntry>, BTreeMap<String, TypedFac
             path.clone(),
             TypedFacts::from_public(Facts {
                 nodes: vec![Node {
+                    native_semantic: None,
                     id: format!("function:{path}"),
                     kind: "function".into(),
                     name: format!("function_{index}"),
@@ -44,7 +45,7 @@ fn entries_and_facts(count: usize) -> (Vec<FileEntry>, BTreeMap<String, TypedFac
                     is_test: false,
                     language: "rust".into(),
                     generated: false,
-                    details: json!({}),
+                    details: serde_json::Value::Null,
                 }],
                 ..Facts::default()
             }),
@@ -255,7 +256,7 @@ fn semantic_dependencies_include_dynamic_receivers_without_scanning_dynamic_text
             member: "run".into(),
         }),
     });
-    let keys = super::reference_keys(facts);
+    let keys = facts.reference_keys();
     for key in [
         "pkg.Worker",
         "Worker",
@@ -323,7 +324,7 @@ fn graph_owner_and_commitment_batches_preserve_rows_across_variable_limits() {
         }
         let tx = conn.transaction().unwrap();
         let mut path_cache = PathDictionaryCache::new();
-        persist_files(&tx, &mut path_cache, &entries, &facts, None, true).unwrap();
+        persist_files(&tx, &mut path_cache, &entries, &facts, true).unwrap();
         let mut node_paths: hashbrown::HashMap<_, _> = facts
             .values()
             .flat_map(|f| f.nodes.iter())
@@ -440,7 +441,7 @@ fn cold_file_node_and_search_inserts_respect_live_batch_boundaries() {
     let (entries, facts) = entries_and_facts(251);
     let tx = conn.transaction().unwrap();
     let mut path_cache = PathDictionaryCache::new();
-    persist_files(&tx, &mut path_cache, &entries, &facts, None, true).unwrap();
+    persist_files(&tx, &mut path_cache, &entries, &facts, true).unwrap();
     tx.commit().unwrap();
 
     for table in [
@@ -471,7 +472,7 @@ fn cold_batch_failure_rolls_back_previously_flushed_rows() {
     let error = {
         let tx = conn.transaction().unwrap();
         let mut path_cache = PathDictionaryCache::new();
-        let error = persist_files(&tx, &mut path_cache, &entries, &facts, None, true)
+        let error = persist_files(&tx, &mut path_cache, &entries, &facts, true)
             .expect_err("the injected late failure must abort persistence");
         drop(tx);
         error

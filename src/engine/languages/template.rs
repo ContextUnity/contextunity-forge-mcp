@@ -1,4 +1,4 @@
-//! Byte-preserving masking for embedded Django, Jinja, and Vue template tags.
+//! Byte-preserving masking for embedded template tags.
 
 use std::borrow::Cow;
 

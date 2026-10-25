@@ -8,7 +8,10 @@ pub(super) fn collect(root: Syntax<'_>, source: &str, offset: usize) -> serde_js
     let mut setters = Vec::new();
     let mut cursor = root.walk();
     for statement in root.named_children(&mut cursor) {
-        if !matches!(statement.kind(), "import_statement" | "import_from_statement") {
+        if !matches!(
+            statement.kind(),
+            "import_statement" | "import_from_statement"
+        ) {
             continue;
         }
         let from = statement.kind() == "import_from_statement";
@@ -37,7 +40,9 @@ pub(super) fn collect(root: Syntax<'_>, source: &str, offset: usize) -> serde_js
         let node = cursor.node();
         visited += 1;
         if visited > 65_536 {
-            for (_, _, safe) in &mut imports { *safe = false; }
+            for (_, _, safe) in &mut imports {
+                *safe = false;
+            }
             break;
         }
         if node.kind() == "identifier" {
@@ -61,13 +66,18 @@ pub(super) fn collect(root: Syntax<'_>, source: &str, offset: usize) -> serde_js
                     && value.parent().is_some_and(|parent| {
                         matches!(parent.kind(), "argument_list" | "keyword_argument")
                     });
-                let escaped = !level_constant && !value.parent().is_some_and(|parent| {
-                    matches!(parent.kind(), "dotted_name" | "aliased_import"
-                        | "import_statement" | "import_from_statement")
-                        || (parent.kind() == "call"
+                let escaped = !level_constant
+                    && !value.parent().is_some_and(|parent| {
+                        matches!(
+                            parent.kind(),
+                            "dotted_name"
+                                | "aliased_import"
+                                | "import_statement"
+                                | "import_from_statement"
+                        ) || (parent.kind() == "call"
                             && parent.child_by_field_name("function") == Some(value)
                             && !factory_changed)
-                });
+                    });
                 if escaped {
                     for (_, _, safe) in &mut imports {
                         *safe = false;
@@ -75,19 +85,29 @@ pub(super) fn collect(root: Syntax<'_>, source: &str, offset: usize) -> serde_js
                 }
             }
         }
-        if cursor.goto_first_child() { continue; }
+        if cursor.goto_first_child() {
+            continue;
+        }
         loop {
-            if cursor.goto_next_sibling() { break; }
+            if cursor.goto_next_sibling() {
+                break;
+            }
             if !cursor.goto_parent() {
-                return serde_json::json!(imports.into_iter().map(|(alias, position, safe)| {
-                    serde_json::json!({"alias": alias, "line": position.row + offset + 1,
+                return serde_json::json!(imports
+                    .into_iter()
+                    .map(|(alias, position, safe)| {
+                        serde_json::json!({"alias": alias, "line": position.row + offset + 1,
                         "column": position.column, "safe": safe})
-                }).collect::<Vec<_>>());
+                    })
+                    .collect::<Vec<_>>());
             }
         }
     }
-    serde_json::json!(imports.into_iter().map(|(alias, position, safe)| {
-        serde_json::json!({"alias": alias, "line": position.row + offset + 1,
+    serde_json::json!(imports
+        .into_iter()
+        .map(|(alias, position, safe)| {
+            serde_json::json!({"alias": alias, "line": position.row + offset + 1,
             "column": position.column, "safe": safe})
-    }).collect::<Vec<_>>())
+        })
+        .collect::<Vec<_>>())
 }

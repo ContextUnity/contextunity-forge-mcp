@@ -131,7 +131,8 @@ impl LanguageProfile for Php {
                         .child_by_field_name("object")
                         .or_else(|| ctx.node.child_by_field_name("scope")),
                 ) {
-                    let proven_this = text(receiver, ctx.source) == "$this"
+                    let receiver_text = text(receiver, ctx.source);
+                    let proven_this = receiver_text == "$this"
                         && facts
                             .nodes
                             .iter()
@@ -141,11 +142,7 @@ impl LanguageProfile for Php {
                             });
                     let expression = format!(
                         "{}.{}",
-                        if proven_this {
-                            "this"
-                        } else {
-                            text(receiver, ctx.source)
-                        },
+                        if proven_this { "this" } else { receiver_text },
                         text(name, ctx.source)
                     );
                     syntax::call_reference(

@@ -1,6 +1,3 @@
-#[cfg(any(feature = "lang-c", feature = "lang-cpp"))]
-#[path = "support/c_family.rs"]
-mod c_family;
 #[cfg(any(
     feature = "lang-c",
     feature = "lang-cpp",
@@ -10,8 +7,7 @@ mod c_family;
     feature = "lang-php",
     feature = "lang-ruby"
 ))]
-#[path = "support/mod.rs"]
-mod syntax;
+pub(crate) mod support;
 use crate::core::models::{Facts, Node, Reference};
 use crate::engine::ast::{self, field, text};
 use crate::engine::linker::traits::{LanguageLinker, GENERIC_LINKER};
@@ -22,6 +18,18 @@ use std::{
     path::Path,
     sync::Arc,
 };
+#[cfg(any(
+    feature = "lang-c",
+    feature = "lang-cpp",
+    feature = "lang-csharp",
+    feature = "lang-java",
+    feature = "lang-kotlin",
+    feature = "lang-php",
+    feature = "lang-ruby"
+))]
+pub(crate) use support as syntax;
+#[cfg(any(feature = "lang-c", feature = "lang-cpp"))]
+pub(crate) use support::c_family;
 use tree_sitter::{Node as Syntax, Parser};
 #[cfg(any(feature = "lang-java", feature = "lang-kotlin"))]
 pub(crate) mod build_manifest;
@@ -29,18 +37,13 @@ pub(crate) mod build_manifest;
 pub mod dependency_registry;
 /// Typed framework manifests consumed by existing language linkers.
 pub mod manifests;
-#[path = "python/receivers.rs"]
-pub(crate) mod python_receivers;
 /// Package and TypeScript path registries.
 pub(crate) mod registries;
 pub(crate) mod semantic;
 #[cfg(any(feature = "lang-html", feature = "lang-vue"))]
-#[path = "support/template.rs"]
 pub(crate) mod template;
 #[cfg(any(feature = "lang-python", feature = "lang-rust", feature = "lang-toml"))]
 pub(crate) mod toml_manifest;
-#[path = "typescript/linker_bindings.rs"]
-pub(crate) mod typescript_bindings;
 
 pub(crate) const MAX_VALUE_FLOW_TYPE_DEPTH: usize = 8;
 
@@ -234,10 +237,192 @@ pub struct LanguageContext {
     pub(crate) di_rule_origins: HashMap<usize, crate::core::semantic::ExtractionRuleOrigin>,
     pub(crate) semantic_rules: Vec<semantic::EffectiveSemanticRule>,
     pub(crate) syntax_rules: Vec<manifests::syntax::SyntaxRule>,
+    /// Necessary operation families derived during effective rule preparation.
+    pub(crate) has_factory_members: bool,
+    pub(crate) has_object_call_definitions: bool,
+    named_member_rules: HashMap<String, Vec<usize>>,
+    projection_rules: Option<ProjectionRuleIndex>,
+    prepared_projections: HashMap<String, manifests::semantic::PreparedRules>,
+    file_provider_rules: Option<HashMap<String, Vec<usize>>>,
     pub(crate) rule_ir: manifests::RuleIRHandle,
 }
 
+#[derive(Clone, Debug, Default)]
+struct ProjectionRuleIndex {
+    globals: HashMap<String, Vec<usize>>,
+    members: HashMap<String, Vec<usize>>,
+    imported: Vec<usize>,
+}
+
+/// Merge necessary candidates without allocating or changing effective row order.
+pub(crate) struct ProjectionRuleCandidates<'a> {
+    slices: [&'a [usize]; 4],
+    positions: [usize; 4],
+    legacy: std::ops::Range<usize>,
+}
+
+impl Iterator for ProjectionRuleCandidates<'_> {
+    type Item = usize;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(index) = self.legacy.next() {
+            return Some(index);
+        }
+        let next = self
+            .slices
+            .iter()
+            .zip(self.positions)
+            .filter_map(|(slice, position)| slice.get(position))
+            .min()
+            .copied()?;
+        for (slice, position) in self.slices.iter().zip(&mut self.positions) {
+            if slice.get(*position) == Some(&next) {
+                *position += 1;
+            }
+        }
+        Some(next)
+    }
+}
+
 impl LanguageContext {
+    pub(crate) fn prepare_named_member_rules(&mut self) {
+        use manifests::{projections::NamedBindingForm, syntax::SyntaxOperation};
+        self.named_member_rules.clear();
+        self.has_factory_members = false;
+        self.has_object_call_definitions = false;
+        let mut projections = ProjectionRuleIndex::default();
+        for (index, rule) in self.syntax_rules.iter().enumerate() {
+            self.has_factory_members |=
+                matches!(&rule.operation, SyntaxOperation::FactoryMembers { .. });
+            self.has_object_call_definitions |= matches!(
+                &rule.operation,
+                SyntaxOperation::NamedBinding {
+                    binding: NamedBindingForm::CallDefinition {
+                        target_kind: manifests::projections::DefinitionKind::Object,
+                        ..
+                    },
+                    ..
+                }
+            );
+            if let SyntaxOperation::NamedBinding {
+                binding: NamedBindingForm::MemberReference { root },
+                ..
+            } = &rule.operation
+            {
+                self.named_member_rules
+                    .entry(root.clone())
+                    .or_default()
+                    .push(index);
+            }
+            let api = manifests::semantic::syntax_rule_api(rule).and_then(Result::ok);
+            match api {
+                Some(manifests::projections::Api::Global { name }) => {
+                    projections
+                        .globals
+                        .entry(name.clone())
+                        .or_default()
+                        .push(index);
+                }
+                Some(manifests::projections::Api::GlobalMember { member, .. }) => {
+                    projections
+                        .members
+                        .entry(member.clone())
+                        .or_default()
+                        .push(index);
+                }
+                Some(manifests::projections::Api::Imported { .. }) => {
+                    projections.imported.push(index)
+                }
+                _ => {}
+            }
+        }
+        self.projection_rules = Some(projections);
+        let mut providers: HashMap<String, Vec<usize>> = HashMap::new();
+        for (index, effective) in self
+            .semantic_rules
+            .iter()
+            .enumerate()
+            .filter(|(_, rule)| rule.active)
+        {
+            if let manifests::SemanticOperation::CallToFile {
+                target: manifests::SemanticTarget::ProjectPathSuffix { language, .. },
+                ..
+            }
+            | manifests::SemanticOperation::ClassAttributeToFile {
+                target: manifests::SemanticTarget::ProjectPathSuffix { language, .. },
+                ..
+            } = &effective.rule.operation
+            {
+                providers.entry(language.clone()).or_default().push(index);
+            }
+        }
+        self.file_provider_rules = Some(providers);
+        self.prepared_projections = manifests::semantic::prepare_projection_rules(self);
+    }
+
+    pub(crate) fn prepared_projections(
+        &self,
+        language: &str,
+    ) -> Option<&manifests::semantic::PreparedRules> {
+        self.prepared_projections.get(language)
+    }
+
+    pub(crate) fn named_member_rules(&self, root: &str) -> &[usize] {
+        self.named_member_rules.get(root).map_or(&[], Vec::as_slice)
+    }
+
+    pub(crate) fn has_projection_rules_for_kind(&self, kind: &str) -> bool {
+        match kind {
+            "call_expression" => self.projection_rules.as_ref().is_none_or(|rules| {
+                !rules.globals.is_empty()
+                    || !rules.members.is_empty()
+                    || !rules.imported.is_empty()
+                    || !self.named_member_rules.is_empty()
+            }),
+            "member_expression" => {
+                self.projection_rules.is_none() || !self.named_member_rules.is_empty()
+            }
+            _ => false,
+        }
+    }
+
+    pub(crate) fn projection_rule_candidates(
+        &self,
+        kind: &str,
+        callee: &str,
+    ) -> ProjectionRuleCandidates<'_> {
+        let mut candidates = ProjectionRuleCandidates {
+            slices: [&[]; 4],
+            positions: [0; 4],
+            legacy: 0..0,
+        };
+        let Some(index) = &self.projection_rules else {
+            candidates.legacy = 0..self.syntax_rules.len();
+            return candidates;
+        };
+        if kind == "call_expression" {
+            candidates.slices[0] = index.globals.get(callee).map_or(&[], Vec::as_slice);
+            if let Some((_, member)) = callee.rsplit_once('.') {
+                candidates.slices[1] = index.members.get(member).map_or(&[], Vec::as_slice);
+            }
+            if callee.split('.').count() <= 2 {
+                candidates.slices[2] = &index.imported;
+            }
+        }
+        if matches!(kind, "call_expression" | "member_expression") {
+            if let Some((root, _)) = callee.split_once('.') {
+                candidates.slices[3] = self.named_member_rules(root);
+            }
+        }
+        candidates
+    }
+
+    pub(crate) fn file_provider_rules_for_language(&self, language: &str) -> Option<&[usize]> {
+        self.file_provider_rules
+            .as_ref()
+            .map(|rules| rules.get(language).map_or(&[][..], Vec::as_slice))
+    }
+
     pub(crate) fn component_macro(
         &self,
         name: &str,
@@ -296,7 +481,7 @@ pub struct SyntaxGrammarSpec {
     pub comments: &'static [&'static str],
 }
 pub(crate) struct CompiledSyntaxGrammar {
-    kinds: HashMap<u16, CompiledSyntaxKind>,
+    kinds: Vec<Option<CompiledSyntaxKind>>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -343,7 +528,7 @@ impl CompiledSyntaxKind {
 
 impl CompiledSyntaxGrammar {
     pub(crate) fn classify(&self, kind_id: u16) -> Option<CompiledSyntaxKind> {
-        self.kinds.get(&kind_id).copied()
+        self.kinds.get(usize::from(kind_id)).copied().flatten()
     }
 }
 
@@ -367,20 +552,13 @@ impl SyntaxGrammarSpec {
             );
             Ok(id)
         };
-        let mut compiled_kinds = HashMap::<u16, CompiledSyntaxKind>::with_capacity(
-            self.declarations.len()
-                + self.references.len()
-                + self.scopes.len()
-                + self.imports.len()
-                + self.member_access.len()
-                + self.comments.len(),
-        );
+        let mut compiled_kinds = vec![None::<CompiledSyntaxKind>; grammar.node_kind_count()];
         for (name, category) in self.declarations {
             anyhow::ensure!(
                 !category.is_empty(),
                 "SyntaxGrammarSpec declaration category is empty"
             );
-            let compiled = compiled_kinds.entry(kind(name)?).or_default();
+            let compiled = compiled_kinds[usize::from(kind(name)?)].get_or_insert_default();
             anyhow::ensure!(
                 compiled.declaration.is_none(),
                 "SyntaxGrammarSpec repeats declaration kind '{name}'"
@@ -395,7 +573,9 @@ impl SyntaxGrammarSpec {
             (self.comments, CompiledSyntaxKind::COMMENT),
         ] {
             for name in names {
-                compiled_kinds.entry(kind(name)?).or_default().flags |= flag;
+                compiled_kinds[usize::from(kind(name)?)]
+                    .get_or_insert_default()
+                    .flags |= flag;
             }
         }
         Ok(CompiledSyntaxGrammar {
@@ -744,10 +924,10 @@ pub trait LanguageProfile: Send + Sync {
         &self,
         root: Syntax<'_>,
         source: &str,
-        rules: &LanguageContext,
+        rules: &Arc<LanguageContext>,
     ) -> FileContext {
         let mut file = self.prepare(root, source);
-        file.rules = Arc::new(rules.clone());
+        file.rules = Arc::clone(rules);
         file
     }
     /// Derives module exports after the shared walk has collected root bindings.
@@ -905,6 +1085,24 @@ pub trait LanguageProfile: Send + Sync {
     ) {
         self.extract_routes_with_context(ctx, facts, symbols, rules, routes);
     }
+    #[doc(hidden)]
+    fn typed_scope_projections(&self) -> bool {
+        false
+    }
+    #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
+    fn extract_routes_with_typed_projections(
+        &self,
+        ctx: &SyntaxContext<'_, '_>,
+        facts: &mut Facts,
+        symbols: &HashMap<usize, String>,
+        rules: &LanguageContext,
+        rule_ir: &manifests::RuleIRHandle,
+        routes: &crate::engine::ast::routes::RouteContext,
+        _projections: &mut HashMap<String, crate::core::semantic::ValueFlowFacts>,
+    ) {
+        self.extract_routes_with_rule_ir(ctx, facts, symbols, rules, rule_ir, routes);
+    }
     /// Finalizes extracted facts after the syntax walk.
     fn finish(&self, _facts: &mut Facts) {}
     /// Describes AST search syntax supported by this profile.
@@ -930,6 +1128,77 @@ pub trait LanguageProfile: Send + Sync {
 }
 
 include!(concat!(env!("OUT_DIR"), "/language_profiles.rs"));
+
+#[cfg(any(feature = "lang-python", feature = "lang-typescript"))]
+pub(crate) fn publish_scope_projections(
+    facts: &mut Facts,
+    mut projections: HashMap<String, crate::core::semantic::ValueFlowFacts>,
+) {
+    if projections.is_empty() {
+        return;
+    }
+    for node in &mut facts.nodes {
+        let Some(flow) = projections.remove(&node.id) else {
+            continue;
+        };
+        let output = &mut node.details["value_flow"];
+        if !output.is_object() {
+            *output = serde_json::json!({});
+        }
+        for (key, mut value, present) in [
+            (
+                "component_configurations",
+                serde_json::to_value(flow.component_configurations().collect::<Vec<_>>())
+                    .expect("typed configurations"),
+                flow.component_configurations().next().is_some(),
+            ),
+            (
+                "symbol_attachments",
+                serde_json::to_value(flow.symbol_attachments().collect::<Vec<_>>())
+                    .expect("typed attachments"),
+                flow.symbol_attachments().next().is_some(),
+            ),
+            (
+                "named_bindings",
+                serde_json::to_value(flow.named_bindings().collect::<Vec<_>>())
+                    .expect("typed named bindings"),
+                flow.named_bindings().next().is_some(),
+            ),
+            (
+                "endpoint_requests",
+                serde_json::to_value(flow.endpoint_requests().collect::<Vec<_>>())
+                    .expect("typed endpoints"),
+                flow.endpoint_requests().next().is_some(),
+            ),
+        ] {
+            if present {
+                if output.get(key).is_none() {
+                    output[key] = serde_json::json!([]);
+                }
+                let values = output[key]
+                    .as_array_mut()
+                    .expect("parser-owned projection vector");
+                let incoming = value.as_array_mut().expect("typed projection vector");
+                if key == "component_configurations" {
+                    values.append(incoming);
+                } else {
+                    let overflow = values.len().saturating_add(incoming.len()) > 128;
+                    values.extend(
+                        incoming
+                            .drain(..)
+                            .take(129usize.saturating_sub(values.len())),
+                    );
+                    if overflow {
+                        output["fact_limit_exceeded"] = true.into();
+                    }
+                }
+            }
+        }
+        if flow.fact_limit_exceeded {
+            output["fact_limit_exceeded"] = true.into();
+        }
+    }
+}
 
 fn registry() -> impl Iterator<Item = &'static dyn LanguageProfile> + Clone {
     PROFILE_GROUPS
@@ -971,6 +1240,14 @@ pub fn profiles() -> impl Iterator<Item = &'static dyn LanguageProfile> + Clone 
         .get_or_init(|| validate_profiles(registry()).expect("invalid compiled language registry"));
     registry()
 }
+
+pub(crate) fn profile_available(id: &str) -> bool {
+    (matches!(id, "typescript" | "javascript" | "vue") && cfg!(feature = "lang-typescript"))
+        || AVAILABLE_LANGUAGE_FEATURES
+            .iter()
+            .any(|feature| feature.strip_prefix("lang-") == Some(id))
+}
+
 /// Performs by id.
 pub fn by_id(id: &str) -> Option<&'static dyn LanguageProfile> {
     profiles().find(|p| p.id() == id)
@@ -1095,7 +1372,7 @@ pub(crate) fn parse_file_typed(
     source: &str,
     module: &str,
     typed: &mut crate::core::typed_facts::TypedFacts,
-    language_context: &LanguageContext,
+    language_context: &Arc<LanguageContext>,
 ) -> Result<()> {
     let tree = parse_tree(profile, path, source)?;
     ast::extract_tree_with_language_context(

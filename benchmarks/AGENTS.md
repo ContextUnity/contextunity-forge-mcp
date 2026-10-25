@@ -37,10 +37,21 @@ All benchmark runs are driven by declarative JSON profiles located in `benchmark
 - `benchmarks/mcp_adapter_single_load.py`: Linux inotify probe verifying that adapter configurations (`forge-mcp.yaml`) are not redundantly re-read on every request.
 - `benchmarks/cold_test_coverage_benchmark.py`: Sequentially compares cold builds and graph coverage from fresh temporary databases while honoring the selected workspace's `forge-mcp.yaml` and linked workspaces.
 
+## Host Performance Profile Precondition
+
+> [!IMPORTANT]
+> **Performance Governor Required**: Benchmark measurements are invalid if run under the OS `power-saver` platform profile or energy-performance preference (`energy_performance_preference: power`), which caps CPU clocks to 400 MHz – 1.9 GHz and artificially doubles measured latencies.
+> Before running benchmarks, ensure the host profile is active:
+> ```bash
+> powerprofilesctl get  # must be 'performance' or 'balanced'
+> # If power-saver: powerprofilesctl set performance
+> ```
+
 ## Staged Lifecycle
 
 When explicitly instructed to run benchmarks:
-1. Compile release binary: `cargo build --release`.
-2. Allow host to settle to idle baseline.
-3. Execute single controlled run: `python3 benchmarks/run_benchmarks.py --profile <profile>`.
-4. Run full test suite: `cargo test --all-targets`.
+1. Verify host power profile: `powerprofilesctl get` (ensure `performance`).
+2. Compile release binary: `cargo build --release`.
+3. Allow host to settle to idle baseline.
+4. Execute single controlled run: `python3 benchmarks/run_benchmarks.py --profile <profile>`.
+5. Run full test suite: `cargo test --all-targets`.

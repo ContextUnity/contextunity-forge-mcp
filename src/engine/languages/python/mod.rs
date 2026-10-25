@@ -1,20 +1,117 @@
 use super::*;
 use crate::engine::ast::{relations, routes};
-#[path = "python/computed_receivers.rs"]
+
+/// Only summary-dependent, necessary candidates from the existing main walk.
+pub(crate) struct DeferredEvent<'tree> {
+    pub(crate) node: Syntax<'tree>,
+    pub(crate) owner: String,
+    pub(crate) frontiers: (usize, usize, usize),
+    reference_frontier: usize,
+    declaration: bool,
+    registration_guards: Vec<Option<String>>,
+    projection: bool,
+}
+
+pub(crate) fn prepare_deferred_event<'tree>(
+    ctx: &SyntaxContext<'_, 'tree>,
+    facts: &mut Facts,
+    symbols: &HashMap<usize, String>,
+    rules: &LanguageContext,
+    rule_ir: &manifests::RuleIRHandle,
+) -> Option<DeferredEvent<'tree>> {
+    let kind = ctx.node.kind();
+    if matches!(kind, "assignment" | "annotated_assignment") {
+        syntax_operations::extract_class_attribute(
+            ctx.node, ctx.source, ctx.owner, ctx.offset, facts, rules,
+        );
+    }
+    let frontiers = (facts.nodes.len(), facts.edges.len(), facts.references.len());
+    let declaration = matches!(kind, "function_definition" | "class_definition")
+        && routes::declaration_candidate(ctx, rule_ir);
+    let registration_guards = std::cell::RefCell::new(Vec::new());
+    if kind == "call" {
+        // This admission precedes prefix proof in the existing extractor. Keep
+        // its incremental Facts cursor at the original event, then stop before
+        // the unavailable completed-summary proof or any emitted route facts.
+        routes::registration_with_context_filtered(
+            ctx,
+            facts,
+            symbols,
+            rule_ir,
+            &routes::RouteContext::default(),
+            |rule, facts| {
+                if rule.registration_guard.as_deref().is_none_or(|guard| {
+                    syntax_operations::is_receiver_registration(
+                        ctx.node, ctx.source, symbols, facts, guard,
+                    )
+                }) {
+                    registration_guards
+                        .borrow_mut()
+                        .push(rule.registration_guard.clone());
+                }
+                false
+            },
+        );
+        call_to_file(ctx, facts, rules);
+        routes::client_call(ctx, facts, rules, "python");
+    }
+    Python.extract_routes(ctx, facts, symbols);
+    let projection = projections::candidate(ctx, rules);
+    let registration_guards = registration_guards.into_inner();
+    (declaration || !registration_guards.is_empty() || projection).then(|| DeferredEvent {
+        node: ctx.node,
+        owner: ctx.owner.to_owned(),
+        frontiers,
+        reference_frontier: facts.references.len(),
+        declaration,
+        registration_guards,
+        projection,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn finish_deferred_event(
+    event: &DeferredEvent<'_>,
+    ctx: &SyntaxContext<'_, '_>,
+    facts: &mut Facts,
+    symbols: &HashMap<usize, String>,
+    rules: &LanguageContext,
+    rule_ir: &manifests::RuleIRHandle,
+    lexical: &routes::RouteContext,
+    projections: &mut HashMap<String, crate::core::semantic::ValueFlowFacts>,
+) {
+    if event.declaration {
+        routes::declaration_with_context(ctx, facts, rule_ir, lexical);
+    }
+    if !event.registration_guards.is_empty() {
+        routes::registration_with_context_filtered(
+            ctx,
+            facts,
+            symbols,
+            rule_ir,
+            lexical,
+            |rule, _| event.registration_guards.contains(&rule.registration_guard),
+        );
+    }
+    if event.projection {
+        projections::extract_with_frontier(
+            ctx,
+            facts,
+            rules,
+            lexical,
+            symbols,
+            event.reference_frontier,
+            projections,
+        );
+    }
+}
 mod computed_receivers;
-#[path = "python/fastmcp.rs"]
-mod fastmcp;
-#[path = "python/lazy_exports.rs"]
+mod decorated_registration;
 mod lazy_exports;
-#[path = "python/logging_factories.rs"]
 mod logging_factories;
-#[path = "python/module_exports.rs"]
 mod module_exports;
-#[path = "python/projections.rs"]
 mod projections;
-#[path = "python/render_context.rs"]
-mod render_context;
-#[path = "python/template_loaders.rs"]
+mod syntax_operations;
 mod template_loaders;
 
 pub(crate) fn logging_factories(
@@ -24,11 +121,8 @@ pub(crate) fn logging_factories(
 ) -> serde_json::Value {
     logging_factories::collect(root, source, offset)
 }
-#[path = "python/dependencies.rs"]
 pub(crate) mod dependencies;
-#[path = "python/linker.rs"]
 pub(crate) mod linker;
-#[path = "python/value_flow.rs"]
 pub(crate) mod value_flow;
 /// Performs language.
 pub fn language() -> tree_sitter::Language {
@@ -465,10 +559,12 @@ impl LanguageProfile for Python {
         &self,
         root: Syntax<'_>,
         source: &str,
-        rules: &LanguageContext,
+        rules: &Arc<LanguageContext>,
     ) -> FileContext {
-        render_context::prepare_file(root, source, &rules.syntax_rules);
-        self.prepare(root, source)
+        syntax_operations::prepare_file(root, source, rules);
+        let mut file = self.prepare(root, source);
+        file.rules = Arc::clone(rules);
+        file
     }
     fn extract_imports(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         let (node, source) = (ctx.node, ctx.source);
@@ -532,7 +628,7 @@ impl LanguageProfile for Python {
         if matches!(ctx.node.kind(), "call") {
             call(ctx, facts, false);
             template_loaders::extract(ctx, facts);
-            render_context::extract_reverse_route(
+            syntax_operations::extract_reverse_route(
                 ctx.node, ctx.source, ctx.owner, ctx.offset, facts,
             );
             if let Some(hint) = computed_receivers::receiver_hint(ctx.node, ctx.source) {
@@ -889,6 +985,10 @@ impl LanguageProfile for Python {
         {
             return None;
         }
+        let name = field(node, source, "name").unwrap_or_default();
+        if name.starts_with("test_") {
+            return Some("test_case");
+        }
         let decorators = node
             .parent()
             .filter(|parent| parent.kind() == "decorated_definition")
@@ -912,12 +1012,7 @@ impl LanguageProfile for Python {
         }) {
             return Some("test_fixture");
         }
-        let name = field(node, source, "name").unwrap_or_default();
-        if name.starts_with("test_") {
-            Some("test_case")
-        } else {
-            Some("test_helper")
-        }
+        Some("test_helper")
     }
     fn extract_relations(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         if let Some(bases) = ctx.node.child_by_field_name("superclasses") {
@@ -949,7 +1044,7 @@ impl LanguageProfile for Python {
             }
         }
         relations::decorator_references(ctx, facts);
-        fastmcp::decorator_candidates(ctx, facts);
+        decorated_registration::decorator_candidates(ctx, facts);
     }
     fn extract_mutations(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         if !matches!(
@@ -973,7 +1068,20 @@ impl LanguageProfile for Python {
         facts: &mut Facts,
         _symbols: &HashMap<usize, String>,
     ) {
-        if ctx.node.kind() == "assignment" && !ctx.owner.starts_with("module:") {
+        if ctx.node.kind() != "assignment"
+            || !ctx
+                .node
+                .child_by_field_name("left")
+                .is_some_and(|left| left.kind() == "identifier")
+            || !ctx
+                .node
+                .parent()
+                .and_then(|node| node.parent())
+                .is_some_and(|node| node.kind() == "module")
+        {
+            return;
+        }
+        if !ctx.owner.starts_with("module:") {
             let module_id = facts
                 .nodes
                 .first()
@@ -995,10 +1103,10 @@ impl LanguageProfile for Python {
                     shadowed_require_scopes: ctx.shadowed_require_scopes,
                     type_checking_aliases: ctx.type_checking_aliases,
                 };
-                fastmcp::module_assignment(&module_ctx, facts);
+                decorated_registration::module_assignment(&module_ctx, facts);
             }
         } else {
-            fastmcp::module_assignment(ctx, facts);
+            decorated_registration::module_assignment(ctx, facts);
         }
     }
     fn extract_routes_with_context(
@@ -1020,8 +1128,33 @@ impl LanguageProfile for Python {
         rule_ir: &super::manifests::RuleIRHandle,
         route_context: &crate::engine::ast::routes::RouteContext,
     ) {
+        let mut projections = HashMap::new();
+        self.extract_routes_with_typed_projections(
+            ctx,
+            facts,
+            symbols,
+            rules,
+            rule_ir,
+            route_context,
+            &mut projections,
+        );
+        super::publish_scope_projections(facts, projections);
+    }
+    fn typed_scope_projections(&self) -> bool {
+        true
+    }
+    fn extract_routes_with_typed_projections(
+        &self,
+        ctx: &SyntaxContext<'_, '_>,
+        facts: &mut Facts,
+        symbols: &HashMap<usize, String>,
+        rules: &super::LanguageContext,
+        rule_ir: &super::manifests::RuleIRHandle,
+        route_context: &crate::engine::ast::routes::RouteContext,
+        projections: &mut HashMap<String, crate::core::semantic::ValueFlowFacts>,
+    ) {
         if matches!(ctx.node.kind(), "assignment" | "annotated_assignment") {
-            render_context::extract_class_attribute(
+            syntax_operations::extract_class_attribute(
                 ctx.node, ctx.source, ctx.owner, ctx.offset, facts, rules,
             );
         }
@@ -1029,39 +1162,40 @@ impl LanguageProfile for Python {
             routes::declaration_with_context(ctx, facts, rule_ir, route_context);
         }
         if ctx.node.kind() == "call" {
-            let proven: HashSet<&str> = rules
-                .route_calls
-                .iter()
-                .filter_map(|rule| rule.registration_guard.as_deref())
-                .filter(|guard| {
-                    render_context::is_receiver_registration(
-                        ctx.node, ctx.source, symbols, facts, guard,
-                    )
-                })
-                .collect();
             routes::registration_with_context_filtered(
                 ctx,
                 facts,
                 symbols,
                 rule_ir,
                 route_context,
-                |rule| {
-                    rule.registration_guard
-                        .as_deref()
-                        .is_none_or(|guard| proven.contains(guard))
+                |rule, facts| {
+                    rule.registration_guard.as_deref().is_none_or(|guard| {
+                        syntax_operations::is_receiver_registration(
+                            ctx.node, ctx.source, symbols, facts, guard,
+                        )
+                    })
                 },
             );
             call_to_file(ctx, facts, rules);
             routes::client_call(ctx, facts, rules, self.id());
         }
         self.extract_routes(ctx, facts, symbols);
-        projections::extract(ctx, facts, rules, route_context, symbols);
+        let reference_frontier = facts.references.len();
+        projections::extract_with_frontier(
+            ctx,
+            facts,
+            rules,
+            route_context,
+            symbols,
+            reference_frontier,
+            projections,
+        );
     }
     fn finish(&self, facts: &mut Facts) {
         projections::clear();
         relations::implicit_fields(facts);
-        fastmcp::registrations(facts);
-        render_context::clear_file_context();
+        decorated_registration::registrations(facts);
+        syntax_operations::clear_file_context();
     }
     fn ast_search_capabilities(&self) -> AstSearchCapabilities {
         AstSearchCapabilities {
@@ -1084,15 +1218,10 @@ impl LanguageProfile for Python {
 }
 
 fn call_to_file(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts, rules: &LanguageContext) {
-    use super::manifests::{SemanticCallee, SemanticOperation};
-    let has_call_to_file = rules.semantic_rules.iter().any(|rule| {
-        rule.active
-            && matches!(
-                &rule.rule.operation,
-                SemanticOperation::CallToFile { language, .. } if language == "python"
-            )
-    });
-    if !has_call_to_file {
+    let indices = rules
+        .prepared_projections("python")
+        .map_or(&[][..], |prepared| prepared.call_to_file.as_slice());
+    if indices.is_empty() {
         return;
     }
     let Some(callee) = ctx
@@ -1103,108 +1232,62 @@ fn call_to_file(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts, rules: &Language
         return;
     };
     let alias = text(callee, ctx.source);
-    let import_owner = facts
-        .nodes
-        .first()
-        .filter(|node| node.kind == "module")
-        .map(|node| node.id.clone())
-        .or_else(|| {
-            facts
-                .nodes
-                .iter()
-                .find(|node| node.kind == "module")
-                .map(|node| node.id.clone())
-        });
-    let Some(import_owner) = import_owner else {
-        return;
-    };
-    for effective in rules.semantic_rules.iter().filter(|rule| {
-        rule.active
-            && matches!(
-                &rule.rule.operation,
-                SemanticOperation::CallToFile { language, .. } if language == "python"
+    super::manifests::semantic::execute_call_rules(
+        ctx,
+        facts,
+        rules,
+        indices,
+        "python",
+        alias,
+        |module| projections::imported_module_candidate(alias, module),
+        |index| {
+            let arguments = ctx.node.child_by_field_name("arguments")?;
+            let mut cursor = arguments.walk();
+            let mut positional_index = 0;
+            let mut target = None;
+            let mut keyword_seen = false;
+            for argument in arguments.named_children(&mut cursor) {
+                match argument.kind() {
+                    "comment" => continue,
+                    "keyword_argument" => keyword_seen = true,
+                    "list_splat" | "dictionary_splat" => return None,
+                    _ => {
+                        if keyword_seen {
+                            return None;
+                        }
+                        if positional_index == index {
+                            target = Some(argument);
+                        }
+                        positional_index += 1;
+                    }
+                }
+            }
+            target.and_then(|node| template_loaders::literal(node, ctx.source))
+        },
+        |module, export| {
+            let Some(scope) = lexical_binding_owner(ctx.node, ctx.source, alias) else {
+                return false;
+            };
+            let root = match scope.kind() {
+                "module" => scope,
+                "function_definition" => {
+                    let Some(body) = scope.child_by_field_name("body") else {
+                        return false;
+                    };
+                    body
+                }
+                _ => return false,
+            };
+            template_loaders::imported(
+                root,
+                ctx.source,
+                alias,
+                module,
+                export,
+                ctx.node.start_byte(),
             )
-    }) {
-        let SemanticOperation::CallToFile {
-            language,
-            callee,
-            argument,
-            relation,
-            ..
-        } = &effective.rule.operation
-        else {
-            continue;
-        };
-        if language != "python" {
-            continue;
-        }
-        let SemanticCallee::Imported { module, export } = callee;
-        if !facts.references.iter().any(|reference| {
-            reference.kind == "imports"
-                && reference.source == import_owner
-                && reference.alias.as_deref() == Some(alias)
-                && reference.module.as_deref() == Some(module)
-                && reference.expression == *export
-        }) {
-            continue;
-        }
-        let Some(root) = render_context::lexical_import_owner(ctx.node, ctx.source, alias) else {
-            continue;
-        };
-        if !template_loaders::imported(
-            root,
-            ctx.source,
-            alias,
-            module,
-            export,
-            ctx.node.start_byte(),
-        ) {
-            continue;
-        }
-        let Some(arguments) = ctx.node.child_by_field_name("arguments") else {
-            continue;
-        };
-        let mut cursor = arguments.walk();
-        let args: Vec<_> = arguments
-            .named_children(&mut cursor)
-            .filter(|node| node.kind() != "comment")
-            .collect();
-        if args.iter().any(|node| {
-            matches!(
-                node.kind(),
-                "keyword_argument" | "list_splat" | "dictionary_splat"
-            )
-        }) {
-            continue;
-        }
-        let Some(literal) = args
-            .get(*argument)
-            .and_then(|node| template_loaders::literal(*node, ctx.source))
-        else {
-            continue;
-        };
-        if !super::manifests::semantic::normal_relative_path(literal) {
-            continue;
-        }
-        let position = ctx.node.start_position();
-        super::semantic::push(
-            facts,
-            effective.fact(
-                ctx.owner,
-                position.row + ctx.offset + 1,
-                position.column,
-                literal.to_owned(),
-                text(ctx.node, ctx.source).to_owned(),
-                super::semantic::SemanticFactRole::CallToFile {
-                    import_owner: import_owner.to_owned(),
-                    alias: alias.to_owned(),
-                    module: module.clone(),
-                    export: export.clone(),
-                    relation: *relation,
-                },
-            ),
-        );
-    }
+        },
+    );
 }
 
 pub(crate) fn builtin_member(receiver: &str, member: &str) -> bool {
@@ -1288,6 +1371,59 @@ pub(crate) fn builtin_member(receiver: &str, member: &str) -> bool {
                 | "values"
         ),
         "Mapping" => matches!(member, "get" | "items" | "keys" | "values"),
+        "pathlib.PurePath" | "pathlib.PurePosixPath" | "pathlib.PureWindowsPath" => matches!(
+            member,
+            "as_posix"
+                | "as_uri"
+                | "is_absolute"
+                | "is_relative_to"
+                | "is_reserved"
+                | "joinpath"
+                | "match"
+                | "relative_to"
+                | "with_name"
+                | "with_stem"
+                | "with_suffix"
+        ),
+        "pathlib.Path" | "pathlib.PosixPath" | "pathlib.WindowsPath" => {
+            builtin_member("pathlib.PurePath", member)
+                || matches!(
+                    member,
+                    "absolute"
+                        | "chmod"
+                        | "exists"
+                        | "expanduser"
+                        | "glob"
+                        | "hardlink_to"
+                        | "is_block_device"
+                        | "is_char_device"
+                        | "is_dir"
+                        | "is_fifo"
+                        | "is_file"
+                        | "is_mount"
+                        | "is_socket"
+                        | "is_symlink"
+                        | "iterdir"
+                        | "lstat"
+                        | "mkdir"
+                        | "open"
+                        | "read_bytes"
+                        | "read_text"
+                        | "readlink"
+                        | "rename"
+                        | "replace"
+                        | "resolve"
+                        | "rglob"
+                        | "rmdir"
+                        | "samefile"
+                        | "stat"
+                        | "symlink_to"
+                        | "touch"
+                        | "unlink"
+                        | "write_bytes"
+                        | "write_text"
+                )
+        }
         "Logger" | "logging.Logger" => matches!(
             member,
             "info"

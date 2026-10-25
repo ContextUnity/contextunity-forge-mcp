@@ -185,25 +185,26 @@ pub(super) fn collect_setup_facts(
                 }
             }
 
-            if setup_script
-                && typescript
-                && depth == 0
-                && !slots_stopped
-                && node.kind() == "expression_statement"
-            {
+            if setup_script && node.kind() == "expression_statement" {
                 if let Some(call) = node
                     .named_child(0)
-                    .filter(|node| is_slot_call(*node, source, rules))
+                    .filter(|node| node.kind() == "call_expression")
                 {
                     if let Some(fact) = macro_fact(call, source, rules, None) {
                         output.macro_calls.push(fact);
                     }
-                    *output.typed_slot_calls += 1;
-                    if *output.typed_slot_calls > 1
-                        || collect_typed_slot_call(call, source, output.typed_slots)
+                    if depth == 0
+                        && typescript
+                        && !slots_stopped
+                        && is_slot_call(call, source, rules)
                     {
-                        *output.typed_slots_invalid = true;
-                        slots_stopped = true;
+                        *output.typed_slot_calls += 1;
+                        if *output.typed_slot_calls > 1
+                            || collect_typed_slot_call(call, source, output.typed_slots)
+                        {
+                            *output.typed_slots_invalid = true;
+                            slots_stopped = true;
+                        }
                     }
                 }
             }

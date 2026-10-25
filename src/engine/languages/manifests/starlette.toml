@@ -1,8 +1,3 @@
-receivers = []
-builtins = []
-filters = []
-routes = []
-
 [[class_hierarchy_receivers]]
 bases = ["starlette.responses.JSONResponse"]
 provider = "starlette.responses.JSONResponse"

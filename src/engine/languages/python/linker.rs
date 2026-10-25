@@ -1,13 +1,13 @@
 use crate::core::models::{Facts, Node};
 use crate::engine::languages::{self, LanguageFamily};
+use crate::engine::linker::interner::{LinkerInterner, SymbolId};
 use crate::engine::linker::traits::{
-    resolve_default_import, ImportContext, ImportResolution, LanguageLinker,
+    ImportContext, ImportResolution, LanguageLinker, PackageExports, insert_package_export,
+    package_export, resolve_default_import,
 };
 use hashbrown::{HashMap, HashSet};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
-
-pub(super) type PackageExports<'a> = HashMap<&'a str, HashMap<&'a str, Option<&'a Node>>>;
 
 pub(crate) struct PythonLinker;
 
@@ -80,12 +80,18 @@ impl LanguageLinker for PythonLinker {
         else {
             return result;
         };
-        let export = context
-            .package_exports
-            .get(module.path.as_str())
-            .and_then(|exports| exports.get(tail.as_str()));
+        let export = package_export(
+            context.package_exports,
+            context.interner,
+            module.path.as_str(),
+            &tail,
+        );
         if let Some(export) = export {
-            if context.candidates.iter().all(|candidate| candidate.kind == "variable") {
+            if context
+                .candidates
+                .iter()
+                .all(|candidate| candidate.kind == "variable")
+            {
                 context.candidates.clear();
                 if let Some(target) = export {
                     context.candidates.push(target);
@@ -136,7 +142,9 @@ impl LanguageLinker for PythonLinker {
             }
         }
         if context.candidates.is_empty() {
-            if let Some(target) = resolve_export(context.package_exports, module, &tail) {
+            if let Some(target) =
+                resolve_export(context.package_exports, context.interner, module, &tail)
+            {
                 context.candidates.push(target);
                 result.reexport_symbol = true;
             }
@@ -146,22 +154,40 @@ impl LanguageLinker for PythonLinker {
 
     fn package_exports<'a>(
         &self,
+        interner: &mut LinkerInterner<'a>,
+        node_rebindings: &HashMap<SymbolId, HashSet<SymbolId>>,
         all: &'a BTreeMap<String, Facts>,
         modules_by_namespace: &crate::engine::linker::traits::ModulesByNamespace<'a>,
         by_module: &HashMap<&'a str, Vec<&'a Node>>,
         root: Option<&Path>,
     ) -> crate::engine::linker::traits::PackageExports<'a> {
-        package_exports(all, modules_by_namespace, by_module, root)
+        package_exports(
+            interner,
+            node_rebindings,
+            all.values(),
+            modules_by_namespace,
+            by_module,
+            root,
+        )
     }
 
     fn package_exports_borrowed<'a>(
         &self,
-        all: &'a BTreeMap<String, &'a Facts>,
+        interner: &mut LinkerInterner<'a>,
+        node_rebindings: &HashMap<SymbolId, HashSet<SymbolId>>,
+        all: &BTreeMap<String, &'a Facts>,
         modules_by_namespace: &crate::engine::linker::traits::ModulesByNamespace<'a>,
         by_module: &HashMap<&'a str, Vec<&'a Node>>,
         root: Option<&Path>,
     ) -> crate::engine::linker::traits::PackageExports<'a> {
-        package_exports(all, modules_by_namespace, by_module, root)
+        package_exports(
+            interner,
+            node_rebindings,
+            all.values().copied(),
+            modules_by_namespace,
+            by_module,
+            root,
+        )
     }
 
     fn required_full_facts(
@@ -202,6 +228,7 @@ impl LanguageLinker for PythonLinker {
 
     fn resolve_imported_member<'a>(
         &self,
+        interner: &LinkerInterner<'a>,
         module: &'a Node,
         member: &str,
         by_module: &HashMap<&'a str, Vec<&'a Node>>,
@@ -222,7 +249,7 @@ impl LanguageLinker for PythonLinker {
             .flatten()
             .find(|node| node.kind == "module" && node.qualname == module.qualname)
         else {
-            return resolve_export(exports, module, member)
+            return resolve_export(exports, interner, module, member)
                 .into_iter()
                 .collect();
         };
@@ -239,7 +266,7 @@ impl LanguageLinker for PythonLinker {
             .filter(|node| node.path == stub.path)
             .collect();
         if candidates.is_empty() {
-            candidates.extend(resolve_export(exports, module, member));
+            candidates.extend(resolve_export(exports, interner, module, member));
         }
         candidates
     }
@@ -375,14 +402,28 @@ pub(super) fn required_full_facts<F: AsRef<Facts>>(
 
 pub(super) fn resolve_export<'a>(
     exports: &PackageExports<'a>,
+    interner: &LinkerInterner<'_>,
     module: &Node,
     name: &str,
 ) -> Option<&'a Node> {
-    exports
-        .get(module.path.as_str())?
-        .get(name)
-        .copied()
-        .flatten()
+    package_export(exports, interner, module.path.as_str(), name).flatten()
+}
+
+fn node_rebound(
+    module: &Node,
+    name: &str,
+    interner: &LinkerInterner<'_>,
+    node_rebindings: &HashMap<SymbolId, HashSet<SymbolId>>,
+) -> bool {
+    module.rebinding_names().any(|candidate| candidate == name)
+        || interner
+            .lookup_symbol(&module.id)
+            .zip(interner.lookup_symbol(name))
+            .is_some_and(|(module_id, name_id)| {
+                node_rebindings
+                    .get(&module_id)
+                    .is_some_and(|names| names.contains(&name_id))
+            })
 }
 
 fn lazy_import_path(module: &Node, export: &serde_json::Value) -> Option<String> {
@@ -442,6 +483,7 @@ struct ExportBinding<'a> {
 
 fn register_export<'a>(
     exports: &mut PackageExports<'a>,
+    interner: &mut LinkerInterner<'a>,
     pending: &mut Vec<(&'a str, &'a str, &'a Node, &'a str)>,
     seen: &mut HashSet<(&'a str, &'a str)>,
     binding: ExportBinding<'a>,
@@ -454,17 +496,19 @@ fn register_export<'a>(
         member,
     } = binding;
     if !seen.insert((owner, name)) {
-        exports.entry(owner).or_default().insert(name, None);
+        insert_package_export(exports, interner, owner, name, None);
         pending.retain(|(path, alias, _, _)| *path != owner || *alias != name);
         return;
     }
     let Some(provider) = provider else {
         return;
     };
+    let path_id = interner.intern_path(owner);
+    let name_id = interner.intern_symbol(name);
     let target = exports
-        .entry(owner)
+        .entry(path_id)
         .or_default()
-        .entry(name)
+        .entry(name_id)
         .or_insert(None);
     let Some(member) = member else {
         *target = Some(provider);
@@ -482,12 +526,11 @@ fn register_export<'a>(
     crate::engine::linker::traits::filter_stubs_and_overloads(&mut candidates);
     if candidates.len() == 1
         && candidates[0].kind == "variable"
-        && provider.details["exports"]
-            .as_array()
-            .is_some_and(|items| items.iter().any(|export| {
-                export["name"].as_str() == Some(member)
-                    && export["local"].as_str().is_some()
-            }))
+        && provider.details["exports"].as_array().is_some_and(|items| {
+            items.iter().any(|export| {
+                export["name"].as_str() == Some(member) && export["local"].as_str().is_some()
+            })
+        })
     {
         pending.push((owner, name, provider, member));
         return;
@@ -499,8 +542,10 @@ fn register_export<'a>(
     }
 }
 
-pub(super) fn package_exports<'a, F: AsRef<Facts>>(
-    all: &'a BTreeMap<String, F>,
+pub(super) fn package_exports<'a>(
+    interner: &mut LinkerInterner<'a>,
+    node_rebindings: &HashMap<SymbolId, HashSet<SymbolId>>,
+    all: impl IntoIterator<Item = &'a Facts>,
     modules_by_namespace: &HashMap<LanguageFamily, HashMap<String, Vec<&'a Node>>>,
     by_module: &HashMap<&str, Vec<&'a Node>>,
     root: Option<&Path>,
@@ -508,8 +553,7 @@ pub(super) fn package_exports<'a, F: AsRef<Facts>>(
     let mut exports: PackageExports<'a> = HashMap::new();
     let mut pending = Vec::new();
     let mut seen = HashSet::new();
-    for (path, facts) in all {
-        let facts = facts.as_ref();
+    for facts in all {
         let Some(module) = facts
             .nodes
             .iter()
@@ -517,11 +561,7 @@ pub(super) fn package_exports<'a, F: AsRef<Facts>>(
         else {
             continue;
         };
-        let rebound = |name| {
-            module.details["rebindings"]
-                .as_array()
-                .is_some_and(|items| items.iter().any(|item| item.as_str() == Some(name)))
-        };
+        let path = module.path.as_str();
         for reference in facts
             .references
             .iter()
@@ -532,8 +572,8 @@ pub(super) fn package_exports<'a, F: AsRef<Facts>>(
             else {
                 continue;
             };
-            if rebound(alias) {
-                exports.entry(path.as_str()).or_default().insert(alias, None);
+            if node_rebound(module, alias, interner, node_rebindings) {
+                insert_package_export(&mut exports, interner, path, alias, None);
                 continue;
             }
             if reference.expression == import_path
@@ -567,6 +607,7 @@ pub(super) fn package_exports<'a, F: AsRef<Facts>>(
             }
             register_export(
                 &mut exports,
+                interner,
                 &mut pending,
                 &mut seen,
                 ExportBinding {
@@ -582,13 +623,19 @@ pub(super) fn package_exports<'a, F: AsRef<Facts>>(
             let Some(name) = export["name"].as_str() else {
                 continue;
             };
-            exports.entry(path.as_str()).or_default().insert(name, None);
+            insert_package_export(&mut exports, interner, path, name, None);
             let provider = export["module"]
                 .as_str()
-                .and_then(|module_path| export_provider(path, module_path, modules_by_namespace, root))
-                .or_else(|| (export["local"].as_str().is_some() && export["module"].is_null()).then_some(module));
+                .and_then(|module_path| {
+                    export_provider(path, module_path, modules_by_namespace, root)
+                })
+                .or_else(|| {
+                    (export["local"].as_str().is_some() && export["module"].is_null())
+                        .then_some(module)
+                });
             register_export(
                 &mut exports,
+                interner,
                 &mut pending,
                 &mut seen,
                 ExportBinding {
@@ -608,10 +655,10 @@ pub(super) fn package_exports<'a, F: AsRef<Facts>>(
             let Some(name) = export["name"].as_str() else {
                 continue;
             };
-            if seen.contains(&(path.as_str(), name)) {
+            if seen.contains(&(path, name)) {
                 continue;
             }
-            if rebound(name) {
+            if node_rebound(module, name, interner, node_rebindings) {
                 continue;
             }
             let Some(import_path) = lazy_import_path(module, export) else {
@@ -626,6 +673,7 @@ pub(super) fn package_exports<'a, F: AsRef<Facts>>(
             );
             register_export(
                 &mut exports,
+                interner,
                 &mut pending,
                 &mut seen,
                 ExportBinding {
@@ -641,12 +689,9 @@ pub(super) fn package_exports<'a, F: AsRef<Facts>>(
     loop {
         let before = pending.len();
         pending.retain(|(owner, name, provider, member)| {
-            let target = resolve_export(&exports, provider, member);
+            let target = resolve_export(&exports, interner, provider, member);
             if let Some(target) = target {
-                exports
-                    .get_mut(owner)
-                    .expect("pending export owner exists")
-                    .insert(name, Some(target));
+                insert_package_export(&mut exports, interner, owner, name, Some(target));
                 false
             } else {
                 true

@@ -1,8 +1,3 @@
-receivers = []
-builtins = []
-filters = []
-routes = []
-
 [[syntax_rules]]
 id = "async-connection"
 language = "python"

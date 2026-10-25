@@ -466,7 +466,8 @@ and has no fabricated breadcrumb. A node without a verified role has no role bad
 ### Governing rules and edge evidence
 
 This repository example uses the verified rule for
-`src/engine/linker/resolution.rs:23` and its actual rule source:
+[`document_symbol_candidates`](../../src/engine/linker/resolution/mod.rs#L105-L143)
+and its actual rule source:
 
 ```markdown
 > [!IMPORTANT] Governing Invariants

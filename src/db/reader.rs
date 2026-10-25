@@ -403,6 +403,17 @@ pub fn open(path: &Path, root: &Path) -> Result<Connection> {
     conn.set_limit(rusqlite::limits::Limit::SQLITE_LIMIT_SQL_LENGTH, 64 * 1024);
     Ok(conn)
 }
+
+/// Decodes one persisted local facts payload for integration-level storage checks.
+///
+/// # Errors
+///
+/// Returns an error when the payload is corrupt or uses an unsupported encoding.
+#[doc(hidden)]
+pub fn decode_local_facts(blob: &[u8]) -> Result<crate::core::models::Facts> {
+    Ok(crate::core::typed_facts::decode_facts(blob)?.into_public())
+}
+
 pub(crate) fn inventory_snapshot(conn: &Connection) -> Result<Vec<crate::core::models::FileEntry>> {
     // Sealed inventory metadata can exceed the public SQL cell limit; restore it before tool queries.
     let previous_limit = conn.set_limit(rusqlite::limits::Limit::SQLITE_LIMIT_LENGTH, i32::MAX);
@@ -2215,19 +2226,5 @@ fn diagnostic_reason(
     match cause {
         Some("shadowed_binding") => Some("shadowed_binding"),
         _ => None,
-    }
-}
-
-#[allow(dead_code)]
-/// Reads and decodes typed facts for a single indexed file.
-pub(crate) fn file_facts(
-    conn: &Connection,
-    path: &str,
-) -> Result<Option<crate::core::typed_facts::TypedFacts>> {
-    let mut st = conn.prepare("SELECT facts_blob FROM local_facts WHERE path=?1")?;
-    let raw: Option<Vec<u8>> = st.query_row([path], |row| row.get(0)).optional()?;
-    match raw {
-        Some(blob) => Ok(Some(crate::core::typed_facts::decode_facts(&blob)?)),
-        None => Ok(None),
     }
 }

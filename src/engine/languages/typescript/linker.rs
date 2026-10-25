@@ -1,6 +1,11 @@
 use super::*;
 use crate::core::semantic::SourcePosition;
 use crate::engine::languages;
+use crate::engine::linker::interner::{LinkerInterner, SymbolId};
+use crate::engine::linker::traits::{
+    ImportContext, ImportResolution, LanguageLinker, ModulesByNamespace, PackageExports,
+    insert_package_export, package_export, resolve_default_import,
+};
 use crate::engine::linker::value_flow::{SemanticResolver, Symbol, SymbolRole, TypeTarget};
 use hashbrown::{HashMap, HashSet};
 use std::collections::BTreeSet;
@@ -18,7 +23,6 @@ impl<'a> TypeScriptMembers<'a> {
         all: &'a BTreeMap<String, F>,
         resolver: &impl SemanticResolver<'a>,
     ) -> Self {
-        let vue_fields = all.keys().any(|path| path.ends_with(".vue"));
         let classes: Vec<_> = all
             .values()
             .flat_map(|facts| &facts.as_ref().nodes)
@@ -40,12 +44,11 @@ impl<'a> TypeScriptMembers<'a> {
             let facts = facts.as_ref();
             let prefix = format!("{}.", class.qualname);
             let methods = own.entry(class.id.as_str()).or_default();
-            let mut fields = vue_fields.then(|| own_fields.entry(class.id.as_str()).or_default());
             for method in &facts.nodes {
                 let is_method = matches!(method.kind.as_str(), "method" | "function")
                     || (matches!(class.kind.as_str(), "enum" | "interface")
                         && method.kind == "field");
-                let is_field = vue_fields && method.kind == "field";
+                let is_field = method.kind == "field";
                 if !is_method && !is_field {
                     continue;
                 }
@@ -87,12 +90,12 @@ impl<'a> TypeScriptMembers<'a> {
                         }
                     }
                     if is_field {
-                        if let Some(fields) = fields.as_deref_mut() {
-                            fields
-                                .entry((name, method.details["is_static"] == true))
-                                .or_default()
-                                .push(method);
-                        }
+                        own_fields
+                            .entry(class.id.as_str())
+                            .or_default()
+                            .entry((name, method.details["is_static"] == true))
+                            .or_default()
+                            .push(method);
                     }
                     if is_method {
                         methods
@@ -111,7 +114,7 @@ impl<'a> TypeScriptMembers<'a> {
                 }
                 candidates.sort_unstable_by(|a, b| a.id.cmp(&b.id));
             }
-            if let Some(fields) = fields {
+            if let Some(fields) = own_fields.get_mut(class.id.as_str()) {
                 for candidates in fields.values_mut() {
                     candidates.sort_unstable_by(|a, b| a.id.cmp(&b.id));
                 }
@@ -126,10 +129,7 @@ impl<'a> TypeScriptMembers<'a> {
                 match resolver.resolve_symbol(
                     class,
                     &reference.expression,
-                    SourcePosition {
-                        line: reference.line,
-                        column: reference.column,
-                    },
+                    reference.position(),
                     SymbolRole::Type,
                 ) {
                     Symbol::Type(TypeTarget::Local(base))
@@ -159,7 +159,7 @@ impl<'a> TypeScriptMembers<'a> {
         }
         for class in classes {
             inherited(class, &own, &parents, &mut members, &mut HashSet::new(), 0);
-            if vue_fields {
+            if !own_fields.is_empty() {
                 inherited(
                     class,
                     &own_fields,
@@ -265,11 +265,6 @@ fn inherited<'a>(
     completed.insert(class.id.as_str(), result.clone());
     result
 }
-use crate::engine::linker::traits::{
-    resolve_default_import, ImportContext, ImportResolution, LanguageLinker, ModulesByNamespace,
-    PackageExports,
-};
-
 pub(crate) struct TypeScriptLinker;
 pub(crate) static TYPESCRIPT_LINKER: TypeScriptLinker = TypeScriptLinker;
 
@@ -306,12 +301,13 @@ fn provider<'a>(
     }
 }
 
-fn target<'a>(exports: &PackageExports<'a>, module: &Node, name: &str) -> Option<&'a Node> {
-    exports
-        .get(module.path.as_str())?
-        .get(name)
-        .copied()
-        .flatten()
+fn target<'a>(
+    exports: &PackageExports<'a>,
+    interner: &LinkerInterner<'_>,
+    module: &Node,
+    name: &str,
+) -> Option<&'a Node> {
+    package_export(exports, interner, module.path.as_str(), name).flatten()
 }
 
 fn component_module_paths(name: &str, root: &str, extension: &str) -> Vec<String> {
@@ -370,11 +366,11 @@ fn configured_component_modules<'a>(
             continue;
         };
         if context.reference.module.as_deref() != Some(virtual_module)
-            || !context.dependencies.declares_for_path(
-                rule.activation_family(),
-                context.path,
-                package,
-            )
+            || !rule.activation_family().is_some_and(|family| {
+                context
+                    .dependencies
+                    .declares_for_path(family, context.path, package)
+            })
         {
             continue;
         }
@@ -437,7 +433,7 @@ impl LanguageLinker for TypeScriptLinker {
             context.tail().map(str::to_owned),
         ) {
             if !name.is_empty() {
-                let exported = target(context.package_exports, module, &name);
+                let exported = target(context.package_exports, context.interner, module, &name);
                 let direct_type_export = typescript_source
                     && exported.is_none()
                     && matches!(context.candidates.as_slice(), [node] if matches!(node.kind.as_str(), "type" | "interface")
@@ -460,6 +456,7 @@ impl LanguageLinker for TypeScriptLinker {
     }
     fn resolve_imported_member<'a>(
         &self,
+        interner: &LinkerInterner<'a>,
         module: &'a Node,
         member: &str,
         _by_module: &HashMap<&'a str, Vec<&'a Node>>,
@@ -467,25 +464,31 @@ impl LanguageLinker for TypeScriptLinker {
         exports: &PackageExports<'a>,
         _lookup_key: &mut String,
     ) -> Vec<&'a Node> {
-        target(exports, module, member).into_iter().collect()
+        target(exports, interner, module, member)
+            .into_iter()
+            .collect()
     }
     fn package_exports<'a>(
         &self,
+        interner: &mut LinkerInterner<'a>,
+        _node_rebindings: &HashMap<SymbolId, HashSet<SymbolId>>,
         all: &'a BTreeMap<String, Facts>,
         modules: &ModulesByNamespace<'a>,
         by_module: &HashMap<&'a str, Vec<&'a Node>>,
         root: Option<&Path>,
     ) -> PackageExports<'a> {
-        package_exports(all, modules, by_module, root)
+        package_exports(interner, all.values(), modules, by_module, root)
     }
     fn package_exports_borrowed<'a>(
         &self,
-        all: &'a BTreeMap<String, &'a Facts>,
+        interner: &mut LinkerInterner<'a>,
+        _node_rebindings: &HashMap<SymbolId, HashSet<SymbolId>>,
+        all: &BTreeMap<String, &'a Facts>,
         modules: &ModulesByNamespace<'a>,
         by_module: &HashMap<&'a str, Vec<&'a Node>>,
         root: Option<&Path>,
     ) -> PackageExports<'a> {
-        package_exports(all, modules, by_module, root)
+        package_exports(interner, all.values().copied(), modules, by_module, root)
     }
     fn needs_reference_identity(&self, _path: &str, facts: &Facts) -> bool {
         javascript(facts)
@@ -529,8 +532,9 @@ fn type_position_kind(kind: &str) -> bool {
     matches!(kind, "type" | "interface" | "class" | "enum")
 }
 
-fn package_exports<'a, F: AsRef<Facts>>(
-    all: &'a BTreeMap<String, F>,
+fn package_exports<'a>(
+    interner: &mut LinkerInterner<'a>,
+    all: impl IntoIterator<Item = &'a Facts>,
     modules: &ModulesByNamespace<'a>,
     by_module: &HashMap<&'a str, Vec<&'a Node>>,
     root: Option<&Path>,
@@ -545,11 +549,11 @@ fn package_exports<'a, F: AsRef<Facts>>(
             .entry((path, source))
             .or_insert_with(|| provider(path, source, modules, root))
     };
-    for (path, file) in all.iter().filter(|(_, file)| javascript(file.as_ref())) {
-        let file = file.as_ref();
+    for file in all.into_iter().filter(|file| javascript(file)) {
         let Some(module) = file.nodes.iter().find(|node| node.kind == "module") else {
             continue;
         };
+        let path = module.path.as_str();
         let Some(bindings) = module.details["exports"].as_array() else {
             continue;
         };
@@ -559,7 +563,7 @@ fn package_exports<'a, F: AsRef<Facts>>(
                     .as_str()
                     .and_then(|source| resolve_provider(path, source))
                 {
-                    stars.push((path.as_str(), provider));
+                    stars.push((path, provider));
                 }
                 continue;
             }
@@ -567,16 +571,14 @@ fn package_exports<'a, F: AsRef<Facts>>(
                 continue;
             };
             let local = binding["local"].as_str();
-            if local.is_some_and(|local| {
-                module.details["rebindings"]
-                    .as_array()
-                    .is_some_and(|items| items.iter().any(|item| item.as_str() == Some(local)))
-            }) {
+            if local
+                .is_some_and(|local| module.rebinding_names().any(|candidate| candidate == local))
+            {
                 continue;
             }
-            if !seen.insert((path.as_str(), name)) {
-                exports.entry(path.as_str()).or_default().insert(name, None);
-                pending.retain(|(owner, alias, _, _, _)| *owner != path.as_str() || *alias != name);
+            if !seen.insert((path, name)) {
+                insert_package_export(&mut exports, interner, path, name, None);
+                pending.retain(|(owner, alias, _, _, _)| *owner != path || *alias != name);
                 continue;
             }
             let type_only = binding["type_only"] == true;
@@ -598,20 +600,22 @@ fn package_exports<'a, F: AsRef<Facts>>(
                     };
                 }
             }
-            let owner = exports.entry(path.as_str()).or_default();
-            owner.insert(name, None);
+            let owner_path = interner.intern_path(path);
+            let name_id = interner.intern_symbol(name);
+            let owner = exports.entry(owner_path).or_default();
+            owner.insert(name_id, None);
             if let Some(source) = source {
                 if let Some(provider) = resolve_provider(path, source) {
                     if let Some(member) = member {
-                        pending.push((path.as_str(), name, provider, member, type_only));
+                        pending.push((path, name, provider, member, type_only));
                     } else if !type_only || type_position_kind(provider.kind.as_str()) {
-                        owner.insert(name, Some(provider));
+                        owner.insert(name_id, Some(provider));
                     }
                 }
             } else if let Some(local) = local {
                 let qualname = format!("{}.{}", module.qualname, local);
                 let mut candidates: Vec<&Node> = by_module
-                    .get(path.as_str())
+                    .get(path)
                     .into_iter()
                     .flatten()
                     .copied()
@@ -623,7 +627,7 @@ fn package_exports<'a, F: AsRef<Facts>>(
                     candidates.retain(|node| !matches!(node.kind.as_str(), "type" | "interface"));
                 }
                 if let [node] = candidates.as_slice() {
-                    owner.insert(name, Some(node));
+                    owner.insert(name_id, Some(node));
                 }
             }
         }
@@ -631,7 +635,11 @@ fn package_exports<'a, F: AsRef<Facts>>(
     loop {
         let mut additions = HashMap::<(&str, &str), Option<&Node>>::new();
         for (owner, provider) in &stars {
-            for (&name, &node) in exports.get(provider.path.as_str()).into_iter().flatten() {
+            let Some(provider_path) = interner.lookup_path(&provider.path) else {
+                continue;
+            };
+            for (&name_id, &node) in exports.get(&provider_path).into_iter().flatten() {
+                let name = interner.resolve_symbol(name_id);
                 if name == "default" || seen.contains(&(*owner, name)) {
                     continue;
                 }
@@ -643,33 +651,43 @@ fn package_exports<'a, F: AsRef<Facts>>(
         }
         let mut changed = false;
         for ((owner, name), node) in additions {
-            let existing = exports.entry(owner).or_default();
-            if !existing.contains_key(name)
+            let (Some(owner_id), Some(name_id)) =
+                (interner.lookup_path(owner), interner.lookup_symbol(name))
+            else {
+                continue;
+            };
+            let existing = exports.entry(owner_id).or_default();
+            if !existing.contains_key(&name_id)
                 || existing
-                    .get(name)
+                    .get(&name_id)
                     .copied()
                     .flatten()
                     .map(|node| node.id.as_str())
                     != node.map(|node| node.id.as_str())
             {
-                existing.insert(name, node);
+                existing.insert(name_id, node);
                 changed = true;
             }
         }
         for (owner, name, provider, member, type_only) in &pending {
-            let mut node = target(&exports, provider, member);
+            let mut node = target(&exports, interner, provider, member);
             if *type_only && node.is_some_and(|n| !type_position_kind(n.kind.as_str())) {
                 node = None;
             }
-            let existing = exports.get_mut(owner).expect("export owner exists");
+            let (Some(owner_id), Some(name_id)) =
+                (interner.lookup_path(owner), interner.lookup_symbol(name))
+            else {
+                continue;
+            };
+            let existing = exports.get_mut(&owner_id).expect("export owner exists");
             if existing
-                .get(name)
+                .get(&name_id)
                 .copied()
                 .flatten()
                 .map(|node| node.id.as_str())
                 != node.map(|node| node.id.as_str())
             {
-                existing.insert(name, node);
+                existing.insert(name_id, node);
                 changed = true;
             }
         }
@@ -698,12 +716,16 @@ pub(crate) fn required_configuration_facts(
                 ref package,
                 ref config_file,
                 ref modules,
+                ref callable_imports,
                 ..
             } = rule.operation
             else {
                 continue;
             };
-            if !dependencies.declares_for_path(rule.activation_family(), path, package) {
+            if !rule
+                .activation_family()
+                .is_some_and(|family| dependencies.declares_for_path(family, path, package))
+            {
                 continue;
             }
             let config_path = if scope.is_empty() {
@@ -724,19 +746,53 @@ pub(crate) fn required_configuration_facts(
                     .iter()
                     .find(|node| node.kind == "module")
                     .and_then(|node| config.flows.get(node))
-                    .map(|flow| &flow.component_configurations);
+                    .map(|flow| flow.component_configurations());
                 for configuration in configurations
                     .into_iter()
                     .flatten()
                     .filter(|fact| fact.origin.pack == rule.pack && fact.origin.rule == rule.id)
                 {
+                    if let Some(descriptor) = callable_imports
+                        .as_ref()
+                        .filter(|_| configuration.callable_imports.is_some())
+                    {
+                        if selected.insert((
+                            config_path.clone(),
+                            rule.pack.clone(),
+                            rule.id.clone(),
+                            String::new(),
+                        )) {
+                            for export in &descriptor.exports {
+                                let directory = if scope.is_empty() {
+                                    export.directory.clone()
+                                } else {
+                                    format!("{scope}/{}", export.directory)
+                                };
+                                for (candidate, language) in catalog {
+                                    if *language == "typescript"
+                                        && dependencies.nearest_manifest_scope_for_path(
+                                            LanguageFamily("javascript"),
+                                            candidate,
+                                        ) == Some(scope)
+                                        && candidate
+                                            .strip_prefix(&directory)
+                                            .and_then(|tail| tail.strip_prefix('/'))
+                                            .is_some_and(|tail| {
+                                                !tail.contains('/')
+                                                    && tail.ends_with(&export.extension)
+                                            })
+                                    {
+                                        required.insert((*candidate).to_owned());
+                                    }
+                                }
+                            }
+                        }
+                    }
                     for name in &configuration.modules {
                         let Some(addition) = modules.get(name).filter(|addition| {
-                            dependencies.declares_for_path(
-                                rule.activation_family(),
-                                path,
-                                &addition.package,
-                            )
+                            rule.activation_family().is_some_and(|family| {
+                                dependencies.declares_for_path(family, path, &addition.package)
+                            })
                         }) else {
                             continue;
                         };

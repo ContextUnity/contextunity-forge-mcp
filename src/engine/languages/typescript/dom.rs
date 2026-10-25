@@ -1,5 +1,49 @@
 use super::*;
 
+pub(crate) fn typed_dom_receiver(name: &str) -> Option<&'static str> {
+    match name {
+        "Document" | "document" => Some("Document"),
+        "Window" | "window" => Some("Window"),
+        "EventTarget" => Some("EventTarget"),
+        "Event" | "CustomEvent" | "MouseEvent" | "KeyboardEvent" | "DragEvent"
+        | "ClipboardEvent" | "FocusEvent" => Some("Event"),
+        "URL" => Some("URL"),
+        "URLSearchParams" => Some("URLSearchParams"),
+        "Headers" => Some("Headers"),
+        "DOMTokenList" => Some("DOMTokenList"),
+        "Storage" => Some("Storage"),
+        "Element" | "HTMLElement" | "Node" => Some("Element"),
+        "ParentNode" => Some("ParentNode"),
+        "ChildNode" => Some("ChildNode"),
+        "DocumentFragment" => Some("DocumentFragment"),
+        _ if (name.starts_with("HTML") || name.starts_with("SVG")) && name.ends_with("Element") => {
+            Some("Element")
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn typed_dom_property(receiver: &str, property: &str) -> Option<&'static str> {
+    match (typed_dom_receiver(receiver)?, property) {
+        (
+            "Element",
+            "parentElement"
+            | "firstElementChild"
+            | "lastElementChild"
+            | "nextElementSibling"
+            | "previousElementSibling",
+        ) => Some("Element"),
+        ("Element", "ownerDocument") => Some("Document"),
+        ("Element", "classList") => Some("DOMTokenList"),
+        ("Document", "documentElement" | "body" | "head" | "activeElement") => Some("Element"),
+        ("Document", "defaultView") => Some("Window"),
+        ("Window", "document") => Some("Document"),
+        ("Event", "target" | "currentTarget") => Some("Element"),
+        ("URL", "searchParams") => Some("URLSearchParams"),
+        _ => None,
+    }
+}
+
 pub(super) fn dom_global_name(name: &str) -> Option<&'static str> {
     match name {
         "document" => Some("document"),
@@ -26,17 +70,7 @@ pub(super) fn browser_global_type(name: &str) -> bool {
     if typed_dom_receiver(name).is_some() {
         return true;
     }
-    matches!(
-        name,
-        "Response"
-            | "Request"
-            | "Headers"
-            | "URL"
-            | "URLSearchParams"
-            | "FormData"
-            | "Blob"
-            | "File"
-    )
+    matches!(name, "Response" | "Request" | "FormData" | "Blob" | "File")
 }
 
 pub(super) fn remember_dom_global(

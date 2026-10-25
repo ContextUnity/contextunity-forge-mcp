@@ -188,7 +188,7 @@ The graph matches the binary you installed. After changing features, rebuild the
 
 These are different jobs.
 
-A **framework** adds rules for a language Forge already parses. Put a TOML or YAML manifest under `.forge/frameworks/`; its filename stem is the pack ID. A same-ID project file merges with the bundle by default, with local rules taking precedence. Use `replace = true` for full replacement or `enabled = false` in a complete valid manifest to disable that effective pack. Bundled files are inventoried automatically at build time. Supported operations, the four required arrays, and pack examples are in [framework manifests](docs/reference/framework-manifests.md).
+A **framework** adds rules for a language Forge already parses. Put a TOML or YAML manifest under `.forge/frameworks/`; its filename stem is the pack ID. A same-ID project file merges with the bundle by default, with local rules taking precedence. Use `replace = true` for full replacement or `enabled = false` to disable that effective pack. Bundled files are inventoried automatically at build time. Supported typed operations and pack examples are in [framework manifests](docs/reference/framework-manifests.md).
 
 A **language** needs a compiled profile. Implement `LanguageProfile` for discovery and extraction, and `LanguageLinker` when import or receiver resolution is language-specific. Register a `lang-*` Cargo feature and rebuild. The traits, the directory layout, and where framework data plugs into a linker are in [engine modularity](docs/architecture/modularity.md). The same [framework manifests](docs/reference/framework-manifests.md) page has the section on extending language support, including what a project manifest can supply only when a linker already asks for it.
 

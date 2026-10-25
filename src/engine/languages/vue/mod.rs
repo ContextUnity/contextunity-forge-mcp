@@ -1,9 +1,7 @@
 use super::*;
 use crate::core::models::ReceiverHint;
 use crate::core::semantic::{SourcePosition, TypeExpr, ValueFlowFacts, VueSlotFact};
-#[path = "vue/setup_facts.rs"]
 mod setup_facts;
-#[path = "vue/template.rs"]
 mod template;
 use setup_facts::{collect_setup_facts, SetupFactOutputs};
 
@@ -106,12 +104,12 @@ fn extract_file_impl(
     module: &str,
     facts: &mut Facts,
     mut flows: Option<&mut crate::core::typed_facts::FlowStore>,
-    rules: &LanguageContext,
+    rules: &Arc<LanguageContext>,
 ) -> Result<()> {
     extract_file_routes(path, module, facts, rules);
+    let module_id = format!("module:{path}");
     let mut rest = source;
     let mut base = 0;
-    let mut script_setup_ranges = Vec::new();
     let mut setup_positions = Vec::new();
     let mut script_setup_bindings = std::collections::BTreeSet::new();
     let mut setup_callables = BTreeMap::new();
@@ -143,24 +141,15 @@ fn extract_file_impl(
         let tag = &rest[start..opening];
         let script = &rest[opening..end];
         let setup_script = is_setup_script_tag(tag);
-        if setup_script && script_setup_ranges.len() < 128 {
-            let absolute_start = base + opening;
-            let absolute_end = absolute_start + script.len();
-            let start = source_position(source, absolute_start);
-            let end = source_position(source, absolute_end);
-            setup_positions.push((start, end));
-            script_setup_ranges.push(serde_json::json!({
-                "start_line": start.line,
-                "start_column": start.column,
-                "end_line": end.line,
-                "end_column": end.column,
-            }));
+        let absolute_start = base + opening;
+        let start_pos = source_position(source, absolute_start);
+        if setup_script && setup_positions.len() < 128 {
+            let end = source_position(source, absolute_start + script.len());
+            setup_positions.push((start_pos, end));
         } else if setup_script {
             script_setup_ranges_overflowed = true;
         }
-        let lang = if rest[start..opening].contains("lang=\"ts\"")
-            || rest[start..opening].contains("lang='ts'")
-        {
+        let lang = if tag.contains("lang=\"ts\"") || tag.contains("lang='ts'") {
             "typescript"
         } else {
             "javascript"
@@ -170,21 +159,14 @@ fn extract_file_impl(
         } else {
             &typescript::JAVASCRIPT
         };
-        let offset = source[..base + opening]
-            .bytes()
-            .filter(|b| *b == b'\n')
-            .count();
-        let column = source[..base + opening]
-            .rsplit('\n')
-            .next()
-            .unwrap_or("")
-            .len();
-        let tree = ast::parse_island(
-            &mut profile.create_parser(path)?,
-            script,
-            base + opening,
-            tree_sitter::Point::new(offset, column),
-        )
+        let tree = with_warm_parser(lang, profile.grammar(path), |parser| {
+            ast::parse_island(
+                parser,
+                script,
+                absolute_start,
+                tree_sitter::Point::new(start_pos.line - 1, start_pos.column),
+            )
+        })?
         .context("Tree-sitter parse cancelled")?;
         {
             let mut output = SetupFactOutputs {
@@ -219,7 +201,7 @@ fn extract_file_impl(
             path,
             source,
             module,
-            &format!("module:{path}"),
+            &module_id,
             facts,
             flows.as_deref_mut(),
             rules,
@@ -244,12 +226,6 @@ fn extract_file_impl(
         .iter_mut()
         .find(|node| node.kind == "module" && node.path == path)
     {
-        module_node.details["vue_script_setup"] =
-            serde_json::Value::Array(if script_setup_ranges_overflowed {
-                Vec::new()
-            } else {
-                script_setup_ranges
-            });
         if script_setup_ranges_overflowed {
             macro_calls.clear();
         }
@@ -262,13 +238,17 @@ fn extract_file_impl(
         }
         if !macro_calls.is_empty() || !typed_slots.is_empty() {
             let mut enrich = |flow: &mut ValueFlowFacts| {
-                flow.vue_slots.append(&mut typed_slots);
-                flow.component_macros.extend(macro_calls.iter().cloned());
+                for fact in typed_slots.drain(..) {
+                    flow.push_vue_slot(fact);
+                }
+                for fact in macro_calls.iter().cloned() {
+                    flow.push_component_macro(fact);
+                }
                 for fact in &macro_calls {
                     if let (Some(binding), Some(annotation)) = (&fact.binding, &fact.annotation) {
                         for value in &mut flow.bindings {
                             if value.name == *binding
-                                && matches!(&value.value, crate::core::semantic::ValueExpr::Call { callee } if *callee == fact.callee)
+                                && matches!(&value.value, crate::core::semantic::ValueExpr::Call { callee, .. } if *callee == fact.callee)
                             {
                                 value.value = crate::core::semantic::ValueExpr::Annotated {
                                     type_expr: annotation.clone(),
@@ -301,11 +281,11 @@ fn extract_file_impl(
         }
     }
 
-    let imported_aliases: HashSet<String> = facts
+    let imported_aliases: HashSet<&str> = facts
         .references
         .iter()
         .filter(|reference| reference.kind == "imports" && reference.module.is_some())
-        .filter_map(|reference| reference.alias.clone())
+        .filter_map(|reference| reference.alias.as_deref())
         .collect();
     let imported_component_wrappers: HashSet<String> = rules
         .syntax_rules
@@ -408,8 +388,8 @@ fn extract_file_impl(
                 if let Some(field) = matches.next() {
                     if matches.next().is_none() {
                         typed_prop_fields.insert(
-                            (binding.clone(), member_path.clone()),
-                            (field.id.clone(), origin.clone()),
+                            (binding.as_str(), member_path.as_str()),
+                            (field.id.as_str(), origin),
                         );
                     }
                 }
@@ -447,32 +427,29 @@ fn extract_file_impl(
                         .get(reference.expression.as_str())
                         .map(|(hint, _)| hint.clone());
                 }
-            }
-            if reference.kind == "references"
+            } else if reference.kind == "references"
                 && template_scopes.contains(reference.source.as_str())
-                && script_setup_bindings.contains(reference.expression.as_str())
             {
-                reference.receiver_hint = Some(ReceiverHint::VueSetupBinding);
-            }
-            if reference.kind == "references" && template_scopes.contains(reference.source.as_str())
-            {
+                if script_setup_bindings.contains(reference.expression.as_str()) {
+                    reference.receiver_hint = Some(ReceiverHint::VueSetupBinding);
+                }
                 let expression = if reference.expression.contains("?.") {
                     std::borrow::Cow::Owned(reference.expression.replace("?.", "."))
                 } else {
                     std::borrow::Cow::Borrowed(reference.expression.as_str())
                 };
                 if let Some((binding, member_path)) = expression.split_once('.') {
-                    let owner = nodes_by_id.get(reference.source.as_str()).copied();
-                    if !member_path.is_empty()
-                        && !setup_callable_shadowed(owner, binding, &facts.nodes)
-                    {
+                    if !member_path.is_empty() {
                         if let Some((field_id, origin)) =
-                            typed_prop_fields.get(&(binding.to_owned(), member_path.to_owned()))
+                            typed_prop_fields.get(&(binding, member_path))
                         {
-                            reference.receiver_hint = Some(ReceiverHint::ConfiguredTypedMember {
-                                origin: origin.clone(),
-                                field_id: field_id.clone(),
-                            });
+                            let owner = nodes_by_id.get(reference.source.as_str()).copied();
+                            if !setup_callable_shadowed(owner, binding, &facts.nodes) {
+                                reference.receiver_hint = Some(ReceiverHint::ConfiguredTypedMember {
+                                    origin: (*origin).clone(),
+                                    field_id: (*field_id).to_owned(),
+                                });
+                            }
                         }
                     }
                 }
@@ -525,11 +502,13 @@ fn extract_file_routes(path: &str, module: &str, facts: &mut Facts, rules: &Lang
             continue;
         }
         let name = format!("{method} {route_path}");
+        facts.pending_flow_nodes.push(facts.nodes.len());
         facts.nodes.push(Node {
+    native_semantic: None,
             id: id.clone(), kind: "route".into(), name: name.clone(),
             qualname: format!("{module}.{name}"), path: path.into(), line: 1, end_line: 1,
             is_test: crate::core::models::is_test(path), language: "vue".into(), generated: false,
-            details: serde_json::json!({"method":method,"route_path":route_path,"handler":null,"handlers":[],"route_name":null,"include_module":null,"include_namespace":null,"value_flow":ValueFlowFacts { rule_origins: vec![origin], ..Default::default() }}),
+            details: serde_json::json!({"method":method,"route_path":route_path,"handler":null,"handlers":[],"route_name":null,"include_module":null,"include_namespace":null,"value_flow":ValueFlowFacts { framework: Some(Box::new(crate::core::semantic::FrameworkScopeFacts { facts: vec![crate::core::semantic::FrameworkFact::RuleOrigin(origin)], ..Default::default() })), ..Default::default() }}),
         });
         facts.edges.push(crate::core::models::Edge {
             src: format!("module:{path}"),
@@ -553,11 +532,7 @@ fn setup_callable_shadowed(owner: Option<&Node>, name: &str, nodes: &[Node]) -> 
             node.path == owner.path
                 && node.kind != "module"
                 && node.qualname == scope
-                && node.details["bindings"].as_array().is_some_and(|bindings| {
-                    bindings
-                        .iter()
-                        .any(|binding| binding.as_str() == Some(name))
-                })
+                && node.binding_names().any(|candidate| candidate == name)
         }) {
             return true;
         }
@@ -648,76 +623,12 @@ fn is_setup_script_tag(tag: &str) -> bool {
     setup && !source
 }
 
-pub(crate) fn admits_macro(
-    module: &crate::core::models::Node,
-    at: crate::core::semantic::SourcePosition,
-) -> bool {
-    if module.kind != "module" || module.language != "vue" {
-        return false;
-    }
-    let Some(ranges) = module
-        .details
-        .get("vue_script_setup")
-        .and_then(|value| value.as_array())
-    else {
-        return false;
-    };
-    if ranges.len() > 128 {
-        return false;
-    }
-
-    let at = Position {
-        line: at.line,
-        column: at.column,
-    };
-    let mut admitted = false;
-    for range in ranges {
-        let Some(object) = range.as_object() else {
-            return false;
-        };
-        if object.len() != 4
-            || !["start_line", "start_column", "end_line", "end_column"]
-                .iter()
-                .all(|key| object.contains_key(*key))
-        {
-            return false;
-        }
-        let coordinate = |key: &str| {
-            object
-                .get(key)
-                .and_then(serde_json::Value::as_u64)
-                .and_then(|value| usize::try_from(value).ok())
-        };
-        let (Some(start_line), Some(start_column), Some(end_line), Some(end_column)) = (
-            coordinate("start_line"),
-            coordinate("start_column"),
-            coordinate("end_line"),
-            coordinate("end_column"),
-        ) else {
-            return false;
-        };
-        let start = Position {
-            line: start_line,
-            column: start_column,
-        };
-        let end = Position {
-            line: end_line,
-            column: end_column,
-        };
-        if start >= end {
-            return false;
-        }
-        admitted |= at >= start && at < end;
-    }
-    admitted
-}
-
 pub(crate) fn extract_typed(
     path: &str,
     source: &str,
     module: &str,
     typed: &mut crate::core::typed_facts::TypedFacts,
-    rules: &LanguageContext,
+    rules: &Arc<LanguageContext>,
 ) -> Result<()> {
     extract_file_impl(
         path,
@@ -728,5 +639,6 @@ pub(crate) fn extract_typed(
         rules,
     )?;
     VUE.finish(&mut typed.facts);
+    typed.project_named_selectors();
     Ok(())
 }
