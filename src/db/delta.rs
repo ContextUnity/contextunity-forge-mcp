@@ -8,15 +8,15 @@ use std::{
     time::Instant,
 };
 
-use crate::core::{
-    commitments,
-    models::{compact_graph::Graph as CompactGraph, stable_hash64, FileEntry},
-    typed_facts::TypedFacts,
-};
 use super::{
     batch::{BorrowedSqlValue, MultiValueBatch},
     dictionary::PathDictionaryCache,
     ingest::{persist_files, persist_graph, CachedNodePath},
+};
+use crate::core::{
+    commitments,
+    models::{compact_graph::Graph as CompactGraph, stable_hash64, FileEntry},
+    typed_facts::TypedFacts,
 };
 
 fn cached(conn: &Connection, sql: &str, params: impl rusqlite::Params) -> rusqlite::Result<usize> {
@@ -204,7 +204,7 @@ pub(crate) fn persist_delta(
         }
     }
     let files_writing = Instant::now();
-    persist_files(&tx, &mut path_cache, &changed_entries, facts, None, false)?;
+    persist_files(&tx, &mut path_cache, &changed_entries, facts, false)?;
     let files_ms = files_writing.elapsed().as_secs_f64() * 1000.;
     let graph_writing = Instant::now();
     persist_graph(

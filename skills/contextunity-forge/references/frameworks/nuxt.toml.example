@@ -8,11 +8,6 @@
 # Configured setup returns expose actual callables; i18n result t remains external.
 # components=false controls component discovery independently of module contracts.
 
-receivers = []
-builtins = []
-filters = []
-routes = []
-
 [[syntax_rules]]
 id = "components"
 display = { autoimport = "builtin:nuxt_autoimport", component = "builtin:nuxt" }

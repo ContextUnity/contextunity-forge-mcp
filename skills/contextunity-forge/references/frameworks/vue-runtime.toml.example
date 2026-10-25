@@ -7,11 +7,6 @@
 # Callable aliases retain actual indexed targets; non-node state remains unresolved.
 # Canonical bundled identity is vue-runtime, not vue.
 
-receivers = []
-builtins = []
-filters = []
-routes = []
-
 [[syntax_rules]]
 id = "pinia-options-store"
 language = "typescript"

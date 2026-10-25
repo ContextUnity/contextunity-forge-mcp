@@ -3,21 +3,95 @@
 use crate::{
     core::models::{Facts, Node, Reference},
     engine::languages::{
-        dependency_registry::DependencyRegistry, manifests::FrameworkManifest, ImportPath,
-        LanguageFamily, LanguageProfile,
+        ImportPath, LanguageFamily, LanguageProfile, dependency_registry::DependencyRegistry,
+        manifests::FrameworkManifest,
     },
+    engine::linker::interner::{LinkerInterner, PathId, SymbolId},
 };
-use hashbrown::HashMap;
+use hashbrown::{HashMap, HashSet};
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::Path,
 };
 
-/// Package re-exports indexed by owner file and imported name.
-pub type PackageExports<'a> = HashMap<&'a str, HashMap<&'a str, Option<&'a Node>>>;
+/// Package re-exports indexed by interned owner file and imported name.
+pub type PackageExports<'a> = HashMap<PathId, HashMap<SymbolId, Option<&'a Node>>>;
+
+pub(crate) fn package_export<'a>(
+    exports: &PackageExports<'a>,
+    interner: &LinkerInterner<'_>,
+    path: &str,
+    name: &str,
+) -> Option<Option<&'a Node>> {
+    exports
+        .get(&interner.lookup_path(path)?)?
+        .get(&interner.lookup_symbol(name)?)
+        .copied()
+}
+
+pub(crate) fn insert_package_export<'a>(
+    exports: &mut PackageExports<'a>,
+    interner: &mut LinkerInterner<'a>,
+    path: &'a str,
+    name: &'a str,
+    target: Option<&'a Node>,
+) -> Option<Option<&'a Node>> {
+    exports
+        .entry(interner.intern_path(path))
+        .or_default()
+        .insert(interner.intern_symbol(name), target)
+}
 
 /// Cross-file indexes available while resolving one import reference.
 pub type ModulesByNamespace<'a> = HashMap<LanguageFamily, HashMap<String, Vec<&'a Node>>>;
+
+/// Select the nearest indexed module providers using the importing file's workspace and path.
+pub(crate) fn import_provider_modules<'a, 'n>(
+    path: &str,
+    normalized: &'n ImportPath,
+    family: LanguageFamily,
+    modules_by_namespace: &ModulesByNamespace<'a>,
+) -> (Vec<&'a Node>, &'n str) {
+    let workspace = crate::engine::languages::workspace_path(path).0;
+    let mut providers = Vec::new();
+    let mut selected_namespace = "";
+    for local in [true, false] {
+        if !local && normalized.relative {
+            break;
+        }
+        let mut namespace = normalized.namespace.as_str();
+        loop {
+            if local || namespace.contains('.') {
+                providers = modules_by_namespace
+                    .get(&family)
+                    .and_then(|namespaces| namespaces.get(namespace))
+                    .into_iter()
+                    .flatten()
+                    .copied()
+                    .filter(|node| {
+                        (crate::engine::languages::workspace_path(&node.path).0 == workspace)
+                            == local
+                    })
+                    .collect();
+            }
+            if !providers.is_empty() {
+                selected_namespace = namespace;
+                break;
+            }
+            if !normalized.symbol_path {
+                break;
+            }
+            let Some((parent, _)) = namespace.rsplit_once('.') else {
+                break;
+            };
+            namespace = parent;
+        }
+        if !providers.is_empty() {
+            break;
+        }
+    }
+    (providers, selected_namespace)
+}
 
 /// Drop stub and overload candidates only when a concrete implementation is available.
 pub(crate) fn filter_stubs_and_overloads(candidates: &mut Vec<&Node>) {
@@ -48,6 +122,8 @@ fn is_stub_or_overload(node: &Node) -> bool {
 pub struct ImportContext<'ctx, 'a, 'input> {
     /// Workspace-relative importing file.
     pub path: &'input str,
+    /// Canonical symbol and path identities shared by linker indexes.
+    pub interner: &'ctx LinkerInterner<'a>,
     /// Dependency data and framework manifests admitted for the indexed workspace.
     pub dependencies: &'ctx DependencyRegistry,
     /// Parsed import reference.
@@ -55,7 +131,7 @@ pub struct ImportContext<'ctx, 'a, 'input> {
     /// Rust's bounded canonical named-forwarding index, when Rust is enabled.
     #[cfg(feature = "lang-rust")]
     pub(crate) rust_forwarding:
-        Option<&'a crate::engine::languages::rust::linker::RustForwarding<'a>>,
+        Option<&'ctx crate::engine::languages::rust::linker::RustForwarding<'a>>,
     /// Normalized import path from the language profile.
     pub normalized: Option<&'input ImportPath>,
     /// Namespace prefix that selected the indexed module.
@@ -67,13 +143,13 @@ pub struct ImportContext<'ctx, 'a, 'input> {
     /// Candidate symbols selected by the linker.
     pub candidates: &'ctx mut Vec<&'a Node>,
     /// Modules grouped under language-specific import namespaces.
-    pub modules_by_namespace: &'a ModulesByNamespace<'a>,
+    pub modules_by_namespace: &'ctx ModulesByNamespace<'a>,
     /// Nodes grouped by source file.
-    pub by_module: &'a HashMap<&'a str, Vec<&'a Node>>,
+    pub by_module: &'ctx HashMap<&'a str, Vec<&'a Node>>,
     /// Nodes grouped by fully qualified name.
-    pub by_qual: &'a HashMap<&'a str, Vec<&'a Node>>,
+    pub by_qual: &'ctx HashMap<&'a str, Vec<&'a Node>>,
     /// Explicit package re-exports discovered for the workspace.
-    pub package_exports: &'a PackageExports<'a>,
+    pub package_exports: &'ctx PackageExports<'a>,
     /// Reusable buffer for qualified-name lookup.
     pub lookup_key: &'ctx mut String,
 }
@@ -141,65 +217,11 @@ pub trait LanguageLinker: Send + Sync {
         dependencies.framework_manifest_for_path(family, path, framework, package)
     }
 
-    /// Returns whether a declared framework owns a receiver rule.
-    fn framework_receiver(
-        &self,
-        dependencies: &DependencyRegistry,
-        family: LanguageFamily,
-        path: &str,
-        framework: &str,
-        package: &str,
-        rule: &str,
-    ) -> bool {
-        self.framework_manifest(dependencies, family, path, framework, package)
-            .is_some_and(|manifest| manifest.has_receiver(rule))
-    }
-
-    /// Returns whether a declared framework owns a builtin rule.
-    fn framework_builtin(
-        &self,
-        dependencies: &DependencyRegistry,
-        family: LanguageFamily,
-        path: &str,
-        framework: &str,
-        package: &str,
-        rule: &str,
-    ) -> bool {
-        self.framework_manifest(dependencies, family, path, framework, package)
-            .is_some_and(|manifest| manifest.has_builtin(rule))
-    }
-
-    /// Returns whether a declared framework owns a template-filter rule.
-    fn framework_filter(
-        &self,
-        dependencies: &DependencyRegistry,
-        family: LanguageFamily,
-        path: &str,
-        framework: &str,
-        package: &str,
-        rule: &str,
-    ) -> bool {
-        self.framework_manifest(dependencies, family, path, framework, package)
-            .is_some_and(|manifest| manifest.has_filter(rule))
-    }
-
-    /// Returns the target associated with a declared framework route rule.
-    fn framework_route_target<'a>(
-        &self,
-        dependencies: &'a DependencyRegistry,
-        family: LanguageFamily,
-        path: &str,
-        framework: &str,
-        package: &str,
-        source: &str,
-    ) -> Option<&'a str> {
-        self.framework_manifest(dependencies, family, path, framework, package)?
-            .route_target(source)
-    }
-
     /// Resolves a member through language-specific companion declarations.
+    #[allow(clippy::too_many_arguments)]
     fn resolve_imported_member<'a>(
         &self,
+        _interner: &LinkerInterner<'a>,
         _module: &'a Node,
         _member: &str,
         _by_module: &HashMap<&'a str, Vec<&'a Node>>,
@@ -213,6 +235,8 @@ pub trait LanguageLinker: Send + Sync {
     /// Builds language-specific package re-export indexes before parallel linking.
     fn package_exports<'a>(
         &self,
+        _interner: &mut LinkerInterner<'a>,
+        _node_rebindings: &HashMap<SymbolId, HashSet<SymbolId>>,
         _all: &'a BTreeMap<String, Facts>,
         _modules_by_namespace: &ModulesByNamespace<'a>,
         _by_module: &HashMap<&'a str, Vec<&'a Node>>,
@@ -226,7 +250,9 @@ pub trait LanguageLinker: Send + Sync {
     /// The borrowed form avoids cloning facts during incremental relinking.
     fn package_exports_borrowed<'a>(
         &self,
-        _all: &'a BTreeMap<String, &'a Facts>,
+        _interner: &mut LinkerInterner<'a>,
+        _node_rebindings: &HashMap<SymbolId, HashSet<SymbolId>>,
+        _all: &BTreeMap<String, &'a Facts>,
         _modules_by_namespace: &ModulesByNamespace<'a>,
         _by_module: &HashMap<&'a str, Vec<&'a Node>>,
         _root: Option<&Path>,
@@ -333,6 +359,7 @@ mod tests {
 
     fn node(id: &str, is_stub: bool, is_overload: bool) -> Node {
         Node {
+            native_semantic: None,
             id: id.to_owned(),
             kind: "function".to_owned(),
             name: id.to_owned(),

@@ -4,7 +4,8 @@
 //! workspace namespaces as ordinary graph linking. No disk or SQL is consulted
 //! while reducing values or resolving calls.
 
-use super::traits::{ImportContext, ModulesByNamespace, PackageExports};
+use super::interner::{PathId, SymbolId};
+use super::traits::{ImportContext, ModulesByNamespace, PackageExports, import_provider_modules};
 use super::value_flow::{SemanticResolver, Symbol, SymbolRole, TypeTarget};
 use crate::core::{
     models::{Facts, Node, ReceiverHint, Reference},
@@ -14,68 +15,74 @@ use crate::engine::languages::{self, ImportPath};
 use hashbrown::{HashMap, HashSet};
 use std::collections::BTreeMap;
 
-fn nuxt_component_root(
-    dependencies: &languages::dependency_registry::DependencyRegistry,
+mod components;
+mod factories;
+mod preparation;
+mod type_resolution;
+
+pub(super) fn component_names(
     path: &str,
-) -> Option<String> {
-    let manifest = languages::linker_for("vue").framework_manifest(
-        dependencies,
-        languages::LanguageFamily("javascript"),
-        path,
-        "nuxt",
-        "nuxt",
-    )?;
-    manifest.routes.iter().find_map(|route| {
-        let languages::manifests::FrameworkManifestValue::String(route) = route else {
-            return None;
-        };
-        route
-            .strip_suffix("/**/*.vue")
-            .filter(|root| !root.is_empty())
-            .map(str::to_owned)
-    })
+    project: &str,
+    root: &str,
+    extension: &str,
+) -> Option<(String, String)> {
+    components::component_names(path, project, root, extension)
 }
 
-fn nuxt_component_names(path: &str, project: &str, root: &str) -> Option<(String, String)> {
-    let relative = if project.is_empty() {
-        path.strip_prefix(root)?.strip_prefix('/')?
-    } else {
-        path.strip_prefix(project)?
-            .strip_prefix('/')?
-            .strip_prefix(root)?
-            .strip_prefix('/')?
-    };
-    let stem = relative.strip_suffix(".vue")?;
-    if stem.is_empty()
-        || !stem
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'-' | b'_'))
-    {
-        return None;
-    }
-    let mut pascal = String::new();
-    for segment in stem.split('/') {
-        if segment.is_empty() {
-            return None;
-        }
-        for word in segment.split(['-', '_']) {
-            let mut chars = word.chars();
-            let first = chars.next()?;
-            pascal.push(first.to_ascii_uppercase());
-            pascal.extend(chars);
-        }
-    }
-    let mut kebab = String::with_capacity(pascal.len() + 4);
-    for (index, character) in pascal.chars().enumerate() {
-        if character.is_ascii_uppercase() && index > 0 {
-            kebab.push('-');
-        }
-        kebab.push(character.to_ascii_lowercase());
-    }
-    Some((pascal, kebab))
+type ComponentScope = (PathId, SymbolId, SymbolId);
+type ArgumentFactoryKey = (SymbolId, usize, SymbolId);
+type ArgumentFactoryCandidates =
+    Vec<std::sync::Arc<super::value_flow::ConfiguredReceiverAuthority>>;
+type ArgumentFactories = HashMap<ArgumentFactoryKey, ArgumentFactoryCandidates>;
+type HierarchyAuthorities =
+    HashMap<(SymbolId, SymbolId), std::sync::Arc<super::value_flow::ConfiguredReceiverAuthority>>;
+type ImplicitBuiltinMap = HashMap<SymbolId, String>;
+
+struct ReceiverTypes {
+    rules: std::sync::Arc<languages::LanguageContext>,
+    indices: Vec<usize>,
 }
 
-enum Imported<'a> {
+impl ReceiverTypes {
+    fn iter(&self) -> impl Iterator<Item = &languages::manifests::syntax::ReceiverTypeRule> {
+        self.indices
+            .iter()
+            .filter_map(|&index| match &self.rules.syntax_rules[index].operation {
+                languages::manifests::syntax::SyntaxOperation::ReceiverType { receiver } => {
+                    Some(receiver)
+                }
+                _ => None,
+            })
+    }
+}
+
+struct ResultScope<'a> {
+    config: &'a Node,
+    module: SymbolId,
+    exports: HashMap<SymbolId, Vec<(&'a Node, SymbolId)>>,
+    calls: HashMap<SymbolId, std::sync::Arc<super::value_flow::ConfiguredCallResult>>,
+}
+
+#[derive(Default)]
+struct CallableCandidates<'a> {
+    nodes: Vec<&'a Node>,
+    incomplete: bool,
+}
+
+struct CallableModule<'a> {
+    owner: &'a Node,
+    exports: HashMap<SymbolId, CallableCandidates<'a>>,
+}
+
+struct CallableScope<'a> {
+    implicit: bool,
+    aliases: Vec<SymbolId>,
+    names: HashMap<SymbolId, CallableCandidates<'a>>,
+    modules: HashMap<PathId, std::sync::Arc<CallableModule<'a>>>,
+    incomplete: bool,
+}
+
+pub(in crate::engine::linker) enum Imported<'a> {
     Nodes(Vec<&'a Node>, SourcePosition, bool),
     External(String, SourcePosition, &'a Reference, bool),
     Unknown,
@@ -84,114 +91,65 @@ enum Imported<'a> {
 pub(super) enum Member<'a> {
     Local(&'a Node),
     External(&'a str, usize, Option<&'a str>),
+    ConfiguredExternal {
+        authority: &'a super::value_flow::ConfiguredReceiverAuthority,
+        origin: &'a TypeTarget<'a>,
+        evidence: &'a str,
+    },
     Builtin,
     Ambiguous,
     Unknown,
 }
 
-fn rust_import_path(module: &str) -> std::borrow::Cow<'_, str> {
-    if module.contains("::") {
-        std::borrow::Cow::Owned(module.replace("::", "."))
-    } else {
-        std::borrow::Cow::Borrowed(module)
-    }
-}
-
-fn rust_deref_wrapper(target: &TypeTarget<'_>) -> Option<&'static str> {
-    match target {
-        TypeTarget::Builtin(name) if name == "Box" => Some("Box"),
-        TypeTarget::External { module, .. } => {
-            let wrapper = match rust_import_path(module).as_ref() {
-                "std.boxed.Box" | "alloc.boxed.Box" => "Box",
-                "std.sync.Arc" | "alloc.sync.Arc" => "Arc",
-                "std.rc.Rc" | "alloc.rc.Rc" => "Rc",
-                _ => return None,
-            };
-            Some(wrapper)
-        }
-        _ => None,
-    }
-}
-
-fn python_typing_nullable_generic(
-    module: &str,
-    reference: &Reference,
-    member: &str,
-) -> Option<&'static str> {
-    if !matches!(module, "typing" | "typing_extensions") {
-        return None;
-    }
-    match (reference.expression.as_str(), member) {
-        ("Optional", "") => Some("Optional"),
-        ("Union", "") => Some("Union"),
-        (origin, "Optional") if origin == module => Some("Optional"),
-        (origin, "Union") if origin == module => Some("Union"),
-        _ => None,
-    }
-}
-
-fn python_nullable_payload<'a>(
-    wrapper: &str,
-    args: &'a [crate::core::semantic::TypeExpr],
-) -> Option<&'a crate::core::semantic::TypeExpr> {
-    use crate::core::semantic::TypeExpr;
-
-    match (wrapper, args) {
-        ("Optional", [payload]) => Some(payload),
-        ("Union", [TypeExpr::Named { name }, payload]) if name == "None" => Some(payload),
-        ("Union", [payload, TypeExpr::Named { name }]) if name == "None" => Some(payload),
-        _ => None,
-    }
-}
-
-fn rust_standard_member(module: &str, member: &str) -> bool {
-    if matches!(member, "new" | "from" | "with_capacity" | "default") {
-        return false;
-    }
-    let module = rust_import_path(module);
-    let nominal = match module.as_ref() {
-        "std.collections.HashMap"
-        | "std.collections.HashSet"
-        | "std.collections.BTreeMap"
-        | "std.collections.BTreeSet" => module.rsplit_once('.').map_or("", |(_, name)| name),
-        "std.string.String" | "alloc.string.String" => "String",
-        "std.vec.Vec" | "alloc.vec.Vec" => "Vec",
-        "std.path.Path" => "Path",
-        "std.path.PathBuf" => "PathBuf",
-        "std.option.Option" | "core.option.Option" => "Option",
-        "std.result.Result" | "core.result.Result" => "Result",
-        _ => return false,
-    };
-    languages::by_id("rust").is_some_and(|profile| profile.builtin_member(nominal, member))
-}
-
 fn name_rebound(owner: &Node, name: &str) -> bool {
-    owner.details["rebindings"]
-        .as_array()
-        .is_some_and(|names| names.iter().any(|item| item.as_str() == Some(name)))
+    owner.rebinding_names().any(|candidate| candidate == name)
 }
 
-fn rust_wrapper_value_member(wrapper: &str, member: &str) -> bool {
-    match wrapper {
-        "Box" => matches!(member, "as_ref" | "as_mut"),
-        "Arc" | "Rc" => matches!(member, "clone" | "as_ref"),
-        _ => false,
-    }
+type FactoryImport<'a> = Option<(&'a Node, SymbolId, SourcePosition)>;
+
+#[derive(Clone, Copy)]
+enum FactoryBinding<'a> {
+    Declaration(&'a crate::core::semantic::BindingFact),
+    Initializer(&'a crate::core::semantic::BindingFact),
+    Invalid,
+}
+
+enum FactoryDeclarations<'a> {
+    Indexed {
+        bindings: Option<&'a HashSet<SymbolId>>,
+        rebindings: Option<&'a HashSet<SymbolId>>,
+    },
+    Raw(&'a Node),
 }
 
 pub(super) struct Context<'a> {
-    flows: Option<&'a HashMap<&'a str, &'a crate::core::typed_facts::FlowState>>,
+    interner: &'a super::interner::LinkerInterner<'a>,
+    dependencies: &'a languages::dependency_registry::DependencyRegistry,
+    named: super::named_bindings::NamedBindings<'a>,
+    flows: Option<&'a HashMap<SymbolId, &'a crate::core::typed_facts::FlowState>>,
     by_qual: &'a HashMap<&'a str, Vec<&'a Node>>,
+    by_id: &'a HashMap<SymbolId, &'a Node>,
+    node_bindings: &'a HashMap<SymbolId, HashSet<SymbolId>>,
+    node_rebindings: &'a HashMap<SymbolId, HashSet<SymbolId>>,
     exports: &'a HashMap<&'a str, PackageExports<'a>>,
-    imports: HashMap<&'a str, HashMap<&'a str, Imported<'a>>>,
-    python_psycopg_paths: HashSet<&'a str>,
-    nuxt_runtime_projects: HashMap<&'a str, String>,
-    nuxt_component_builtins: HashMap<&'a str, HashSet<String>>,
-    nuxt_consumer_projects: HashMap<&'a str, String>,
-    nuxt_components: HashMap<String, HashMap<String, Vec<&'a Node>>>,
-    radix_vue_projects: HashSet<String>,
+    pub(in crate::engine::linker) imports: HashMap<SymbolId, HashMap<SymbolId, Imported<'a>>>,
+    factory_imports: HashMap<(SymbolId, SymbolId), FactoryImport<'a>>,
+    factory_bindings: HashMap<(SymbolId, SymbolId), FactoryBinding<'a>>,
+    factory_declarations: HashMap<SymbolId, FactoryDeclarations<'a>>,
+    factory_callees: HashSet<SymbolId>,
+    receiver_types: HashMap<PathId, std::sync::Arc<ReceiverTypes>>,
+    argument_factories: HashMap<PathId, std::sync::Arc<ArgumentFactories>>,
+    hierarchy_results: HashMap<PathId, std::sync::Arc<HierarchyAuthorities>>,
+    component_builtins: HashMap<PathId, HashMap<SymbolId, String>>,
+    component_candidate_ids: HashMap<ComponentScope, usize>,
+    component_candidates: Vec<HashMap<SymbolId, Vec<&'a Node>>>,
+    component_consumers: HashMap<PathId, Vec<usize>>,
+    implicit_builtins: HashMap<PathId, std::sync::Arc<ImplicitBuiltinMap>>,
+    autoimports: HashMap<PathId, HashMap<SymbolId, String>>,
+    result_scopes: HashMap<PathId, Vec<std::sync::Arc<ResultScope<'a>>>>,
+    callable_scopes: HashMap<PathId, Vec<std::sync::Arc<CallableScope<'a>>>>,
     commonjs: super::commonjs::CommonJsBindings<'a>,
-    members: HashMap<(&'a str, &'a str, bool), Vec<&'a Node>>,
+    members: HashMap<(SymbolId, SymbolId, bool), Vec<&'a Node>>,
     python: Option<&'a super::receivers::PythonReceivers<'a>>,
     #[cfg(feature = "lang-rust")]
     rust: Option<&'a languages::rust::linker::RustMembers<'a>>,
@@ -234,6 +192,13 @@ impl<'ctx, 'a> LanguageMemberLookup<'ctx, 'a> {
     }
 
     #[cfg(feature = "lang-rust")]
+    pub(super) fn rust_deref_target(&self, receiver: &Node) -> Option<&'a Node> {
+        self.context
+            .rust
+            .and_then(|index| index.deref_target(receiver))
+    }
+
+    #[cfg(feature = "lang-rust")]
     pub(super) fn rust<'lookup>(
         &'lookup self,
         receiver: &Node,
@@ -260,6 +225,159 @@ impl<'ctx, 'a> LanguageMemberLookup<'ctx, 'a> {
 }
 
 impl<'a> Context<'a> {
+    fn path_id(&self, path: &str) -> Option<PathId> {
+        self.interner.lookup_path(path)
+    }
+
+    pub(in crate::engine::linker) fn symbol_id(&self, symbol: &str) -> Option<SymbolId> {
+        self.interner.lookup_symbol(symbol)
+    }
+
+    fn factory_declares(&self, owner: &Node, name: &str) -> bool {
+        let name_id = self.symbol_id(name);
+        match self
+            .symbol_id(&owner.id)
+            .and_then(|owner| self.factory_declarations.get(&owner))
+        {
+            Some(FactoryDeclarations::Raw(declaration)) => declaration
+                .binding_names()
+                .chain(declaration.rebinding_names())
+                .any(|binding| binding == name),
+            Some(FactoryDeclarations::Indexed {
+                bindings,
+                rebindings,
+            }) => name_id.is_some_and(|name_id| {
+                bindings.is_some_and(|names| names.contains(&name_id))
+                    || rebindings.is_some_and(|names| names.contains(&name_id))
+            }),
+            None => false,
+        }
+    }
+    fn configured_unshadowed(&self, owner: &'a Node, name: &str) -> bool {
+        let mut scope = owner.qualname.as_str();
+        let mut key = String::new();
+        for _ in 0..super::value_flow::SemanticLimits::default().alias_depth {
+            if self
+                .by_qual
+                .get(scope)
+                .into_iter()
+                .flatten()
+                .any(|lexical| {
+                    lexical.path == owner.path
+                        && (self.factory_declares(lexical, name)
+                            || self
+                                .symbol_id(&lexical.id)
+                                .zip(self.symbol_id(name))
+                                .is_some_and(|key| self.factory_bindings.contains_key(&key))
+                            || self
+                                .symbol_id(&lexical.id)
+                                .and_then(|owner| self.imports.get(&owner))
+                                .is_some_and(|imports| {
+                                    self.symbol_id(name)
+                                        .is_some_and(|name| imports.contains_key(&name))
+                                }))
+                })
+                || self
+                    .by_qual
+                    .get(super::qualified(&mut key, scope, name))
+                    .into_iter()
+                    .flatten()
+                    .any(|node| node.path == owner.path)
+            {
+                return false;
+            }
+            let Some((parent, _)) = scope.rsplit_once('.') else {
+                return true;
+            };
+            scope = parent;
+        }
+        false
+    }
+
+    fn implicit_factory_result(&self, owner: &'a Node, callee: &str) -> Option<TypeTarget<'a>> {
+        let callee_id = self.symbol_id(callee)?;
+        let mut providers = self
+            .result_scopes
+            .get(&self.path_id(owner.path.as_str())?)
+            .into_iter()
+            .flatten()
+            .filter_map(|scope| scope.exports.get(&callee_id))
+            .flatten();
+        let (provider, binding) = providers.next()?;
+        if !self.configured_unshadowed(owner, callee) {
+            return None;
+        }
+        if providers.next().is_some() {
+            return Some(TypeTarget::Ambiguous);
+        }
+        Some(
+            self.factory_value(provider, *binding, owner)
+                .unwrap_or(TypeTarget::Unknown),
+        )
+    }
+
+    fn factory_value(
+        &self,
+        provider: &'a Node,
+        binding: SymbolId,
+        consumer: &Node,
+    ) -> Option<TypeTarget<'a>> {
+        let definition = self
+            .named
+            .factories
+            .get(&(self.interner.lookup_symbol(&provider.id)?, binding))?;
+        let [fact] = definition.facts.as_slice() else {
+            return Some(TypeTarget::Ambiguous);
+        };
+        if let Some(required) = &fact.configured_module {
+            let required = self.symbol_id(required)?;
+            let provider_path = self.path_id(provider.path.as_str())?;
+            let consumer_path = self.path_id(consumer.path.as_str())?;
+            let consumer_scopes = self.result_scopes.get(&consumer_path);
+            let admitted = self
+                .result_scopes
+                .get(&provider_path)
+                .into_iter()
+                .flatten()
+                .any(|scope| {
+                    scope.module == required
+                        && consumer_scopes.into_iter().flatten().any(|other| {
+                            other.module == required && other.config.id == scope.config.id
+                        })
+                });
+            if !admitted {
+                return Some(TypeTarget::Unknown);
+            }
+        }
+        Some(definition.value.clone())
+    }
+
+    pub(super) fn property_type_for_path(
+        &self,
+        path: &str,
+        receiver: &str,
+        member: &str,
+    ) -> Option<String> {
+        if let Some(receiver) = self.receiver_type(path, receiver) {
+            return receiver.properties.get(member).cloned();
+        }
+        super::typescript::semantic_context::typed_dom_property(receiver, member).map(str::to_owned)
+    }
+    fn receiver_type(
+        &self,
+        path: &str,
+        name: &str,
+    ) -> Option<&languages::manifests::syntax::ReceiverTypeRule> {
+        let path = self.path_id(path)?;
+        let mut candidates = self
+            .receiver_types
+            .get(&path)?
+            .iter()
+            .filter(|receiver| receiver.name == name);
+        let first = candidates.next()?;
+        candidates.next().is_none().then_some(first)
+    }
+
     pub(super) fn exact_external_import(
         &self,
         owner: &Node,
@@ -268,71 +386,212 @@ impl<'a> Context<'a> {
         symbol: &str,
         at: SourcePosition,
     ) -> bool {
-        matches!(
-            self.imports.get(owner.id.as_str()).and_then(|imports| imports.get(alias)),
-            Some(Imported::External(origin, position, reference, _))
-                if origin == module
-                    && *position < at
-                    && reference.source == owner.id
-                    && reference.module.as_deref() == Some(module)
-                    && reference.expression == symbol
-                    && reference.alias.as_deref() == Some(alias)
-        )
+        self.symbol_id(&owner.id)
+            .zip(self.symbol_id(alias))
+            .is_some_and(|(owner_id, alias_id)| {
+                matches!(
+                    self.imports
+                        .get(&owner_id)
+                        .and_then(|imports| imports.get(&alias_id)),
+                    Some(Imported::External(origin, position, reference, _))
+                        if origin == module
+                            && *position < at
+                            && reference.source == owner.id
+                            && reference.module.as_deref() == Some(module)
+                            && reference.expression == symbol
+                            && reference.alias.as_deref() == Some(alias)
+                )
+            })
     }
 
-    pub(super) fn nuxt_builtin_component(&self, path: &str, tag: &str) -> bool {
-        self.nuxt_runtime_projects.contains_key(path)
-            && self
-                .nuxt_component_builtins
-                .get(path)
-                .is_some_and(|builtins| builtins.contains(tag))
+    pub(super) fn component_builtin(&self, path: &str, tag: &str) -> Option<&str> {
+        let tag = self.symbol_id(tag)?;
+        self.component_builtins
+            .get(&self.path_id(path)?)?
+            .get(&tag)
+            .map(String::as_str)
     }
 
-    pub(super) fn radix_vue_component(&self, path: &str, tag: &str) -> bool {
-        self.nuxt_runtime_projects
-            .get(path)
-            .is_some_and(|project| self.radix_vue_projects.contains(project))
-            && matches!(
-                tag,
-                "DialogRoot"
-                    | "DialogPortal"
-                    | "DialogOverlay"
-                    | "DialogContent"
-                    | "DialogTitle"
-                    | "DialogDescription"
-                    | "DialogClose"
-            )
+    pub(super) fn component_candidates(&self, path: &str, tag: &str) -> Vec<&'a Node> {
+        let (Some(path), Some(tag)) = (self.path_id(path), self.symbol_id(tag)) else {
+            return Vec::new();
+        };
+        let mut candidates: Vec<_> = self
+            .component_consumers
+            .get(&path)
+            .into_iter()
+            .flatten()
+            .filter_map(|&index| self.component_candidates.get(index)?.get(&tag))
+            .flatten()
+            .copied()
+            .collect();
+        candidates.sort_unstable_by(|left, right| left.id.cmp(&right.id));
+        candidates.dedup_by(|left, right| left.id == right.id);
+        candidates
     }
 
-    pub(super) fn nuxt_component_candidates(&self, path: &str, tag: &str) -> Option<&[&'a Node]> {
-        let project = self.nuxt_consumer_projects.get(path)?;
-        self.nuxt_components
-            .get(project)?
-            .get(tag)
-            .map(Vec::as_slice)
+    pub(super) fn autoimport(&self, path: &str, name: &str) -> bool {
+        let Some(path) = self.path_id(path) else {
+            return false;
+        };
+        let Some(name) = self.symbol_id(name) else {
+            return false;
+        };
+        self.autoimports
+            .get(&path)
+            .is_some_and(|names| names.contains_key(&name))
+            || self
+                .implicit_builtins
+                .get(&path)
+                .is_some_and(|names| names.contains_key(&name))
     }
 
-    fn unshadowed_global(&self, owner: &'a Node, name: &str, at: SourcePosition) -> bool {
+    /// Only configured, complete exported callables supplement ordinary lexical calls.
+    pub(super) fn implicit_callables(&self, owner: &'a Node, name: &str) -> Vec<&'a Node> {
+        let mut candidates = Vec::new();
+        let Some(name_id) = self.symbol_id(name) else {
+            return candidates;
+        };
+        let Some(path) = self.path_id(&owner.path) else {
+            return candidates;
+        };
+        for scope in self
+            .callable_scopes
+            .get(&path)
+            .into_iter()
+            .flatten()
+            .filter(|scope| scope.implicit)
+        {
+            if scope.incomplete {
+                return Vec::new();
+            }
+            if let Some(found) = scope.names.get(&name_id) {
+                if found.incomplete {
+                    return Vec::new();
+                }
+                for node in &found.nodes {
+                    if !candidates
+                        .iter()
+                        .any(|previous: &&Node| previous.id == node.id)
+                    {
+                        if candidates.len() == 8 {
+                            return Vec::new();
+                        }
+                        candidates.push(*node);
+                    }
+                }
+            }
+        }
+        if !candidates.is_empty() && !self.configured_unshadowed(owner, name) {
+            candidates.clear();
+        }
+        candidates
+    }
+
+    /// Confined aliases normalize into the existing canonical import path.
+    pub(super) fn callable_import_path(
+        &self,
+        path: &str,
+        reference: &Reference,
+    ) -> Option<ImportPath> {
+        let (module, _) = self.callable_import_module(path, reference)?;
+        Some(ImportPath {
+            namespace: module.qualname.clone(),
+            relative: true,
+            symbol_path: false,
+        })
+    }
+
+    fn callable_import_module(
+        &self,
+        path: &str,
+        reference: &Reference,
+    ) -> Option<(&'a Node, &CallableCandidates<'a>)> {
+        let source = reference.module.as_deref()?;
+        let path = self.path_id(path)?;
+        let mut selected: Option<(&Node, &CallableCandidates<'a>)> = None;
+        for scope in self.callable_scopes.get(&path).into_iter().flatten() {
+            if scope.incomplete {
+                return None;
+            }
+            for alias in &scope.aliases {
+                let alias = self.interner.resolve_symbol(*alias);
+                let Some(tail) = source.strip_prefix(alias) else {
+                    continue;
+                };
+                if tail
+                    .split('/')
+                    .any(|part| part.is_empty() || matches!(part, "." | ".."))
+                    || tail.contains('\\')
+                {
+                    return None;
+                }
+                let module = scope.modules.get(&self.path_id(tail)?)?;
+                let target = module
+                    .exports
+                    .get(&self.symbol_id(reference.expression.as_str())?)?;
+                if target.incomplete || target.nodes.is_empty() {
+                    return None;
+                }
+                if selected.is_some_and(|(previous, _)| previous.id != module.owner.id) {
+                    return None;
+                }
+                selected = Some((module.owner, target));
+            }
+        }
+        let selected = selected?;
+        let alias = reference.alias.as_deref()?;
+        let owner = reference.source.as_str();
+        let owner_id = self.symbol_id(owner)?;
+        let alias_id = self.symbol_id(alias)?;
+        let rebound = match self.factory_declarations.get(&owner_id) {
+            Some(FactoryDeclarations::Indexed { rebindings, .. }) => {
+                rebindings.is_some_and(|names| names.contains(&alias_id))
+            }
+            Some(FactoryDeclarations::Raw(node)) => {
+                node.rebinding_names().any(|name| name == alias)
+            }
+            None => false,
+        };
+        if rebound || self.factory_bindings.contains_key(&(owner_id, alias_id)) {
+            return None;
+        }
+        Some(selected)
+    }
+
+    pub(super) fn autoimport_evidence(&self, path: &str, name: &str) -> Option<&str> {
+        let path = self.path_id(path)?;
+        let name = self.symbol_id(name)?;
+        self.autoimports
+            .get(&path)
+            .and_then(|names| names.get(&name))
+            .or_else(|| {
+                self.implicit_builtins
+                    .get(&path)
+                    .and_then(|names| names.get(&name))
+            })
+            .map(String::as_str)
+    }
+
+    pub(in crate::engine::linker) fn unshadowed_global(
+        &self,
+        owner: &'a Node,
+        name: &str,
+        at: SourcePosition,
+    ) -> bool {
         let mut scope = owner.qualname.as_str();
         let mut lookup_key = String::with_capacity(128);
         loop {
             if self.by_qual.get(scope).into_iter().flatten().any(|node| {
                 node.path == owner.path
-                    && (node.details["bindings"].as_array().is_some_and(|bindings| {
-                        bindings
-                            .iter()
-                            .any(|binding| binding.as_str() == Some(name))
-                    }) || node.details["rebindings"]
-                        .as_array()
-                        .is_some_and(|rebindings| {
-                            rebindings
-                                .iter()
-                                .any(|binding| binding.as_str() == Some(name))
+                    && (node.binding_names().any(|candidate| candidate == name)
+                        || node.rebinding_names().any(|candidate| candidate == name)
+                        || self.symbol_id(&node.id).is_some_and(|node_id| {
+                            self.imports.get(&node_id).is_some_and(|imports| {
+                                self.symbol_id(name)
+                                    .is_some_and(|name| imports.contains_key(&name))
+                            })
                         })
-                        || self
-                            .imports
-                            .get(node.id.as_str())
-                            .is_some_and(|imports| imports.contains_key(name))
                         || self.value_flow(node).is_some_and(|flow| {
                             flow.bindings
                                 .iter()
@@ -355,37 +614,18 @@ impl<'a> Context<'a> {
         true
     }
 
-    fn dom_factory(
-        &self,
-        owner: &'a Node,
-        callee: &str,
-        at: SourcePosition,
-    ) -> Option<TypeTarget<'a>> {
-        if !matches!(owner.language.as_str(), "javascript" | "typescript")
-            || !matches!(
-                callee,
-                "document.createElement" | "document.querySelector" | "document.getElementById"
-            )
-            || !self.unshadowed_global(owner, "document", at)
-        {
-            return None;
-        }
-        Some(TypeTarget::Builtin("Element".to_owned()))
+    pub(super) fn tracks_commonjs_binding(&self, scope: &Node, alias: &str) -> bool {
+        self.commonjs.tracks(scope, alias)
     }
 
-    fn fetch_response_factory(
-        &self,
-        owner: &'a Node,
-        callee: &str,
-        at: SourcePosition,
-    ) -> Option<TypeTarget<'a>> {
-        if !matches!(owner.language.as_str(), "javascript" | "typescript")
-            || callee != "await fetch"
-            || !self.unshadowed_global(owner, "fetch", at)
-        {
-            return None;
-        }
-        Some(TypeTarget::Builtin("Web.Response".to_owned()))
+    pub(super) fn node_has_rebinding(&self, owner: &Node, alias: &str) -> bool {
+        self.symbol_id(&owner.id)
+            .zip(self.symbol_id(alias))
+            .is_some_and(|(owner, alias)| {
+                self.node_rebindings
+                    .get(&owner)
+                    .is_some_and(|bindings| bindings.contains(&alias))
+            })
     }
 
     pub(super) fn admits_commonjs_binding(
@@ -398,10 +638,10 @@ impl<'a> Context<'a> {
         self.commonjs.admits(scope, alias, owner, at)
     }
     fn visible(owner: &Node, candidate: &Node, at: SourcePosition, role: SymbolRole) -> bool {
-        if candidate.language == "rust" && candidate.kind == "impl" {
-            return false;
+        if let Some(visible) = super::rust::semantic_context::visible(owner, candidate) {
+            return visible;
         }
-        if matches!(role, SymbolRole::Type) || owner.language == "rust" {
+        if matches!(role, SymbolRole::Type) {
             return true;
         }
         if candidate
@@ -411,9 +651,7 @@ impl<'a> Context<'a> {
         {
             return true;
         }
-        if matches!(owner.language.as_str(), "javascript" | "typescript" | "vue")
-            && candidate.kind == "function"
-        {
+        if super::typescript::semantic_context::visible(owner, candidate) {
             return true;
         }
         SourcePosition {
@@ -421,341 +659,396 @@ impl<'a> Context<'a> {
             column: candidate.details["column"].as_u64().unwrap_or(0) as usize,
         } < at
     }
-    pub(super) fn build<F: AsRef<Facts>>(
-        all: &'a BTreeMap<String, F>,
-        modules: &'a ModulesByNamespace<'a>,
-        by_module: &'a HashMap<&'a str, Vec<&'a Node>>,
-        by_qual: &'a HashMap<&'a str, Vec<&'a Node>>,
-        exports: &'a HashMap<&'a str, PackageExports<'a>>,
-        normalized_imports: &HashMap<(&str, &str), Option<ImportPath>>,
-        dependencies: &languages::dependency_registry::DependencyRegistry,
-    ) -> Self {
-        let mut context = Self {
-            flows: None,
-            by_qual,
-            exports,
-            imports: HashMap::new(),
-            python_psycopg_paths: HashSet::new(),
-            nuxt_runtime_projects: HashMap::new(),
-            nuxt_component_builtins: HashMap::new(),
-            nuxt_consumer_projects: HashMap::new(),
-            nuxt_components: HashMap::new(),
-            radix_vue_projects: HashSet::new(),
-            commonjs: super::commonjs::CommonJsBindings::build(all),
-            members: HashMap::new(),
-            python: None,
-            #[cfg(feature = "lang-rust")]
-            rust: None,
-            #[cfg(feature = "lang-typescript")]
-            typescript: None,
-        };
-        let mut nuxt_projects = HashSet::new();
-        for (path, facts) in all {
-            let facts = facts.as_ref();
-            let Some(module) = facts.nodes.iter().find(|node| node.kind == "module") else {
-                continue;
-            };
-            if module.language == "python"
-                && facts.references.iter().any(|reference| {
-                    reference.kind == "imports"
-                        && (reference.module.as_deref() == Some("psycopg")
-                            || reference.expression == "psycopg")
-                })
-                && dependencies.declares_for_path(
-                    languages::LanguageFamily("python"),
-                    path,
-                    "psycopg",
-                )
-            {
-                context.python_psycopg_paths.insert(path.as_str());
-            }
-            if module.details["nuxt_default_components_enabled"] == true
-                && dependencies.declares_for_path(
-                    languages::LanguageFamily("javascript"),
-                    path,
-                    "nuxt",
-                )
-            {
-                if let Some(project) = path
-                    .strip_suffix("/nuxt.config.ts")
-                    .or_else(|| (path == "nuxt.config.ts").then_some(""))
-                {
-                    if dependencies.nearest_manifest_scope_for_path(
-                        languages::LanguageFamily("javascript"),
-                        path,
-                    ) == Some(project)
-                    {
-                        nuxt_projects.insert(project.to_owned());
-                    }
-                }
-            }
-            if module.details["nuxt_radix_vue_enabled"] == true
-                && dependencies.declares_for_path(
-                    languages::LanguageFamily("javascript"),
-                    path,
-                    "nuxt",
-                )
-                && dependencies.declares_for_path(
-                    languages::LanguageFamily("javascript"),
-                    path,
-                    "radix-vue",
-                )
-            {
-                if let Some(project) = path
-                    .strip_suffix("/nuxt.config.ts")
-                    .or_else(|| (path == "nuxt.config.ts").then_some(""))
-                {
-                    if dependencies.nearest_manifest_scope_for_path(
-                        languages::LanguageFamily("javascript"),
-                        path,
-                    ) == Some(project)
-                    {
-                        context.radix_vue_projects.insert(project.to_owned());
-                    }
-                }
-            }
-        }
-        for (path, facts) in all {
-            let facts = facts.as_ref();
-            let Some(module) = facts.nodes.iter().find(|node| node.kind == "module") else {
-                continue;
-            };
-            if module.language == "vue" {
-                if let Some(project) = dependencies
-                    .nearest_manifest_scope_for_path(languages::LanguageFamily("javascript"), path)
-                {
-                    if dependencies.declares_for_path(
-                        languages::LanguageFamily("javascript"),
-                        path,
-                        "nuxt",
-                    ) {
-                        context
-                            .nuxt_runtime_projects
-                            .insert(path.as_str(), project.to_owned());
-                        if let Some(manifest) = languages::linker_for("vue").framework_manifest(
-                            dependencies,
-                            languages::LanguageFamily("javascript"),
-                            path,
-                            "nuxt",
-                            "nuxt",
-                        ) {
-                            let builtins = manifest
-                                .builtins
-                                .iter()
-                                .filter_map(|value| match value {
-                                    languages::manifests::FrameworkManifestValue::String(name) => {
-                                        Some(name.clone())
-                                    }
-                                    _ => None,
-                                })
-                                .collect();
-                            context
-                                .nuxt_component_builtins
-                                .insert(path.as_str(), builtins);
-                        }
-                    }
-                    if nuxt_projects.contains(project) {
-                        context
-                            .nuxt_consumer_projects
-                            .insert(path.as_str(), project.to_owned());
-                        if let Some(root) = nuxt_component_root(dependencies, path) {
-                            if let Some((pascal, kebab)) =
-                                nuxt_component_names(path, project, &root)
-                            {
-                                let components = context
-                                    .nuxt_components
-                                    .entry(project.to_owned())
-                                    .or_default();
-                                components.entry(pascal).or_default().push(module);
-                                components.entry(kebab).or_default().push(module);
-                            }
-                        }
-                    }
-                }
-            }
-            let Some(profile) = languages::by_id(&module.language) else {
-                continue;
-            };
-            let linker = languages::linker_for(&module.language);
-            let Some(package_exports) = exports.get(profile.id()) else {
-                continue;
-            };
-            let owners: HashMap<&str, &Node> = facts
-                .nodes
-                .iter()
-                .map(|node| (node.id.as_str(), node))
-                .collect();
-            for reference in facts
-                .references
-                .iter()
-                .filter(|reference| reference.kind == "imports")
-            {
-                let Some(alias) = reference.alias.as_deref().filter(|alias| *alias != "*") else {
-                    continue;
-                };
-                let Some(owner) = owners.get(reference.source.as_str()).copied() else {
-                    continue;
-                };
-                let key = (
-                    path.as_str(),
-                    reference.module.as_deref().unwrap_or(&reference.expression),
-                );
-                let Some(normalized) = normalized_imports.get(&key).and_then(Option::as_ref) else {
-                    continue;
-                };
-                let workspace = languages::workspace_path(path).0;
-                let mut providers = Vec::new();
-                let mut selected = "";
-                for local in [true, false] {
-                    if !local && normalized.relative {
-                        break;
-                    }
-                    let mut namespace = normalized.namespace.as_str();
-                    loop {
-                        if local || namespace.contains('.') {
-                            providers = modules
-                                .get(&profile.family())
-                                .and_then(|map| map.get(namespace))
-                                .into_iter()
-                                .flatten()
-                                .copied()
-                                .filter(|node| {
-                                    (languages::workspace_path(&node.path).0 == workspace) == local
-                                })
-                                .collect();
-                        }
-                        if !providers.is_empty() {
-                            selected = namespace;
-                            break;
-                        }
-                        if !normalized.symbol_path {
-                            break;
-                        }
-                        let Some((parent, _)) = namespace.rsplit_once('.') else {
-                            break;
-                        };
-                        namespace = parent;
-                    }
-                    if !providers.is_empty() {
-                        break;
-                    }
-                }
-                let mut candidates = Vec::new();
-                let mut lookup_key = String::new();
-                linker.resolve_import(&mut ImportContext {
-                    path,
-                    dependencies,
-                    reference,
-                    normalized: Some(normalized),
-                    selected_namespace: selected,
-                    family: profile.family(),
-                    modules: &mut providers,
-                    candidates: &mut candidates,
-                    modules_by_namespace: modules,
-                    by_module,
-                    by_qual,
-                    package_exports,
-                    lookup_key: &mut lookup_key,
-                });
-                let position = SourcePosition {
-                    line: reference.line,
-                    column: reference.column,
-                };
-                let is_type_only = matches!(
-                    reference.receiver_hint.as_ref(),
-                    Some(ReceiverHint::TypeOnlyImport)
-                );
-                let unproven_guard = is_type_only
-                    && profile.id() == "python"
-                    && !super::python_has_proven_type_checking(
-                        path,
-                        facts,
-                        modules,
-                        dependencies,
-                        profile.family(),
-                    );
-                let target = if unproven_guard {
-                    Imported::Unknown
-                } else if providers.len() == 1 && !candidates.is_empty() {
-                    Imported::Nodes(candidates, position, is_type_only)
-                } else if providers.is_empty() && !normalized.relative {
-                    let module_name = reference.module.as_deref().unwrap_or(&reference.expression);
-                    if matches!(module_name, "typing" | "typing_extensions")
-                        && reference.expression == "Any"
-                    {
-                        Imported::Unknown
-                    } else {
-                        let factory_safe = module.details["python_logging_factories"]
-                            .as_array()
-                            .is_some_and(|entries| {
-                                let mut matching = entries.iter().filter(|entry| {
-                                    entry["alias"].as_str() == Some(alias)
-                                        && entry["line"].as_u64() == Some(position.line as u64)
-                                        && entry["column"].as_u64() == Some(position.column as u64)
-                                });
-                                matching.next().is_some_and(|entry| {
-                                    entry.as_object().is_some_and(|object| object.len() == 4)
-                                        && entry["safe"].as_bool() == Some(true)
-                                }) && matching.next().is_none()
-                            });
-                        Imported::External(
-                            module_name.to_owned(),
-                            position,
-                            reference,
-                            factory_safe,
-                        )
-                    }
-                } else {
-                    Imported::Unknown
-                };
-                let aliases = context.imports.entry(owner.id.as_str()).or_default();
-                if aliases.contains_key(alias) {
-                    aliases.insert(alias, Imported::Unknown);
-                } else {
-                    aliases.insert(alias, target);
-                }
-            }
-        }
-        for node in all
-            .values()
-            .flat_map(|facts| &facts.as_ref().nodes)
-            .filter(|node| node.kind == "method")
-        {
-            let Some((parent, _)) = node.qualname.rsplit_once('.') else {
-                continue;
-            };
-            let mut classes = by_qual
-                .get(parent)
-                .into_iter()
-                .flatten()
-                .copied()
-                .filter(|class| {
-                    class.path == node.path && matches!(class.kind.as_str(), "class" | "interface")
-                });
-            let Some(class) = classes.next() else {
-                continue;
-            };
-            if classes.next().is_none() {
-                context
-                    .members
-                    .entry((
-                        class.id.as_str(),
-                        node.name.as_str(),
-                        node.details["is_static"] == true,
-                    ))
-                    .or_default()
-                    .push(node);
-            }
-        }
-        context
-    }
-
-    pub(super) fn with_flows(
+    pub(super) fn with_flows<F: AsRef<Facts>>(
         mut self,
-        flows: Option<&'a HashMap<&'a str, &'a crate::core::typed_facts::FlowState>>,
+        flows: Option<&'a HashMap<SymbolId, &'a crate::core::typed_facts::FlowState>>,
+        uncertainties: Option<
+            &'a HashMap<SymbolId, &'a [crate::core::semantic::NamedDefinitionUncertainty]>,
+        >,
+        faults: Option<&HashSet<SymbolId>>,
+        all: &'a BTreeMap<String, F>,
+        dependencies: &'a languages::dependency_registry::DependencyRegistry,
     ) -> Self {
         self.flows = flows;
+        self.named = super::named_bindings::NamedBindings::build(
+            all,
+            self.interner,
+            flows,
+            uncertainties,
+            faults,
+            dependencies,
+            self.by_id,
+        );
+        self.prepare_registry_bindings();
+        self.prepare_factory_bindings(all);
+        self.prepare_component_environments(all, dependencies);
+        self.prepare_callable_aliases(all);
+        let mut factory_callees = HashSet::new();
+        factory_callees.extend(self.factory_imports.keys().map(|(_, callee_id)| *callee_id));
+        factory_callees.extend(self.factory_bindings.keys().map(|(_, callee_id)| *callee_id));
+        factory_callees.extend(self.named.factories.keys().map(|(_, binding)| *binding));
+        for scopes in self.result_scopes.values() {
+            for scope in scopes {
+                factory_callees.extend(scope.calls.keys().copied());
+            }
+        }
+        for map in self.implicit_builtins.values() {
+            factory_callees.extend(map.keys().copied());
+        }
+        for map in self.component_builtins.values() {
+            factory_callees.extend(map.keys().copied());
+        }
+        self.factory_callees = factory_callees;
         self
+    }
+
+    pub(super) fn named_target(
+        &self,
+        owner: &'a Node,
+        domain: &str,
+        key: &str,
+        origin: Option<&crate::core::semantic::ExtractionRuleOrigin>,
+    ) -> Symbol<'a> {
+        use crate::core::semantic::{NamedBindingRole, NamedTargetKind, SymbolOperand};
+        let scope = super::named_bindings::project(&owner.path, self.dependencies);
+        let Some(scope_id) = self.interner.lookup_path(scope) else {
+            return Symbol::Unknown;
+        };
+        let origin_scopes = origin.and_then(|origin| {
+            self.symbol_id(&origin.pack)
+                .zip(self.symbol_id(&origin.rule))
+                .and_then(|(pack, rule)| self.named.scopes(scope_id, pack, rule))
+        });
+        let mut scoped_ids = Vec::new();
+        if let Some(scopes) = origin_scopes {
+            scoped_ids.extend_from_slice(scopes);
+        } else {
+            scoped_ids.push(scope_id);
+        }
+        let (Some(domain), Some(key)) = (self.symbol_id(domain), self.symbol_id(key)) else {
+            return Symbol::Unknown;
+        };
+        let mut selected = None;
+        let mut count = 0usize;
+        let mut uncertain = false;
+        for scope in scoped_ids {
+            let (matching, unknown) = self.named.definitions(scope, domain, key);
+            count += matching.len();
+            selected = selected.or_else(|| matching.first());
+            uncertain |= unknown;
+        }
+        if uncertain || count == 0 {
+            return Symbol::Unknown;
+        }
+        if count != 1 {
+            return Symbol::Ambiguous;
+        }
+        let Some(definition) = selected else {
+            return Symbol::Unknown;
+        };
+        let NamedBindingRole::Definition {
+            target,
+            target_kind,
+        } = &definition.fact.role
+        else {
+            return Symbol::Unknown;
+        };
+        match target {
+            SymbolOperand::Node { id } => {
+                let Some(target) = self.interner.lookup_node(self.by_id, id) else {
+                    return Symbol::Unknown;
+                };
+                if target.path != definition.owner.path {
+                    return Symbol::Unknown;
+                }
+                match target_kind {
+                    NamedTargetKind::Object if target.kind == "object" => {
+                        Symbol::Type(TypeTarget::Local(target))
+                    }
+                    NamedTargetKind::ListenerScope if target.kind == "template_scope" => {
+                        Symbol::Type(TypeTarget::Local(target))
+                    }
+                    NamedTargetKind::Callable
+                        if matches!(target.kind.as_str(), "function" | "method") =>
+                    {
+                        Symbol::Callable(target)
+                    }
+                    _ => Symbol::Unknown,
+                }
+            }
+            SymbolOperand::Name { expression } if *target_kind == NamedTargetKind::Callable => {
+                match self.resolve_symbol(
+                    definition.owner,
+                    expression,
+                    definition.fact.position,
+                    SymbolRole::Callable,
+                ) {
+                    symbol @ (Symbol::Callable(_) | Symbol::Ambiguous) => symbol,
+                    _ => Symbol::Unknown,
+                }
+            }
+            _ => Symbol::Unknown,
+        }
+    }
+
+    /// None preserves ordinary template fallback; observed uncertainty suppresses it.
+    pub(super) fn template_named_target(
+        &self,
+        owner: &'a Node,
+        domain: &str,
+        key: &str,
+        kind: &str,
+    ) -> Option<Symbol<'a>> {
+        use crate::core::semantic::StaticString;
+        if kind != "filter" {
+            return None;
+        }
+        let scope = super::named_bindings::project(&owner.path, self.dependencies);
+        let Some(scope_id) = self.interner.lookup_path(scope) else {
+            return Some(Symbol::Unknown);
+        };
+        let (Some(domain), Some(key)) = (self.symbol_id(domain), self.symbol_id(key)) else {
+            return Some(Symbol::Unknown);
+        };
+        let owner_path = self.path_id(&owner.path)?;
+        if self
+            .named
+            .registry_uncertain(scope_id, domain, key, owner_path, self.interner)
+        {
+            return Some(Symbol::Unknown);
+        }
+        let mut result = None;
+        for registry in self.named.registry_definitions(scope_id, domain) {
+            if !registry.root.contains_path(owner_path, self.interner) {
+                continue;
+            }
+            let definition = &registry.definition;
+            match &definition.fact.key {
+                StaticString::Literal { value } if self.symbol_id(value.as_str()) != Some(key) => {
+                    continue;
+                }
+                StaticString::Unknown => return Some(Symbol::Unknown),
+                _ => {}
+            }
+            let symbol = match registry.target {
+                Ok(Some(node)) => Symbol::Callable(node),
+                Ok(None) => Symbol::Unknown,
+                Err(()) => Symbol::Ambiguous,
+            };
+            result = Some(match (result, symbol) {
+                (_, Symbol::Unknown | Symbol::Type(_)) => return Some(Symbol::Unknown),
+                (Some(Symbol::Unknown), _) => return Some(Symbol::Unknown),
+                (Some(Symbol::Ambiguous), _) | (_, Symbol::Ambiguous) => Symbol::Ambiguous,
+                (Some(Symbol::Callable(previous)), Symbol::Callable(next))
+                    if previous.id != next.id =>
+                {
+                    Symbol::Ambiguous
+                }
+                (_, symbol) => symbol,
+            });
+        }
+        result
+    }
+
+    fn prepare_registry_bindings(&mut self) {
+        use crate::core::semantic::{NamedBindingRole, SymbolOperand, TypeExpr};
+        let prepared: Vec<_> = self
+            .named
+            .registries
+            .iter()
+            .map(|(key, registries)| {
+                let targets: Vec<_> = registries
+                    .iter()
+                    .map(|registry| {
+                        let definition = &registry.definition;
+                        let NamedBindingRole::RegistryDefinition {
+                            receiver:
+                                SymbolOperand::Name {
+                                    expression: receiver,
+                                },
+                            target,
+                        } = &definition.fact.role
+                        else {
+                            return Ok(None);
+                        };
+                        let Some(annotation) = definition.owner.parameter_type(receiver) else {
+                            return Ok(None);
+                        };
+                        let receiver = super::value_flow::resolve_type(
+                            definition.owner,
+                            &TypeExpr::Named {
+                                name: annotation.to_owned(),
+                            },
+                            definition.fact.position,
+                            self,
+                            super::value_flow::SemanticLimits::default(),
+                        );
+                        let TypeTarget::External {
+                            module,
+                            import_line,
+                        } = receiver
+                        else {
+                            return Ok(None);
+                        };
+                        let expected = format!(
+                            "{}.{}",
+                            registry.receiver_type.module, registry.receiver_type.export
+                        );
+                        if (module != registry.receiver_type.module && module != expected)
+                            || !self.registry_receiver_import(
+                                definition.owner,
+                                annotation,
+                                &registry.receiver_type,
+                                import_line,
+                                definition.fact.position,
+                            )
+                        {
+                            return Ok(None);
+                        }
+                        let symbol = match target {
+                            SymbolOperand::Name { expression } => self.resolve_symbol(
+                                definition.owner,
+                                expression,
+                                definition.fact.position,
+                                SymbolRole::Callable,
+                            ),
+                            SymbolOperand::Node { id } => self
+                                .interner
+                                .lookup_node(self.by_id, id)
+                                .filter(|node| {
+                                    node.path == definition.owner.path
+                                        && matches!(node.kind.as_str(), "function" | "method")
+                                })
+                                .map_or(Symbol::Unknown, Symbol::Callable),
+                            SymbolOperand::Unknown => Symbol::Unknown,
+                        };
+                        match symbol {
+                            Symbol::Callable(node) => Ok(Some(node)),
+                            Symbol::Ambiguous => Err(()),
+                            _ => Ok(None),
+                        }
+                    })
+                    .collect();
+                (*key, targets)
+            })
+            .collect();
+        for (key, targets) in prepared {
+            if let Some(registries) = self.named.registries.get_mut(&key) {
+                for (registry, target) in registries.iter_mut().zip(targets) {
+                    registry.target = target;
+                }
+            }
+        }
+    }
+
+    fn registry_receiver_import(
+        &self,
+        owner: &'a Node,
+        annotation: &str,
+        expected: &languages::manifests::projections::ImportedReceiverType,
+        import_line: usize,
+        at: SourcePosition,
+    ) -> bool {
+        let (alias, member) = annotation.split_once('.').unwrap_or((annotation, ""));
+        let mut scope = owner.qualname.as_str();
+        loop {
+            for node in self.nodes_in_path(scope, &owner.path) {
+                let import = self
+                    .symbol_id(&node.id)
+                    .and_then(|node| self.imports.get(&node))
+                    .and_then(|imports| {
+                        self.symbol_id(alias).and_then(|alias| imports.get(&alias))
+                    });
+                if let Some(import) = import {
+                    return matches!(import, Imported::External(module, position, reference, _)
+                        if module == &expected.module
+                            && position.line == import_line && *position < at
+                            && reference.source == node.id
+                            && reference.module.as_deref() == Some(expected.module.as_str())
+                            && reference.alias.as_deref() == Some(alias)
+                            && ((member.is_empty() && reference.expression == expected.export)
+                                || (member == expected.export && reference.expression == expected.module)));
+                }
+            }
+            let Some((parent, _)) = scope.rsplit_once('.') else {
+                return false;
+            };
+            scope = parent;
+        }
+    }
+
+    pub(super) fn named_member(
+        &self,
+        owner: &'a Node,
+        name: &str,
+        at: SourcePosition,
+    ) -> Option<Symbol<'a>> {
+        use crate::core::semantic::{NamedBindingRole, StaticString, ValueExpr};
+        use languages::manifests::{projections::NamedBindingForm, syntax::SyntaxOperation};
+        let (root, _) = name.split_once('.')?;
+        let rules = self.dependencies.language_context_for_path(&owner.path);
+        for &index in rules.named_member_rules(root) {
+            let rule = &rules.syntax_rules[index];
+            let SyntaxOperation::NamedBinding {
+                domain,
+                binding: NamedBindingForm::MemberReference { root },
+            } = &rule.operation
+            else {
+                continue;
+            };
+            let Some(tail) = name
+                .strip_prefix(root)
+                .and_then(|tail| tail.strip_prefix('.'))
+            else {
+                continue;
+            };
+            let (key, member) = tail.split_once('.').unwrap_or((tail, ""));
+            let proven = self.value_flow(owner).is_some_and(|flow| {
+                flow.named_bindings().any(|fact| {
+                    fact.origin.pack == rule.pack
+                        && fact.origin.rule == rule.id
+                        && fact.position.line == at.line
+                        && matches!(fact.role, NamedBindingRole::Reference)
+                        && matches!(&fact.key, StaticString::Literal { value } if value == key)
+                })
+            });
+            if !proven {
+                return Some(Symbol::Unknown);
+            }
+            let target = self.named_target(owner, domain, key, None);
+            if member.is_empty() {
+                return Some(target);
+            }
+            let Symbol::Type(TypeTarget::Local(object)) = target else {
+                return Some(target);
+            };
+            let Some(ValueExpr::Object { members, .. }) = self
+                .value_flow(object)
+                .and_then(|flow| flow.return_value.as_ref())
+            else {
+                return Some(Symbol::Unknown);
+            };
+            let matching: Vec<_> = members.iter().filter(|item| item.name == member).collect();
+            let [item] = matching.as_slice() else {
+                return Some(Symbol::Unknown);
+            };
+            let nodes = self
+                .interner
+                .lookup_path(&object.path)
+                .and_then(|path| self.named.positions.get(&(path, item.position)))
+                .map_or(&[][..], Vec::as_slice);
+            let matching: Vec<_> = nodes
+                .iter()
+                .copied()
+                .filter(|node| node.name == member)
+                .collect();
+            return Some(match matching.as_slice() {
+                [node] => Symbol::Callable(node),
+                [] => Symbol::Unknown,
+                _ => Symbol::Ambiguous,
+            });
+        }
+        None
     }
 
     pub(super) fn with_python(
@@ -823,6 +1116,29 @@ impl<'a> Context<'a> {
         } else {
             Symbol::Type(TypeTarget::Local(node))
         }
+    }
+
+    pub(in crate::engine::linker) fn nodes_in_path<'s>(
+        &'s self,
+        qualified: &str,
+        path: &'s str,
+    ) -> impl Iterator<Item = &'a Node> + 's {
+        self.by_qual
+            .get(qualified)
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(move |node| node.path == path)
+    }
+
+    pub(in crate::engine::linker) fn imported_alias(
+        &self,
+        node: &Node,
+        alias: &str,
+    ) -> Option<&Imported<'a>> {
+        self.symbol_id(&node.id)
+            .and_then(|owner| self.imports.get(&owner))
+            .and_then(|aliases| self.symbol_id(alias).and_then(|alias| aliases.get(&alias)))
     }
 
     fn member(
@@ -894,6 +1210,47 @@ impl<'a> Context<'a> {
         self.lookup_member_mode(receiver, member, caller, false)
     }
 
+    pub(super) fn lookup_property<'s>(
+        &'s self,
+        receiver: &'s TypeTarget<'a>,
+        member: &str,
+        caller: &'a Node,
+    ) -> Member<'s> {
+        match receiver {
+            TypeTarget::ConfiguredReceiver {
+                authority,
+                origin,
+                fallback,
+                evidence,
+            } => {
+                if let super::value_flow::ConfiguredReceiverAuthority::Nominal {
+                    receiver, ..
+                } = authority.as_ref()
+                {
+                    if receiver.rule.properties.contains_key(member) {
+                        return Member::ConfiguredExternal {
+                            authority,
+                            origin,
+                            evidence,
+                        };
+                    }
+                }
+                fallback.as_deref().map_or(Member::Unknown, |fallback| {
+                    self.lookup_property(fallback, member, caller)
+                })
+            }
+            TypeTarget::Builtin(receiver)
+                if self
+                    .property_type_for_path(&caller.path, receiver, member)
+                    .is_some() =>
+            {
+                Member::Builtin
+            }
+            TypeTarget::Local(_) => self.lookup_component_template_field(receiver, member),
+            _ => Member::Unknown,
+        }
+    }
+
     #[cfg(feature = "lang-rust")]
     pub(super) fn dynamic_dispatch<'s>(
         &'s self,
@@ -910,7 +1267,43 @@ impl<'a> Context<'a> {
         caller: &'a Node,
         associated: bool,
     ) -> Member<'s> {
+        #[cfg(feature = "lang-rust")]
+        if caller.language == "rust" {
+            if let Some(target) = super::rust::semantic_context::reference_target(receiver) {
+                return self.lookup_member_mode(target, member, caller, associated);
+            }
+        }
         match receiver {
+            TypeTarget::ConfiguredReceiver {
+                authority,
+                origin,
+                fallback,
+                evidence,
+            } => {
+                let admitted = match authority.as_ref() {
+                    super::value_flow::ConfiguredReceiverAuthority::Hierarchy { rule, .. } => {
+                        rule.members.iter().any(|allowed| allowed == member)
+                    }
+                    super::value_flow::ConfiguredReceiverAuthority::Nominal {
+                        receiver, ..
+                    } => receiver
+                        .rule
+                        .members
+                        .iter()
+                        .any(|allowed| allowed == member),
+                };
+                if admitted {
+                    Member::ConfiguredExternal {
+                        authority,
+                        origin,
+                        evidence,
+                    }
+                } else if let Some(fallback) = fallback {
+                    self.lookup_member_mode(fallback, member, caller, associated)
+                } else {
+                    Member::Unknown
+                }
+            }
             TypeTarget::Local(receiver)
                 if receiver.language == "python" && receiver.kind == "class" =>
             {
@@ -919,11 +1312,67 @@ impl<'a> Context<'a> {
                     .map(|index| index.lookup(receiver, member, false))
                 {
                     Some(super::receivers::Member::Local(node)) => Member::Local(node),
-                    Some(super::receivers::Member::External(module, line, provider)) => {
+                    Some(super::receivers::Member::External(module, line, provider, _)) => {
                         Member::External(module, line, provider)
                     }
                     Some(super::receivers::Member::Ambiguous) => Member::Ambiguous,
                     _ => Member::Unknown,
+                }
+            }
+            #[cfg(feature = "lang-rust")]
+            TypeTarget::RustCollection { .. } if caller.language == "rust" => {
+                if !associated
+                    && languages::by_id("rust")
+                        .is_some_and(|profile| profile.builtin_member("Vec", member))
+                {
+                    Member::Builtin
+                } else {
+                    Member::Unknown
+                }
+            }
+            #[cfg(feature = "lang-rust")]
+            TypeTarget::RustIterator { item } if caller.language == "rust" => {
+                let standard = !associated
+                    && languages::by_id("rust")
+                        .is_some_and(|profile| profile.builtin_member("Iterator", member));
+                let has_reference_item = matches!(
+                    item.as_ref(),
+                    TypeTarget::RustReference { mutable: false, .. }
+                );
+                if standard && (member == "next" || has_reference_item) {
+                    Member::Builtin
+                } else {
+                    Member::Unknown
+                }
+            }
+            #[cfg(feature = "lang-rust")]
+            TypeTarget::RustSlice { .. } if caller.language == "rust" => {
+                if !associated
+                    && languages::by_id("rust")
+                        .is_some_and(|profile| profile.builtin_member("Slice", member))
+                {
+                    Member::Builtin
+                } else {
+                    Member::Unknown
+                }
+            }
+            #[cfg(feature = "lang-rust")]
+            TypeTarget::RustWrapper { wrapper, ok, .. } if caller.language == "rust" => {
+                let name = match wrapper {
+                    super::value_flow::RustWrapperKind::Option => "Option",
+                    super::value_flow::RustWrapperKind::Result => "Result",
+                };
+                let standard = languages::by_id("rust")
+                    .is_some_and(|profile| profile.builtin_member(name, member));
+                let adapter_shape = !matches!(member, "cloned" | "copied")
+                    || matches!(
+                        ok.as_ref(),
+                        TypeTarget::RustReference { mutable: false, .. }
+                    );
+                if !associated && standard && adapter_shape {
+                    Member::Builtin
+                } else {
+                    Member::Unknown
                 }
             }
             #[cfg(feature = "lang-rust")]
@@ -933,12 +1382,12 @@ impl<'a> Context<'a> {
                 if associated {
                     return Member::Unknown;
                 }
-                if rust_wrapper_value_member(wrapper, member) {
+                if super::rust::semantic_context::wrapper_value_member(wrapper, member) {
                     return Member::Builtin;
                 }
                 match target.as_ref() {
                     TypeTarget::External { module, .. } => {
-                        if rust_standard_member(module, member) {
+                        if super::rust::semantic_context::standard_member(module, member) {
                             Member::Builtin
                         } else {
                             Member::Unknown
@@ -973,8 +1422,12 @@ impl<'a> Context<'a> {
                     }
                 }
                 match self
-                    .members
-                    .get(&(receiver.id.as_str(), member, associated))
+                    .interner
+                    .lookup_symbol(&receiver.id)
+                    .zip(self.interner.lookup_symbol(member))
+                    .and_then(|(receiver, member)| {
+                        self.members.get(&(receiver, member, associated))
+                    })
                     .map(Vec::as_slice)
                 {
                     Some([node]) => Member::Local(node),
@@ -1012,77 +1465,35 @@ impl<'a> Context<'a> {
                 module,
                 import_line,
             } => {
-                if caller.language == "python" && module == "psycopg.AsyncConnection" {
-                    if self.python_psycopg_paths.contains(caller.path.as_str())
-                        && matches!(member, "execute" | "cursor")
-                    {
-                        Member::External(module, *import_line, Some("psycopg.AsyncConnection"))
+                if let Some(receiver) = self.receiver_type(&caller.path, module) {
+                    if receiver.members.iter().any(|allowed| allowed == member) {
+                        Member::External(module, *import_line, Some(module))
                     } else {
                         Member::Unknown
                     }
-                } else if caller.language == "python" && module == "sqlite3.Cursor" {
-                    if matches!(
-                        member,
-                        "execute"
-                            | "executemany"
-                            | "executescript"
-                            | "fetchone"
-                            | "fetchmany"
-                            | "fetchall"
-                            | "close"
-                    ) {
-                        Member::External(module, *import_line, Some("builtin:sqlite3"))
-                    } else {
-                        Member::Unknown
-                    }
-                } else if caller.language == "python" && module == "sqlite3.Connection" {
-                    if matches!(
-                        member,
-                        "execute"
-                            | "executemany"
-                            | "executescript"
-                            | "cursor"
-                            | "commit"
-                            | "rollback"
-                            | "close"
-                            | "total_changes"
-                            | "interrupt"
-                    ) {
-                        Member::External(module, *import_line, Some("builtin:sqlite3"))
-                    } else {
-                        Member::Unknown
-                    }
-                } else if caller.language == "python" && module == "logging.LoggerAdapter" {
-                    if matches!(
-                        member,
-                        "info"
-                            | "warning"
-                            | "error"
-                            | "debug"
-                            | "critical"
-                            | "exception"
-                            | "log"
-                            | "isEnabledFor"
-                            | "setLevel"
-                            | "addHandler"
-                            | "removeHandler"
-                            | "process"
-                    ) {
-                        Member::External(
-                            module,
-                            *import_line,
-                            Some("builtin:logging.LoggerAdapter"),
-                        )
-                    } else {
-                        Member::Unknown
+                } else if let Some(outcome) =
+                    super::python::semantic_context::external_member(caller, module, member)
+                {
+                    match outcome {
+                        super::python::semantic_context::ExternalMemberOutcome::Supported(
+                            origin,
+                        ) => Member::External(module, *import_line, Some(origin)),
+                        super::python::semantic_context::ExternalMemberOutcome::Unsupported => {
+                            Member::Unknown
+                        }
                     }
                 } else {
                     Member::External(module, *import_line, None)
                 }
             }
             TypeTarget::Builtin(receiver) => {
-                if languages::by_id(&caller.language)
-                    .is_some_and(|profile| profile.builtin_member(receiver, member))
+                if self
+                    .receiver_type(&caller.path, receiver)
+                    .is_some_and(|receiver| {
+                        receiver.members.iter().any(|allowed| allowed == member)
+                    })
+                    || languages::by_id(&caller.language)
+                        .is_some_and(|profile| profile.builtin_member(receiver, member))
                 {
                     Member::Builtin
                 } else {
@@ -1095,7 +1506,7 @@ impl<'a> Context<'a> {
     }
 
     #[cfg(feature = "lang-typescript")]
-    pub(super) fn lookup_vue_template_field<'s>(
+    pub(super) fn lookup_component_template_field<'s>(
         &'s self,
         receiver: &'s TypeTarget<'a>,
         member: &str,
@@ -1121,682 +1532,11 @@ impl<'a> Context<'a> {
     }
 
     #[cfg(not(feature = "lang-typescript"))]
-    pub(super) fn lookup_vue_template_field<'s>(
+    pub(super) fn lookup_component_template_field<'s>(
         &'s self,
         _receiver: &'s TypeTarget<'a>,
         _member: &str,
     ) -> Member<'s> {
         Member::Unknown
-    }
-}
-
-impl<'a> SemanticResolver<'a> for Context<'a> {
-    fn resolve_external_factory(
-        &self,
-        owner: &'a Node,
-        callee: &str,
-        at: SourcePosition,
-    ) -> Option<TypeTarget<'a>> {
-        if matches!(owner.language.as_str(), "javascript" | "typescript") {
-            return self
-                .dom_factory(owner, callee, at)
-                .or_else(|| self.fetch_response_factory(owner, callee, at));
-        }
-        if owner.language != "python" {
-            return None;
-        }
-        let (head, member) = callee.split_once('.').unwrap_or((callee, ""));
-        if !matches!(member, "" | "getLogger" | "LoggerAdapter" | "connect") {
-            return None;
-        }
-        let mut scope = owner.qualname.as_str();
-        loop {
-            for node in self
-                .by_qual
-                .get(scope)
-                .into_iter()
-                .flatten()
-                .copied()
-                .filter(|node| node.path == owner.path)
-            {
-                if let Some(import) = self
-                    .imports
-                    .get(node.id.as_str())
-                    .and_then(|aliases| aliases.get(head))
-                {
-                    let Imported::External(imported_module, position, reference, true) = import
-                    else {
-                        return None;
-                    };
-                    if !matches!(imported_module.as_str(), "logging" | "sqlite3") || *position > at
-                    {
-                        return None;
-                    }
-                    let canonical = match (reference.expression.as_str(), member) {
-                        ("logging", "getLogger") | ("getLogger", "") => "logging.Logger",
-                        ("logging", "LoggerAdapter") | ("LoggerAdapter", "") => {
-                            "logging.LoggerAdapter"
-                        }
-                        ("sqlite3", "connect") | ("connect", "") => "sqlite3.Connection",
-                        _ => return None,
-                    };
-                    let Symbol::Type(TypeTarget::External {
-                        module,
-                        import_line,
-                    }) = self.resolve_symbol(owner, callee, at, SymbolRole::Callable)
-                    else {
-                        return None;
-                    };
-                    if !matches!(module.as_str(), "logging" | "sqlite3")
-                        || position.line != import_line
-                    {
-                        return None;
-                    }
-                    return Some(TypeTarget::Builtin(canonical.to_owned()));
-                }
-            }
-            scope = scope.rsplit_once('.')?.0;
-        }
-    }
-    fn value_flow(&self, node: &'a Node) -> Option<&'a crate::core::semantic::ValueFlowFacts> {
-        match self.flows?.get(node.id.as_str()).copied()? {
-            crate::core::typed_facts::FlowState::Valid { facts, .. } => Some(facts),
-            crate::core::typed_facts::FlowState::Invalid(_) => None,
-        }
-    }
-
-    fn invalid_value_flow(&self, node: &'a Node) -> bool {
-        self.flows.is_some_and(|flows| {
-            matches!(
-                flows.get(node.id.as_str()),
-                Some(crate::core::typed_facts::FlowState::Invalid(_))
-            )
-        })
-    }
-
-    fn has_typed_flows(&self) -> bool {
-        self.flows.is_some()
-    }
-
-    fn raw_value_flow(&self, node: &'a Node) -> Option<&'a serde_json::Value> {
-        match self.flows?.get(node.id.as_str()).copied()? {
-            crate::core::typed_facts::FlowState::Invalid(value) => Some(value),
-            crate::core::typed_facts::FlowState::Valid { .. } => None,
-        }
-    }
-    fn resolve_applied(
-        &self,
-        owner: &'a Node,
-        base: &str,
-        args: &[crate::core::semantic::TypeExpr],
-        at: SourcePosition,
-    ) -> TypeTarget<'a> {
-        let clean_base = base.rsplit_once('.').map_or(base, |(_, name)| name);
-        let nominal = self.resolve_symbol(owner, base, at, SymbolRole::Type);
-        if owner.language == "python" {
-            let is_union_or_optional = match &nominal {
-                Symbol::Type(TypeTarget::Builtin(wrapper)) => {
-                    matches!(wrapper.as_str(), "Optional" | "Union")
-                }
-                Symbol::Unknown => clean_base == "Union" || clean_base == "Optional",
-                _ => false,
-            };
-            if is_union_or_optional {
-                if owner.kind == "type" {
-                    return TypeTarget::Unknown;
-                }
-                let Some(payload) = python_nullable_payload(clean_base, args) else {
-                    return TypeTarget::Unknown;
-                };
-                return super::value_flow::resolve_type(
-                    owner,
-                    payload,
-                    at,
-                    self,
-                    super::value_flow::SemanticLimits::default(),
-                );
-            }
-        }
-        if matches!(owner.language.as_str(), "typescript" | "javascript" | "vue")
-            && args.len() == 1
-            && matches!(&nominal, Symbol::Type(TypeTarget::Builtin(name)) if name == "Promise")
-        {
-            return TypeTarget::Builtin("Promise".to_owned());
-        }
-        if owner.language == "rust"
-            && matches!(base, "anyhow::Result" | "anyhow.Result")
-            && args.len() == 1
-            && matches!(nominal, Symbol::Unknown)
-        {
-            return TypeTarget::Builtin("Result".to_owned());
-        }
-        if owner.language == "rust" && args.len() == 1 {
-            if let Symbol::Type(outer) = &nominal {
-                if let Some(wrapper) = rust_deref_wrapper(outer) {
-                    let mut target = super::value_flow::resolve_type(
-                        owner,
-                        &args[0],
-                        at,
-                        self,
-                        super::value_flow::SemanticLimits::default(),
-                    );
-                    if matches!(target, TypeTarget::Unknown) {
-                        if let crate::core::semantic::TypeExpr::Applied { base, .. } = &args[0] {
-                            if let Symbol::Type(TypeTarget::External {
-                                module,
-                                import_line,
-                            }) = self.resolve_symbol(owner, base, at, SymbolRole::Type)
-                            {
-                                if matches!(
-                                    rust_import_path(&module).split('.').next(),
-                                    Some("std" | "alloc" | "core")
-                                ) {
-                                    target = TypeTarget::External {
-                                        module,
-                                        import_line,
-                                    };
-                                }
-                            }
-                        }
-                    }
-                    return TypeTarget::RustDeref {
-                        wrapper,
-                        target: Box::new(target),
-                    };
-                }
-            }
-        }
-        match nominal {
-            Symbol::Type(TypeTarget::Local(node))
-                if owner.language == "rust" && matches!(node.kind.as_str(), "struct" | "enum") =>
-            {
-                TypeTarget::Local(node)
-            }
-            Symbol::Type(TypeTarget::External {
-                module,
-                import_line,
-            }) if owner.language == "python" && module == "psycopg.AsyncConnection" => {
-                TypeTarget::External {
-                    module,
-                    import_line,
-                }
-            }
-            Symbol::Type(TypeTarget::Builtin(name))
-                if languages::by_id(&owner.language)
-                    .is_some_and(|profile| profile.builtin_generic(&name)) =>
-            {
-                TypeTarget::Builtin(name)
-            }
-            Symbol::Type(TypeTarget::External { module, .. })
-                if matches!(
-                    module.as_str(),
-                    "typing" | "typing_extensions" | "collections.abc"
-                ) && languages::by_id(&owner.language)
-                    .is_some_and(|profile| profile.builtin_generic(clean_base)) =>
-            {
-                TypeTarget::Builtin(clean_base.to_string())
-            }
-            _ => TypeTarget::Unknown,
-        }
-    }
-    fn resolve_payload(
-        &self,
-        owner: &'a Node,
-        expression: &crate::core::semantic::TypeExpr,
-        at: SourcePosition,
-    ) -> TypeTarget<'a> {
-        let crate::core::semantic::TypeExpr::Applied { base, args } = expression else {
-            return TypeTarget::Unknown;
-        };
-        if args.is_empty() {
-            return TypeTarget::Unknown;
-        }
-        let wrapper = self.resolve_applied(owner, base, args, at);
-        let admitted = match (owner.language.as_str(), &wrapper) {
-            ("rust", TypeTarget::Builtin(name)) => {
-                (name == "Option" && args.len() == 1) || (name == "Result" && args.len() <= 2)
-            }
-            ("typescript" | "javascript" | "vue", TypeTarget::Builtin(name)) => {
-                name == "Promise" && args.len() == 1
-            }
-            _ => false,
-        };
-        if !admitted {
-            return TypeTarget::Unknown;
-        }
-        super::value_flow::resolve_type(
-            owner,
-            &args[0],
-            at,
-            self,
-            super::value_flow::SemanticLimits::default(),
-        )
-    }
-    fn resolve_member(
-        &self,
-        receiver: &TypeTarget<'a>,
-        member: &str,
-        owner: &'a Node,
-        _at: SourcePosition,
-    ) -> Symbol<'a> {
-        match receiver {
-            TypeTarget::Local(node) => self.member(node, member, false, owner),
-            TypeTarget::RustDeref {
-                wrapper, target, ..
-            } => {
-                if rust_wrapper_value_member(wrapper, member) {
-                    Symbol::Unknown
-                } else {
-                    self.resolve_member(target, member, owner, _at)
-                }
-            }
-            TypeTarget::Object(members) => match members.get(member) {
-                Some(node) => Symbol::Callable(node),
-                None => Symbol::Unknown,
-            },
-            _ => Symbol::Unknown,
-        }
-    }
-    fn resolve_symbol(
-        &self,
-        owner: &'a Node,
-        name: &str,
-        at: SourcePosition,
-        role: SymbolRole,
-    ) -> Symbol<'a> {
-        let Some(name) = super::receiver_type_name(name) else {
-            return Symbol::Unknown;
-        };
-        if name.is_empty()
-            || !name
-                .chars()
-                .all(|c| c.is_alphanumeric() || matches!(c, '_' | '.' | '$' | ':'))
-        {
-            return Symbol::Unknown;
-        }
-        if owner.language == "rust" {
-            if name == "Self" {
-                #[cfg(feature = "lang-rust")]
-                if let Some(receiver) = self.rust.and_then(|members| members.receiver_for(owner)) {
-                    return Symbol::Type(TypeTarget::Local(receiver));
-                }
-                if let Some(receiver) = owner.details["receiver_type"]
-                    .as_str()
-                    .filter(|name| *name != "Self")
-                {
-                    return self.resolve_symbol(owner, receiver, at, SymbolRole::Type);
-                }
-            }
-            #[cfg(feature = "lang-rust")]
-            if let Some(member) = name
-                .strip_prefix("Self::")
-                .or_else(|| name.strip_prefix("Self."))
-            {
-                if let Some(receiver) = self.rust.and_then(|members| members.receiver_for(owner)) {
-                    let methods = self.rust.map_or(&[] as &[&'a Node], |m| {
-                        m.lookup(receiver, member, true, owner)
-                    });
-                    if let Some(target) = methods.first() {
-                        return Symbol::Callable(target);
-                    }
-                    if member == "new" || member == "default" {
-                        return Symbol::Type(TypeTarget::Local(receiver));
-                    }
-                }
-            }
-        }
-        let (head, member) = name.split_once('.').unwrap_or((&name, ""));
-        if owner.language == "python"
-            && matches!(head, "self" | "cls")
-            && owner.details["receiver_name"].as_str() == Some(head)
-            && !name_rebound(owner, head)
-        {
-            let mut scope = owner.qualname.as_str();
-            while let Some((parent, _)) = scope.rsplit_once('.') {
-                if let Some(nodes) = self.by_qual.get(parent) {
-                    if let Some(class) = nodes
-                        .iter()
-                        .copied()
-                        .find(|n| n.path == owner.path && n.kind == "class")
-                    {
-                        if member.is_empty() {
-                            return Symbol::Type(TypeTarget::Local(class));
-                        } else {
-                            return self.member(class, member, false, owner);
-                        }
-                    }
-                }
-                scope = parent;
-            }
-        }
-        if matches!(owner.language.as_str(), "javascript" | "typescript")
-            && head == "this"
-            && owner.details["receiver_name"].as_str() == Some("this")
-            && !name_rebound(owner, head)
-        {
-            let associated = owner.details["is_static"] == true;
-            let mut scope = owner.qualname.as_str();
-            while let Some((parent, _)) = scope.rsplit_once('.') {
-                if let Some(nodes) = self.by_qual.get(parent) {
-                    if let Some(class) = nodes.iter().copied().find(|n| {
-                        n.path == owner.path && matches!(n.kind.as_str(), "class" | "interface")
-                    }) {
-                        if member.is_empty() {
-                            return Symbol::Type(TypeTarget::Local(class));
-                        } else {
-                            return self.member(class, member, associated, owner);
-                        }
-                    }
-                }
-                scope = parent;
-            }
-        }
-        let mut scope = owner.qualname.as_str();
-        let mut lookup_key = String::with_capacity(128);
-        loop {
-            let scope_nodes = self.by_qual.get(scope);
-            if let Some(nodes) = scope_nodes {
-                for node in nodes.iter().copied().filter(|node| node.path == owner.path) {
-                    if node.details["rebindings"]
-                        .as_array()
-                        .is_some_and(|names| names.iter().any(|name| name.as_str() == Some(head)))
-                        && !self.admits_commonjs_binding(node, head, owner, at)
-                    {
-                        return Symbol::Unknown;
-                    }
-                    if let Some(import) = self
-                        .imports
-                        .get(node.id.as_str())
-                        .and_then(|aliases| aliases.get(head))
-                    {
-                        let imported_at = match import {
-                            Imported::Nodes(_, position, _)
-                            | Imported::External(_, position, _, _) => Some(*position),
-                            Imported::Unknown => None,
-                        };
-                        if let Some(imported_at) = imported_at {
-                            let local = self
-                                .by_qual
-                                .get(super::qualified(&mut lookup_key, scope, &name))
-                                .into_iter()
-                                .flatten()
-                                .copied()
-                                .filter(|candidate| {
-                                    candidate.path == owner.path
-                                        && SourcePosition {
-                                            line: candidate.line,
-                                            column: candidate.details["column"]
-                                                .as_u64()
-                                                .unwrap_or(0)
-                                                as usize,
-                                        } > imported_at
-                                        && Self::visible(owner, candidate, at, role)
-                                });
-                            if local.clone().next().is_some() {
-                                return self.classify(local, role);
-                            }
-                        }
-                        let type_only = match import {
-                            Imported::Nodes(_, _, type_only) => *type_only,
-                            Imported::External(_, _, reference, _) => matches!(
-                                reference.receiver_hint.as_ref(),
-                                Some(ReceiverHint::TypeOnlyImport)
-                            ),
-                            Imported::Unknown => false,
-                        };
-                        if type_only
-                            && matches!(role, SymbolRole::Callable | SymbolRole::Constructor)
-                        {
-                            return Symbol::Unknown;
-                        }
-                        return match import {
-                            Imported::Nodes(targets, position, _)
-                                if *position <= at
-                                    || (owner.kind == "template_scope"
-                                        && owner.language == "vue") =>
-                            {
-                                if member.is_empty() {
-                                    self.classify(targets.iter().copied(), role)
-                                } else {
-                                    if matches!(role, SymbolRole::Callable) {
-                                        if let [target] = targets.as_slice() {
-                                            if matches!(
-                                                target.kind.as_str(),
-                                                "class" | "struct" | "enum" | "interface"
-                                            ) {
-                                                return self.member(target, member, true, owner);
-                                            }
-                                        }
-                                    }
-                                    let mut nodes = Vec::new();
-                                    for target in targets {
-                                        if target.kind == "module"
-                                            && matches!(
-                                                target.language.as_str(),
-                                                "typescript" | "javascript" | "vue"
-                                            )
-                                        {
-                                            let (export, rest) =
-                                                member.split_once('.').unwrap_or((member, ""));
-                                            let Some(exported) = self
-                                                .exports
-                                                .get(target.language.as_str())
-                                                .and_then(|exports| {
-                                                    exports.get(target.path.as_str())
-                                                })
-                                                .and_then(|exports| exports.get(export))
-                                            else {
-                                                continue;
-                                            };
-                                            let Some(exported) = exported else {
-                                                return Symbol::Ambiguous;
-                                            };
-                                            if rest.is_empty() {
-                                                nodes.push(*exported);
-                                            } else if targets.len() == 1
-                                                && matches!(role, SymbolRole::Callable)
-                                                && matches!(
-                                                    exported.kind.as_str(),
-                                                    "class" | "interface"
-                                                )
-                                            {
-                                                return self.member(exported, rest, true, owner);
-                                            }
-                                            continue;
-                                        }
-                                        nodes.extend(
-                                            self.by_qual
-                                                .get(super::qualified(
-                                                    &mut lookup_key,
-                                                    &target.qualname,
-                                                    member,
-                                                ))
-                                                .into_iter()
-                                                .flatten()
-                                                .copied()
-                                                .filter(|node| node.path == target.path),
-                                        );
-                                    }
-                                    self.classify(nodes.into_iter(), role)
-                                }
-                            }
-                            Imported::External(module, position, reference, _)
-                                if *position <= at =>
-                            {
-                                let python_nullable =
-                                    python_typing_nullable_generic(module, reference, member);
-                                if (owner.language == "python"
-                                    && matches!(role, SymbolRole::Constructor))
-                                    || (matches!(module.as_str(), "typing" | "typing_extensions")
-                                        && (member == "Any" || head == "Any"))
-                                {
-                                    Symbol::Unknown
-                                } else if owner.language == "python"
-                                    && matches!(
-                                        module.as_str(),
-                                        "typing" | "typing_extensions" | "collections.abc"
-                                    )
-                                    && languages::by_id("python").is_some_and(|p| {
-                                        p.builtin_generic(head) || p.builtin_member(head, "get")
-                                    })
-                                    || (owner.language == "python"
-                                        && python_nullable.is_some()
-                                        && matches!(
-                                            module.as_str(),
-                                            "typing" | "typing_extensions"
-                                        ))
-                                {
-                                    Symbol::Type(TypeTarget::Builtin(
-                                        python_nullable.unwrap_or(head).to_string(),
-                                    ))
-                                } else if owner.language == "python"
-                                    && matches!(role, SymbolRole::Type)
-                                    && module == "psycopg"
-                                    && self.python_psycopg_paths.contains(owner.path.as_str())
-                                    && ((reference.expression == "AsyncConnection"
-                                        && member.is_empty())
-                                        || (reference.expression == "psycopg"
-                                            && member == "AsyncConnection"))
-                                {
-                                    Symbol::Type(TypeTarget::External {
-                                        module: "psycopg.AsyncConnection".to_owned(),
-                                        import_line: position.line,
-                                    })
-                                } else if owner.language == "python"
-                                    && module == "logging"
-                                    && (matches!(member, "Logger" | "LoggerAdapter")
-                                        || matches!(head, "Logger" | "LoggerAdapter"))
-                                {
-                                    let log_class = if matches!(member, "Logger" | "LoggerAdapter")
-                                    {
-                                        member
-                                    } else {
-                                        head
-                                    };
-                                    Symbol::Type(TypeTarget::External {
-                                        module: format!("logging.{log_class}"),
-                                        import_line: position.line,
-                                    })
-                                } else if owner.language == "python"
-                                    && matches!(role, SymbolRole::Type)
-                                    && module == "sqlite3"
-                                    && ((reference.expression == "sqlite3"
-                                        && matches!(member, "Cursor" | "Connection"))
-                                        || (matches!(
-                                            reference.expression.as_str(),
-                                            "Cursor" | "Connection"
-                                        ) && member.is_empty()))
-                                {
-                                    let cls = if reference.expression == "sqlite3" {
-                                        member
-                                    } else {
-                                        reference.expression.as_str()
-                                    };
-                                    Symbol::Type(TypeTarget::External {
-                                        module: format!("sqlite3.{cls}"),
-                                        import_line: position.line,
-                                    })
-                                } else {
-                                    Symbol::Type(TypeTarget::External {
-                                        module: module.clone(),
-                                        import_line: position.line,
-                                    })
-                                }
-                            }
-                            _ => Symbol::Unknown,
-                        };
-                    }
-                }
-            }
-            if !member.is_empty() && matches!(role, SymbolRole::Callable) {
-                if let Symbol::Type(TypeTarget::Local(receiver)) = self.classify(
-                    self.by_qual
-                        .get(super::qualified(&mut lookup_key, scope, head))
-                        .into_iter()
-                        .flatten()
-                        .copied()
-                        .filter(|node| {
-                            node.path == owner.path && Self::visible(owner, node, at, role)
-                        }),
-                    SymbolRole::Type,
-                ) {
-                    return self.member(receiver, member, true, owner);
-                }
-            }
-            let local = self
-                .by_qual
-                .get(super::qualified(&mut lookup_key, scope, &name))
-                .into_iter()
-                .flatten()
-                .copied()
-                .filter(|node| node.path == owner.path && Self::visible(owner, node, at, role));
-            if local.clone().next().is_some() {
-                return self.classify(local, role);
-            }
-            if scope_nodes.is_some_and(|nodes| {
-                nodes
-                    .iter()
-                    .filter(|node| node.path == owner.path)
-                    .any(|node| {
-                        node.details["bindings"].as_array().is_some_and(|names| {
-                            names.iter().any(|name| name.as_str() == Some(head))
-                        })
-                    })
-            }) {
-                return Symbol::Unknown;
-            }
-            let Some((parent, _)) = scope.rsplit_once('.') else {
-                break;
-            };
-            scope = parent;
-        }
-        let builtin = languages::by_id(&owner.language).is_some_and(|profile| {
-            profile.builtin_type(&name)
-                || (matches!(owner.language.as_str(), "typescript" | "javascript" | "vue")
-                    && matches!(role, SymbolRole::Type)
-                    && name == "Promise"
-                    && profile.builtin("Promise"))
-        });
-        if builtin {
-            Symbol::Type(TypeTarget::Builtin(name.into_owned()))
-        } else {
-            Symbol::Unknown
-        }
-    }
-
-    fn resolve_import_module(
-        &self,
-        owner: &'a Node,
-        name: &str,
-        at: SourcePosition,
-    ) -> Option<&'a Node> {
-        let (head, _) = name.split_once('.').unwrap_or((name, ""));
-        let mut scope = owner.qualname.as_str();
-        loop {
-            if let Some(nodes) = self.by_qual.get(scope) {
-                for node in nodes.iter().copied().filter(|node| node.path == owner.path) {
-                    if let Some(Imported::Nodes(targets, position, _)) = self
-                        .imports
-                        .get(node.id.as_str())
-                        .and_then(|aliases| aliases.get(head))
-                    {
-                        if *position <= at
-                            || (owner.kind == "template_scope" && owner.language == "vue")
-                        {
-                            if let [target] = targets.as_slice() {
-                                if target.kind == "module" {
-                                    return Some(*target);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            match scope.rsplit_once('.') {
-                Some((parent, _)) => scope = parent,
-                None => break,
-            }
-        }
-        None
     }
 }

@@ -1,271 +1,83 @@
+pub(crate) mod binary;
+mod flow_store;
+mod presentation;
+mod semantic_store;
+
+pub(crate) use flow_store::{encoded_scope_fact_count, scope_fact_count, FlowState, FlowStore};
+pub(crate) use presentation::{NodeView, NodesView, ParameterTypesView, PublicNodesView};
+pub use semantic_store::{NodeSemanticEntry, SemanticStore};
+pub(crate) use semantic_store::{SemanticEntry, SemanticState};
+
 use super::models::{Facts, Node};
-use super::semantic::ValueFlowFacts;
+use binary::{BinaryDecode, BinaryEncode};
 use rayon::prelude::*;
-use serde::ser::{SerializeMap, SerializeSeq, SerializeStruct};
-use serde::{Deserialize, Serialize, Serializer};
 use serde_json::Value;
-use std::collections::HashMap;
+
+const LOCAL_FACTS_BINARY_MAGIC: &[u8] = b"FORGE-LOCAL-FACTS\0\x03";
+
+thread_local! {
+    static LOCAL_FACTS_BUFFER: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+    static LOCAL_FACTS_COMPRESSOR: std::cell::RefCell<Option<zstd::bulk::Compressor<'static>>> =
+        const { std::cell::RefCell::new(None) };
+    static LOCAL_FACTS_DECODER: std::cell::RefCell<Option<zstd::zstd_safe::DCtx<'static>>> =
+        const { std::cell::RefCell::new(None) };
+}
 
 pub(crate) fn encode_facts(facts: &TypedFacts) -> anyhow::Result<Vec<u8>> {
-    let mut encoder = zstd::stream::write::Encoder::new(Vec::new(), 1)?;
-    {
-        let mut writer = std::io::BufWriter::with_capacity(64 * 1024, &mut encoder);
-        serde_json::to_writer(&mut writer, facts)?;
-        std::io::Write::flush(&mut writer)?;
-    }
-    Ok(encoder.finish()?)
+    anyhow::ensure!(
+        !facts.flows.has_invalid_named_uncertainty_carriers(),
+        "malformed named-definition uncertainty carrier"
+    );
+    LOCAL_FACTS_BUFFER.with(|buffer| -> anyhow::Result<Vec<u8>> {
+        let mut raw = buffer.borrow_mut();
+        raw.clear();
+        facts.encode(&mut raw);
+        LOCAL_FACTS_COMPRESSOR.with(|slot| -> anyhow::Result<Vec<u8>> {
+            let mut slot = slot.borrow_mut();
+            if slot.is_none() {
+                *slot = Some(zstd::bulk::Compressor::new(1)?);
+            }
+            let compressor = slot.as_mut().expect("facts compressor initialized");
+            let mut encoded = compressor.compress(&raw)?;
+            encoded.reserve(LOCAL_FACTS_BINARY_MAGIC.len());
+            encoded.splice(0..0, LOCAL_FACTS_BINARY_MAGIC.iter().copied());
+            Ok(encoded)
+        })
+    })
 }
 
 pub(crate) fn decode_facts(blob: &[u8]) -> anyhow::Result<TypedFacts> {
-    let decoder = zstd::stream::read::Decoder::new(blob)?;
-    Ok(serde_json::from_reader(decoder)?)
-}
-
-#[derive(Clone, Debug)]
-pub(crate) enum FlowState {
-    Valid {
-        facts: Box<ValueFlowFacts>,
-        original: Option<Value>,
-        classic_fields_first: Option<bool>,
-    },
-    Invalid(Value),
-}
-
-impl Serialize for FlowState {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        match self {
-            Self::Valid {
-                original: Some(value),
-                ..
-            }
-            | Self::Invalid(value) => value.serialize(serializer),
-            Self::Valid {
-                facts,
-                original: None,
-                classic_fields_first: Some(fields_first),
-            } => ClassicFlow {
-                facts,
-                fields_first: *fields_first,
-            }
-            .serialize(serializer),
-            Self::Valid {
-                facts,
-                original: None,
-                classic_fields_first: None,
-            } => facts.serialize(serializer),
+    let compressed = blob
+        .strip_prefix(LOCAL_FACTS_BINARY_MAGIC)
+        .ok_or_else(|| anyhow::anyhow!("unsupported local facts format"))?;
+    let facts = LOCAL_FACTS_DECODER.with(|slot| -> anyhow::Result<TypedFacts> {
+        let mut slot = slot.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(zstd::zstd_safe::DCtx::try_create().ok_or_else(|| {
+                std::io::Error::other("failed to allocate facts decompression context")
+            })?);
         }
-    }
-}
-
-struct ClassicFlow<'a> {
-    facts: &'a ValueFlowFacts,
-    fields_first: bool,
-}
-
-impl Serialize for ClassicFlow<'_> {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut map = serializer.serialize_map(Some(
-            2 + usize::from(!self.facts.immutable_initializers.is_empty())
-                + usize::from(!self.facts.branch_joins.is_empty()),
-        ))?;
-        let bindings = (!self.facts.bindings.is_empty()).then_some(&self.facts.bindings);
-        let fields = (!self.facts.fields.is_empty()).then_some(&self.facts.fields);
-        if self.fields_first {
-            map.serialize_entry("fields", &fields)?;
-            map.serialize_entry("bindings", &bindings)?;
-        } else {
-            map.serialize_entry("bindings", &bindings)?;
-            map.serialize_entry("fields", &fields)?;
-        }
-        if !self.facts.immutable_initializers.is_empty() {
-            map.serialize_entry("immutable_initializers", &self.facts.immutable_initializers)?;
-        }
-        if !self.facts.branch_joins.is_empty() {
-            map.serialize_entry("branch_joins", &self.facts.branch_joins)?;
-        }
-        map.end()
-    }
-}
-
-#[derive(Clone, Debug, Default)]
-pub(crate) struct FlowStore {
-    entries: HashMap<String, FlowState>,
-}
-
-const SCOPE_FACT_KEYS: [&str; 9] = [
-    "bindings",
-    "branch_joins",
-    "immutable_initializers",
-    "collection_elements",
-    "template_contexts",
-    "type_only_imports",
-    "annotation_references",
-    "vue_slots",
-    "fields",
-];
-
-/// Returns the total count of all scope facts across all 9 fact categories.
-pub fn scope_fact_count(facts: &ValueFlowFacts) -> usize {
-    facts
-        .bindings
-        .len()
-        .saturating_add(facts.branch_joins.len())
-        .saturating_add(facts.immutable_initializers.len())
-        .saturating_add(facts.collection_elements.len())
-        .saturating_add(facts.template_contexts.len())
-        .saturating_add(facts.type_only_imports.len())
-        .saturating_add(facts.annotation_references.len())
-        .saturating_add(facts.vue_slots.len())
-        .saturating_add(facts.fields.len())
-}
-
-/// Counts the same nine arrays on a persisted value-flow object.
-pub fn encoded_scope_fact_count(encoded: &Value) -> usize {
-    SCOPE_FACT_KEYS
-        .into_iter()
-        .map(|key| encoded[key].as_array().map_or(0, Vec::len))
-        .fold(0usize, usize::saturating_add)
-}
-
-impl FlowStore {
-    fn invalid_overflow(mut original: Value) -> FlowState {
-        if let Some(facts) = original.as_object_mut() {
-            facts.remove("type_only_imports");
-            facts.remove("annotation_references");
-            facts.insert("fact_limit_exceeded".into(), Value::Bool(true));
-        }
-        FlowState::Invalid(original)
-    }
-
-    pub(crate) fn state(&self, node: &Node) -> Option<&FlowState> {
-        self.entries.get(&node.id)
-    }
-
-    pub(crate) fn get(&self, node: &Node) -> Option<&ValueFlowFacts> {
-        match self.state(node) {
-            Some(FlowState::Valid { facts, .. }) => Some(facts),
-            _ => None,
-        }
-    }
-
-    pub(crate) fn raw(&self, node: &Node) -> Option<&Value> {
-        match self.state(node) {
-            Some(FlowState::Valid { original, .. }) => original.as_ref(),
-            Some(FlowState::Invalid(value)) => Some(value),
-            None => None,
-        }
-    }
-
-    pub(crate) fn get_mut(&mut self, id: &str) -> Option<&mut ValueFlowFacts> {
-        match self.entries.get_mut(id) {
-            Some(FlowState::Valid {
-                facts, original, ..
-            }) => {
-                *original = None;
-                Some(facts)
-            }
-            _ => None,
-        }
-    }
-
-    fn exceeds_fact_limit(facts: &ValueFlowFacts) -> bool {
-        scope_fact_count(facts) > super::semantic::DEFAULT_FACTS_PER_SCOPE
-            || facts.fact_limit_exceeded
-    }
-
-    pub(crate) fn insert(&mut self, id: String, facts: ValueFlowFacts) {
-        if Self::exceeds_fact_limit(&facts) {
-            let original = serde_json::to_value(facts)
-                .expect("value-flow facts contain only JSON-compatible values");
-            self.entries.insert(id, Self::invalid_overflow(original));
-            return;
-        }
-        self.entries.insert(
-            id,
-            FlowState::Valid {
-                facts: Box::new(facts),
-                original: None,
-                classic_fields_first: None,
-            },
-        );
-    }
-
-    pub(crate) fn insert_classic(&mut self, id: String, facts: ValueFlowFacts) {
-        if Self::exceeds_fact_limit(&facts) {
-            let original = serde_json::to_value(facts)
-                .expect("value-flow facts contain only JSON-compatible values");
-            self.entries.insert(id, Self::invalid_overflow(original));
-            return;
-        }
-        let fields_first = facts.bindings.is_empty() && !facts.fields.is_empty();
-        self.entries.insert(
-            id,
-            FlowState::Valid {
-                facts: Box::new(facts),
-                original: None,
-                classic_fields_first: Some(fields_first),
-            },
-        );
-    }
-
-    pub(crate) fn ingest(&mut self, node: &mut Node) {
-        let classic = node.kind == "template_scope"
-            && node.language == "javascript"
-            && node.details["classic_global"] == true;
-        let Some(value) = node.details.get_mut("value_flow") else {
-            return;
-        };
-        if value.is_null() {
-            return;
-        }
-        let original = value.take();
-        if encoded_scope_fact_count(&original) > super::semantic::DEFAULT_FACTS_PER_SCOPE
-            || original["fact_limit_exceeded"] == true
-        {
-            self.entries
-                .insert(node.id.clone(), Self::invalid_overflow(original));
-            return;
-        }
-        let classic_fields_first = classic.then(|| {
-            original
-                .as_object()
-                .and_then(|object| object.keys().next())
-                .is_some_and(|key| key == "fields")
-        });
-        let state = match ValueFlowFacts::deserialize_for_scope(&original, classic) {
-            Ok(facts) => FlowState::Valid {
-                facts: Box::new(facts),
-                original: Some(original),
-                classic_fields_first,
-            },
-            Err(_) => FlowState::Invalid(original),
-        };
-        self.entries.insert(node.id.clone(), state);
-    }
-
-    pub(crate) fn rename(&mut self, old: &str, new: String) {
-        if let Some(state) = self.entries.remove(old) {
-            self.entries.insert(new, state);
-        }
-    }
-
-    pub(crate) fn append(&mut self, other: &mut Self) {
-        self.entries.extend(other.entries.drain());
-    }
-
-    pub(crate) fn take(&mut self, id: &str) -> Option<ValueFlowFacts> {
-        match self.entries.remove(id) {
-            Some(FlowState::Valid { facts, .. }) => Some(*facts),
-            _ => None,
-        }
-    }
-
-    pub(crate) fn details<'a>(&'a self, node: &'a Node) -> DetailsView<'a> {
-        DetailsView {
-            node,
-            flow: self.state(node),
-        }
-    }
+        let context = slot.as_mut().expect("facts decoder initialized");
+        context
+            .init()
+            .map_err(|code| std::io::Error::other(zstd::zstd_safe::get_error_name(code)))?;
+        LOCAL_FACTS_BUFFER.with(|buffer| -> anyhow::Result<TypedFacts> {
+            let mut raw = buffer.borrow_mut();
+            raw.clear();
+            let mut decoder = zstd::stream::read::Decoder::with_context(compressed, context);
+            std::io::Read::read_to_end(&mut decoder, &mut raw)?;
+            let mut cursor = 0;
+            let facts = TypedFacts::decode(&raw, &mut cursor)
+                .ok_or_else(|| anyhow::anyhow!("malformed binary local facts"))?;
+            anyhow::ensure!(cursor == raw.len(), "trailing bytes in binary local facts");
+            Ok(facts)
+        })
+    })?;
+    anyhow::ensure!(
+        !facts.flows.has_invalid_named_uncertainty_carriers(),
+        "malformed named-definition uncertainty carrier"
+    );
+    Ok(facts)
 }
 
 #[derive(Clone, Debug, Default)]
@@ -274,37 +86,127 @@ pub(crate) struct TypedFacts {
     pub(crate) flows: FlowStore,
 }
 
-impl TypedFacts {
-    pub(crate) fn nodes_view(&self) -> NodesView<'_> {
-        NodesView(self)
+fn named_selector_reference(
+    node: &Node,
+    key: &super::semantic::StaticString,
+    kind: &str,
+    position: super::semantic::SourcePosition,
+    domain: &str,
+) -> super::models::Reference {
+    super::models::Reference {
+        source: node.id.clone(), line: position.line, column: position.column,
+        expression: match key {
+            super::semantic::StaticString::Literal { value } => value.clone(),
+            super::semantic::StaticString::Unknown => String::new(),
+        },
+        kind: kind.to_owned(), alias: None, module: Some(domain.to_owned()), dynamic: false, receiver_hint: None,
     }
-    #[allow(dead_code)]
+}
+
+fn normalize_empty_details(node: &mut Node) {
+    if node.details.as_object().is_some_and(serde_json::Map::is_empty) {
+        node.details = Value::Null;
+    }
+}
+
+pub(super) fn remap_identifier(
+    value: &mut String,
+    ids: &std::collections::HashMap<String, String>,
+) -> bool {
+    let Some(replacement) = ids.get(value) else { return false };
+    value.clone_from(replacement);
+    true
+}
+
+impl TypedFacts {
+    /// Project compact selectors into existing indexed reference storage.
+    pub(crate) fn project_named_selectors(&mut self) {
+        use super::semantic::{NamedBindingRole, StaticString};
+        for node in &self.facts.nodes {
+            for marker in self.flows.named_uncertainties(&node.id) {
+                self.facts.references.push(named_selector_reference(
+                    node,
+                    &marker.key,
+                    "semantic_named_definition",
+                    super::semantic::SourcePosition {
+                        line: node.line,
+                        column: 0,
+                    },
+                    &marker.domain,
+                ));
+            }
+            let Some(flow) = self.flows.get(node) else {
+                continue;
+            };
+            for fact in flow.named_bindings() {
+                let kind = if matches!(
+                    fact.role,
+                    NamedBindingRole::Definition { .. }
+                        | NamedBindingRole::RegistryDefinition { .. }
+                ) {
+                    "semantic_named_definition"
+                } else {
+                    "semantic_named_reference"
+                };
+                self.facts.references.push(named_selector_reference(
+                    node,
+                    &fact.key,
+                    kind,
+                    fact.position,
+                    &fact.domain,
+                ));
+            }
+            for fact in flow.endpoint_requests() {
+                let (StaticString::Literal { value: url }, StaticString::Literal { value: method }) =
+                    (&fact.url, &fact.method)
+                else {
+                    continue;
+                };
+                self.facts.references.push(super::models::Reference {
+                    source: node.id.clone(),
+                    expression: format!("{method} {url}"),
+                    kind: "calls_endpoint".into(),
+                    line: fact.position.line,
+                    column: fact.position.column,
+                    alias: None,
+                    module: None,
+                    dynamic: false,
+                    receiver_hint: Some(super::models::ReceiverHint::ConfiguredReference {
+                        origin: fact.origin.clone(),
+                    }),
+                });
+            }
+        }
+    }
+    pub(crate) fn nodes_view(&self) -> NodesView<'_, '_> { PublicNodesView::new(&self.facts, &self.flows) }
     pub(crate) fn push_node(&mut self, mut node: Node) {
+        NodeSemanticEntry::ingest(&mut node);
         self.flows.ingest(&mut node);
+        self.facts
+            .semantic
+            .ingest(self.facts.nodes.len(), &mut node);
+        normalize_empty_details(&mut node);
         self.facts.nodes.push(node);
     }
     pub(crate) fn from_public(mut facts: Facts) -> Self {
-        let mut flows = FlowStore::default();
-        for node in &mut facts.nodes {
+        let mut flows = std::mem::take(&mut facts.semantic.flows);
+        for (index, node) in facts.nodes.iter_mut().enumerate() {
+            NodeSemanticEntry::ingest(node);
             flows.ingest(node);
+            facts.semantic.ingest(index, node);
+            normalize_empty_details(node);
         }
+        facts.semantic.mark_complete();
+        facts.pending_flow_nodes.clear();
         Self { facts, flows }
     }
 
     pub(crate) fn into_public(mut self) -> Facts {
-        for node in &mut self.facts.nodes {
-            if let Some(state) = self.flows.state(node) {
-                node.details["value_flow"] = serde_json::to_value(state)
-                    .expect("value-flow facts contain only JSON-compatible values");
-            }
-        }
-        self.facts
+        self.facts.semantic.flows = self.flows; self.facts.pending_flow_nodes.clear(); self.facts
     }
 
     /// Extracts canonical semantic reference keys from typed facts.
-    pub(crate) fn reference_keys(&self) -> Vec<&str> {
-        self.collect_reference_keys(false)
-    }
+    pub(crate) fn reference_keys(&self) -> Vec<&str> { self.collect_reference_keys(false) }
 
     /// Extracts semantic reference keys from typed facts, optionally including component declarations.
     pub(crate) fn collect_reference_keys<'a>(&'a self, include_components: bool) -> Vec<&'a str> {
@@ -347,6 +249,22 @@ impl TypedFacts {
             insert(expression);
         }
         for reference in &self.facts.references {
+            if let Some(crate::core::models::ReceiverHint::TypedCallResult { value, .. }) =
+                &reference.receiver_hint
+            {
+                let mut current = value;
+                for _ in 0..=8 {
+                    let super::semantic::ValueExpr::Call { callee, site } = current else {
+                        break;
+                    };
+                    insert(callee);
+                    let Some(receiver) = site.as_ref().and_then(|site| site.receiver.as_deref())
+                    else {
+                        break;
+                    };
+                    current = receiver;
+                }
+            }
             if let Some(
                 crate::core::models::ReceiverHint::CallResult { callee, .. }
                 | crate::core::models::ReceiverHint::ConstructorResult { callee, .. },
@@ -375,8 +293,8 @@ impl TypedFacts {
                     }
                 }
             }
-            if let Some(types) = node.details.get("param_types").and_then(Value::as_object) {
-                for ty in types.values().filter_map(Value::as_str) {
+            for (_, ty) in node.parameter_types() {
+                if let Some(ty) = ty {
                     insert(ty);
                 }
             }
@@ -393,118 +311,13 @@ impl TypedFacts {
 
 impl std::ops::Deref for TypedFacts {
     type Target = Facts;
-    fn deref(&self) -> &Facts {
-        &self.facts
-    }
+    fn deref(&self) -> &Facts { &self.facts }
 }
 
 impl std::ops::DerefMut for TypedFacts {
-    fn deref_mut(&mut self) -> &mut Facts {
-        &mut self.facts
-    }
+    fn deref_mut(&mut self) -> &mut Facts { &mut self.facts }
 }
 
 impl AsRef<Facts> for TypedFacts {
-    fn as_ref(&self) -> &Facts {
-        &self.facts
-    }
-}
-
-pub(crate) struct NodesView<'a>(&'a TypedFacts);
-
-impl Serialize for NodesView<'_> {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut sequence = serializer.serialize_seq(Some(self.0.facts.nodes.len()))?;
-        for node in &self.0.facts.nodes {
-            sequence.serialize_element(&NodeView {
-                node,
-                flows: &self.0.flows,
-            })?;
-        }
-        sequence.end()
-    }
-}
-
-pub(crate) struct DetailsView<'a> {
-    node: &'a Node,
-    flow: Option<&'a FlowState>,
-}
-
-impl std::fmt::Display for DetailsView<'_> {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        struct Writer<'a, 'b>(&'a mut std::fmt::Formatter<'b>);
-        impl std::io::Write for Writer<'_, '_> {
-            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-                let text = std::str::from_utf8(bytes).map_err(std::io::Error::other)?;
-                self.0.write_str(text).map_err(std::io::Error::other)?;
-                Ok(bytes.len())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
-        serde_json::to_writer(Writer(formatter), self).map_err(|_| std::fmt::Error)
-    }
-}
-
-impl Serialize for DetailsView<'_> {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let Some(flow) = self.flow else {
-            return self.node.details.serialize(serializer);
-        };
-        let Some(details) = self.node.details.as_object() else {
-            return self.node.details.serialize(serializer);
-        };
-        let mut map = serializer.serialize_map(Some(details.len()))?;
-        for (key, value) in details {
-            if key == "value_flow" {
-                map.serialize_entry(key, flow)?;
-            } else {
-                map.serialize_entry(key, value)?;
-            }
-        }
-        map.end()
-    }
-}
-
-pub(crate) struct NodeView<'a> {
-    pub(crate) node: &'a Node,
-    pub(crate) flows: &'a FlowStore,
-}
-
-impl Serialize for NodeView<'_> {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let node = self.node;
-        let mut state = serializer.serialize_struct("Node", 11)?;
-        state.serialize_field("id", &node.id)?;
-        state.serialize_field("kind", &node.kind)?;
-        state.serialize_field("name", &node.name)?;
-        state.serialize_field("qualname", &node.qualname)?;
-        state.serialize_field("path", &node.path)?;
-        state.serialize_field("line", &node.line)?;
-        state.serialize_field("end_line", &node.end_line)?;
-        state.serialize_field("is_test", &node.is_test)?;
-        state.serialize_field("language", &node.language)?;
-        state.serialize_field("generated", &node.generated)?;
-        state.serialize_field("details", &self.flows.details(node))?;
-        state.end()
-    }
-}
-
-impl Serialize for TypedFacts {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut state = serializer.serialize_struct("Facts", 5)?;
-        state.serialize_field("nodes", &self.nodes_view())?;
-        state.serialize_field("edges", &self.facts.edges)?;
-        state.serialize_field("references", &self.facts.references)?;
-        state.serialize_field("docs", &self.facts.docs)?;
-        state.serialize_field("errors", &self.facts.errors)?;
-        state.end()
-    }
-}
-
-impl<'de> Deserialize<'de> for TypedFacts {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Facts::deserialize(deserializer).map(Self::from_public)
-    }
+    fn as_ref(&self) -> &Facts { &self.facts }
 }

@@ -1,15 +1,301 @@
+use super::interner::{LinkerInterner, PathId, SymbolId};
 use super::*;
 use crate::core::typed_facts::FlowState;
 use crate::engine::languages::{self, LanguageProfile};
 use crate::engine::linker::semantic_context;
 use std::collections::BTreeSet;
 
-fn project_scope(
+pub(super) struct PreparedSemanticFacts<'a> {
+    pub(super) interner: &'a LinkerInterner<'a>,
+    pub(super) facts:
+        BTreeMap<PathId, Vec<std::borrow::Cow<'a, languages::semantic::SemanticFact>>>,
+    pub(super) errors: BTreeMap<PathId, Vec<(usize, String, String)>>,
+}
+
+/// Canonical declarative framework rule action model.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum DeclarativeRulePrimitive {
+    /// Emits a route or endpoint match edge and coverage entry (`EmitRoute`).
+    EmitRoute {
+        kind: &'static str,
+        resolved_prefix: &'static str,
+        unmatched_prefix: &'static str,
+        ambiguous_prefix: &'static str,
+    },
+    /// Emits a declarative semantic occurrence edge (`EmitEdge`).
+    EmitEdge { evidence: &'static str },
+}
+
+type OccurrenceKey = (
+    SymbolId,
+    usize,
+    usize,
+    languages::semantic::SemanticRelation,
+);
+pub(super) type OccurrenceValue = (SymbolId, BTreeSet<SymbolId>, bool, bool);
+
+#[derive(Default)]
+pub(super) struct OccurrenceTable {
+    entries: BTreeMap<OccurrenceKey, OccurrenceValue>,
+}
+
+impl OccurrenceTable {
+    pub(super) fn entry(
+        &mut self,
+        owner: SymbolId,
+        line: usize,
+        column: usize,
+        relation: languages::semantic::SemanticRelation,
+        expression: &str,
+        interner: &LinkerInterner<'_>,
+    ) -> &mut OccurrenceValue {
+        let expression = interner
+            .lookup_symbol(expression)
+            .expect("semantic occurrence expression");
+        self.entries
+            .entry((owner, line, column, relation))
+            .or_insert_with(|| (expression, BTreeSet::new(), false, false))
+    }
+
+    pub(super) fn emit_all(
+        self,
+        graph: &mut Graph,
+        path: &str,
+        primitive: DeclarativeRulePrimitive,
+        interner: &LinkerInterner<'_>,
+    ) {
+        let DeclarativeRulePrimitive::EmitEdge { evidence } = primitive else {
+            return;
+        };
+        for ((owner, line, _, relation), (expression, targets, ambiguous, unresolved)) in
+            self.entries
+        {
+            emit_occurrence(
+                graph,
+                path,
+                owner,
+                line,
+                relation.as_str(),
+                interner.resolve_symbol(expression).to_owned(),
+                targets,
+                ambiguous,
+                unresolved,
+                evidence,
+                interner,
+            );
+        }
+    }
+}
+
+pub(super) struct CompositionInput<'a, 'lookup> {
+    pub(super) nodes: &'lookup [&'a Node],
+    pub(super) by_id: &'lookup HashMap<SymbolId, &'a Node>,
+    pub(super) semantic: &'lookup PreparedSemanticFacts<'a>,
+}
+
+fn extend_semantic_state<'a>(
+    state: &'a crate::core::typed_facts::SemanticState,
+    line: usize,
+    qualname: &str,
+    facts: &mut Vec<std::borrow::Cow<'a, languages::semantic::SemanticFact>>,
+    errors: &mut Vec<(usize, String, String)>,
+) {
+    match state {
+        crate::core::typed_facts::SemanticState::Valid { facts: values, .. } => {
+            facts.extend(values.iter().map(std::borrow::Cow::Borrowed));
+        }
+        crate::core::typed_facts::SemanticState::Invalid { error, .. } => {
+            errors.push((line, qualname.to_owned(), error.clone()));
+        }
+    }
+}
+
+impl<'a> PreparedSemanticFacts<'a> {
+    pub(super) fn build<F: AsRef<Facts> + Sync>(
+        all: &'a BTreeMap<String, F>,
+        interner: &'a LinkerInterner<'a>,
+    ) -> Self {
+        let files: Vec<_> = all
+            .par_iter()
+            .filter_map(|(path, source)| {
+                let mut facts = Vec::new();
+                let mut errors = Vec::new();
+                let source = source.as_ref();
+                if source.semantic.is_complete() {
+                    for (_, entry) in source.semantic.entries() {
+                        extend_semantic_state(
+                            &entry.state,
+                            entry.line,
+                            &entry.qualname,
+                            &mut facts,
+                            &mut errors,
+                        );
+                    }
+                } else {
+                    for (index, node) in source.nodes.iter().enumerate() {
+                        if let Some(state) = source.semantic.state(index) {
+                            extend_semantic_state(
+                                state,
+                                node.line,
+                                &node.qualname,
+                                &mut facts,
+                                &mut errors,
+                            );
+                            continue;
+                        }
+                        match languages::semantic::decode(node) {
+                            Ok(values) => {
+                                facts.extend(values.into_iter().map(std::borrow::Cow::Owned))
+                            }
+                            Err(error) => {
+                                errors.push((node.line, node.qualname.clone(), error.to_string()))
+                            }
+                        }
+                    }
+                }
+                (!facts.is_empty() || !errors.is_empty()).then(|| {
+                    (
+                        interner.lookup_path(path).expect("catalog path"),
+                        facts,
+                        errors,
+                    )
+                })
+            })
+            .collect();
+        let mut prepared = Self {
+            interner,
+            facts: BTreeMap::new(),
+            errors: BTreeMap::new(),
+        };
+        for (path, facts, errors) in files {
+            if !facts.is_empty() {
+                prepared.facts.insert(path, facts);
+            }
+            if !errors.is_empty() {
+                prepared.errors.insert(path, errors);
+            }
+        }
+        prepared
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_occurrence(
+    graph: &mut Graph,
     path: &str,
+    owner_id: SymbolId,
+    line: usize,
+    kind: &str,
+    expression: String,
+    targets: BTreeSet<SymbolId>,
+    ambiguous: bool,
+    unresolved: bool,
+    evidence: &'static str,
+    interner: &LinkerInterner<'_>,
+) {
+    let status = if ambiguous || targets.len() > 1 {
+        "ambiguous"
+    } else if unresolved || targets.is_empty() {
+        "unresolved"
+    } else {
+        "resolved"
+    };
+    if status == "resolved" {
+        graph.edges.push(Edge {
+            src: interner.resolve_symbol(owner_id).to_owned(),
+            dst: interner
+                .resolve_symbol(targets.into_iter().next().expect("resolved target"))
+                .to_owned(),
+            kind: kind.into(),
+            path: path.to_owned(),
+            line,
+            evidence: expression.clone(),
+            confidence: "exact".into(),
+        });
+    }
+    graph.coverage.push(Coverage {
+        path: path.to_owned(),
+        line,
+        expression,
+        status: status.into(),
+        evidence: evidence.into(),
+    });
+}
+
+pub(super) const ENDPOINT_ROUTE_PRIMITIVE: DeclarativeRulePrimitive =
+    DeclarativeRulePrimitive::EmitRoute {
+        kind: "calls_endpoint",
+        resolved_prefix: "endpoint route",
+        unmatched_prefix: "unmatched endpoint route",
+        ambiguous_prefix: "ambiguous endpoint route",
+    };
+
+const NAMED_ROUTE_PRIMITIVE: DeclarativeRulePrimitive = DeclarativeRulePrimitive::EmitRoute {
+    kind: "references_route",
+    resolved_prefix: "unique route name",
+    unmatched_prefix: "unmatched route name",
+    ambiguous_prefix: "ambiguous route name",
+};
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn emit_route_match(
+    graph: &mut Graph,
+    path: &str,
+    src: &str,
+    line: usize,
+    primitive: DeclarativeRulePrimitive,
+    expression: &str,
+    matched: Result<Option<&Node>, ()>,
+    resolved_value: Option<&str>,
+    error_value: &str,
+) {
+    let DeclarativeRulePrimitive::EmitRoute {
+        kind,
+        resolved_prefix,
+        unmatched_prefix,
+        ambiguous_prefix,
+    } = primitive
+    else {
+        return;
+    };
+    let (status, evidence) = match matched {
+        Ok(Some(route)) => {
+            graph.edges.push(Edge {
+                src: src.to_owned(),
+                dst: route.id.clone(),
+                kind: kind.into(),
+                path: path.to_owned(),
+                line,
+                evidence: expression.to_owned(),
+                confidence: "exact".into(),
+            });
+            (
+                "resolved",
+                format!(
+                    "{resolved_prefix}: {}",
+                    resolved_value.unwrap_or(&route.name)
+                ),
+            )
+        }
+        Ok(None) => ("unresolved", format!("{unmatched_prefix}: {error_value}")),
+        Err(()) => ("ambiguous", format!("{ambiguous_prefix}: {error_value}")),
+    };
+    graph.coverage.push(Coverage {
+        path: path.to_owned(),
+        line,
+        expression: expression.to_owned(),
+        status: status.into(),
+        evidence: evidence.into(),
+    });
+}
+
+pub(super) fn project_scope(
+    path: &str,
+    family: languages::LanguageFamily,
     dependencies: &languages::dependency_registry::DependencyRegistry,
 ) -> String {
     dependencies
-        .nearest_manifest_scope_for_path(languages::LanguageFamily("python"), path)
+        .nearest_manifest_scope_for_path(family, path)
         .unwrap_or_else(|| languages::workspace_path(path).0)
         .to_owned()
 }
@@ -22,38 +308,46 @@ fn project_scope(
 pub(super) fn compose<'a, F: AsRef<Facts> + Sync>(
     all: &'a BTreeMap<String, F>,
     owners: Option<&std::collections::BTreeSet<String>>,
-    flows: Option<&'a HashMap<&'a str, &'a FlowState>>,
+    flows: Option<&'a HashMap<SymbolId, &'a FlowState>>,
     dependencies: &languages::dependency_registry::DependencyRegistry,
-    profiles: &HashMap<&'a str, &'static dyn LanguageProfile>,
+    _profiles: &HashMap<&'a str, &'static dyn LanguageProfile>,
     semantic_context: &semantic_context::Context<'a>,
-    nodes: &[&'a Node],
+    input: CompositionInput<'a, '_>,
 ) -> Vec<Graph> {
+    let CompositionInput {
+        nodes,
+        by_id,
+        semantic: prepared,
+    } = input;
+    let interner = prepared.interner;
     let route_index = routes::RouteIndex::build(nodes);
-    use languages::semantic::{
-        SemanticFactRole, SemanticIdentity, SemanticOccurrence, SemanticRelation,
-    };
-    let by_id: HashMap<_, _> = nodes.iter().map(|node| (node.id.as_str(), *node)).collect();
-    let mut semantic_facts = BTreeMap::new();
-    let mut semantic_errors = BTreeMap::new();
-    let mut semantic_targets = BTreeMap::<SemanticIdentity, BTreeSet<String>>::new();
-    for (path, source) in all {
-        let mut decoded = Vec::new();
-        for node in &source.as_ref().nodes {
-            match languages::semantic::decode(node) {
-                Ok(values) => decoded.extend(values),
-                Err(error) => semantic_errors
-                    .entry(path.as_str())
-                    .or_insert_with(Vec::new)
-                    .push((node.line, node.qualname.clone(), error.to_string())),
-            }
-        }
-        for fact in &decoded {
+    let http_target_contexts = routes::HttpTargetContexts::build(
+        all.iter()
+            .filter(|(path, _)| owners.is_none_or(|owners| owners.contains(*path)))
+            .filter(|(_, source)| {
+                source.as_ref().references.iter().any(|reference| {
+                    reference.kind == "calls_endpoint"
+                        && matches!(
+                            &reference.receiver_hint,
+                            Some(crate::core::models::ReceiverHint::ConfiguredReference { .. })
+                        )
+                })
+            })
+            .map(|(path, _)| path.as_str()),
+        dependencies,
+    );
+    use languages::semantic::{SemanticFactRole, SemanticIdentity};
+    let semantic_facts = &prepared.facts;
+    let semantic_errors = &prepared.errors;
+    let mut semantic_targets = BTreeMap::<SemanticIdentity, BTreeSet<SymbolId>>::new();
+    for (&path, decoded) in semantic_facts {
+        let path = interner.resolve_path(path);
+        for fact in decoded {
             if let SemanticFactRole::FileProvider { target } = &fact.role {
-                if let Some(node) = by_id.get(target.as_str()).filter(|node| {
+                if let Some(node) = interner.lookup_node(by_id, target.as_str()).filter(|node| {
                     node.kind == "module"
-                        && node.path == *path
+                        && node.path == path
                         && fact.occurrence.owner_id == node.id
-                        && fact.identity.scope == project_scope(path, dependencies)
                         && fact
                             .identity
                             .target
@@ -63,14 +357,11 @@ pub(super) fn compose<'a, F: AsRef<Facts> + Sync>(
                     semantic_targets
                         .entry(fact.identity.clone())
                         .or_default()
-                        .insert(node.id.clone());
+                        .insert(interner.lookup_symbol(&node.id).expect("catalog target"));
                 }
             }
         }
-        semantic_facts.insert(path.as_str(), decoded);
     }
-    #[cfg(not(feature = "lang-html"))]
-    let _ = (flows, dependencies, profiles, semantic_context);
     #[cfg(feature = "lang-html")]
     let render_contexts =
         html_templates::RenderContextRegistry::build(all, flows, semantic_context, dependencies);
@@ -85,8 +376,16 @@ pub(super) fn compose<'a, F: AsRef<Facts> + Sync>(
                 edges: Vec::new(),
                 coverage: Vec::new(),
             };
+            for owner in &facts.nodes {
+                if let Some(FlowState::Valid { facts: flow, .. }) = interner
+                    .lookup_symbol(&owner.id)
+                    .and_then(|id| flows.and_then(|flows| flows.get(&id).copied()))
+                {
+                    super::projections::compose(&mut graph, owner, flow, semantic_context, by_id, dependencies);
+                }
+            }
             for (line, expression, error) in
-                semantic_errors.get(path.as_str()).into_iter().flatten()
+                interner.lookup_path(path).and_then(|path| semantic_errors.get(&path)).into_iter().flatten()
             {
                 graph.coverage.push(Coverage {
                     path: path.clone(),
@@ -96,307 +395,149 @@ pub(super) fn compose<'a, F: AsRef<Facts> + Sync>(
                     evidence: format!("invalid persisted semantic fact: {error}").into(),
                 });
             }
-            let mut occurrences = BTreeMap::<
-                (SemanticOccurrence, SemanticRelation),
-                (String, BTreeSet<String>),
-            >::new();
-            for fact in semantic_facts.get(path.as_str()).into_iter().flatten() {
-                let SemanticFactRole::CallToFile {
-                    import_owner,
-                    alias,
-                    module,
-                    export,
-                    relation,
-                } = &fact.role
-                else {
-                    continue;
-                };
-                let entry = occurrences
-                    .entry((fact.occurrence.clone(), *relation))
-                    .or_insert_with(|| (fact.expression.clone(), BTreeSet::new()));
-                if fact.identity.scope != project_scope(path, dependencies)
-                    || !by_id
-                        .get(fact.occurrence.owner_id.as_str())
-                        .is_some_and(|owner| owner.path == *path)
-                    || !by_id.get(import_owner.as_str()).is_some_and(|owner| {
-                        owner.path == *path
-                            && semantic_context.exact_external_import(
-                                owner,
-                                alias,
-                                module,
-                                export,
-                                crate::core::semantic::SourcePosition {
-                                    line: fact.occurrence.line,
-                                    column: fact.occurrence.column,
-                                },
-                            )
-                    })
-                {
-                    continue;
-                }
-                if let Some(targets) = semantic_targets.get(&fact.identity) {
-                    entry.1.extend(targets.iter().cloned());
-                }
-            }
-            // Aggregate every rule and namespace before promoting one source occurrence.
-            for ((occurrence, relation), (expression, targets)) in occurrences {
-                let status = match targets.len() {
-                    0 => "unresolved",
-                    1 => "resolved",
-                    _ => "ambiguous",
-                };
-                if targets.len() == 1 {
-                    graph.edges.push(Edge {
-                        src: occurrence.owner_id,
-                        dst: targets.into_iter().next().expect("one target"),
-                        kind: relation.as_str().into(),
-                        path: path.clone(),
-                        line: occurrence.line,
-                        evidence: expression.clone(),
-                        confidence: "exact".into(),
-                    });
-                }
-                graph.coverage.push(Coverage {
-                    path: path.clone(),
-                    line: occurrence.line,
-                    expression,
-                    status: status.into(),
-                    evidence: "declarative file identity; unique proven target required".into(),
-                });
-            }
-
+            super::python::semantic_relations::compose_file_relations(
+                path,
+                by_id,
+                dependencies,
+                semantic_context,
+                prepared,
+                &semantic_targets,
+                &mut graph,
+            );
             #[cfg(feature = "lang-html")]
-            for (provider, target) in render_contexts.targets(path) {
-                graph.edges.push(Edge {
-                    src: provider.source.id.clone(),
-                    dst: target.id.clone(),
-                    kind: "renders".into(),
-                    path: path.clone(),
-                    line: provider.context.position.line,
-                    evidence: format!(
-                        "render target: {} from {}",
-                        target.path, provider.source.path
-                    ),
-                    confidence: "exact".into(),
-                });
-            }
+            super::html::relations::emit_render_targets(path, &render_contexts, &mut graph);
 
+            let mut file_rules = None;
+            let mut unscoped_endpoint_rule = None;
             for reference in facts
                 .references
                 .iter()
                 .filter(|reference| reference.kind == "calls_endpoint")
             {
+                let rules =
+                    file_rules.get_or_insert_with(|| dependencies.language_context_for_path(path));
+                let has_unscoped_endpoint_rule = *unscoped_endpoint_rule.get_or_insert_with(|| {
+                    rules.syntax_rules.iter().any(|rule| {
+                        matches!(
+                            rule.operation,
+                            languages::manifests::syntax::SyntaxOperation::HttpClientCall {
+                                target_context: None,
+                                ..
+                            } | languages::manifests::syntax::SyntaxOperation::HtmlRequestAttributes { .. }
+                        )
+                    }) || rules.semantic_rules.iter().any(|rule| {
+                        rule.active
+                            && matches!(
+                                rule.rule.operation,
+                                languages::manifests::semantic::SemanticOperation::EndpointProjection { .. }
+                            )
+                    })
+                });
+                let origin = match &reference.receiver_hint {
+                    Some(crate::core::models::ReceiverHint::ConfiguredReference { origin }) => {
+                        let origin_is_configured = rules.syntax_rules.iter().any(|rule| {
+                            rule.pack == origin.pack
+                                && rule.id == origin.rule
+                                && matches!(
+                                    rule.operation,
+                                    languages::manifests::syntax::SyntaxOperation::HttpClientCall { .. }
+                                        | languages::manifests::syntax::SyntaxOperation::HtmlRequestAttributes { .. }
+                                )
+                        }) || rules.semantic_rules.iter().any(|rule| {
+                            rule.active
+                                && rule.pack == origin.pack
+                                && rule.rule.id == origin.rule
+                                && matches!(
+                                    rule.rule.operation,
+                                    languages::manifests::semantic::SemanticOperation::EndpointProjection { .. }
+                                )
+                        });
+                        if !origin_is_configured {
+                            continue;
+                        }
+                        Some(origin)
+                    }
+                    _ if has_unscoped_endpoint_rule => None,
+                    _ => continue,
+                };
                 let (method, url) = reference
                     .expression
                     .split_once(' ')
                     .unwrap_or(("ANY", &reference.expression));
-                let (remote, _) = routes::normalize_client_url(url);
-                if remote {
-                    graph.coverage.push(Coverage {
-                        path: path.clone(),
-                        line: reference.line,
-                        expression: reference.expression.clone(),
-                        status: "external".into(),
-                        evidence: "remote HTTP endpoint".into(),
-                    });
+                if routes::is_remote_client_url(url) {
+                    graph.reference_coverage(path, reference, "external", "remote HTTP endpoint".into());
                     continue;
                 }
-                match route_index.match_route(method, url) {
-                    Ok(Some(route)) => {
-                        graph.edges.push(Edge {
-                            src: reference.source.clone(),
-                            dst: route.id.clone(),
-                            kind: "calls_endpoint".into(),
-                            path: path.clone(),
-                            line: reference.line,
-                            evidence: reference.expression.clone(),
-                            confidence: "exact".into(),
-                        });
-                        graph.coverage.push(Coverage {
-                            path: path.clone(),
-                            line: reference.line,
-                            expression: reference.expression.clone(),
-                            status: "resolved".into(),
-                            evidence: format!("endpoint route: {}", route.name).into(),
-                        });
-                    }
-                    Ok(None) => graph.coverage.push(Coverage {
-                        path: path.clone(),
-                        line: reference.line,
-                        expression: reference.expression.clone(),
-                        status: "unresolved".into(),
-                        evidence: format!("unmatched endpoint route: {}", reference.expression)
-                            .into(),
-                    }),
-                    Err(()) => graph.coverage.push(Coverage {
-                        path: path.clone(),
-                        line: reference.line,
-                        expression: reference.expression.clone(),
-                        status: "ambiguous".into(),
-                        evidence: format!("ambiguous endpoint route: {}", reference.expression)
-                            .into(),
-                    }),
-                }
+                let target_context = origin.and_then(|origin| http_target_contexts.get(path, origin));
+                emit_route_match(
+                    &mut graph,
+                    path,
+                    &reference.source,
+                    reference.line,
+                    ENDPOINT_ROUTE_PRIMITIVE,
+                    &reference.expression,
+                    route_index.match_route_in_context(method, url, target_context, path),
+                    None,
+                    &reference.expression,
+                );
             }
 
             #[cfg(feature = "lang-html")]
-            for node in facts
-                .nodes
+            super::html::relations::emit_request_routes(
+                path,
+                facts,
+                flows,
+                interner,
+                &route_index,
+                dependencies,
+                &mut graph,
+            );
+
+            for reference in facts
+                .references
                 .iter()
-                .filter(|node| node.kind == "htmx_request")
+                .filter(|reference| reference.kind == "references_route")
             {
-                let (method, url) = node.name.split_once(' ').unwrap_or(("GET", &node.name));
-                let status = node.details["url_status"]
-                    .as_str()
-                    .unwrap_or("local_unverified");
-                if status == "remote" {
-                    graph.coverage.push(Coverage {
-                        path: path.clone(),
-                        line: node.line,
-                        expression: node.name.clone(),
-                        status: "external".into(),
-                        evidence: "remote HTTP endpoint".into(),
-                    });
+                let Some(crate::core::models::ReceiverHint::NamedRoute { origin, key: name }) =
+                    &reference.receiver_hint
+                else {
+                    continue;
+                };
+                let rules =
+                    file_rules.get_or_insert_with(|| dependencies.language_context_for_path(path));
+                if !rules.syntax_rules.iter().any(|rule| {
+                    rule.pack == origin.pack
+                        && rule.id == origin.rule
+                        && matches!(
+                            rule.operation,
+                            languages::manifests::syntax::SyntaxOperation::NamedRouteCall { .. }
+                                | languages::manifests::syntax::SyntaxOperation::TemplateNamedRoute { .. }
+                        )
+                }) {
                     continue;
                 }
-                if status == "current_page" {
-                    graph.coverage.push(Coverage {
-                        path: path.clone(),
-                        line: node.line,
-                        expression: node.name.clone(),
-                        status: "resolved".into(),
-                        evidence: "current page form/action".into(),
-                    });
-                    continue;
-                }
-                match route_index.match_route(method, url) {
-                    Ok(Some(route)) => {
-                        graph.edges.push(Edge {
-                            src: node.id.clone(),
-                            dst: route.id.clone(),
-                            kind: "calls_endpoint".into(),
-                            path: path.clone(),
-                            line: node.line,
-                            evidence: node.name.clone(),
-                            confidence: "exact".into(),
-                        });
-                        graph.coverage.push(Coverage {
-                            path: path.clone(),
-                            line: node.line,
-                            expression: node.name.clone(),
-                            status: "resolved".into(),
-                            evidence: format!("endpoint route: {}", route.name).into(),
-                        });
-                    }
-                    Ok(None) => graph.coverage.push(Coverage {
-                        path: path.clone(),
-                        line: node.line,
-                        expression: node.name.clone(),
-                        status: "unresolved".into(),
-                        evidence: format!("unmatched endpoint route: {}", node.name).into(),
-                    }),
-                    Err(()) => graph.coverage.push(Coverage {
-                        path: path.clone(),
-                        line: node.line,
-                        expression: node.name.clone(),
-                        status: "ambiguous".into(),
-                        evidence: format!("ambiguous endpoint route: {}", node.name).into(),
-                    }),
-                }
+                emit_route_match(
+                    &mut graph,
+                    path,
+                    &reference.source,
+                    reference.line,
+                    NAMED_ROUTE_PRIMITIVE,
+                    &reference.expression,
+                    route_index.match_route_name(name),
+                    Some(name),
+                    name,
+                );
             }
 
             #[cfg(feature = "lang-html")]
-            if profiles
-                .get(path.as_str())
-                .is_some_and(|profile| profile.id() == "html")
-            {
-                for reference in facts.references.iter().filter(|reference| {
-                    reference.kind == "references"
-                        && (reference.expression.starts_with("template.variable.")
-                            || reference.expression.starts_with("template.macro."))
-                }) {
-                    match expressions.resolve(path, reference) {
-                        html_templates::Match::Unique { module, symbol } => {
-                            graph.edges.push(Edge {
-                                src: reference.source.clone(),
-                                dst: symbol.id.clone(),
-                                kind: "references".into(),
-                                path: path.clone(),
-                                line: reference.line,
-                                evidence: format!(
-                                    "template binding from {} via {}",
-                                    symbol.path, module.path
-                                ),
-                                confidence: "exact".into(),
-                            });
-                            graph.coverage.push(Coverage {
-                                path: path.clone(),
-                                line: reference.line,
-                                expression: reference.expression.clone(),
-                                status: "resolved".into(),
-                                evidence: format!("template binding: {}", symbol.path).into(),
-                            });
-                        }
-                        html_templates::Match::Ambiguous => graph.coverage.push(Coverage {
-                            path: path.clone(),
-                            line: reference.line,
-                            expression: reference.expression.clone(),
-                            status: "ambiguous".into(),
-                            evidence: "multiple template bindings".into(),
-                        }),
-                        html_templates::Match::Missing => {
-                            let key = reference.expression.strip_prefix("template.variable.");
-                            let providers: Vec<_> = render_contexts.providers(path).collect();
-                            let matching_providers: Vec<_> = key
-                                .map(|key| {
-                                    providers
-                                        .iter()
-                                        .copied()
-                                        .filter(|provider| {
-                                            provider.context.keys.iter().any(|item| item == key)
-                                        })
-                                        .collect()
-                                })
-                                .unwrap_or_default();
-                            let (status, evidence): (&str, Cow<'static, str>) =
-                                match (providers.len(), matching_providers.as_slice()) {
-                                    (1, [provider]) => {
-                                        graph.edges.push(Edge {
-                                            src: reference.source.clone(),
-                                            dst: provider.source.id.clone(),
-                                            kind: "context_provider".into(),
-                                            path: path.clone(),
-                                            line: reference.line,
-                                            evidence: format!(
-                                                "render context: {}",
-                                                provider.source.path
-                                            ),
-                                            confidence: "exact".into(),
-                                        });
-                                        (
-                                            "resolved",
-                                            format!("render context: {}", provider.source.path)
-                                                .into(),
-                                        )
-                                    }
-                                    (provider_count, matching)
-                                        if provider_count > 1 && !matching.is_empty() =>
-                                    {
-                                        ("ambiguous", "multiple render context providers".into())
-                                    }
-                                    _ => ("unresolved", "no proven template binding".into()),
-                                };
-                            graph.coverage.push(Coverage {
-                                path: path.clone(),
-                                line: reference.line,
-                                expression: reference.expression.clone(),
-                                status: status.into(),
-                                evidence,
-                            });
-                        }
-                    }
-                }
-            }
+            super::html::relations::emit_template_references(
+                path,
+                facts,
+                &expressions,
+                &render_contexts,
+                dependencies,
+                &mut graph,
+            );
 
             graph
         })

@@ -1,64 +1,8 @@
 # Example .forge/frameworks/django.toml
-# Framework rules consumed by the Forge language linker for Django templates and views.
-# All four sections (receivers, builtins, filters, routes) are required by the schema.
-
-receivers = [
-  "template_context=django.shortcuts.render",
-]
-
-builtins = [
-  "template.tag.block",
-  "template.tag.include",
-  "template.tag.extends",
-  "template.tag.with",
-  "template.tag.endwith",
-  "template.tag.endblock",
-  "template.tag.if",
-  "template.tag.elif",
-  "template.tag.else",
-  "template.tag.endif",
-  "template.tag.for",
-  "template.tag.empty",
-  "template.tag.endfor",
-  "template.tag.autoescape",
-  "template.tag.endautoescape",
-  "template.tag.filter",
-  "template.tag.endfilter",
-  "template.tag.csrf_token",
-  "template.tag.url",
-  "template.tag.load",
-  "template.library.i18n",
-  "template.library.static",
-  "template.library.l10n",
-  "template.library.tz",
-]
-
-filters = [
-  "template.filter.default",
-  "template.filter.date",
-  "template.filter.length",
-  "template.filter.json_script",
-  "template.filter.slugify",
-  "template.filter.escape",
-  "template.filter.escapejs",
-  "template.filter.safe",
-  "template.filter.upper",
-  "template.filter.lower",
-  "template.filter.urlencode",
-  "template.filter.linebreaks",
-  "template.filter.linebreaksbr",
-  "template.filter.truncatechars",
-  "template.filter.truncatewords",
-  "template.filter.striptags",
-  "template.filter.floatformat",
-  "template.filter.pluralize",
-  "template.filter.first",
-  "template.filter.last",
-  "template.filter.join",
-]
-
-routes = [
-  "template.tag.static=static",
-  "template.tag.trans=i18n",
-  "template.tag.translate=i18n",
-]
+# Template identities are declared as data on a generic syntax rule.
+[[syntax_rules]]
+id = "template-symbols"
+language = "html"
+activation = [{ kind = "package", name = "django" }]
+display = { builtin = "builtin:django_template", library = "builtin:django_template_library" }
+operation = { kind = "template_symbols", requires_loader = false, tags = ["block", "include", "extends", "with", "endwith", "endblock", "if", "elif", "else", "endif", "for", "empty", "endfor", "autoescape", "endautoescape", "filter", "endfilter", "csrf_token", "url", "load"], filters = ["default", "date", "length", "json_script", "slugify", "escape", "escapejs", "safe", "upper", "lower", "urlencode", "linebreaks", "linebreaksbr", "truncatechars", "truncatewords", "striptags", "floatformat", "pluralize", "first", "last", "join"], libraries = ["i18n", "static", "l10n", "tz"], library_routes = { static = "static", trans = "i18n", translate = "i18n" } }

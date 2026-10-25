@@ -1,10 +1,10 @@
-use super::value_flow::{valid_scope_facts, SemanticLimits};
+use super::value_flow::{SemanticLimits, valid_scope_facts};
 use crate::core::models::{Facts, Node};
 use crate::core::semantic::{SourcePosition, TypeExpr, ValueExpr, ValueFlowFacts};
 use crate::core::typed_facts::{FlowState, FlowStore, TypedFacts};
 use crate::engine::languages;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     borrow::Cow,
@@ -57,7 +57,12 @@ impl<'a> Contracts<'a> {
     /// Hashes resolution-relevant node identities as a sorted set of fixed-size digests.
     pub(crate) fn resolution_digest(&self, facts: &'a Facts) -> anyhow::Result<BTreeSet<[u8; 16]>> {
         let mut digests = BTreeSet::new();
-        for node in facts.nodes.iter().filter(|node| node.kind != "component") {
+        for (index, node) in facts
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, node)| node.kind != "component")
+        {
             let mut hasher = ResolutionHasher::default();
             serde_json::to_writer(
                 &mut hasher,
@@ -70,7 +75,7 @@ impl<'a> Contracts<'a> {
                     node.is_test,
                     &node.language,
                     node.generated,
-                    self.details(node),
+                    self.details(node, facts.semantic.state(index)),
                 ),
             )?;
             digests.insert(hasher.finish());
@@ -109,8 +114,38 @@ impl<'a> Contracts<'a> {
         }
     }
 
-    pub(crate) fn details(&self, node: &'a Node) -> Value {
+    pub(crate) fn details(
+        &self,
+        node: &'a Node,
+        semantic: Option<&crate::core::typed_facts::SemanticState>,
+    ) -> Value {
         let mut details = node.details.clone();
+        if let Some(metadata) = node.native_semantic.as_deref() {
+            if let Value::Object(view) =
+                serde_json::to_value(metadata.view()).expect("semantic DTO serializes")
+            {
+                if !details.is_object() {
+                    details = Value::Object(Default::default());
+                }
+                details
+                    .as_object_mut()
+                    .expect("details DTO is an object")
+                    .extend(view);
+            }
+        }
+        if let Some(state) = semantic {
+            details["semantic_facts"] =
+                serde_json::to_value(state.view()).expect("semantic facts serialize");
+        }
+        if let Some(store) = self.typed_flows {
+            let uncertainty = store.named_uncertainties(&node.id);
+            if !uncertainty.is_empty() {
+                details["named_definition_uncertainties"] = json!(uncertainty);
+            }
+            if store.named_uncertainty_fault(&node.id) {
+                details["named_definition_uncertainty_fault"] = json!(true);
+            }
+        }
         if !matches!(node.kind.as_str(), "function" | "method") {
             return self.raw_details(node, details);
         }
@@ -123,10 +158,46 @@ impl<'a> Contracts<'a> {
         if !valid_scope_facts(node, flow, SemanticLimits::default()) {
             return self.raw_details(node, details);
         }
-        let Some(metadata) = details.as_object_mut() else {
-            return details;
-        };
+        // Empty flows still need the callable contract shape in incremental digests.
+        if !details.is_object() {
+            details = Value::Object(Default::default());
+        }
+        let metadata = details
+            .as_object_mut()
+            .expect("projected node details are an object");
         let mut projected = serde_json::Map::new();
+        if flow.annotation_references().any(|fact| fact.value_query) {
+            projected.insert(
+                "annotation_references".into(),
+                json!(flow.annotation_references().collect::<Vec<_>>()),
+            );
+        }
+        for (key, value, empty) in [
+            (
+                "symbol_attachments",
+                json!(flow.symbol_attachments().collect::<Vec<_>>()),
+                flow.symbol_attachments().next().is_none(),
+            ),
+            (
+                "factory_results",
+                json!(flow.factory_results().collect::<Vec<_>>()),
+                flow.factory_results().next().is_none(),
+            ),
+            (
+                "named_bindings",
+                json!(flow.named_bindings().collect::<Vec<_>>()),
+                flow.named_bindings().next().is_none(),
+            ),
+            (
+                "endpoint_requests",
+                json!(flow.endpoint_requests().collect::<Vec<_>>()),
+                flow.endpoint_requests().next().is_none(),
+            ),
+        ] {
+            if !empty {
+                projected.insert(key.into(), value);
+            }
+        }
         if let Some(return_type) = &flow.return_type {
             projected.insert("return_type".into(), json!(return_type));
         }
@@ -160,26 +231,57 @@ impl<'a> Contracts<'a> {
     }
 
     fn raw_details(&self, node: &Node, mut details: Value) -> Value {
-        if node.kind == "module" && node.language == "vue" {
-            if let Some(metadata) = details.as_object_mut() {
-                metadata.remove("vue_script_setup");
-            }
-        }
         if let Some(state) = self.typed_flows.and_then(|store| store.state(node)) {
-            if let Some(metadata) = details.as_object_mut() {
-                let value = match state {
-                    FlowState::Valid {
-                        original: Some(value),
-                        ..
+            let value = match state {
+                FlowState::Valid {
+                    facts,
+                    original: None,
+                    ..
+                } if facts.is_empty() => None,
+                FlowState::Valid {
+                    facts,
+                    original: None,
+                    ..
+                } if node.kind == "module" && node.language == "vue" => {
+                    let mut stripped = facts.clone();
+                    stripped.facts.retain(|f| {
+                        !matches!(f, crate::core::semantic::FrameworkFact::ComponentMacro(_))
+                    });
+                    if stripped.is_empty() {
+                        None
+                    } else {
+                        Some(json!(stripped))
                     }
-                    | FlowState::Invalid(value) => value.clone(),
-                    FlowState::Valid {
-                        facts,
-                        original: None,
-                        ..
-                    } => json!(facts),
-                };
-                metadata.insert("value_flow".into(), value);
+                }
+                FlowState::Valid {
+                    original: Some(value),
+                    ..
+                } if node.kind == "module" && node.language == "vue" => {
+                    let mut stripped = value.clone();
+                    if let Some(obj) = stripped.as_object_mut() {
+                        obj.remove("component_macros");
+                    }
+                    Some(stripped)
+                }
+                FlowState::Valid {
+                    original: Some(value),
+                    ..
+                }
+                | FlowState::Invalid(value) => Some(value.clone()),
+                FlowState::Valid {
+                    facts,
+                    original: None,
+                    ..
+                } => Some(json!(facts)),
+            };
+            if let Some(value) = value {
+                if !details.is_object() {
+                    details = Value::Object(Default::default());
+                }
+                details
+                    .as_object_mut()
+                    .expect("stored node details are an object")
+                    .insert("value_flow".into(), value);
             }
         }
         details
@@ -337,7 +439,16 @@ impl<'a> Contracts<'a> {
                     json!({"opaque_value": value})
                 }
             }
-            ValueExpr::Call { callee } | ValueExpr::Construct { callee } => {
+            ValueExpr::Call {
+                site: Some(site), ..
+            } => {
+                let mut legacy = value.clone();
+                if let ValueExpr::Call { site, .. } = &mut legacy {
+                    *site = None;
+                }
+                json!({"callsite":site,"contract":self.value_contract(owner,flow,&legacy,at,stack,depth+1)})
+            }
+            ValueExpr::Call { callee, .. } | ValueExpr::Construct { callee } => {
                 let head = callee.split('.').next().unwrap_or(callee);
                 if let Some(binding) = flow
                     .bindings
@@ -417,11 +528,10 @@ impl<'a> Contracts<'a> {
         let mut lookup_key = String::with_capacity(128);
         loop {
             if let Some(nodes) = self.symbols.get(&(owner.path.as_str(), scope)) {
-                if nodes.iter().any(|node| {
-                    node.details["rebindings"]
-                        .as_array()
-                        .is_some_and(|names| names.iter().any(|name| name.as_str() == Some(head)))
-                }) {
+                if nodes
+                    .iter()
+                    .any(|node| node.rebinding_names().any(|candidate| candidate == head))
+                {
                     return None;
                 }
             }
@@ -442,11 +552,9 @@ impl<'a> Contracts<'a> {
                 .symbols
                 .get(&(owner.path.as_str(), scope))
                 .is_some_and(|nodes| {
-                    nodes.iter().any(|node| {
-                        node.details["bindings"].as_array().is_some_and(|names| {
-                            names.iter().any(|name| name.as_str() == Some(head))
-                        })
-                    })
+                    nodes
+                        .iter()
+                        .any(|node| node.binding_names().any(|candidate| candidate == head))
                 })
             {
                 return None;
@@ -478,11 +586,12 @@ impl<'a> Contracts<'a> {
                 .get(&(owner.path.as_str(), scope))
                 .is_some_and(|nodes| {
                     nodes.iter().any(|node| {
-                        ["bindings", "rebindings"].iter().any(|key| {
-                            node.details[*key].as_array().is_some_and(|names| {
-                                names.iter().any(|name| name.as_str() == Some(head))
+                        node.binding_names()
+                            .chain(node.rebinding_names())
+                            .any(|candidate| candidate == head)
+                            || self.flows.get(node.id.as_str()).is_some_and(|flow| {
+                                flow.bindings.iter().any(|binding| binding.name == head)
                             })
-                        })
                     })
                 })
             {
@@ -530,6 +639,7 @@ mod resolution_digest_tests {
 
     fn module(line: usize, details: serde_json::Value) -> Node {
         Node {
+            native_semantic: None,
             id: "module:src/lib.py".into(),
             kind: "module".into(),
             name: "lib.py".into(),
@@ -546,6 +656,7 @@ mod resolution_digest_tests {
 
     fn component() -> Node {
         Node {
+            native_semantic: None,
             id: "component:src".into(),
             kind: "component".into(),
             name: "src".into(),
@@ -556,7 +667,7 @@ mod resolution_digest_tests {
             is_test: false,
             language: "unknown".into(),
             generated: false,
-            details: json!({}),
+            details: serde_json::Value::Null,
         }
     }
 
@@ -579,5 +690,54 @@ mod resolution_digest_tests {
 
         let changed_details = digest(vec![module(2, json!({"exports": ["beta"]}))]);
         assert_ne!(first, changed_details);
+
+        let origin = json!({"pack":"proof","rule":"projection"});
+        let position = json!({"line":2,"column":3});
+        for (vector, before, after) in [
+            (
+                "symbol_attachments",
+                json!({"origin":origin,"position":position,"source":{"kind":"node","id":"callback"},"target":{"kind":"name","expression":"Model"},"relation":"uses_model"}),
+                json!({"origin":origin,"position":position,"source":{"kind":"node","id":"callback"},"target":{"kind":"name","expression":"Alternate"},"relation":"uses_model"}),
+            ),
+            (
+                "factory_results",
+                json!({"origin":origin,"position":position,"binding":"first","members":[{"name":"run","position":position}]}),
+                json!({"origin":origin,"position":position,"binding":"second","members":[{"name":"run","position":position}]}),
+            ),
+            (
+                "named_bindings",
+                json!({"origin":origin,"position":position,"domain":"renderer","key":{"kind":"literal","value":"cart"},"role":{"kind":"definition","target":{"kind":"name","expression":"drawA"},"target_kind":"callable"}}),
+                json!({"origin":origin,"position":position,"domain":"renderer","key":{"kind":"literal","value":"cart"},"role":{"kind":"definition","target":{"kind":"name","expression":"drawB"},"target_kind":"callable"}}),
+            ),
+            (
+                "endpoint_requests",
+                json!({"origin":origin,"position":position,"url":{"kind":"literal","value":"/records"},"method":{"kind":"literal","value":"GET"}}),
+                json!({"origin":origin,"position":position,"url":{"kind":"literal","value":"/records"},"method":{"kind":"literal","value":"POST"}}),
+            ),
+            (
+                "named_bindings",
+                json!({"origin":origin,"position":position,"domain":"filters","key":{"kind":"literal","value":"decorate"},"role":{"kind":"registry_definition","receiver":{"kind":"name","expression":"env"},"target":{"kind":"name","expression":"first"}}}),
+                json!({"origin":origin,"position":position,"domain":"filters","key":{"kind":"literal","value":"decorate"},"role":{"kind":"registry_definition","receiver":{"kind":"name","expression":"other"},"target":{"kind":"name","expression":"first"}}}),
+            ),
+            (
+                "named_bindings",
+                json!({"origin":origin,"position":position,"domain":"filters","key":{"kind":"literal","value":"decorate"},"role":{"kind":"registry_definition","receiver":{"kind":"name","expression":"env"},"target":{"kind":"name","expression":"first"}}}),
+                json!({"origin":origin,"position":position,"domain":"filters","key":{"kind":"literal","value":"decorate"},"role":{"kind":"registry_definition","receiver":{"kind":"name","expression":"env"},"target":{"kind":"name","expression":"second"}}}),
+            ),
+        ] {
+            let callable = |fact| {
+                let mut node = module(2, json!({"value_flow":{vector:[fact]}}));
+                node.id = "function:src/lib.py:callback".into();
+                node.kind = "function".into();
+                node.name = "callback".into();
+                node.qualname = "lib.callback".into();
+                node
+            };
+            assert_ne!(
+                digest(vec![callable(before)]),
+                digest(vec![callable(after)]),
+                "{vector}: callable projection affects canonical identity"
+            );
+        }
     }
 }

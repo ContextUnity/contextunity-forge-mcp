@@ -1,13 +1,13 @@
-# Copy to .forge/frameworks/django.toml. The default mode extends the bundle.
-receivers = []
-builtins = []
-filters = []
-routes = []
+# Copy to .forge/frameworks/project-rules.toml. Identity is the filename stem.
+# Default merging retains other bundled rules; matching identities are replaced. Use replace=true for full replacement.
+# Set enabled=false to disable this entire effective pack.
+enabled = true
 
 [[class_hierarchy_receivers]]
 bases = ["django.custom.Base"]
 provider = "django.custom.Base"
 members = ["deliver"]
+returns = { deliver = { kind = "self" } }
 
 [[route_decorators]]
 callee = "portal.expose"
@@ -36,3 +36,69 @@ namespace = "templates"
 scope = "project"
 activation = []
 operation = { kind = "call_to_file", language = "python", callee = { kind = "imported", module = "portal.responses", export = "render_file" }, argument = 1, target = { kind = "project_path_suffix", prefix = "templates/", language = "html" }, relation = "renders_template" }
+
+[[syntax_rules]]
+id = "portal-route-key"
+language = "python"
+operation = { kind = "named_route_call", module = "portal.urls", export = "lookup", argument = 0, expression_prefix = "portal.route." }
+
+# Illustrative policy names: substitute verified package, configuration and API identities.
+# The configured modules remain eligible when the component switch is false.
+[[syntax_rules]]
+id = "demo-environment"
+language = "typescript"
+[syntax_rules.operation]
+kind = "component_environment"
+package = "demo-runtime"
+config_file = "demo.config.ts"
+config_callee = "defineDemoConfig"
+enabled_key = "components"
+modules_key = "modules"
+directory = "components"
+extension = ".vue"
+virtual_module = "#demo-components"
+autoimports = []
+builtins = []
+[syntax_rules.operation.modules."demo-store/module"]
+package = "demo-store"
+components = []
+exports = [{ directory = "state", extension = ".ts" }]
+[syntax_rules.operation.modules."demo-i18n/module"]
+package = "demo-i18n"
+components = []
+call_results = { useDemoLocale = ["translate"] }
+
+[[syntax_rules]]
+id = "demo-setup-factory"
+language = "typescript"
+# setup_return omits the options-only state_member/actions_member fields.
+operation = { kind = "factory_members", callee = { kind = "global", name = "defineDemoStore" }, argument = 1, shape = "setup_return", configured_module = "demo-store/module" }
+
+# Explicit local installation: frontend must own demo-runtime; missing providers stay nonexact.
+# To select a linked workspace, replace the empty workspace with its enabled adapter alias.
+[[syntax_rules]]
+id = "demo-renderer-reference"
+language = "python"
+operation = { kind = "named_binding", domain = "demo_renderer", binding = { kind = "call_reference", callee = { kind = "imported", module = "demo.tables", export = "Column" }, key = { kind = "keyword", name = "renderer" }, provider_scopes = [{ workspace = "", project = "frontend", package = "demo-runtime" }] } }
+
+# Match imported receiver type and provider-relative template directory, not a global filter name.
+[[syntax_rules]]
+id = "demo-filter-definition"
+language = "python"
+operation = { kind = "named_binding", domain = "demo_filters", binding = { kind = "assignment_definition", receiver_type = { module = "jinja2", export = "Environment" }, member = "filters", template_root = "templates" } }
+
+[[syntax_rules]]
+id = "demo-filter-reference"
+language = "html"
+operation = { kind = "named_binding", domain = "demo_filters", binding = { kind = "template_reference", symbol_kind = "filter" } }
+
+# Application assertion: verify the actual client/app chain before selecting these exact paths.
+[[syntax_rules]]
+id = "demo-client-context"
+language = "python"
+operation = { kind = "http_client_call", callee = "", receivers = ["demo_client"], methods = { get = "GET", post = "POST" }, default_method = "GET", url_key = "url", method_key = "method", relative_prefixes = ["/"], target_context = { request_owners = ["tests/test_api.py"], route_owners = ["app/routes.py"] } }
+
+[[syntax_rules]]
+id = "demo-literal-receiver"
+language = "typescript"
+operation = { kind = "receiver_type", receiver = { name = "DemoInput", members = [], properties = { value = "string" }, callback_callees = [], generic = false, argument_factories = [{ callee = { kind = "global_member", receiver = "demoDocument", member = "create" }, argument = 0, literals = ["entry"] }] } }

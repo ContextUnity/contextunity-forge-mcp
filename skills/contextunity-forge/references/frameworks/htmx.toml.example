@@ -6,12 +6,7 @@
 # Literal local request URLs join one backend route; hx-target/hx-swap are context.
 # Remote, dynamic and current-page values create no exact endpoint edge.
 
-receivers = []
-builtins = []
-filters = []
-routes = []
-
 [[syntax_rules]]
 id = "request-attributes"
 language = "html"
-operation = { kind = "html_request_attributes", request_node = "htmx_request", context_node = "htmx_context", namespace = "htmx", context_label = "HTMX context", prefixes = ["hx-", "data-hx-"], methods = { get = "GET", post = "POST", put = "PUT", patch = "PATCH", delete = "DELETE" }, contexts = ["trigger", "target", "swap", "include"], values = "vals" }
+operation = { kind = "html_request_attributes", request_node = "htmx_request", context_node = "htmx_context", namespace = "htmx", context_label = "HTMX context", prefixes = ["hx-", "data-hx-"], methods = { get = "GET", post = "POST", put = "PUT", patch = "PATCH", delete = "DELETE" }, contexts = ["trigger", "target", "swap", "include"], values = "vals", value_dynamic_prefixes = ["js:", "javascript:"] }

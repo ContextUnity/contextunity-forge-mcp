@@ -2,12 +2,6 @@
 # Public members verified against grid-view-spec commit a2d037dff7cef99b820fbf212d21042bc5a90ca7.
 # Concrete block/action rules include inherited fields; the Django host has methods.
 # GridViewAction is a union alias, represented by its real base and six variants.
-# All four legacy arrays are required by the schema.
-receivers = ["GridViewSpec=grid_view_spec.types.spec.GridViewSpec"]
-builtins = []
-filters = []
-routes = []
-
 [[class_hierarchy_receivers]]
 bases = ["grid_view_spec.types.spec.GridViewSpec", "grid_view_spec.types.GridViewSpec"]
 provider = "grid_view_spec.types.spec.GridViewSpec"

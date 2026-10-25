@@ -6,11 +6,6 @@
 # Literal Route methods and actual handler positions; a handlerless Mount has no handles edge.
 # Verified response inheritance supplies external members, not invented local declarations.
 
-receivers = []
-builtins = []
-filters = []
-routes = []
-
 [[class_hierarchy_receivers]]
 bases = ["starlette.responses.JSONResponse"]
 provider = "starlette.responses.JSONResponse"

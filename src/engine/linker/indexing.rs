@@ -1,9 +1,10 @@
+use super::interner::{LinkerInterner, SymbolId};
 use crate::{
     core::models::{Facts, Node, Reference},
     engine::{
         languages::{
-            self, dependency_registry::DependencyRegistry, ImportPath, LanguageFamily,
-            LanguageProfile,
+            self, ImportPath, LanguageFamily, LanguageProfile,
+            dependency_registry::DependencyRegistry,
         },
         linker::traits::{ImportContext, ModulesByNamespace, PackageExports},
     },
@@ -25,6 +26,7 @@ impl<'a> NamespaceIndexes<'a> {
         nodes: &[&'a Node],
         root: Option<&Path>,
         dependency_registry: &'a DependencyRegistry,
+        interner: &mut LinkerInterner<'a>,
     ) -> Self {
         let profiles: HashMap<&str, &'static dyn LanguageProfile> = all
             .iter()
@@ -180,6 +182,7 @@ impl<'a> NamespaceIndexes<'a> {
             all,
             &modules_by_namespace,
             &normalized_imports,
+            interner,
         );
 
         Self {
@@ -193,14 +196,18 @@ impl<'a> NamespaceIndexes<'a> {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn package_exports<'a>(
-    profiles: &HashMap<&'a str, &'static dyn LanguageProfile>,
-    modules_by_namespace: &'a ModulesByNamespace<'a>,
-    by_module: &'a HashMap<&'a str, Vec<&'a Node>>,
+pub(super) fn package_exports<'index, 'a>(
+    profiles: &'index HashMap<&'a str, &'static dyn LanguageProfile>,
+    modules_by_namespace: &'index ModulesByNamespace<'a>,
+    by_module: &'index HashMap<&'a str, Vec<&'a Node>>,
+    node_rebindings: &'index HashMap<SymbolId, HashSet<SymbolId>>,
     public_all: Option<&'a BTreeMap<String, Facts>>,
-    borrowed: Option<&'a BTreeMap<String, &'a Facts>>,
+    borrowed: Option<&'index BTreeMap<String, &'a Facts>>,
     root: Option<&Path>,
-    #[cfg(feature = "lang-rust")] rust_forwarding: &languages::rust::linker::RustForwarding<'a>,
+    interner: &mut LinkerInterner<'a>,
+    #[cfg(feature = "lang-rust")] rust_forwarding: &'index languages::rust::linker::RustForwarding<
+        'a,
+    >,
 ) -> HashMap<&'static str, PackageExports<'a>> {
     let mut language_ids: HashSet<&'static str> =
         profiles.values().map(|profile| profile.id()).collect();
@@ -213,6 +220,8 @@ pub(super) fn package_exports<'a>(
                 id,
                 if let Some(public_all) = public_all {
                     languages::linker_for(id).package_exports(
+                        interner,
+                        node_rebindings,
                         public_all,
                         modules_by_namespace,
                         by_module,
@@ -220,6 +229,8 @@ pub(super) fn package_exports<'a>(
                     )
                 } else {
                     languages::linker_for(id).package_exports_borrowed(
+                        interner,
+                        node_rebindings,
                         borrowed.expect("typed facts view exists"),
                         modules_by_namespace,
                         by_module,
@@ -236,22 +247,26 @@ pub(super) fn package_exports<'a>(
 }
 
 pub(super) struct InheritanceIndexes<'a> {
-    pub(super) python_receivers: languages::python_receivers::PythonReceivers<'a>,
+    pub(super) python_receivers: super::python::receivers::PythonReceivers<'a>,
     #[cfg(feature = "lang-rust")]
     pub(super) rust_members: languages::rust::linker::RustMembers<'a>,
 }
 
 impl<'a> InheritanceIndexes<'a> {
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn build<F: AsRef<Facts>>(
+    pub(super) fn build<'index, F: AsRef<Facts>>(
         all: &'a BTreeMap<String, F>,
-        by_id: &HashMap<&'a str, &'a Node>,
-        by_qual: &'a HashMap<&'a str, Vec<&'a Node>>,
-        node_bindings: &HashMap<&'a str, HashSet<&'a str>>,
-        node_rebindings: &HashMap<&'a str, HashSet<&'a str>>,
-        by_module: &'a HashMap<&'a str, Vec<&'a Node>>,
-        namespaces: &'a NamespaceIndexes<'a>,
-        package_exports: &'a HashMap<&'static str, PackageExports<'a>>,
+        interner: &LinkerInterner<'a>,
+        #[cfg(feature = "lang-rust")] flows: Option<
+            &'index HashMap<SymbolId, &'a crate::core::typed_facts::FlowState>,
+        >,
+        by_id: &'index HashMap<SymbolId, &'a Node>,
+        by_qual: &'index HashMap<&'a str, Vec<&'a Node>>,
+        node_bindings: &'index HashMap<SymbolId, HashSet<SymbolId>>,
+        node_rebindings: &'index HashMap<SymbolId, HashSet<SymbolId>>,
+        by_module: &'index HashMap<&'a str, Vec<&'a Node>>,
+        namespaces: &'index NamespaceIndexes<'a>,
+        package_exports: &'index HashMap<&'static str, PackageExports<'a>>,
         dependency_registry: &'a DependencyRegistry,
     ) -> Self {
         let mut inheritance_imports: HashMap<(&str, &str, &str), Vec<&Reference>> = HashMap::new();
@@ -269,9 +284,10 @@ impl<'a> InheritanceIndexes<'a> {
                 .iter()
                 .filter(|reference| reference.kind == "imports")
             {
-                if let (Some(alias), Some(owner)) =
-                    (import.alias.as_deref(), by_id.get(import.source.as_str()))
-                {
+                if let (Some(alias), Some(owner)) = (
+                    import.alias.as_deref(),
+                    interner.lookup_node(by_id, import.source.as_str()),
+                ) {
                     inheritance_imports
                         .entry((path.as_str(), owner.qualname.as_str(), alias))
                         .or_default()
@@ -280,13 +296,14 @@ impl<'a> InheritanceIndexes<'a> {
             }
         }
 
-        let lookup =
-            |name: &str| -> &[&Node] { by_qual.get(name).map(Vec::as_slice).unwrap_or_default() };
-        let python_receivers = languages::python_receivers::PythonReceivers::build(
+        let python_receivers = super::python::receivers::PythonReceivers::build(
             all,
             |class, reference| {
                 let expression = reference.expression.as_str();
                 let (head, tail) = expression.split_once('.').unwrap_or((expression, ""));
+                let Some(head_id) = interner.lookup_symbol(head) else {
+                    return super::python::receivers::Base::Unknown;
+                };
                 let mut scope = class
                     .qualname
                     .rsplit_once('.')
@@ -300,50 +317,51 @@ impl<'a> InheritanceIndexes<'a> {
                     if by_qual.get(scope).is_some_and(|nodes| {
                         nodes.iter().any(|node| {
                             node.path == class.path
-                                && node_rebindings
-                                    .get(node.id.as_str())
-                                    .is_some_and(|bindings| bindings.contains(head))
+                                && interner
+                                    .lookup_symbol(&node.id)
+                                    .and_then(|node_id| node_rebindings.get(&node_id))
+                                    .is_some_and(|bindings| bindings.contains(&head_id))
                         })
                     }) {
-                        return languages::python_receivers::Base::Unknown;
+                        return super::python::receivers::Base::Unknown;
                     }
-                    let local: Vec<_> = lookup(super::qualified(&mut key, scope, expression))
-                        .iter()
-                        .copied()
-                        .filter(|node| node.path == class.path && node.kind == "class")
-                        .collect();
+                    let local: Vec<_> =
+                        nodes_by_qualname(by_qual, super::qualified(&mut key, scope, expression))
+                            .filter(|node| node.path == class.path && node.kind == "class")
+                            .collect();
                     if local.len() == 1 {
                         if imports
                             .iter()
                             .any(|import| import.line > local[0].line && import.line <= class.line)
                         {
-                            return languages::python_receivers::Base::Unknown;
+                            return super::python::receivers::Base::Unknown;
                         }
-                        return languages::python_receivers::Base::Local(&local[0].id);
+                        return super::python::receivers::Base::Local(&local[0].id);
                     }
                     if local.len() > 1 {
-                        return languages::python_receivers::Base::Unknown;
+                        return super::python::receivers::Base::Unknown;
                     }
                     if !imports.is_empty() {
                         if imports.len() != 1 {
-                            return languages::python_receivers::Base::Unknown;
+                            return super::python::receivers::Base::Unknown;
                         }
                         let import = imports[0];
                         if import.line > class.line
                             || by_qual.get(scope).is_some_and(|nodes| {
                                 nodes.iter().any(|node| {
                                     node.path == class.path
-                                        && node_rebindings
-                                            .get(node.id.as_str())
-                                            .is_some_and(|bindings| bindings.contains(head))
+                                        && interner
+                                            .lookup_symbol(&node.id)
+                                            .and_then(|node_id| node_rebindings.get(&node_id))
+                                            .is_some_and(|bindings| bindings.contains(&head_id))
                                 })
                             })
                         {
-                            return languages::python_receivers::Base::Unknown;
+                            return super::python::receivers::Base::Unknown;
                         }
                         let Some(profile) = namespaces.profiles.get(class.path.as_str()).copied()
                         else {
-                            return languages::python_receivers::Base::Unknown;
+                            return super::python::receivers::Base::Unknown;
                         };
                         let normalized = namespaces
                             .normalized_imports
@@ -353,7 +371,7 @@ impl<'a> InheritanceIndexes<'a> {
                             ))
                             .and_then(Option::as_ref);
                         let Some(normalized) = normalized else {
-                            return languages::python_receivers::Base::Unknown;
+                            return super::python::receivers::Base::Unknown;
                         };
                         let mut modules: Vec<_> = namespaces
                             .modules_by_namespace
@@ -377,6 +395,7 @@ impl<'a> InheritanceIndexes<'a> {
                         let mut targets = Vec::new();
                         languages::linker_for(profile.id()).resolve_import(&mut ImportContext {
                             path: &class.path,
+                            interner,
                             dependencies: dependency_registry,
                             reference: import,
                             #[cfg(feature = "lang-rust")]
@@ -396,10 +415,11 @@ impl<'a> InheritanceIndexes<'a> {
                             targets = targets
                                 .iter()
                                 .flat_map(|target| {
-                                    lookup(&format!("{}.{}", target.qualname, tail))
-                                        .iter()
-                                        .copied()
-                                        .filter(move |node| node.path == target.path)
+                                    nodes_by_qualname(
+                                        by_qual,
+                                        &format!("{}.{}", target.qualname, tail),
+                                    )
+                                    .filter(move |node| node.path == target.path)
                                 })
                                 .collect();
                         }
@@ -407,7 +427,7 @@ impl<'a> InheritanceIndexes<'a> {
                         targets.sort_by_key(|target| &target.id);
                         targets.dedup_by_key(|target| &target.id);
                         if targets.len() == 1 {
-                            return languages::python_receivers::Base::Local(&targets[0].id);
+                            return super::python::receivers::Base::Local(&targets[0].id);
                         }
                         if targets.is_empty() && modules.is_empty() && !normalized.relative {
                             let module = import.module.as_deref().unwrap_or(&import.expression);
@@ -420,39 +440,41 @@ impl<'a> InheritanceIndexes<'a> {
                                 canonical.push('.');
                                 canonical.push_str(tail);
                             }
-                            return languages::python_receivers::Base::External(
+                            return super::python::receivers::Base::External(
                                 canonical,
                                 module,
                                 import.line,
                             );
                         }
-                        return languages::python_receivers::Base::Unknown;
+                        return super::python::receivers::Base::Unknown;
                     }
                     if by_qual.get(scope).is_some_and(|nodes| {
                         nodes.iter().any(|node| {
                             node.path == class.path
-                                && node_bindings
-                                    .get(node.id.as_str())
-                                    .is_some_and(|bindings| bindings.contains(head))
+                                && interner
+                                    .lookup_symbol(&node.id)
+                                    .and_then(|node_id| node_bindings.get(&node_id))
+                                    .is_some_and(|bindings| bindings.contains(&head_id))
                         })
                     }) {
-                        return languages::python_receivers::Base::Unknown;
+                        return super::python::receivers::Base::Unknown;
                     }
                     scope = scope.rsplit_once('.').map_or("", |(parent, _)| parent);
                 }
                 if expression == "object" {
-                    languages::python_receivers::Base::External(
+                    super::python::receivers::Base::External(
                         "builtins.object".into(),
                         "builtins",
                         0,
                     )
                 } else {
-                    languages::python_receivers::Base::Unknown
+                    super::python::receivers::Base::Unknown
                 }
             },
             |path, base| {
-                let rule = dependency_registry.class_hierarchy_receiver_for_path(path, base)?;
-                Some((rule.provider.as_str(), rule.members.as_slice()))
+                let (pack, rule) =
+                    dependency_registry.class_hierarchy_authority_for_path(path, base, None)?;
+                Some((rule.provider.as_str(), pack, rule))
             },
         );
         drop(inheritance_imports);
@@ -460,7 +482,19 @@ impl<'a> InheritanceIndexes<'a> {
         Self {
             python_receivers,
             #[cfg(feature = "lang-rust")]
-            rust_members: languages::rust::linker::RustMembers::build(all),
+            rust_members: languages::rust::linker::RustMembers::build(
+                all,
+                interner,
+                flows,
+                &namespaces.rust_forwarding,
+            ),
         }
     }
+}
+
+fn nodes_by_qualname<'index, 'node>(
+    by_qual: &'index HashMap<&'node str, Vec<&'node Node>>,
+    qualname: &str,
+) -> impl Iterator<Item = &'node Node> + 'index {
+    by_qual.get(qualname).into_iter().flatten().copied()
 }

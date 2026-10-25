@@ -10,16 +10,18 @@ use anyhow::{bail, Context, Result};
 use sha2::{Digest, Sha256};
 use std::{
     cell::RefCell,
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
-type LanguageContextCacheKey = (String, String, String);
+type LanguageContextKey = (String, Vec<(String, String)>);
 
 thread_local! {
-    static LANGUAGE_CONTEXT_CACHE: RefCell<HashMap<LanguageContextCacheKey, Arc<super::LanguageContext>>> =
+    // Compatibility-only reuse for direct bundled/manual registry callers.
+    // Collected inventories use the immutable registry-owned contexts below.
+    static LEGACY_LANGUAGE_CONTEXT_CACHE: RefCell<HashMap<(String, LanguageContextKey), Arc<super::LanguageContext>>> =
         RefCell::new(HashMap::new());
 }
 
@@ -29,9 +31,14 @@ pub struct DependencyRegistry {
     packages: HashMap<LanguageFamily, HashSet<String>>,
     scoped_packages: HashMap<LanguageFamily, HashMap<String, HashSet<String>>>,
     scoped_origins: HashMap<LanguageFamily, HashMap<String, HashMap<String, String>>>,
+    own_packages: HashMap<String, HashSet<String>>,
+    workspaces: HashSet<String>,
+    named_provider_scopes: HashMap<super::manifests::projections::NamedProviderScope, String>,
+    rust_libraries: HashMap<String, String>,
     framework_manifests: HashMap<(String, String), FrameworkManifest>,
     standard_framework_manifests: HashMap<String, FrameworkManifest>,
-    rule_ir: RuleIRHandle,
+    language_contexts: HashMap<LanguageContextKey, Arc<super::LanguageContext>>,
+    rule_ir: HashMap<String, RuleIRHandle>,
     javascript_packages: JavascriptPackageRegistry,
     typescript_paths: TypeScriptPathsRegistry,
     #[cfg(feature = "lang-rust")]
@@ -50,21 +57,50 @@ impl DependencyRegistry {
 
     /// Reuses merged extraction rules for files with the same workspace and package scope.
     pub(crate) fn language_context_for_path(&self, path: &str) -> Arc<super::LanguageContext> {
-        let (workspace, _) = super::workspace_path(path);
-        let family = LanguageFamily("python");
-        let manifest_scope = self
-            .nearest_manifest_scope_for_path(family, path)
-            .unwrap_or(workspace);
-        let key = (
-            self.digest.clone(),
-            workspace.to_owned(),
-            manifest_scope.to_owned(),
-        );
+        let key = self.language_context_key(path);
+        if let Some(context) = self.language_contexts.get(&key) {
+            return Arc::clone(context);
+        }
+        // Direct/manual registries and unregistered workspace paths retain their
+        // bounded compatibility preparation; collected inventories are ready.
+        let key = (self.digest.clone(), key);
         if let Some(context) =
-            LANGUAGE_CONTEXT_CACHE.with(|cache| cache.borrow().get(&key).cloned())
+            LEGACY_LANGUAGE_CONTEXT_CACHE.with(|cache| cache.borrow().get(&key).cloned())
         {
             return context;
         }
+        let mut context = self.build_language_context(path);
+        if !self.rule_ir.contains_key(super::workspace_path(path).0) {
+            context.rule_ir = RuleIRHandle::prepare(&context);
+        }
+        let context = Arc::new(context);
+        LEGACY_LANGUAGE_CONTEXT_CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            if cache.len() >= 128 {
+                cache.clear();
+            }
+            cache.insert(key, Arc::clone(&context));
+        });
+        context
+    }
+
+    fn language_context_key(&self, path: &str) -> LanguageContextKey {
+        let (workspace, _) = super::workspace_path(path);
+        let families: BTreeSet<_> = profiles().map(|profile| profile.family().0).collect();
+        let scopes = families
+            .into_iter()
+            .map(|family| {
+                let scope = self
+                    .nearest_manifest_scope_for_path(LanguageFamily(family), path)
+                    .unwrap_or(workspace);
+                (family.to_owned(), scope.to_owned())
+            })
+            .collect();
+        (workspace.to_owned(), scopes)
+    }
+
+    fn build_language_context(&self, path: &str) -> super::LanguageContext {
+        let (workspace, _) = super::workspace_path(path);
 
         let mut names: BTreeSet<&str> = self
             .standard_framework_manifests
@@ -78,20 +114,30 @@ impl DependencyRegistry {
                 .map(|(_, name)| name.as_str()),
         );
 
-        let mut context = super::LanguageContext {
-            rule_ir: self.rule_ir.for_workspace(workspace),
-            ..super::LanguageContext::default()
-        };
-        let declared_packages = self
-            .scoped_packages
-            .get(&family)
-            .and_then(|scopes| scopes.get(manifest_scope));
+        let mut context = super::LanguageContext::default();
         for name in names {
-            let manifest = self
-                .framework_manifests
-                .get(&(workspace.to_owned(), name.to_owned()))
-                .or_else(|| self.standard_framework_manifests.get(name));
+            let manifest = self.effective_framework_manifest(path, name);
             let Some(manifest) = manifest else { continue };
+            for (index, rule) in manifest.route_decorators.iter().enumerate() {
+                context.route_rule_origins.insert(
+                    (true, context.route_decorators.len() + index),
+                    crate::core::semantic::ExtractionRuleOrigin {
+                        pack: manifest.name.clone(),
+                        rule: serde_json::to_string(&rule.identity())
+                            .expect("typed route identity"),
+                    },
+                );
+            }
+            for (index, rule) in manifest.route_calls.iter().enumerate() {
+                context.route_rule_origins.insert(
+                    (false, context.route_calls.len() + index),
+                    crate::core::semantic::ExtractionRuleOrigin {
+                        pack: manifest.name.clone(),
+                        rule: serde_json::to_string(&rule.identity())
+                            .expect("typed route identity"),
+                    },
+                );
+            }
             context
                 .class_hierarchy_receivers
                 .extend(manifest.class_hierarchy_receivers.iter().cloned());
@@ -100,34 +146,116 @@ impl DependencyRegistry {
                 .extend(manifest.route_decorators.iter().cloned());
             context
                 .route_calls
-                .extend(manifest.route_calls.iter().cloned());
+                .extend(manifest.route_calls.iter().cloned().map(|mut rule| {
+                    rule.registration_guard = rule.registration_guard.map(|id| {
+                        serde_json::to_string(&(&manifest.name, id))
+                            .expect("rule identity strings serialize")
+                    });
+                    rule
+                }));
+            for (index, rule) in manifest.di_calls.iter().enumerate() {
+                context.di_rule_origins.insert(
+                    context.di_calls.len() + index,
+                    crate::core::semantic::ExtractionRuleOrigin {
+                        pack: manifest.name.clone(),
+                        rule: serde_json::to_string(&rule.identity()).expect("typed DI identity"),
+                    },
+                );
+            }
             context.di_calls.extend(manifest.di_calls.iter().cloned());
+            context.syntax_rules.extend(
+                manifest
+                    .syntax_rules
+                    .iter()
+                    .filter(|rule| {
+                        let rule_family = rule.activation_family();
+                        rule.activation.is_empty()
+                            || rule_family.is_some_and(|family| {
+                                rule.activation.iter().any(|activation| {
+                                    let super::manifests::Activation::Package { name } = activation;
+                                    self.declares_for_path(family, path, name)
+                                })
+                            })
+                    })
+                    .cloned()
+                    .map(|mut rule| {
+                        rule.pack = manifest.name.clone();
+                        rule
+                    }),
+            );
             for rule in &manifest.semantic_rules {
+                let family = super::by_id(rule.language()).map(|profile| profile.family());
+                let scope = family
+                    .and_then(|family| self.nearest_manifest_scope_for_path(family, path))
+                    .unwrap_or(workspace);
+                let declared_packages = family.and_then(|family| {
+                    self.scoped_packages
+                        .get(&family)
+                        .and_then(|scopes| scopes.get(scope))
+                });
                 context
                     .semantic_rules
                     .push(super::semantic::EffectiveSemanticRule {
                         pack: manifest.name.clone(),
                         rule: rule.clone(),
-                        scope: manifest_scope.to_owned(),
+                        scope: scope.to_owned(),
                         active: rule.activation.is_empty()
-                            || rule.activation.iter().any(|activation| {
-                                let super::manifests::Activation::Package { name } = activation;
-                                declared_packages.is_some_and(|packages| packages.contains(name))
+                            || family.is_some_and(|family| {
+                                rule.activation.iter().any(|activation| {
+                                    let super::manifests::Activation::Package { name } = activation;
+                                    declared_packages.is_some_and(|packages| {
+                                        packages.contains(&package_identity(family, name))
+                                    })
+                                })
                             }),
                     });
             }
         }
-        let context = Arc::new(context);
-        LANGUAGE_CONTEXT_CACHE.with(|cache| {
-            let mut cache = cache.borrow_mut();
-            if cache.len() >= 128 {
-                cache.clear();
+        context.prepare_named_member_rules();
+        if let Some(rule_ir) = self.rule_ir.get(workspace) {
+            context.rule_ir = rule_ir.clone();
+        }
+        context
+    }
+
+    fn prepare_language_contexts(&mut self) {
+        // Effective language package scopes can change only at these collected
+        // directory boundaries. Their union covers every admitted scope vector.
+        let scopes: BTreeSet<String> = std::iter::once(String::new())
+            .chain(self.workspaces.iter().cloned())
+            .chain(
+                self.framework_manifests
+                    .keys()
+                    .map(|(scope, _)| scope.clone()),
+            )
+            .chain(
+                self.scoped_packages
+                    .values()
+                    .flat_map(|scopes| scopes.keys().cloned()),
+            )
+            .collect();
+        self.language_contexts.clear();
+        self.rule_ir.clear();
+        for scope in scopes {
+            let path = if scope.is_empty() {
+                "__context_probe__".to_owned()
+            } else {
+                format!("{scope}/__context_probe__")
+            };
+            let key = self.language_context_key(&path);
+            if self.language_contexts.contains_key(&key) {
+                continue;
             }
-            cache
-                .entry(key)
-                .or_insert_with(|| Arc::clone(&context))
-                .clone()
-        })
+            let mut context = self.build_language_context(&path);
+            // Route/DI rows and their origins depend on workspace manifest merge,
+            // not package activation. Compile once per workspace, before workers.
+            let rule_ir = self
+                .rule_ir
+                .entry(key.0.clone())
+                .or_insert_with(|| RuleIRHandle::prepare(&context));
+            context.rule_ir = rule_ir.clone();
+            self.language_contexts.insert(key, Arc::new(context));
+        }
     }
 
     /// Reports removed eligible bundled identities for the complete current file inventory.
@@ -151,7 +279,7 @@ impl DependencyRegistry {
             let call = ["call", "call_expression"]
                 .into_iter()
                 .any(|name| named_kind(&grammar, name).is_some());
-            let routes = matches!(language, "python" | "typescript" | "javascript");
+            let routes = profile.route_extraction_enabled();
             for ((scope, framework), effective) in &self.framework_manifests {
                 if scope != workspace {
                     continue;
@@ -172,7 +300,11 @@ impl DependencyRegistry {
                     ),
                     (
                         RuleDomain::SemanticRules,
-                        language == "python" && named_kind(&grammar, "call").is_some(),
+                        named_kind(&grammar, "call").is_some()
+                            && bundled
+                                .semantic_rules
+                                .iter()
+                                .any(|rule| rule.language() == language),
                     ),
                 ] {
                     if !eligible {
@@ -187,15 +319,14 @@ impl DependencyRegistry {
                             // that identity even when its effective activation changes.
                             bundled.semantic_rules.iter().any(|rule| {
                                 &rule.id == id
+                                    && rule.language() == language
                                     && (rule.activation.is_empty()
                                         || rule.activation.iter().any(|activation| {
                                             let super::manifests::Activation::Package { name } =
                                                 activation;
-                                            self.declares_for_path(
-                                                LanguageFamily("python"),
-                                                path,
-                                                name,
-                                            )
+                                            super::by_id(rule.language()).is_some_and(|profile| {
+                                                self.declares_for_path(profile.family(), path, name)
+                                            })
                                         }))
                             })
                         } else {
@@ -231,11 +362,42 @@ impl DependencyRegistry {
             .collect()
     }
 
-    pub(crate) fn class_hierarchy_receiver_for_path(
+    /// Selects one surviving finite hierarchy identity, optionally within its originating pack.
+    pub(crate) fn class_hierarchy_authority_for_path(
         &self,
         path: &str,
         base: &str,
-    ) -> Option<&super::manifests::ClassHierarchyReceiverRule> {
+        pack: Option<&str>,
+    ) -> Option<(&str, &super::manifests::ClassHierarchyReceiverRule)> {
+        let mut candidates = self.hierarchy_rows_for_path(path).filter(|(name, rule)| {
+            pack.is_none_or(|pack| pack == *name)
+                && rule.bases.iter().any(|candidate| candidate == base)
+        });
+        let first = candidates.next()?;
+        candidates.next().is_none().then_some(first)
+    }
+
+    /// Distinct explicit return targets retain their originating effective pack identity.
+    pub(crate) fn hierarchy_return_targets_for_path(&self, path: &str) -> BTreeSet<(&str, &str)> {
+        self.hierarchy_rows_for_path(path)
+            .flat_map(|(pack, row)| {
+                row.returns.values().filter_map(move |policy| match policy {
+                    super::manifests::ReturnPolicy::Receiver { base } => {
+                        Some((pack, base.as_str()))
+                    }
+                    super::manifests::ReturnPolicy::SelfReceiver => None,
+                })
+            })
+            .collect()
+    }
+
+    fn hierarchy_rows_for_path<'s, 'p>(
+        &'s self,
+        path: &'p str,
+    ) -> impl Iterator<Item = (&'s str, &'s super::manifests::ClassHierarchyReceiverRule)> + 'p
+    where
+        's: 'p,
+    {
         let (workspace, _) = super::workspace_path(path);
         let mut names: BTreeSet<&str> = self
             .standard_framework_manifests
@@ -248,14 +410,18 @@ impl DependencyRegistry {
                 .filter(|(scope, _)| scope == workspace)
                 .map(|(_, name)| name.as_str()),
         );
-        names.into_iter().find_map(|name| {
-            self.framework_manifests
-                .get(&(workspace.to_owned(), name.to_owned()))
-                .or_else(|| self.standard_framework_manifests.get(name))?
-                .class_hierarchy_receivers
-                .iter()
-                .find(|rule| rule.bases.iter().any(|candidate| candidate == base))
-        })
+        names
+            .into_iter()
+            .filter_map(move |name| {
+                self.effective_framework_manifest(path, name)
+                    .map(|manifest| (name, manifest))
+            })
+            .flat_map(|(name, manifest)| {
+                manifest
+                    .class_hierarchy_receivers
+                    .iter()
+                    .map(move |rule| (name, rule))
+            })
     }
 
     /// Resolves local package exports and TypeScript path aliases from the dependency snapshot.
@@ -368,6 +534,9 @@ impl DependencyRegistry {
             std::collections::BTreeMap::<String, sha2::digest::Output<Sha256>>::new();
         let mut parsed_families = Vec::with_capacity(profiles.len());
         for (root, prefix, ignored_names) in roots {
+            registry
+                .workspaces
+                .insert(prefix.trim_end_matches('/').to_owned());
             let manifest_paths = if let Some(discovered) = discovered_manifests {
                 scanner_manifest_paths(&root, &ignored_names, &profiles, discovered)?
             } else {
@@ -416,6 +585,91 @@ impl DependencyRegistry {
                 let mut scope = prefix.clone();
                 scope.push_str(&directory.to_string_lossy().replace('\\', "/"));
                 let scope = scope.trim_end_matches('/').to_owned();
+                if filename == "package.json" {
+                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) {
+                        if let Some(name) = value.get("name").and_then(serde_json::Value::as_str) {
+                            registry
+                                .own_packages
+                                .entry(scope.clone())
+                                .or_default()
+                                .insert(name.to_owned());
+                        }
+                    }
+                } else if filename == "pyproject.toml" {
+                    super::toml_manifest::visit_toml_pairs(&content, &mut |key, value| {
+                        if matches!(key, "project.name" | "tool.poetry.name") {
+                            if let Some(name) = super::toml_manifest::toml_string(value, &content) {
+                                registry
+                                    .own_packages
+                                    .entry(scope.clone())
+                                    .or_default()
+                                    .insert(name);
+                            }
+                        }
+                    });
+                }
+                #[cfg(feature = "lang-rust")]
+                if filename == "Cargo.toml" && scope == prefix.trim_end_matches('/') {
+                    let mut package_name = None;
+                    let mut library_name = None;
+                    let mut library_path = None;
+                    let mut invalid_library_path = false;
+                    let mut invalid_library_name = false;
+                    let mut invalid_package_name = false;
+                    let mut autolib = None;
+                    let mut autolib_present = false;
+                    let mut invalid_autolib = false;
+                    super::toml_manifest::visit_toml_pairs(&content, &mut |key, value| match key {
+                        "package.name" => {
+                            package_name = super::toml_manifest::toml_string(value, &content);
+                            invalid_package_name = package_name.is_none();
+                        }
+                        "lib.name" => {
+                            library_name = super::toml_manifest::toml_string(value, &content);
+                            invalid_library_name = library_name.is_none();
+                        }
+                        "lib.path" => {
+                            library_path = super::toml_manifest::toml_string(value, &content);
+                            invalid_library_path = library_path.is_none();
+                        }
+                        "package.autolib" => {
+                            autolib_present = true;
+                            autolib =
+                                value.utf8_text(content.as_bytes()).ok().and_then(
+                                    |text| match text.trim() {
+                                        "true" => Some(true),
+                                        "false" => Some(false),
+                                        _ => None,
+                                    },
+                                );
+                            invalid_autolib = autolib.is_none();
+                        }
+                        _ => {}
+                    });
+                    let has_library_table = super::toml_manifest::has_table(&content, "lib");
+                    let autolib_allows_library = match (autolib_present, autolib) {
+                        (false, _) | (true, Some(true)) => true,
+                        (true, Some(false)) => has_library_table,
+                        (true, None) => false,
+                    };
+                    let conventional_library_path = !invalid_library_path
+                        && library_path
+                            .as_deref()
+                            .is_none_or(|path| path == "src/lib.rs");
+                    if autolib_allows_library
+                        && !invalid_autolib
+                        && !invalid_library_name
+                        && !invalid_package_name
+                        && package_name.as_deref().is_some_and(|name| !name.is_empty())
+                        && conventional_library_path
+                    {
+                        if let Some(name) = library_name.or(package_name) {
+                            registry
+                                .rust_libraries
+                                .insert(scope.clone(), name.replace('-', "_"));
+                        }
+                    }
+                }
                 if filename == "package.json" {
                     registry
                         .javascript_packages
@@ -496,6 +750,7 @@ impl DependencyRegistry {
         }
         registry.javascript_packages.apply_pnpm_workspaces();
         registry.typescript_paths.resolve_all();
+        registry.prepare_scoped_policies()?;
         let mut hasher = Sha256::new();
         hasher.update(b"forge-dependency-registry-v1\0");
         let standard_digest = Self::standard_manifests_digest_static();
@@ -507,7 +762,147 @@ impl DependencyRegistry {
             hasher.update(digest);
         }
         registry.digest = hex::encode(hasher.finalize());
+        registry.prepare_language_contexts();
+        registry.validate_type_flow_policies()?;
         Ok(registry)
+    }
+
+    fn validate_type_flow_policies(&self) -> Result<()> {
+        let scopes: BTreeSet<&str> = std::iter::once("")
+            .chain(
+                self.framework_manifests
+                    .keys()
+                    .map(|(scope, _)| scope.as_str()),
+            )
+            .chain(
+                self.scoped_packages
+                    .values()
+                    .flat_map(|scopes| scopes.keys().map(String::as_str)),
+            )
+            .collect();
+        for scope in scopes {
+            let path = if scope.is_empty() {
+                "__type_flow_probe__".to_owned()
+            } else {
+                format!("{scope}/__type_flow_probe__")
+            };
+            let context = self.language_context_for_path(&path);
+            anyhow::ensure!(
+                context
+                    .class_hierarchy_receivers
+                    .iter()
+                    .filter(|rule| !rule.returns.is_empty())
+                    .count()
+                    <= 128,
+                "effective return-policy row bound exceeded"
+            );
+            for row in &context.class_hierarchy_receivers {
+                row.validate_returns(4096)?;
+            }
+            let mut receiver_type_limits = BTreeMap::<&str, (usize, usize)>::new();
+            for rule in &context.syntax_rules {
+                let super::manifests::syntax::SyntaxOperation::ReceiverType { receiver } =
+                    &rule.operation
+                else {
+                    continue;
+                };
+                let (clauses, literals) = receiver_type_limits
+                    .entry(rule.language.as_str())
+                    .or_default();
+                *clauses += receiver.argument_factories.len();
+                *literals += receiver
+                    .argument_factories
+                    .iter()
+                    .map(|factory| factory.literals.len())
+                    .sum::<usize>();
+            }
+            for (clauses, literals) in receiver_type_limits.values() {
+                anyhow::ensure!(
+                    *clauses <= 128 && *literals <= 4096,
+                    "effective literal-factory bounds exceeded"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn prepare_scoped_policies(&mut self) -> Result<()> {
+        use super::manifests::{projections::NamedBindingForm, syntax::SyntaxOperation};
+        for manifest in self
+            .framework_manifests
+            .values()
+            .chain(self.standard_framework_manifests.values())
+        {
+            for rule in &manifest.syntax_rules {
+                match &rule.operation {
+                    SyntaxOperation::NamedBinding {
+                        binding:
+                            NamedBindingForm::CallReference {
+                                provider_scopes, ..
+                            },
+                        ..
+                    } => {
+                        for provider in provider_scopes {
+                            let workspace = if provider.workspace.is_empty() {
+                                String::new()
+                            } else {
+                                format!("[{}]", provider.workspace)
+                            };
+                            anyhow::ensure!(
+                                self.workspaces.contains(&workspace),
+                                "unknown or disabled named provider workspace: {}",
+                                provider.workspace
+                            );
+                            let scope = match (workspace.is_empty(), provider.project.is_empty()) {
+                                (true, _) => provider.project.clone(),
+                                (false, true) => workspace,
+                                (false, false) => format!("{workspace}/{}", provider.project),
+                            };
+                            if self
+                                .own_packages
+                                .get(&scope)
+                                .is_some_and(|packages| packages.contains(&provider.package))
+                            {
+                                self.named_provider_scopes.insert(provider.clone(), scope);
+                            }
+                        }
+                    }
+                    SyntaxOperation::HttpClientCall {
+                        target_context: Some(context),
+                        ..
+                    } => {
+                        for path in context.request_owners.iter().chain(&context.route_owners) {
+                            anyhow::ensure!(
+                                self.workspaces.contains(super::workspace_path(path).0),
+                                "unknown or disabled HTTP context workspace: {path}"
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Resolves only explicit, already collected project/package identities.
+    pub(crate) fn named_provider_scope(
+        &self,
+        provider: &super::manifests::projections::NamedProviderScope,
+    ) -> Option<&str> {
+        self.named_provider_scopes.get(provider).map(String::as_str)
+    }
+
+    /// Existing scoped policy relation used by both linking and selective hydration.
+    pub(crate) fn named_scope_admits(&self, consumer: &str, provider: &str, domain: &str) -> bool {
+        use super::manifests::{projections::NamedBindingForm, syntax::SyntaxOperation};
+        let provider_scope = crate::engine::linker::named_binding_scope(provider, self);
+        if crate::engine::linker::named_binding_scope(consumer, self) == provider_scope {
+            return true;
+        }
+        self.language_context_for_path(consumer).syntax_rules.iter().any(|rule| {
+            matches!(&rule.operation, SyntaxOperation::NamedBinding { domain: configured, binding: NamedBindingForm::CallReference { provider_scopes, .. } } if configured == domain && provider_scopes.iter().any(|scope| self.named_provider_scope(scope) == Some(provider_scope.as_str())))
+        })
     }
 
     /// Performs digest.
@@ -525,14 +920,25 @@ impl DependencyRegistry {
         STANDARD_FRAMEWORK_MANIFESTS_DIGEST.get_or_init(|| {
             let mut hasher = Sha256::new();
             hasher.update(b"forge-standard-framework-manifests-v1\0");
-            for (name, source) in STANDARD_FRAMEWORK_MANIFEST_SOURCES {
+            for (name, extension, source) in STANDARD_FRAMEWORK_MANIFESTS {
                 hasher.update((name.len() as u64).to_be_bytes());
                 hasher.update(name.as_bytes());
+                hasher.update((extension.len() as u64).to_be_bytes());
+                hasher.update(extension.as_bytes());
                 hasher.update((source.len() as u64).to_be_bytes());
                 hasher.update(source.as_bytes());
             }
             hex::encode(hasher.finalize())
         })
+    }
+
+    /// Returns the root Cargo library name normalized for Rust import syntax.
+    pub(crate) fn rust_library_for_path(&self, path: &str) -> Option<&str> {
+        let workspace = super::workspace_path(path).0;
+        if self.nearest_manifest_scope_for_path(LanguageFamily("rust"), path) != Some(workspace) {
+            return None;
+        }
+        self.rust_libraries.get(workspace).map(String::as_str)
     }
 
     pub(crate) fn declares_for_path(
@@ -547,7 +953,20 @@ impl DependencyRegistry {
         self.scoped_packages
             .get(&family)
             .and_then(|scopes| scopes.get(scope))
-            .is_some_and(|packages| packages.contains(package))
+            .is_some_and(|packages| packages.contains(&package_identity(family, package)))
+    }
+
+    /// Returns a workspace-local manifest unconditionally, otherwise a bundled
+    pub(crate) fn effective_framework_manifest(
+        &self,
+        path: &str,
+        pack: &str,
+    ) -> Option<&FrameworkManifest> {
+        let workspace = super::workspace_path(path).0;
+        self.framework_manifests
+            .get(&(workspace.to_owned(), pack.to_owned()))
+            .or_else(|| self.standard_framework_manifests.get(pack))
+            .filter(|manifest| manifest.enabled)
     }
 
     /// Returns a workspace-local manifest unconditionally, otherwise a bundled
@@ -562,19 +981,15 @@ impl DependencyRegistry {
         package: &str,
     ) -> Option<&FrameworkManifest> {
         let (workspace, _) = super::workspace_path(path);
-        if let Some(manifest) = self
+        if self
             .framework_manifests
-            .get(&(workspace.to_owned(), framework.to_owned()))
+            .contains_key(&(workspace.to_owned(), framework.to_owned()))
+            || self.declares_for_path(family, path, package)
         {
-            return Some(manifest);
+            self.effective_framework_manifest(path, framework)
+        } else {
+            None
         }
-        self.declares_for_path(family, path, package)
-            .then(|| self.standard_framework_manifests.get(framework))
-            .flatten()
-    }
-
-    pub(crate) fn nuxt_package_scope_for_path(&self, path: &str) -> Option<&str> {
-        self.javascript_packages.nuxt_package_scope_for_path(path)
     }
 
     pub(crate) fn nearest_manifest_scope_for_path(
@@ -663,6 +1078,15 @@ impl DependencyRegistry {
             directory = directory.rsplit_once('/').map_or("", |(parent, _)| parent);
         }
     }
+}
+
+fn package_identity(family: LanguageFamily, name: &str) -> String {
+    #[cfg(feature = "lang-python")]
+    if family == LanguageFamily("python") {
+        return super::python::dependencies::package(name).unwrap_or_else(|| name.to_owned());
+    }
+    let _ = family;
+    name.to_owned()
 }
 
 fn scanner_manifest_paths(
@@ -757,24 +1181,15 @@ fn walked_manifest_paths(
         .collect()
 }
 
-const STANDARD_FRAMEWORK_MANIFEST_SOURCES: [(&str, &str); 9] = [
-    ("alpinejs", include_str!("manifests/alpinejs.toml")),
-    ("django", include_str!("manifests/django.toml")),
-    ("fastapi", include_str!("manifests/fastapi.toml")),
-    ("gridviewspec", include_str!("manifests/gridviewspec.toml")),
-    ("jinja2", include_str!("manifests/jinja2.toml")),
-    ("nestjs", include_str!("manifests/nestjs.toml")),
-    ("nuxt", include_str!("manifests/nuxt.toml")),
-    ("pydantic", include_str!("manifests/pydantic.toml")),
-    ("unittest", include_str!("manifests/unittest.toml")),
-];
+const STANDARD_FRAMEWORK_MANIFESTS: &[(&str, &str, &str)] =
+    include!(concat!(env!("OUT_DIR"), "/framework_manifests.rs"));
 
 static STANDARD_FRAMEWORK_MANIFESTS_DIGEST: std::sync::OnceLock<String> =
     std::sync::OnceLock::new();
 
 fn load_standard_framework_manifests(registry: &mut DependencyRegistry) -> Result<()> {
-    for (name, source) in STANDARD_FRAMEWORK_MANIFEST_SOURCES {
-        let manifest = FrameworkManifest::parse(name.to_owned(), "toml", source)
+    for &(name, extension, source) in STANDARD_FRAMEWORK_MANIFESTS {
+        let manifest = FrameworkManifest::parse(name.to_owned(), extension, source)
             .with_context(|| format!("invalid standard framework manifest {name}"))?;
         registry
             .standard_framework_manifests
@@ -981,7 +1396,7 @@ mod tests {
             .unwrap();
             fs::write(
                 root.join(".forge/frameworks/django.toml"),
-                "replace = true\nreceivers = []\nbuiltins = []\nfilters = []\nroutes = []\n",
+                "replace = true\n",
             )
             .unwrap();
             #[cfg(feature = "lang-rust")]
@@ -1066,8 +1481,7 @@ mod tests {
     #[cfg(feature = "lang-python")]
     #[test]
     fn project_framework_packs_merge_replace_and_activate() {
-        use super::super::manifests::{FrameworkManifest, FrameworkManifestValue};
-        use std::collections::BTreeMap;
+        use super::super::manifests::{syntax::SyntaxOperation, FrameworkManifest};
 
         let mut documented_examples = Vec::new();
         for (extension, source) in [
@@ -1138,11 +1552,7 @@ mod tests {
             ("restored", true),
         ] {
             if phase == "empty replacement" {
-                fs::write(
-                    &replacement,
-                    "replace = true\nreceivers = []\nbuiltins = []\nfilters = []\nroutes = []\n",
-                )
-                .unwrap();
+                fs::write(&replacement, "replace = true\n").unwrap();
             } else if phase == "restored" {
                 fs::remove_file(&replacement).unwrap();
             }
@@ -1165,18 +1575,51 @@ mod tests {
             )
             .unwrap();
             assert!(extracted.facts.errors.is_empty(), "{phase}: parse errors");
-            let owner = extracted
+            let native_owner = &extracted
                 .facts
                 .nodes
                 .iter()
                 .find(|node| node.name == "page")
-                .expect("ordinary caller declaration survives replacement");
-            let consumers: Vec<_> = extracted
+                .expect("native ordinary caller declaration survives replacement")
+                .id;
+            let native_consumers: Vec<_> = extracted
                 .facts
-                .nodes
+                .semantic
+                .entries()
+                .flat_map(|(_, entry)| match &entry.state {
+                    crate::core::typed_facts::SemanticState::Valid { facts, .. } => facts.iter(),
+                    crate::core::typed_facts::SemanticState::Invalid { .. } => {
+                        panic!("{phase}: canonical native semantic facts must remain valid")
+                    }
+                })
+                .filter(|fact| {
+                    matches!(
+                        fact.role,
+                        crate::core::semantic::SemanticFactRole::CallToFile { .. }
+                    )
+                })
+                .collect();
+            assert_eq!(
+                native_consumers.len(),
+                usize::from(enabled),
+                "{phase}: native exact imported-call consumer fact"
+            );
+            assert!(
+                native_consumers
+                    .iter()
+                    .all(|fact| &fact.occurrence.owner_id == native_owner),
+                "{phase}: native actual caller declaration"
+            );
+            let extracted = serde_json::to_value(&extracted).unwrap();
+            let nodes = extracted["nodes"].as_array().unwrap();
+            let owner = nodes
+                .iter()
+                .find(|node| node["name"] == "page")
+                .expect("ordinary caller declaration survives replacement");
+            let consumers: Vec<_> = nodes
                 .iter()
                 .flat_map(|node| {
-                    node.details
+                    node["details"]
                         .get("semantic_facts")
                         .and_then(serde_json::Value::as_array)
                         .into_iter()
@@ -1191,7 +1634,7 @@ mod tests {
                     "{phase}: exact imported-call consumer fact"
                 );
                 assert_eq!(
-                    consumers[0]["occurrence"]["owner_id"], owner.id,
+                    consumers[0]["occurrence"]["owner_id"], owner["id"],
                     "{phase}: actual caller declaration"
                 );
                 assert_eq!(
@@ -1354,10 +1797,10 @@ mod tests {
                         _ => unreachable!(),
                     };
                     let rules = if extension == "toml" {
-                        r#"receivers = ["template_context=project.render", { metadata = { arity = 2 }, enabled = true }]
-builtins = ["template.tag.project", "template.tag.if"]
-filters = ["template.filter.project", "template.filter.upper"]
-routes = ["template.tag.trans=project.i18n", { methods = ["GET", "POST"], priority = 7 }]
+                        r#"[[syntax_rules]]
+ id = "project-template-symbols"
+ language = "html"
+  operation = { kind = "template_symbols", requires_loader = false, tags = ["project", "if"], filters = ["project", "upper"], libraries = [], library_routes = { project_route = "project_catalog" } }
 [[class_hierarchy_receivers]]
 bases = ["django.custom.Base"]
 provider = "django.custom.Base"
@@ -1385,16 +1828,16 @@ callee = "InjectService"
 argument = 0
 "#
                     } else {
-                        r#"receivers:
-  - template_context=project.render
-  - metadata: { arity: 2 }
-    enabled: true
-builtins: [template.tag.project, template.tag.if]
-filters: [template.filter.project, template.filter.upper]
-routes:
-  - template.tag.trans=project.i18n
-  - methods: [GET, POST]
-    priority: 7
+                        r#"syntax_rules:
+  - id: project-template-symbols
+    language: html
+    operation:
+      kind: template_symbols
+      requires_loader: false
+      tags: [project, if]
+      filters: [project, upper]
+      libraries: []
+      library_routes: { project_route: project_catalog }
 class_hierarchy_receivers:
   - bases: [django.custom.Base]
     provider: django.custom.Base
@@ -1442,72 +1885,43 @@ di_calls:
                         failures.push(format!("{label}: explicit project pack did not activate"));
                         continue;
                     };
-                    let opaque_receiver = FrameworkManifestValue::Table(BTreeMap::from([
-                        ("enabled".to_owned(), FrameworkManifestValue::Boolean(true)),
-                        (
-                            "metadata".to_owned(),
-                            FrameworkManifestValue::Table(BTreeMap::from([(
-                                "arity".to_owned(),
-                                FrameworkManifestValue::Integer(2),
-                            )])),
-                        ),
-                    ]));
-                    let opaque_route = FrameworkManifestValue::Table(BTreeMap::from([
-                        (
-                            "methods".to_owned(),
-                            FrameworkManifestValue::Array(vec![
-                                FrameworkManifestValue::String("GET".to_owned()),
-                                FrameworkManifestValue::String("POST".to_owned()),
-                            ]),
-                        ),
-                        ("priority".to_owned(), FrameworkManifestValue::Integer(7)),
-                    ]));
                     for (claim, satisfied) in [
                         (
-                            "project receiver takes precedence",
-                            manifest.receiver_target("template_context") == Some("project.render"),
+                            "project template rule is retained as typed data",
+                            manifest.syntax_rules.iter().any(|rule| {
+                                rule.id == "project-template-symbols"
+                                    && matches!(
+                                        &rule.operation,
+                                        SyntaxOperation::TemplateSymbols { tags, filters, library_routes, .. }
+                                            if tags.iter().any(|tag| tag == "project")
+                                                && filters.iter().any(|filter| filter == "project")
+                                                && library_routes.get("project_route").is_some_and(|library| library == "project_catalog")
+                                    )
+                            }),
                         ),
                         (
-                            "project route takes precedence",
-                            manifest.route_target("template.tag.trans") == Some("project.i18n"),
-                        ),
-                        ("project builtin remains", manifest.has_builtin("template.tag.project")),
-                        ("project filter remains", manifest.has_filter("template.filter.project")),
-                        (
-                            "bundled builtin follows merge mode",
-                            manifest.has_builtin("template.tag.block") != replace,
+                            "bundled template tag follows merge mode",
+                            manifest.syntax_rules.iter().any(|rule| matches!(
+                                &rule.operation,
+                                SyntaxOperation::TemplateSymbols { tags, .. }
+                                    if tags.iter().any(|tag| tag == "block")
+                            )) != replace,
                         ),
                         (
-                            "bundled filter follows merge mode",
-                            manifest.has_filter("template.filter.lower") != replace,
+                            "bundled template filter follows merge mode",
+                            manifest.syntax_rules.iter().any(|rule| matches!(
+                                &rule.operation,
+                                SyntaxOperation::TemplateSymbols { filters, .. }
+                                    if filters.iter().any(|filter| filter == "lower")
+                            )) != replace,
                         ),
                         (
-                            "bundled route follows merge mode",
-                            manifest.route_target("template.tag.static") == (!replace).then_some("static"),
-                        ),
-                        (
-                            "receiver table remains opaque and project first",
-                            manifest.receivers.get(1) == Some(&opaque_receiver),
-                        ),
-                        (
-                            "route table remains opaque and project first",
-                            manifest.routes.get(1) == Some(&opaque_route),
-                        ),
-                        (
-                            "builtin exact-string identity is unique",
-                            manifest.builtins.iter().filter(|rule| matches!(rule, FrameworkManifestValue::String(value) if value == "template.tag.if")).count() == 1,
-                        ),
-                        (
-                            "filter exact-string identity is unique",
-                            manifest.filters.iter().filter(|rule| matches!(rule, FrameworkManifestValue::String(value) if value == "template.filter.upper")).count() == 1,
-                        ),
-                        (
-                            "receiver source identity is unique",
-                            manifest.receivers.iter().filter(|rule| matches!(rule, FrameworkManifestValue::String(value) if value.starts_with("template_context="))).count() == 1,
-                        ),
-                        (
-                            "route source identity is unique",
-                            manifest.routes.iter().filter(|rule| matches!(rule, FrameworkManifestValue::String(value) if value.starts_with("template.tag.trans="))).count() == 1,
+                            "bundled library route follows merge mode",
+                            manifest.syntax_rules.iter().any(|rule| matches!(
+                                &rule.operation,
+                                SyntaxOperation::TemplateSymbols { library_routes, .. }
+                                    if library_routes.get("static").is_some_and(|library| library == "static")
+                            )) != replace,
                         ),
                         (
                             "typed class rule collision uses project provider",
@@ -1601,26 +2015,11 @@ di_calls:
                         failures.push(format!("{label}: re-collection is not deterministic"));
                     }
                     for (invalid, content) in [
-                        (
-                            "missing section",
-                            "receivers = []\nbuiltins = []\nfilters = []\n",
-                        ),
-                        (
-                            "unknown section",
-                            "receivers = []\nbuiltins = []\nfilters = []\nroutes = []\nunknown = []\n",
-                        ),
-                        (
-                            "wrong section shape",
-                            "receivers = {}\nbuiltins = []\nfilters = []\nroutes = []\n",
-                        ),
-                        (
-                            "conflicting modes",
-                            "extend = true\nreplace = true\nreceivers = []\nbuiltins = []\nfilters = []\nroutes = []\n",
-                        ),
-                        (
-                            "wrong mode shape",
-                            "extend = \"true\"\nreceivers = []\nbuiltins = []\nfilters = []\nroutes = []\n",
-                        ),
+                        ("removed legacy section", "receivers = []\n"),
+                        ("unknown section", "unknown = []\n"),
+                        ("wrong rule shape", "semantic_rules = {}\n"),
+                        ("conflicting modes", "extend = true\nreplace = true\n"),
+                        ("wrong mode shape", "extend = \"true\"\n"),
                     ] {
                         fs::write(directory.join("invalid.toml"), content).unwrap();
                         if DependencyRegistry::try_collect_with_paths(root, None, &[]).is_ok() {
@@ -1653,9 +2052,7 @@ di_calls:
                             "[[di_calls]]\ncallee = \"Inject\"\nargument = 0\nextra = true\n",
                         ),
                     ] {
-                        let content = format!(
-                            "receivers = []\nbuiltins = []\nfilters = []\nroutes = []\n{typed_rule}"
-                        );
+                        let content = typed_rule.to_string();
                         fs::write(directory.join("invalid.toml"), content).unwrap();
                         if DependencyRegistry::try_collect_with_paths(root, None, &[]).is_ok() {
                             failures.push(format!("{label}: accepted {invalid}"));
@@ -1690,7 +2087,7 @@ di_calls:
         .unwrap();
         let registry = DependencyRegistry::try_collect_with_paths(root, None, &[]).unwrap();
         match registry.framework_manifest_for_path(family, "src/app.py", "gridviewspec", "grid_view_spec") {
-            Some(manifest) if manifest.receiver_target("GridViewSpec") == Some("grid_view_spec.types.spec.GridViewSpec") => {}
+            Some(manifest) if manifest.class_hierarchy_receivers.iter().any(|rule| rule.bases.iter().any(|base| base == "grid_view_spec.types.spec.GridViewSpec")) => {}
             _ => failures.push("declared grid-view-spec did not activate its verified GridViewSpec bundle receiver".to_owned()),
         }
         assert!(failures.is_empty(), "{}", failures.join("\n"));
@@ -1730,8 +2127,8 @@ di_calls:
                     "callee = \"Depends\"\nargument = 1",
                 )
             );
-            let addition = "receivers = []\nbuiltins = []\nfilters = []\nroutes = []\n[[di_calls]]\ncallee = 'ProjectDepends'\nargument = 0\n";
-            let duplicate = "receivers = []\nbuiltins = []\nfilters = []\nroutes = []\n[[di_calls]]\ncallee = 'Depends'\nargument = 0\n[[di_calls]]\ncallee = 'Depends'\nargument = 0\n";
+            let addition = "[[di_calls]]\ncallee = 'ProjectDepends'\nargument = 0\n";
+            let duplicate = "[[di_calls]]\ncallee = 'Depends'\nargument = 0\n[[di_calls]]\ncallee = 'Depends'\nargument = 0\n";
             let clean = serde_json::json!([]);
             let lost_depends = serde_json::json!([{
                 "framework": "fastapi",
@@ -2058,7 +2455,7 @@ di_calls:
             use crate::{db::reader, engine::pipeline};
             let mixed_root = temporary.0.join("mixed-grammar");
             fs::create_dir_all(mixed_root.join(".forge/frameworks")).unwrap();
-            fs::write(mixed_root.join(".forge/frameworks/mixed.toml"), "receivers=[]\nbuiltins=[]\nfilters=[]\nroutes=[]\n[[route_calls]]\ncallee='publish'\nmethod='GET'\npath_argument=0\nhandler_argument=1\n[[di_calls]]\ncallee='InjectMixed'\nargument=0\n").unwrap();
+            fs::write(mixed_root.join(".forge/frameworks/mixed.toml"), "[[route_calls]]\ncallee='publish'\nmethod='GET'\npath_argument=0\nhandler_argument=1\n[[di_calls]]\ncallee='InjectMixed'\nargument=0\n").unwrap();
             let database = mixed_root.join(".forge/code-map.sqlite");
             let cold_database = mixed_root.join(".forge/cold.sqlite");
             for revision in 0..3 {

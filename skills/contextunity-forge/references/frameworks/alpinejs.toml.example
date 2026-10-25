@@ -1,41 +1,12 @@
 # Example .forge/frameworks/alpinejs.toml
-# Framework rules consumed by the Forge language linker for Alpine.js directives and magic properties.
-# All four sections (receivers, builtins, filters, routes) are required by the schema.
+# Package APIs and directive attributes are generic syntax-rule data.
+[[syntax_rules]]
+id = "implicit-receivers"
+language = "javascript"
+activation = [{ kind = "package", name = "alpinejs" }]
+operation = { kind = "implicit_receivers", names = ["$el", "$refs", "$event", "$dispatch", "$nextTick", "$watch", "$store", "$data", "$id", "$root", "$parent"] }
 
-receivers = [
-  "$el",
-  "$refs",
-  "$event",
-  "$dispatch",
-  "$nextTick",
-  "$watch",
-  "$store",
-  "$data",
-  "$id",
-  "$root",
-  "$parent",
-]
-
-builtins = [
-  "x-data",
-  "x-init",
-  "x-show",
-  "x-bind",
-  "x-on",
-  "x-text",
-  "x-html",
-  "x-model",
-  "x-for",
-  "x-transition",
-  "x-effect",
-  "x-ignore",
-  "x-ref",
-  "x-cloak",
-  "x-teleport",
-  "x-if",
-  "x-id",
-]
-
-filters = []
-
-routes = []
+[[syntax_rules]]
+id = "script-attributes"
+language = "html"
+operation = { kind = "html_script_attributes", event_prefixes = ["@", "x-on:"], object_attribute = "x-data", event_scope = "alpine_event", object_scope = "alpine_data" }

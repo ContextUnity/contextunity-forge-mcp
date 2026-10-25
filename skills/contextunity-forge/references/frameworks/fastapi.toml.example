@@ -7,11 +7,6 @@
 # Imported receiver/source proof is required; missing/dynamic/duplicate targets gain no exact edge.
 # An absent optional response_model emits no attachment fact or coverage.
 
-receivers = []
-builtins = []
-filters = []
-routes = []
-
 [[route_decorators]]
 callee = ".get"
 method = "GET"
