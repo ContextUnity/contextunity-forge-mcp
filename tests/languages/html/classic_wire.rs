@@ -59,14 +59,15 @@ fn classic_flow_wire_slots_and_constructor_receiver_survive_cold_build_and_delta
             |row| row.get(0),
         )
         .unwrap();
-    let facts: contextunity_forge_mcp::core::models::Facts =
-        serde_json::from_slice(&zstd::stream::decode_all(blob.as_slice()).unwrap()).unwrap();
-    let scope = facts
-        .nodes
+    let facts = reader::decode_local_facts(&blob).unwrap();
+    let projected = serde_json::to_value(&facts).unwrap();
+    let scope = projected["nodes"]
+        .as_array()
+        .unwrap()
         .iter()
-        .find(|node| node.details["classic_global"] == true)
+        .find(|node| node["details"]["classic_global"] == true)
         .unwrap();
-    let details = serde_json::to_string(&scope.details).unwrap();
+    let details = serde_json::to_string(&scope["details"]).unwrap();
     let flow = details.split("\"value_flow\":").nth(1).unwrap();
     assert!(flow.starts_with("{\"bindings\":["), "{details}");
     assert!(flow.contains("],\"fields\":null"), "{details}");

@@ -163,12 +163,10 @@ fn mcp_document_retrieval_and_explain_output_controls() {
     );
 
     let document = client.payload("get_doc", json!({"path_or_id":"README.md"}));
-    assert!(
-        document["sections"]["items"][0]["content"]
-            .as_str()
-            .unwrap()
-            .contains("documented contract")
-    );
+    assert!(document["sections"]["items"][0]["content"]
+        .as_str()
+        .unwrap()
+        .contains("documented contract"));
     let outline = client.payload(
         "get_doc",
         json!({"path_or_id":"README.md","detail":"compact"}),
@@ -249,9 +247,12 @@ fn mcp_document_retrieval_and_explain_output_controls() {
             "missing JSON-derived section token {token}: {search_markdown}"
         );
     }
-    assert!(search_markdown.contains(
-        "# [Contract]\n\nThe `target` function preserves the [documented] [contract]."
-    ), "{search_markdown}");
+    assert!(
+        search_markdown.contains(
+            "# [Contract]\n\nThe `target` function preserves the [documented] [contract]."
+        ),
+        "{search_markdown}"
+    );
     assert!(
         search_markdown.contains("[README.md](file://"),
         "search excerpt has a workspace-resolved URI: {search_markdown}"
@@ -581,21 +582,17 @@ fn mcp_document_retrieval_and_explain_output_controls() {
         ["docs/rules.md", "docs/extra.md"].into_iter().collect()
     );
     let reciprocal = client.payload("get_doc", json!({"path_or_id":"docs/rules.md","limit":100}));
-    assert!(
-        reciprocal["cited_by_doc"]["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|section| section["path"] == "docs/guide.md")
-    );
+    assert!(reciprocal["cited_by_doc"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|section| section["path"] == "docs/guide.md"));
     let edges = client.payload("code_map_analyze", json!({"target":"SELECT e.kind,p.path,e.line FROM edges e JOIN path_dictionary p ON p.path_id=e.path_id WHERE e.kind IN('cites_doc','cited_by_doc') AND p.path='docs/guide.md' ORDER BY e.kind,e.line","limit":100}));
-    assert!(
-        edges["rows"]["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|edge| edge["kind"] == "cites_doc" && edge["line"] == 6)
-    );
+    assert!(edges["rows"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|edge| edge["kind"] == "cites_doc" && edge["line"] == 6));
 
     for (path, doc_type, status) in [
         ("AGENTS.md", "guide", Value::Null),
@@ -614,24 +611,20 @@ fn mcp_document_retrieval_and_explain_output_controls() {
             section["status"], status,
             "unspecified is not accepted: {section}"
         );
-        assert!(
-            document["referenced_symbols"]["items"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|symbol| symbol["name"] == "target" && symbol["path"] == "src/main.rs")
-        );
-    }
-    let invariant_nodes = client.payload("code_map_analyze", json!({"target":"SELECT n.name,p.path,n.line FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.kind='invariant' ORDER BY n.name,p.path,n.line","limit":100}));
-    assert!(
-        invariant_nodes["rows"]["items"]
+        assert!(document["referenced_symbols"]["items"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|node| node["name"] == "INV-PLAN"
-                && node["path"] == "docs/plans/proposed.md"
-                && node["line"] == 7)
-    );
+            .any(|symbol| symbol["name"] == "target" && symbol["path"] == "src/main.rs"));
+    }
+    let invariant_nodes = client.payload("code_map_analyze", json!({"target":"SELECT n.name,p.path,n.line FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.kind='invariant' ORDER BY n.name,p.path,n.line","limit":100}));
+    assert!(invariant_nodes["rows"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|node| node["name"] == "INV-PLAN"
+            && node["path"] == "docs/plans/proposed.md"
+            && node["line"] == 7));
     let governance = client.payload("code_map_analyze", json!({"target":"SELECT e.kind,s.name source_name,t.name target_name,p.path,e.line FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes t ON t.node_hash=e.dst_hash JOIN path_dictionary p ON p.path_id=e.path_id WHERE e.kind IN('governs','governed_by') ORDER BY e.kind,s.name,t.name","limit":100}));
     let governance = governance["rows"]["items"].as_array().unwrap();
     for (kind, source, target) in [
@@ -701,13 +694,11 @@ fn mcp_document_retrieval_and_explain_output_controls() {
         } else {
             "affected_docs"
         }];
-        assert!(
-            docs["items"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|doc| doc["path"] == "docs/rules.md")
-        );
+        assert!(docs["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|doc| doc["path"] == "docs/rules.md"));
         if tool == "code_map_inspect" {
             let (_, response) = client.call(tool, json!({"selector":"src/main.rs:target","limit":100,"show_source":false,"format":"markdown"}));
             assert_ne!(response["result"]["isError"], true, "{response}");
@@ -864,25 +855,21 @@ fn mcp_document_retrieval_and_explain_output_controls() {
         .iter()
         .find(|item| item["path"] == "docs/allowed/inspect.md")
         .expect("linked inspect document");
-    assert!(
-        document["content"]
-            .as_str()
-            .expect("full document content")
-            .contains("Unique full inspect document content")
-    );
+    assert!(document["content"]
+        .as_str()
+        .expect("full document content")
+        .contains("Unique full inspect document content"));
 
     let coverage = &inspected["coverage"];
     assert_eq!(
         coverage["has_more"], false,
         "coverage page should be complete: {coverage}"
     );
-    assert!(
-        coverage["items"]
-            .as_array()
-            .expect("full coverage page")
-            .iter()
-            .any(|item| item["expression"] == "helper" && item["status"] == "resolved")
-    );
+    assert!(coverage["items"]
+        .as_array()
+        .expect("full coverage page")
+        .iter()
+        .any(|item| item["expression"] == "helper" && item["status"] == "resolved"));
     let resolved_total = coverage["statuses"]
         .as_array()
         .expect("scope-wide coverage statuses")
@@ -906,12 +893,10 @@ fn mcp_document_retrieval_and_explain_output_controls() {
             .expect("empty coverage-page JSON response"),
     )
     .expect("empty coverage-page JSON payload");
-    assert!(
-        coverage_tail_json["coverage"]["items"]
-            .as_array()
-            .expect("empty coverage tail")
-            .is_empty()
-    );
+    assert!(coverage_tail_json["coverage"]["items"]
+        .as_array()
+        .expect("empty coverage tail")
+        .is_empty());
     assert_eq!(
         coverage_tail_json["coverage"]["statuses"],
         coverage["statuses"]
@@ -1099,13 +1084,11 @@ fn mcp_document_retrieval_and_explain_output_controls() {
     );
     let cli: Value = serde_json::from_slice(&cli.stdout).unwrap();
     for response in [&cli, &expected] {
-        assert!(
-            response["referenced_symbols"]["items"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|symbol| symbol["name"] == "target" && symbol["path"] == "src/main.rs")
-        );
+        assert!(response["referenced_symbols"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|symbol| symbol["name"] == "target" && symbol["path"] == "src/main.rs"));
     }
     assert_eq!(
         cli["referenced_symbols"]["total"],
@@ -1117,16 +1100,12 @@ fn mcp_document_retrieval_and_explain_output_controls() {
         json!({"target":"docs/guide.md","limit":100}),
     );
     let diagnostics = broken["doc_diagnostics"]["items"].as_array().unwrap();
-    assert!(
-        diagnostics
-            .iter()
-            .any(|item| item["kind"] == "broken_doc_link" && item["line"] == 8)
-    );
-    assert!(
-        diagnostics
-            .iter()
-            .any(|item| item["kind"] == "broken_doc_link" && item["line"] == 9)
-    );
+    assert!(diagnostics
+        .iter()
+        .any(|item| item["kind"] == "broken_doc_link" && item["line"] == 8));
+    assert!(diagnostics
+        .iter()
+        .any(|item| item["kind"] == "broken_doc_link" && item["line"] == 9));
     ws.write("src/main.rs", "// shifted\n// still a valid source range\npub fn target() {}\npub fn caller() { target(); }\npub fn grandcaller() { caller(); }\n");
     ws.delta(&["src/main.rs"]);
     invalidate_mcp_connection_cache(&ws.db()).unwrap();
@@ -1163,13 +1142,11 @@ fn mcp_document_retrieval_and_explain_output_controls() {
         "code_map_analyze",
         json!({"target":"docs/range.md","limit":100}),
     );
-    assert!(
-        !clear["doc_diagnostics"]["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|item| item["kind"] == "stale_doc_sections")
-    );
+    assert!(!clear["doc_diagnostics"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["kind"] == "stale_doc_sections"));
     ws.write("src/main.rs", "pub fn target_renamed() {}\npub fn caller() { target_renamed(); }\npub fn grandcaller() { caller(); }\n");
     ws.delta(&["src/main.rs"]);
     invalidate_mcp_connection_cache(&ws.db()).unwrap();

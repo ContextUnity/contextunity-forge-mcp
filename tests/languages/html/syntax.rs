@@ -690,8 +690,9 @@ fn inline_handler_provider_rebinding_fails_closed_after_exact_declaration() {
     let extracted = ast::extract("site/assets/cart.js", "javascript", script).unwrap();
     assert!(
         extracted.nodes.iter().any(|node| {
+            let details = crate::common::assertions::projected_node_details(&extracted, node);
             node.kind == "module"
-                && node.details["rebindings"]
+                && details["rebindings"]
                     .as_array()
                     .is_some_and(|bindings| bindings.iter().any(|binding| binding == "openCart"))
         }),

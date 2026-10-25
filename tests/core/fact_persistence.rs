@@ -1,8 +1,5 @@
 use crate::common::Workspace;
-use contextunity_forge_mcp::{
-    core::models::Facts,
-    db::{reader, writer},
-};
+use contextunity_forge_mcp::db::{reader, writer};
 use rusqlite::Connection;
 use std::path::PathBuf;
 
@@ -22,10 +19,10 @@ fn navigation_storage_preserves_compressed_analysis_and_delta_calls() {
             |row| row.get(0),
         )
         .unwrap();
-    let facts: Facts =
-        serde_json::from_slice(&zstd::stream::decode_all(blob.as_slice()).unwrap()).unwrap();
+    let facts = reader::decode_local_facts(&blob).unwrap();
     let caller = facts.nodes.iter().find(|node| node.name == "run").unwrap();
-    assert!(caller.details.get("value_flow").is_some());
+    let caller_details = crate::common::assertions::projected_node_details(&facts, caller);
+    assert!(caller_details.get("value_flow").is_some());
     let stored: String = conn
         .query_row(
             "SELECT details FROM nodes WHERE id=?1",
@@ -34,7 +31,7 @@ fn navigation_storage_preserves_compressed_analysis_and_delta_calls() {
         )
         .unwrap();
     let stored: serde_json::Value = serde_json::from_str(&stored).unwrap();
-    assert_eq!(stored["signature"], caller.details["signature"]);
+    assert_eq!(stored["signature"], caller_details["signature"]);
     let method: String = conn
         .query_row(
             "SELECT details FROM nodes WHERE name='execute'",

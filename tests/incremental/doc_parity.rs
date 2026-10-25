@@ -163,16 +163,32 @@ fn source_delta_relinks_affected_docs_with_bare_suffix_references() {
     let identity_workspace = Workspace::new();
     let linked = Workspace::new();
     identity_workspace.write("forge-mcp.yaml", &format!("roots: [.]\ndocs: [docs]\nlinked_workspaces:\n  - name: library\n    path: '{}'\n    roots: [src, frontend]\n    docs: [docs]\n", linked.root().display()));
-    identity_workspace.write("primary.py", "def validate(): return 1\ndef primary_only(): return 2\n");
-    identity_workspace.write("docs/context-primary.md", "# Primary\nUse `validate` and `linked_only`.\n");
-    identity_workspace.write("docs/cross-workspace.md", "# Cross workspace\n[`validate`](../[library]/src/validate.py)\n");
+    identity_workspace.write(
+        "primary.py",
+        "def validate(): return 1\ndef primary_only(): return 2\n",
+    );
+    identity_workspace.write(
+        "docs/context-primary.md",
+        "# Primary\nUse `validate` and `linked_only`.\n",
+    );
+    identity_workspace.write(
+        "docs/cross-workspace.md",
+        "# Cross workspace\n[`validate`](../[library]/src/validate.py)\n",
+    );
     linked.write("src/validate.py", "# validation module\n");
     linked.write("src/validate/__init__.py", "# validation package\n");
     linked.write("src/validate/validate.py", "# nested validation module\n");
-    let header_source = "class GridViewHeader:\n    content: str = ''\ndef linked_only(): return 3\n";
+    let header_source =
+        "class GridViewHeader:\n    content: str = ''\ndef linked_only(): return 3\n";
     linked.write("src/header.py", header_source);
-    linked.write("frontend/header.ts", "export interface GridViewHeader {\n  content: string;\n}\n");
-    linked.write("docs/context-linked.md", "# Linked\nUse `validate` and `primary_only`.\n");
+    linked.write(
+        "frontend/header.ts",
+        "export interface GridViewHeader {\n  content: string;\n}\n",
+    );
+    linked.write(
+        "docs/context-linked.md",
+        "# Linked\nUse `validate` and `primary_only`.\n",
+    );
     linked.write("docs/header.md", "# Header\nUse `GridViewHeader.content` and `GridViewHeader.content`.\n## Other\nUse `GridViewHeader.content`.\n");
     identity_workspace.write("provider.py", "def shared_target(): return 1\n");
     identity_workspace.write("other.py", "def shared_target(): return 2\n");
@@ -285,13 +301,8 @@ fn source_delta_relinks_affected_docs_with_bare_suffix_references() {
             "explicit same-file declaration lost to the containing module suffix: {unique}"
         ));
     }
-    let unlinked_unique = reader::get_doc_paged(
-        &live,
-        "docs/unlinked-unique.md",
-        None,
-        &options,
-    )
-    .unwrap();
+    let unlinked_unique =
+        reader::get_doc_paged(&live, "docs/unlinked-unique.md", None, &options).unwrap();
     if !unlinked_unique["referenced_symbols"]["items"]
         .as_array()
         .unwrap()
@@ -336,8 +347,7 @@ fn source_delta_relinks_affected_docs_with_bare_suffix_references() {
             "a missing same-token link must not erase or authorize another path; edges store one row per document-section/symbol, so line 2 is the valid canonical source line, got {mixed_lines:?}: {mixed_occurrences}"
         ));
     }
-    let module =
-        reader::get_doc_paged(&live, "docs/module-identity.md", None, &options).unwrap();
+    let module = reader::get_doc_paged(&live, "docs/module-identity.md", None, &options).unwrap();
     if !module["referenced_symbols"]["items"]
         .as_array()
         .unwrap()
@@ -397,39 +407,31 @@ fn source_delta_relinks_affected_docs_with_bare_suffix_references() {
             "legacy :: qualified identity no longer resolves: {colon_qualified}"
         ));
     }
-    let qualified_priority_refs = reader::get_doc_paged(
-        &live,
-        "docs/qualified-priority.md",
-        None,
-        &options,
-    )
-    .unwrap();
+    let qualified_priority_refs =
+        reader::get_doc_paged(&live, "docs/qualified-priority.md", None, &options).unwrap();
     if !qualified_priority_refs["referenced_symbols"]["items"]
         .as_array()
         .unwrap()
         .iter()
-        .any(|symbol| {
-            symbol["path"] == "src/qualified.rs" && symbol["name"] == "live"
-        })
+        .any(|symbol| symbol["path"] == "src/qualified.rs" && symbol["name"] == "live")
     {
         regressions.push(format!(
             "exact qualified declaration did not produce a verified reference: {qualified_priority_refs}"
         ));
     }
-    let qualified_priority = reader::analyze_paged(
-        &live,
-        "docs/qualified-priority.md",
-        Some(false),
-        &options,
-    )
-    .unwrap();
+    let qualified_priority =
+        reader::analyze_paged(&live, "docs/qualified-priority.md", Some(false), &options).unwrap();
     let priority_stale = qualified_priority["doc_diagnostics"]["items"]
         .as_array()
         .unwrap()
         .iter()
         .filter(|item| item["kind"] == "stale_doc_sections")
         .collect::<Vec<_>>();
-    if priority_stale.len() != 2 || priority_stale.iter().any(|item| item["target"]["line"] != 2) {
+    if priority_stale.len() != 2
+        || priority_stale
+            .iter()
+            .any(|item| item["target"]["line"] != 2)
+    {
         regressions.push(format!(
             "exact qualified target must beat deeper suffix for dot and :: spellings: refs={qualified_priority_refs}, diagnostics={qualified_priority}"
         ));
@@ -570,23 +572,49 @@ fn source_delta_relinks_affected_docs_with_bare_suffix_references() {
         );
     }
     let full_options = QueryOptions::resolve(
-        &ResponsePolicy::default(), Some(100), 0,
-        Some(contextunity_forge_mcp::core::response::Detail::Full), None,
-    ).unwrap();
+        &ResponsePolicy::default(),
+        Some(100),
+        0,
+        Some(contextunity_forge_mcp::core::response::Detail::Full),
+        None,
+    )
+    .unwrap();
     for (path, verified_paths, candidate_paths) in [
         ("docs/context-primary.md", vec!["primary.py"], vec![]),
-        ("[library]/docs/context-linked.md", vec![], vec!["[library]/src/validate.py", "[library]/src/validate/__init__.py", "[library]/src/validate/validate.py"]),
-        ("docs/cross-workspace.md", vec!["[library]/src/validate.py"], vec![]),
+        (
+            "[library]/docs/context-linked.md",
+            vec![],
+            vec![
+                "[library]/src/validate.py",
+                "[library]/src/validate/__init__.py",
+                "[library]/src/validate/validate.py",
+            ],
+        ),
+        (
+            "docs/cross-workspace.md",
+            vec!["[library]/src/validate.py"],
+            vec![],
+        ),
     ] {
         let document = reader::get_doc_paged(&live, path, None, &full_options).unwrap();
-        let verified = document["referenced_symbols"]["items"].as_array().unwrap().iter()
-            .filter_map(|item| item["path"].as_str()).collect::<std::collections::BTreeSet<_>>();
-        let candidates = document["referenced_symbol_candidates"]["items"].as_array().cloned().unwrap_or_default();
-        let candidate_targets = candidates.iter().filter_map(|item| item["target"]["path"].as_str())
+        let verified = document["referenced_symbols"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|item| item["path"].as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        let candidates = document["referenced_symbol_candidates"]["items"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let candidate_targets = candidates
+            .iter()
+            .filter_map(|item| item["target"]["path"].as_str())
             .collect::<std::collections::BTreeSet<_>>();
         if verified != verified_paths.into_iter().collect()
             || candidate_targets != candidate_paths.into_iter().collect()
-            || document["referenced_symbol_candidates"]["total"].as_u64() != Some(candidates.len() as u64)
+            || document["referenced_symbol_candidates"]["total"].as_u64()
+                != Some(candidates.len() as u64)
         {
             regressions.push(format!("document workspace/path eligibility must precede name tiers for {path}: {document}"));
         }
@@ -594,7 +622,11 @@ fn source_delta_relinks_affected_docs_with_bare_suffix_references() {
     let unchanged_document = std::fs::read(linked.path("docs/header.md")).unwrap();
     for (source, expected_verified, expected_candidates) in [
         (Some(header_source), 0, 2),
-        (Some("class GridViewHeader:\n    renamed: str = ''\ndef linked_only(): return 3\n"), 1, 0),
+        (
+            Some("class GridViewHeader:\n    renamed: str = ''\ndef linked_only(): return 3\n"),
+            1,
+            0,
+        ),
         (None, 1, 0),
         (Some(header_source), 0, 2),
     ] {
@@ -605,34 +637,73 @@ fn source_delta_relinks_affected_docs_with_bare_suffix_references() {
         let report = identity_workspace.delta(&["[library]/src/header.py"]);
         let cold_path = identity_workspace.path(".forge/cold-context.sqlite");
         let cold_report = identity_workspace.build_to(&cold_path);
-        assert_eq!(report["output_root"], cold_report["output_root"], "source-only linked edit/delete/restore must preserve complete cold/delta commitments");
+        assert_eq!(
+            report["output_root"], cold_report["output_root"],
+            "source-only linked edit/delete/restore must preserve complete cold/delta commitments"
+        );
         assert_eq!(doc_edges(&identity_workspace.db()), doc_edges(&cold_path));
         assert_eq!(std::fs::read(linked.path("docs/header.md")).unwrap(), unchanged_document,
             "candidate transitions must follow source-only changes, without rewriting the documentary claim");
-        let delta_connection = reader::open(&identity_workspace.db(), identity_workspace.root()).unwrap();
+        let delta_connection =
+            reader::open(&identity_workspace.db(), identity_workspace.root()).unwrap();
         let cold_connection = reader::open(&cold_path, identity_workspace.root()).unwrap();
-        for path in ["docs/context-primary.md", "docs/cross-workspace.md", "[library]/docs/context-linked.md", "[library]/docs/header.md"] {
-            let delta_document = reader::get_doc_paged(&delta_connection, path, None, &full_options).unwrap();
-            let cold_document = reader::get_doc_paged(&cold_connection, path, None, &full_options).unwrap();
-            assert_eq!(delta_document, cold_document, "full public readback must match after source-only transition for {path}");
+        for path in [
+            "docs/context-primary.md",
+            "docs/cross-workspace.md",
+            "[library]/docs/context-linked.md",
+            "[library]/docs/header.md",
+        ] {
+            let delta_document =
+                reader::get_doc_paged(&delta_connection, path, None, &full_options).unwrap();
+            let cold_document =
+                reader::get_doc_paged(&cold_connection, path, None, &full_options).unwrap();
+            assert_eq!(
+                delta_document, cold_document,
+                "full public readback must match after source-only transition for {path}"
+            );
         }
-        let document = reader::get_doc_paged(&delta_connection, "[library]/docs/header.md", Some("Header"), &full_options).unwrap();
-        let candidates = document["referenced_symbol_candidates"]["items"].as_array().cloned().unwrap_or_default();
-        let candidate_paths = candidates.iter().filter_map(|item| item["target"]["path"].as_str())
+        let document = reader::get_doc_paged(
+            &delta_connection,
+            "[library]/docs/header.md",
+            Some("Header"),
+            &full_options,
+        )
+        .unwrap();
+        let candidates = document["referenced_symbol_candidates"]["items"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let candidate_paths = candidates
+            .iter()
+            .filter_map(|item| item["target"]["path"].as_str())
             .collect::<std::collections::BTreeSet<_>>();
         if document["referenced_symbols"]["total"] != expected_verified
             || document["referenced_symbol_candidates"]["total"] != expected_candidates
             || candidates.len() != expected_candidates
-            || candidates.iter().any(|item| item["source"]["path"] != "[library]/docs/header.md"
-                || item["source"]["name"] != "GridViewHeader.content" || item["source"]["line"] != 2
-                || !item["source"]["doc_id"].is_string() || !item["target"]["id"].is_string()
-                || item["target"]["name"] != "content")
-            || (expected_candidates == 2 && candidate_paths != ["[library]/frontend/header.ts", "[library]/src/header.py"].into_iter().collect())
+            || candidates.iter().any(|item| {
+                item["source"]["path"] != "[library]/docs/header.md"
+                    || item["source"]["name"] != "GridViewHeader.content"
+                    || item["source"]["line"] != 2
+                    || !item["source"]["doc_id"].is_string()
+                    || !item["target"]["id"].is_string()
+                    || item["target"]["name"] != "content"
+            })
+            || (expected_candidates == 2
+                && candidate_paths
+                    != ["[library]/frontend/header.ts", "[library]/src/header.py"]
+                        .into_iter()
+                        .collect())
         {
             regressions.push(format!("source-only transition must distinguish a verified singleton from complete ambiguous discovery ({expected_verified}/{expected_candidates}): {document}"));
         }
-        if expected_verified == 1 && !document["referenced_symbols"]["items"].as_array().unwrap().iter()
-            .all(|item| item["path"] == "[library]/frontend/header.ts" && item["name"] == "content")
+        if expected_verified == 1
+            && !document["referenced_symbols"]["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|item| {
+                    item["path"] == "[library]/frontend/header.ts" && item["name"] == "content"
+                })
         {
             regressions.push(format!("only the remaining live TS field may verify after Python edit/deletion: {document}"));
         }
@@ -641,7 +712,9 @@ fn source_delta_relinks_affected_docs_with_bare_suffix_references() {
             [], |row| row.get(0),
         ).unwrap();
         if expected_candidates == 2 && forbidden_edges != 0 {
-            regressions.push(format!("ambiguous discovery cannot create verified/governing edges: {forbidden_edges}"));
+            regressions.push(format!(
+                "ambiguous discovery cannot create verified/governing edges: {forbidden_edges}"
+            ));
         }
     }
     assert!(
@@ -683,15 +756,32 @@ fn readme_only_delta_preserves_verified_code_links_without_component_claims() {
             assert_eq!(doc_edges(&workspace.db()), doc_edges(&cold));
         }
         let edges = doc_edges(&workspace.db());
-        assert_eq!(edges.len(), 2, "one verified declaration requires reciprocal documentary edges: {edges:?}");
-        assert!(edges.iter().any(|(src, dst, kind)| {
-            src.contains("README.md") && dst == &simple_id && kind == "documents"
-        }), "the explicit file claim must document the actual simple declaration: {edges:?}");
-        assert!(edges.iter().any(|(src, dst, kind)| {
-            src == &simple_id && dst.contains("README.md") && kind == "references_doc"
-        }), "the actual declaration must retain its reciprocal README reference: {edges:?}");
-        assert!(edges.iter().all(|(src, dst, _)| src != "component:pkg" && dst != "component:pkg"),
-            "a bare component token cannot establish a verified code claim: {edges:?}");
-        assert_eq!(edges, baseline, "a README heading edit must preserve all verified documentary edges");
+        assert_eq!(
+            edges.len(),
+            2,
+            "one verified declaration requires reciprocal documentary edges: {edges:?}"
+        );
+        assert!(
+            edges.iter().any(|(src, dst, kind)| {
+                src.contains("README.md") && dst == &simple_id && kind == "documents"
+            }),
+            "the explicit file claim must document the actual simple declaration: {edges:?}"
+        );
+        assert!(
+            edges.iter().any(|(src, dst, kind)| {
+                src == &simple_id && dst.contains("README.md") && kind == "references_doc"
+            }),
+            "the actual declaration must retain its reciprocal README reference: {edges:?}"
+        );
+        assert!(
+            edges
+                .iter()
+                .all(|(src, dst, _)| src != "component:pkg" && dst != "component:pkg"),
+            "a bare component token cannot establish a verified code claim: {edges:?}"
+        );
+        assert_eq!(
+            edges, baseline,
+            "a README heading edit must preserve all verified documentary edges"
+        );
     }
 }

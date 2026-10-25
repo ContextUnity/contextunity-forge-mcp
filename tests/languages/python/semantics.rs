@@ -6,19 +6,14 @@ fn typed_parameters_preserve_forward_qualified_and_default_types_in_their_scope(
     let facts = ast::extract("parameters.py", "python", source).unwrap();
     assert!(facts.errors.is_empty(), "{:?}", facts.errors);
     let node = |name| facts.nodes.iter().find(|node| node.name == name).unwrap();
+    let details = |name| crate::common::assertions::projected_node_details(&facts, node(name));
     assert_eq!(
-        node("run").details["param_types"],
+        details("run")["param_types"],
         json!({"service":"Service", "forward":"pkg.Service", "default":"pkg.Service"})
     );
-    assert_eq!(
-        node("nested").details["param_types"],
-        json!({"service":"Other"})
-    );
-    assert_eq!(
-        node("call").details["param_types"],
-        json!({"service":"Service"})
-    );
-    assert!(node("untyped").details.get("param_types").is_none());
+    assert_eq!(details("nested")["param_types"], json!({"service":"Other"}));
+    assert_eq!(details("call")["param_types"], json!({"service":"Service"}));
+    assert!(details("untyped").get("param_types").is_none());
 }
 
 #[test]
@@ -29,11 +24,15 @@ fn class_assignments_are_bindings_without_leaking_nested_callable_assignments() 
         .iter()
         .find(|node| node.name == "Model")
         .unwrap();
-    assert_eq!(model.details["bindings"], json!(["execute", "objects"]));
+    assert_eq!(
+        crate::common::assertions::projected_node_details(&facts, model)["bindings"],
+        json!(["execute", "objects"])
+    );
 }
 
 #[test]
 fn computed_receiver_hints_are_structural_and_preserve_original_expression() {
+    use contextunity_forge_mcp::core::semantic::{SourcePosition, ValueExpr};
     let source = "def run():\n    'value'.upper()\n    r'value'.strip()\n    b'value'.upper()\n    f'{value}'.upper()\n    Widget().execute()\n    package.Widget().execute()\n    super().execute()\n    super(Widget, self).execute()\n    response.request().consume()\n    factory().request().consume()\n";
     let facts = ast::extract("computed.py", "python", source).unwrap();
     assert!(facts.errors.is_empty(), "{:?}", facts.errors);
@@ -54,19 +53,41 @@ fn computed_receiver_hints_are_structural_and_preserve_original_expression() {
     assert!(hint("b'value'.upper").is_none());
     assert!(hint("f'{value}'.upper").is_none());
     assert!(
-        matches!(hint("Widget().execute"), Some(ReceiverHint::CallResult { callee, member }) if callee == "Widget" && member == "execute")
+        matches!(hint("Widget().execute"), Some(ReceiverHint::TypedCallResult { value: ValueExpr::Call { callee, site: None }, member }) if callee == "Widget" && member == "execute")
     );
     assert!(
-        matches!(hint("package.Widget().execute"), Some(ReceiverHint::CallResult { callee, .. }) if callee == "package.Widget")
+        matches!(hint("package.Widget().execute"), Some(ReceiverHint::TypedCallResult { value: ValueExpr::Call { callee, site: None }, member }) if callee == "package.Widget" && member == "execute")
     );
     assert!(
         matches!(hint("super().execute"), Some(ReceiverHint::Super { member }) if member == "execute")
     );
     assert!(hint("super(Widget, self).execute").is_none());
     assert!(
-        matches!(hint("response.request().consume"), Some(ReceiverHint::CallResult { callee, .. }) if callee == "response.request")
+        matches!(hint("response.request().consume"), Some(ReceiverHint::TypedCallResult { value: ValueExpr::Call { callee, site: None }, member }) if callee == "response.request" && member == "consume")
     );
-    assert!(hint("factory().request().consume").is_none());
+    let Some(ReceiverHint::TypedCallResult {
+        value: ValueExpr::Call {
+            callee,
+            site: Some(site),
+        },
+        member,
+    }) = hint("factory().request().consume")
+    else {
+        panic!("nested receiver must retain its canonical call evidence");
+    };
+    assert_eq!(callee, "request");
+    assert_eq!(member, "consume");
+    assert_eq!(
+        site.position,
+        SourcePosition {
+            line: 11,
+            column: 4
+        }
+    );
+    assert!(site.arguments.is_empty());
+    assert!(
+        matches!(site.receiver.as_deref(), Some(ValueExpr::Call { callee, site: None }) if callee == "factory")
+    );
 }
 
 #[test]

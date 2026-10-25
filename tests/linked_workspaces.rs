@@ -311,8 +311,11 @@ fn test_linked_workspace_manifest_outside_roots_does_not_cause_admission_loop() 
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let temp_base =
-        std::env::temp_dir().join(format!("test_forge_mw_loop_{}_{}", std::process::id(), nonce));
+    let temp_base = std::env::temp_dir().join(format!(
+        "test_forge_mw_loop_{}_{}",
+        std::process::id(),
+        nonce
+    ));
 
     let ws_main = temp_base.join("main");
     fs::create_dir_all(ws_main.join("src")).unwrap();
@@ -358,7 +361,11 @@ linked_workspaces:
         Ok(ov)
     });
 
-    assert!(res.is_ok(), "server read must succeed without admission failure: {:?}", res.err());
+    assert!(
+        res.is_ok(),
+        "server read must succeed without admission failure: {:?}",
+        res.err()
+    );
 
     let _ = fs::remove_dir_all(&temp_base);
 }

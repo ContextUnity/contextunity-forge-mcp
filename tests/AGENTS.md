@@ -21,7 +21,8 @@ This document defines the rules for placing, creating, refactoring, and maintain
   - `tests/core.rs` (`tests/core/`): Storage engine, SQLite schema, adapters, scanner limits, and coverage diagnostics.
   - `tests/impact_context.rs`: Impact analysis, traversal reachability, and blast-radius evaluation context.
   - `tests/incremental.rs` (`tests/incremental/`): Delta indexing, resolution identity, module and directory scoping.
-  - `tests/languages.rs` (`tests/languages/`): Language extraction, AST patterns, framework manifests, and language-specific semantics (`INV-CENTRAL-VS-LANGUAGE-ISOLATION`).
+  - `tests/languages.rs` (`tests/languages/`): Language extraction, AST patterns, and language-specific semantics (`INV-CENTRAL-VS-LANGUAGE-ISOLATION`).
+  - `tests/framework_manifests.rs` (`tests/framework_manifests/`): Framework manifest activation and operations, dependency discovery, CommonJS, and manifest deltas.
   - `tests/linked_workspaces.rs`: Multi-workspace links, cross-root dependencies, and workspace boundaries.
   - `tests/linker.rs` (`tests/linker/`, `tests/receivers/`): Cross-file symbol linking, receiver inference, and overload disambiguation.
   - `tests/mcp.rs` (`tests/mcp/`, `tests/mcp_context/`): MCP JSON-RPC protocol server, tool contracts, freshness, and response compaction (includes `tests/mcp_context/ast_search.rs` via `tests/mcp/context.rs`).
@@ -29,12 +30,32 @@ This document defines the rules for placing, creating, refactoring, and maintain
   - `tests/commitment_integrity.rs`: Merkle trees, leaf digest stability, and deterministic cryptographic commitments.
   - `tests/common/`: Shared fixtures, RAII temp workspaces, and MCP test clients (`INV-SHARED-HARNESS`).
 - Group new task tests into existing domain test suites.
+- Keep framework-manifest tests in `tests/framework_manifests/`; keep HTML template and relation tests in `tests/languages/html/`.
+- Keep TypeScript framework tests under `tests/languages/typescript/frameworks/`, with parser-selection coverage in `grammar.rs`.
+- Keep receiver tests under `tests/receivers/{rust,python}/`; Rust module-path cases stay under `rust/module_paths.rs`.
+- Each test subtree maintains its own local `AGENTS.md` specifying module scope, shared helpers, and verification rules:
+  - [`tests/framework_manifests/AGENTS.md`](framework_manifests/AGENTS.md): Declarative framework packs and TOML manifests.
+  - [`tests/languages/html/AGENTS.md`](languages/html/AGENTS.md): HTML templates, Django/Jinja syntax, and HTMX/Alpine relations.
+  - [`tests/languages/typescript/frameworks/AGENTS.md`](languages/typescript/frameworks/AGENTS.md): NestJS, Nuxt, and Vue runtime test suites.
+  - [`tests/receivers/AGENTS.md`](receivers/AGENTS.md): Value flow receiver tests routing and structure.
+  - [`tests/receivers/rust/AGENTS.md`](receivers/rust/AGENTS.md): Rust field chains, trait dispatch, deref pointers, and module paths.
+  - [`tests/receivers/python/AGENTS.md`](receivers/python/AGENTS.md): Python C3 MRO, mixins, and decorator flow.
+- Fast submodule test execution commands:
+  ```bash
+  cargo test --test framework_manifests manifests::<module>::
+  cargo test --test languages html::<module>::
+  cargo test --test languages typescript::frameworks::<module>::
+  cargo test --test linker typed_receivers::rust::<module>::
+  cargo test --test linker typed_receivers::python::<module>::
+  cargo test --test linker value_flow::
+  ```
 - Table-driven tests over function duplication: iterate over structured data tables (`for case in cases { ... }`) for permutations and error codes.
 - Shared test harnesses over repeated boilerplate: common setups (temporary SQLite stores, worktree layouts) belong in shared test helpers (`tests/common/`).
-- Domain cohesion: keep coherent test suites unified within their subsystem domain (`tests/acdd/tasks.rs`, `tests/languages/manifests.rs`). Split tests strictly along natural architectural sub-boundaries when distinct domains emerge.
+- Domain cohesion: keep coherent test suites unified within their subsystem domain (`tests/acdd/tasks.rs`, `tests/framework_manifests.rs`). Split tests strictly along natural architectural sub-boundaries when distinct domains emerge.
 
 ## 3. Suite moves
 - When moving, renaming, splitting, or removing a test suite or test file, update `docs/testing/README.md` and this file in the same `build`.
+- Keep public value-flow reducer cases in `tests/linker/value_flow.rs`; keep private reducer implementation checks beside their source.
 
 ## 4. Public Seams Over Internal Mocks
 

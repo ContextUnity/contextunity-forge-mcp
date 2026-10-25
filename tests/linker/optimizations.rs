@@ -145,7 +145,8 @@ fn linker_borrows_arena_keys_and_reuses_qualified_lookup_storage() {
                 .any(|edge| edge.path == "buf.py" && edge.kind == "imports"));
         } else if label == "single parameter binding" {
             assert!(facts["buf.py"].nodes.iter().any(|node| {
-                node.details["bindings"]
+                crate::common::assertions::projected_node_details(&facts["buf.py"], node)
+                    ["bindings"]
                     .as_array()
                     .is_some_and(|bindings| bindings.iter().any(|binding| binding == &parameter))
             }));

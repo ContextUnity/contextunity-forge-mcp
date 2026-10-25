@@ -164,9 +164,9 @@ fn non_typing_vendor_any_name_retains_external_provenance() {
 }
 
 #[cfg(feature = "lang-python")]
-#[path = "../../receivers/python_value_flow.rs"]
-mod python_value_flow;
+#[path = "../../receivers/python/mod.rs"]
+mod python;
 
 #[cfg(feature = "lang-rust")]
-#[path = "../../receivers/rust_value_flow.rs"]
-mod rust_value_flow;
+#[path = "../../receivers/rust/mod.rs"]
+mod rust;

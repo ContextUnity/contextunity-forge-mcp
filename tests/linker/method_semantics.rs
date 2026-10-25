@@ -101,8 +101,11 @@ function module_ts(): void {}
         let (kind, details) = stored_node(&conn, path, name);
         assert_eq!(kind, "method", "{path}: {name}");
         assert_eq!(details["receiver_type"], receiver_type, "{path}: {name}");
-        assert_eq!(details["is_method"], true, "{path}: {name}");
-        assert_eq!(details["is_static"], is_static, "{path}: {name}");
+        assert!(
+            details.get("is_method").is_none(),
+            "{path}: {name}: method kind already carries this fact"
+        );
+        assert_eq!(details["is_static"] == true, is_static, "{path}: {name}");
     }
 
     for (path, name) in [
@@ -207,7 +210,18 @@ fn explicit_payloads_and_bounded_dispatch_survive_index_readback() {
         "Result<Service, Error>",
         "anyhow::Result<Service>",
     ] {
-        for operation in ["?", ".unwrap()", ".expect(\"present\")"] {
+        for (operation, adapter) in [
+            ("?", ""),
+            (".unwrap()", ""),
+            (".expect(\"present\")", ""),
+            (".as_ref().unwrap()", ".as_ref()"),
+            (".as_mut().unwrap()", ".as_mut()"),
+            (".ok().unwrap()", ".ok()"),
+            (".ok()?", ".ok()"),
+        ] {
+            if wrapper.starts_with("Option") && adapter == ".ok()" {
+                continue;
+            }
             let source = format!(
                 "struct Service; struct Error;\nimpl Service {{ fn work(&self) {{}} }}\n\
                  fn make() -> {wrapper} {{ unknown() }}\n\
@@ -218,7 +232,9 @@ fn explicit_payloads_and_bounded_dispatch_survive_index_readback() {
                  let parameter_payload = value{operation}; parameter_payload.work(); \
                  value.work(); }}\n\
                  fn direct_parameter_caller(value: {wrapper}) {{ \
-                 value{operation}.work(); value.work(); }}\n"
+                 value{operation}.work(); value.work(); }}\n\
+                 fn adapted_caller() {{ let adapted = make(){adapter}; \
+                 adapted.work(); make(){adapter}.work(); }}\n"
             );
             let facts = ast::extract("lib.rs", "rust", &source).unwrap();
             assert!(
@@ -235,7 +251,17 @@ fn explicit_payloads_and_bounded_dispatch_survive_index_readback() {
                 edge.kind == "calls" && edge.dst_name == "work" && edge.evidence == "payload.work"
             }) {
                 failures.push(format!(
-                    "{wrapper}/{operation}: explicit payload lacks work edge"
+                    "{wrapper}/{operation}: explicit payload lacks work edge; caller flow: {:?}",
+                    facts
+                        .nodes
+                        .iter()
+                        .filter(|node| node.name == "caller")
+                        .map(|node| {
+                            crate::common::assertions::projected_node_details(&facts, node)
+                                ["value_flow"]
+                                .clone()
+                        })
+                        .collect::<Vec<_>>()
                 ));
             }
             for expression in [
@@ -256,11 +282,16 @@ fn explicit_payloads_and_bounded_dispatch_survive_index_readback() {
                     ));
                 }
             }
-            for expression in ["make().work", "value.work"] {
+            for expression in [
+                "make().work".to_owned(),
+                "value.work".to_owned(),
+                "adapted.work".to_owned(),
+                format!("make(){adapter}.work"),
+            ] {
                 if edges
                     .iter()
                     .any(|edge| edge.kind == "calls" && edge.evidence == expression)
-                    || !has_coverage(&conn, expression, "unresolved")
+                    || !has_coverage(&conn, &expression, "unresolved")
                 {
                     failures.push(format!(
                         "{wrapper}/{operation}: ordinary receiver {expression} exposed payload"
@@ -336,9 +367,12 @@ fn explicit_payloads_and_bounded_dispatch_survive_index_readback() {
         }
     }
 
-    // A method merely named unwrap is not the standard wrapper operation.
+    // Custom type names and methods do not receive standard adapter behavior.
     for (path, language, source, expression) in [
         ("lib.rs", "rust", "struct Service; impl Service { fn work(&self) {} } struct Envelope<T>(T); impl<T> Envelope<T> { fn unwrap(&self) -> Unknown { unknown() } } fn caller(value: Envelope<Service>) { let payload = value.unwrap(); payload.work(); }", "payload.work"),
+        ("lib.rs", "rust", "struct Service; impl Service { fn work(&self) {} } struct Envelope<T>(T); impl<T> Envelope<T> { fn as_ref(&self) -> Unknown { unknown() } } fn caller(value: Envelope<Service>) { let payload = value.as_ref().unwrap(); payload.work(); }", "payload.work"),
+        ("lib.rs", "rust", "struct Service; impl Service { fn work(&self) {} } fn caller(value: Option<Service>) { let payload = value.ok().unwrap(); payload.work(); }", "payload.work"),
+        ("lib.rs", "rust", "struct Service; impl Service { fn work(&self) {} } struct Vec<T>(T); fn caller(value: Vec<Service>) { let payload = value.iter().cloned().next().unwrap(); payload.work(); }", "payload.work"),
         ("factory.ts", "typescript", "class Service { work() {} } async function make() { return unknown(); } async function caller() { const payload = await make(); payload.work(); }", "payload.work"),
         ("lib.rs", "rust", "struct Service; impl Service { fn work(&self) {} } async fn make() -> Service { Service {} } fn caller() { let future = make(); future.work(); }", "future.work"),
     ] {
@@ -353,15 +387,240 @@ fn explicit_payloads_and_bounded_dispatch_survive_index_readback() {
         }
     }
 
-    let custom_source = "struct Service; impl Service { fn work(&self) {} } struct Envelope; impl Envelope { fn unwrap(&self) -> Service { unknown() } } fn caller(value: Envelope) { let payload = value.unwrap(); payload.work(); }";
+    let adapter_cases = [
+        (
+            "Option as_deref",
+            "Option<Box<Service>>",
+            ".as_deref().unwrap()",
+            true,
+        ),
+        (
+            "Result as_deref",
+            "Result<Box<Service>, Error>",
+            ".as_deref().unwrap()",
+            true,
+        ),
+        (
+            "Option iter",
+            "Option<Service>",
+            ".iter().next().unwrap()",
+            true,
+        ),
+        (
+            "Result iter",
+            "Result<Service, Error>",
+            ".iter().next().unwrap()",
+            true,
+        ),
+        (
+            "Option into_iter",
+            "Option<Service>",
+            ".into_iter().next().unwrap()",
+            true,
+        ),
+        (
+            "Option cloned reference",
+            "Option<&Service>",
+            ".cloned().unwrap()",
+            true,
+        ),
+        (
+            "Option copied reference",
+            "Option<&Service>",
+            ".copied().unwrap()",
+            true,
+        ),
+        (
+            "Result into_iter",
+            "Result<Service, Error>",
+            ".into_iter().next().unwrap()",
+            true,
+        ),
+        (
+            "Vec iter cloned element",
+            "Vec<Service>",
+            ".iter().cloned().next().unwrap()",
+            true,
+        ),
+        (
+            "Vec iter copied element",
+            "Vec<Service>",
+            ".iter().copied().next().unwrap()",
+            true,
+        ),
+        (
+            "Vec into_iter owned element",
+            "Vec<Service>",
+            ".into_iter().next().unwrap()",
+            true,
+        ),
+        (
+            "borrowed Vec into_iter reference",
+            "&Vec<Service>",
+            ".into_iter().next().unwrap()",
+            true,
+        ),
+        (
+            "mutably borrowed Vec into_iter reference",
+            "&mut Vec<Service>",
+            ".into_iter().next().unwrap()",
+            true,
+        ),
+        (
+            "slice iter cloned element",
+            "&[Service]",
+            ".iter().cloned().next().unwrap()",
+            true,
+        ),
+        (
+            "slice iter copied element",
+            "&[Service]",
+            ".iter().copied().next().unwrap()",
+            true,
+        ),
+        (
+            "slice into_iter reference",
+            "&[Service]",
+            ".into_iter().next().unwrap()",
+            true,
+        ),
+        (
+            "mutable slice into_iter reference",
+            "&mut [Service]",
+            ".into_iter().next().unwrap()",
+            true,
+        ),
+        (
+            "Option Vec as_deref slice",
+            "Option<Vec<Service>>",
+            ".as_deref().unwrap().iter().cloned().next().unwrap()",
+            true,
+        ),
+        (
+            "Option cloned shared reference",
+            "Option<&&Service>",
+            ".cloned().unwrap()",
+            true,
+        ),
+        (
+            "Option copied shared reference",
+            "Option<&&Service>",
+            ".copied().unwrap()",
+            true,
+        ),
+        (
+            "Result cloned shared reference",
+            "Result<&&Service, Error>",
+            ".cloned().unwrap()",
+            true,
+        ),
+        (
+            "Result copied shared reference",
+            "Result<&&Service, Error>",
+            ".copied().unwrap()",
+            true,
+        ),
+        (
+            "Iterator cloned shared reference",
+            "Option<&&Service>",
+            ".iter().cloned().next().unwrap()",
+            true,
+        ),
+        (
+            "Iterator copied shared reference",
+            "Option<&&Service>",
+            ".iter().copied().next().unwrap()",
+            true,
+        ),
+        (
+            "iterator item still needs unwrap",
+            "Option<Service>",
+            ".iter().next()",
+            false,
+        ),
+    ];
+    let mut source =
+        "#[derive(Clone, Copy)] struct Service; struct Error; impl Service { fn work(&self) {} }\n"
+            .to_owned();
+    for (index, (_, wrapper, adapter, _)) in adapter_cases.iter().enumerate() {
+        source.push_str(&format!(
+            "fn adapter_{index}(value: {wrapper}) {{ let payload_{index} = value{adapter}; payload_{index}.work(); }}\n"
+        ));
+    }
+    assert!(
+        ast::extract("lib.rs", "rust", &source)
+            .unwrap()
+            .errors
+            .is_empty(),
+        "{source}"
+    );
     let workspace = Workspace::new();
-    workspace.write("lib.rs", custom_source);
+    workspace.write("lib.rs", &source);
     workspace.build();
     let conn = workspace.open();
-    if !read_edges(&conn).iter().any(|edge| {
-        edge.kind == "calls" && edge.dst_name == "work" && edge.evidence == "payload.work"
-    }) {
-        failures.push("custom method lost its explicit nominal return contract".into());
+    let edges = read_edges(&conn);
+    for (index, (label, _, _, resolves)) in adapter_cases.iter().enumerate() {
+        let evidence = format!("payload_{index}.work");
+        let resolved = edges.iter().any(|edge| {
+            edge.kind == "calls"
+                && edge.dst_name == "work"
+                && edge.evidence == evidence
+                && edge.confidence == "inferred"
+        });
+        if resolved != *resolves {
+            failures.push(format!(
+                "{label}: expected resolved={resolves}, stored edges: {edges:#?}"
+            ));
+        }
+        if !*resolves && !has_coverage(&conn, &evidence, "unresolved") {
+            failures.push(format!(
+                "{label}: unresolved iterator wrapper lost coverage"
+            ));
+        }
+    }
+
+    let wrapper_source = "struct Service; struct Error;\n\
+        fn option_member(maybe: Option<Service>) { maybe.is_some(); }\n\
+        fn result_member(outcome: Result<Service, Error>) { outcome.is_ok(); }\n\
+        mod shadowed { struct Service; struct Option<T>(T);\n\
+        fn custom_option(shadow: Option<Service>) { shadow.is_some(); } }";
+    assert!(
+        ast::extract("lib.rs", "rust", wrapper_source)
+            .unwrap()
+            .errors
+            .is_empty(),
+        "{wrapper_source}"
+    );
+    let wrapper_workspace = Workspace::new();
+    wrapper_workspace.write("lib.rs", wrapper_source);
+    wrapper_workspace.build();
+    let wrapper_conn = wrapper_workspace.open();
+    for (label, expression, status) in [
+        ("Option standard member", "maybe.is_some", "external"),
+        ("Result standard member", "outcome.is_ok", "external"),
+        ("shadowed Option", "shadow.is_some", "unresolved"),
+    ] {
+        if !has_coverage(&wrapper_conn, expression, status) {
+            failures.push(format!("{label}: missing {status} coverage"));
+        }
+        if status == "external" && has_coverage(&wrapper_conn, expression, "unresolved") {
+            failures.push(format!(
+                "{label}: standard wrapper method remains unresolved"
+            ));
+        }
+    }
+
+    for method in ["unwrap", "as_ref", "as_mut", "ok"] {
+        let custom_source = format!("struct Service; impl Service {{ fn work(&self) {{}} }} struct Envelope; impl Envelope {{ fn {method}(&self) -> Service {{ unknown() }} }} fn caller(value: Envelope) {{ let payload = value.{method}(); payload.work(); }}");
+        let workspace = Workspace::new();
+        workspace.write("lib.rs", &custom_source);
+        workspace.build();
+        let conn = workspace.open();
+        if !read_edges(&conn).iter().any(|edge| {
+            edge.kind == "calls" && edge.dst_name == "work" && edge.evidence == "payload.work"
+        }) {
+            failures.push("custom method lost its explicit nominal return contract".into());
+        }
     }
 
     for implementors in [2, 8, 9] {

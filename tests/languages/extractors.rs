@@ -48,7 +48,7 @@ impl Config {
         .find(|n| n.name == "new")
         .expect("new method missing");
     assert_eq!(constructor.details["receiver_type"], "Config");
-    assert_eq!(constructor.details["is_method"], true);
+    assert!(constructor.details.get("is_method").is_none());
     assert_eq!(constructor.details["is_static"], true);
 }
 

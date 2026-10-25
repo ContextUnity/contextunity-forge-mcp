@@ -33,8 +33,8 @@ def standalone_helper(x: int) -> int:
         .find(|n| n.name == "fetch")
         .expect("fetch method missing");
     assert_eq!(fetch.details["receiver_type"], "ServiceClient");
-    assert_eq!(fetch.details["is_method"], true);
-    assert_eq!(fetch.details["is_static"], false);
+    assert!(fetch.details.get("is_method").is_none());
+    assert!(fetch.details.get("is_static").is_none());
     assert!(facts
         .nodes
         .iter()

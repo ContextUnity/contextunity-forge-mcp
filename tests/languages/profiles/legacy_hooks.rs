@@ -59,10 +59,8 @@ impl DefaultHooks {
         if node.kind() != "function_expression" {
             return ValueFlowFacts::default();
         }
-        ValueFlowFacts {
-            alias_type: Some(named("ContextAlias")),
+        let mut facts = ValueFlowFacts {
             return_type: self.flow_return.then(|| named("FlowReturn")),
-            return_position: Some(SourcePosition { line: 5, column: 2 }),
             bindings: vec![BindingFact {
                 name: "flow_local".into(),
                 position: SourcePosition { line: 4, column: 2 },
@@ -72,7 +70,10 @@ impl DefaultHooks {
                 conditional: false,
             }],
             ..Default::default()
-        }
+        };
+        facts.alias_type = Some(named("ContextAlias"));
+        facts.return_position = Some(SourcePosition { line: 5, column: 2 });
+        facts
     }
 }
 
@@ -239,7 +240,11 @@ fn legacy_declaration_and_exact_root_preparation_preserve_public_facts() {
                 };
                 let label =
                     format!("combined={combined}/flow_return={flow_return}/prepared={prepared:?}");
-                let mut facts = ast::extract(PATH, "javascript", "").unwrap();
+                let extracted = ast::extract(PATH, "javascript", "").unwrap();
+                let mut facts: Facts = serde_json::from_value(
+                    serde_json::to_value(extracted).expect("public facts serialize"),
+                )
+                .expect("public facts round-trip");
                 let module = facts.nodes.iter_mut().find(|n| n.kind == "module").unwrap();
                 module.details["bindings"] = json!(["existing_binding"]);
                 module.details["rebindings"] = json!(["existing_rebound"]);
@@ -255,7 +260,7 @@ fn legacy_declaration_and_exact_root_preparation_preserve_public_facts() {
                     symbol.qualname == "legacy.ReceiverType.sample",
                     "metadata receiver qualification",
                 );
-                let details = &symbol.details;
+                let details = crate::common::assertions::projected_node_details(&facts, symbol);
                 for (key, expected) in [
                     ("receiver_name", json!("receiver_name")),
                     ("receiver_type", json!("ReceiverType")),
@@ -300,9 +305,10 @@ fn legacy_declaration_and_exact_root_preparation_preserve_public_facts() {
                     "serialized return source position",
                 );
                 let module = facts.nodes.iter().find(|n| n.kind == "module").unwrap();
+                let details = crate::common::assertions::projected_node_details(&facts, module);
                 let matching = matches!(prepared, Prepared::Matching);
                 check(
-                    module.details["bindings"]
+                    details["bindings"]
                         == if matching {
                             json!(["existing_binding", "prepared_only"])
                         } else {
@@ -311,7 +317,7 @@ fn legacy_declaration_and_exact_root_preparation_preserve_public_facts() {
                     "matching prepared bindings / canonical fallback merge",
                 );
                 check(
-                    module.details["rebindings"]
+                    details["rebindings"]
                         == if matching {
                             json!(["existing_rebound", "prepared_rebound"])
                         } else {

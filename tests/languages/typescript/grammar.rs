@@ -1113,7 +1113,7 @@ fn typescript_lexical_this_nested_arrows() {
   static reset() {}
   run() {
     const read = () => this.ready;
-    const call = () => this.mark();
+    const call = () => this?.mark();
     const ordinary = function() { return this.ready; };
     const unknown = () => this.missing;
     read(); call(); ordinary(); unknown();
@@ -1164,7 +1164,7 @@ function outside() { const arrow = () => this.mark(); arrow(); }"#,
     };
     for (path, line, expression) in [
         ("counter.ts", 7, "this.ready"),
-        ("counter.ts", 8, "this.mark"),
+        ("counter.ts", 8, "this?.mark"),
         ("counter.ts", 14, "this.active"),
         ("counter.ts", 15, "this.reset"),
         ("counter.ts", 20, "this.ready"),
@@ -1226,4 +1226,35 @@ function outside() { const arrow = () => this.mark(); arrow(); }"#,
         sibling_edges, 0,
         "same-name Counter in sibling file cannot provide this members"
     );
+}
+
+#[cfg(feature = "lang-vue")]
+#[test]
+fn vue_profile_parser_reuse_tracks_the_selected_grammar() {
+    let profile =
+        contextunity_forge_mcp::engine::languages::by_id("vue").expect("Vue profile is compiled");
+    for (path, source, expected_name) in [
+        (
+            "First.vue",
+            "export function First() { return 1; }",
+            "First",
+        ),
+        (
+            "Second.tsx",
+            "export function Second() { return <button />; }",
+            "Second",
+        ),
+        ("Third.js", "export function Third() { return 1; }", "Third"),
+    ] {
+        let mut facts = contextunity_forge_mcp::core::models::Facts::default();
+        contextunity_forge_mcp::engine::languages::parse_file(
+            profile, path, source, path, &mut facts,
+        )
+        .expect("Vue profile parse failed");
+        assert!(facts.errors.is_empty(), "{path}: {:?}", facts.errors);
+        assert!(facts
+            .nodes
+            .iter()
+            .any(|node| node.name == expected_name && node.kind == "function"));
+    }
 }

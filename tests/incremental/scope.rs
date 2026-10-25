@@ -33,8 +33,12 @@ fn assert_cold_equivalent(workspace: &Workspace) {
             .unwrap();
         for row in rows {
             let (path, facts_blob) = row.unwrap();
-            let facts_json = zstd::stream::decode_all(&facts_blob[..]).unwrap();
-            assert!(!commitments::hash(&facts_json).is_empty(), "{path}");
+            assert!(
+                facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"),
+                "{path}: newly written local facts use the typed binary format"
+            );
+            reader::decode_local_facts(&facts_blob).unwrap();
+            assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
         }
     }
     for sql in [

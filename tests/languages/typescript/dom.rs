@@ -444,9 +444,76 @@ fn dom_factory_return_receivers() {
         ("unknown_factory.ts", "function run() { const button = document.makeElement('button'); button.addEventListener('click', () => {}); }"),
         ("untyped.ts", "function run() { const button = {}; button.addEventListener('click', () => {}); }"),
         ("local.ts", "class Element { addEventListener() {} } function run() { const button = new Element(); button.addEventListener('click'); }"),
+        ("literal.ts", "function run() { const input = document.createElement('input'); input.value.trim(); const script = document.createElement('script'); script.src.trim(); document.createElement('input').value.trim(); document.createElement('script').src.trim(); input.src.trim(); script.value.trim(); input.invented();\ninput.value(); }"),
+        ("literal.js", "function run() { const input = document.createElement('input'); input.value.trim(); const script = document.createElement('script'); script.src.trim(); document.createElement('input').value.trim(); document.createElement('script').src.trim(); input.src.trim(); script.value.trim(); input.invented();\ninput.value(); }"),
+        ("literal_shadow.ts", "function run(document) { const input = document.createElement('input'); input.value.trim(); document.createElement('script').src.trim(); }"),
+        ("literal_write.ts", "function run() { document = {}; const input = document.createElement('input'); input.value.trim(); }"),
+        ("literal_unknown.ts", "function run(tag) { const dynamic = document.createElement(tag); dynamic.addEventListener('click', () => {}); dynamic.value.trim(); const missing = document.createElement(); missing.addEventListener('click', () => {}); const spread = document.createElement(...['input']); spread.addEventListener('click', () => {}); spread.value.trim(); const excess = document.createElement('input', 1, 2, 3, 4); excess.addEventListener('click', () => {}); excess.value.trim(); const unknown = document.createElement('unmapped'); unknown.addEventListener('click', () => {}); unknown.value.trim(); }"),
     ] {
         std::fs::write(workspace.join(path), source).unwrap();
     }
+    for extension in ["ts", "js"] {
+        workspace.write(format!("property.{extension}"), r#"function read() {
+const input = document.createElement('input');
+const script = document.createElement('script');
+const a = input.value;
+const b = script.src;
+const c = document.createElement('input').value;
+const d = document.createElement('script').src;
+a.trim(); b.trim(); c.trim(); d.trim();
+const wrong = document.createElement('input').src;
+const other = document.createElement('script').value;
+const dynamic = document.createElement(tag).value;
+const spread = document.createElement(...['input']).value;
+const fifth = document.createElement('input', 1, 2, 3, 4).value;
+const unknown = document.createElement('unmapped').value;
+const escaped = document.createElement('in\put').value;
+wrong.trim(); other.trim(); dynamic.trim(); spread.trim(); fifth.trim(); unknown.trim(); escaped.trim();
+}"#);
+        workspace.write(format!("property_call.{extension}"), "function read() { const input = document.createElement('input'); input.value(); document.createElement('input').value(); document.createElement('script').src(); }");
+        workspace.write(format!("property_alias.{extension}"), "function read() { const v = document.createElement('input').value; const s = document.createElement('script').src; const alias = v; v(); s(); alias(); }");
+        workspace.write(format!("property_shadow.{extension}"), "function read(document) { const input = document.createElement('input'); const value = input.value; const direct = document.createElement('input').value; value.trim(); direct.trim(); }");
+        workspace.write(format!("property_write.{extension}"), "function read() { document = {}; const value = document.createElement('input').value; value.trim(); }");
+        workspace.write(format!("property_local.{extension}"), "class LocalElement { value = 'local'; } function make() { return new LocalElement(); } function read() { const item = make(); const a = item.value; const b = make().value; }\nfunction call() { const item = make(); item.value(); }");
+    }
+    let manifest = ".forge/frameworks/property-proof.toml";
+    let mut rules = Vec::new();
+    for language in ["javascript", "typescript"] {
+        for (id, global, method, literal, name, property) in [
+            (
+                "original",
+                "nodeFactory",
+                "make",
+                "field",
+                "PropertyProof",
+                "payload",
+            ),
+            (
+                "renamed",
+                "viewFactory",
+                "forge",
+                "cell",
+                "RenamedProof",
+                "content",
+            ),
+        ] {
+            rules.push(serde_json::json!({
+                "id":format!("{id}-{language}"), "language":language,
+                "operation":{"kind":"receiver_type", "receiver":{
+                    "name":name, "members":[], "properties":BTreeMap::from([(property,"string")]),
+                    "callback_callees":[], "generic":false,
+                    "argument_factories":[{"callee":{"kind":"global_member", "receiver":global, "member":method}, "argument":0, "literals":[literal]}]
+                }}
+            }));
+            let extension = if language == "javascript" { "js" } else { "ts" };
+            workspace.write(format!("{id}.{extension}"), &format!(
+                "function read() {{ const item = {global}.{method}('{literal}'); const a = item.{property}; const b = {global}.{method}('{literal}').{property}; a.trim(); b.trim(); }}\nfunction call() {{ {global}.{method}('{literal}').{property}(); }}"
+            ));
+        }
+    }
+    let pack = serde_json::json!({"syntax_rules":rules});
+    let manifest_source = toml::to_string(&pack).unwrap();
+    workspace.write(manifest, &manifest_source);
     let database = workspace.join(".forge/code-map.sqlite");
     writer::build(&workspace, &database, None).unwrap();
     let conn = reader::open(&database, &workspace).unwrap();
@@ -455,7 +522,7 @@ fn dom_factory_return_receivers() {
             "SELECT status,(SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id) FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)=?1 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)=?2",
             rusqlite::params![path, expression],
             |row| Ok((row.get(0)?, row.get(1)?)),
-        ).unwrap()
+        ).unwrap_or_else(|error| panic!("missing DOM coverage {path}:{expression}: {error}"))
     };
     for (path, expression) in [
         ("factory.ts", "button.addEventListener"),
@@ -495,7 +562,268 @@ fn dom_factory_return_receivers() {
         local_edge, 1,
         "local Element method keeps its indexed provider"
     );
+    for path in ["literal.ts", "literal.js"] {
+        for (expression, expected) in [
+            ("input.value.trim", "external"),
+            ("script.src.trim", "external"),
+            ("document.createElement('input').value.trim", "external"),
+            ("document.createElement('script').src.trim", "external"),
+            ("input.src.trim", "unresolved"),
+            ("script.value.trim", "unresolved"),
+            ("input.invented", "unresolved"),
+        ] {
+            let row = coverage(path, expression);
+            assert_eq!(
+                row.0, expected,
+                "literal factory {path}:{expression}: {row:?}"
+            );
+        }
+    }
+    // The read on line 1 and the non-callable property call on line 2 have
+    // the same spelling; select the actual call occurrence explicitly.
+    for path in ["literal.ts", "literal.js"] {
+        let status: String = conn.query_row(
+            "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)=?1 AND line=2 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='input.value'",
+            [path], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(status, "unresolved", "property is not callable: {path}");
+    }
+    for extension in ["ts", "js"] {
+        let path = format!("property.{extension}");
+        for expression in [
+            "input.value",
+            "script.src",
+            "document.createElement('input').value",
+            "document.createElement('script').src",
+            "a.trim",
+            "b.trim",
+            "c.trim",
+            "d.trim",
+        ] {
+            let row = coverage(&path, expression);
+            assert_eq!(
+                row.0, "external",
+                "property read {path}:{expression}: {row:?}"
+            );
+            if !expression.ends_with(".trim") {
+                let language = if extension == "ts" {
+                    "typescript"
+                } else {
+                    "javascript"
+                };
+                for token in [
+                    format!("finite {language} configured member"),
+                    "pack web".into(),
+                    "receiver rule literal-".into(),
+                    "receiver origin external import document.createElement".into(),
+                ] {
+                    assert!(
+                        row.1.contains(&token),
+                        "property provenance {path}:{expression}: missing {token}: {row:?}"
+                    );
+                }
+            }
+        }
+        for expression in [
+            "document.createElement('input').src",
+            "document.createElement('script').value",
+            "document.createElement(tag).value",
+            "document.createElement(...['input']).value",
+            "document.createElement('input', 1, 2, 3, 4).value",
+            "document.createElement('unmapped').value",
+            "document.createElement('in\\put').value",
+            "wrong.trim",
+            "other.trim",
+            "dynamic.trim",
+            "spread.trim",
+            "fifth.trim",
+            "unknown.trim",
+            "escaped.trim",
+        ] {
+            let row = coverage(&path, expression);
+            assert_eq!(
+                row.0, "unresolved",
+                "property boundary {path}:{expression}: {row:?}"
+            );
+        }
+        for (prefix, expressions) in [
+            ("property_alias", vec!["v", "s", "alias"]),
+            (
+                "property_call",
+                vec![
+                    "input.value",
+                    "document.createElement('input').value",
+                    "document.createElement('script').src",
+                ],
+            ),
+            (
+                "property_shadow",
+                vec![
+                    "document.createElement('input').value",
+                    "value.trim",
+                    "direct.trim",
+                ],
+            ),
+            (
+                "property_write",
+                vec!["document.createElement('input').value", "value.trim"],
+            ),
+        ] {
+            for expression in expressions {
+                let row = coverage(&format!("{prefix}.{extension}"), expression);
+                assert_eq!(
+                    row.0, "unresolved",
+                    "property guard {prefix}.{extension}:{expression}: {row:?}"
+                );
+            }
+        }
+        // A shadowed ordinary read has no admitted receiver/property proof.
+        // Direct computed reads and calls above still carry their strict U rows.
+        let shadow_path = format!("property_shadow.{extension}");
+        let absent: i64 = conn.query_row(
+            "SELECT count(*) FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)=?1 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='input.value'",
+            [&shadow_path], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(
+            absent, 0,
+            "unproven plain read has no observation: {shadow_path}"
+        );
+        let edges: i64 = conn.query_row(
+            "SELECT count(*) FROM edge_occurrences WHERE (SELECT path FROM path_dictionary WHERE path_id=owner_id)=?1 AND kind IN ('calls','references')",
+            [&shadow_path], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(
+            edges, 0,
+            "unproven shadow receiver has no success edge: {shadow_path}"
+        );
+        let local_path = format!("property_local.{extension}");
+        for expression in ["item.value", "make().value"] {
+            let status: String = conn.query_row(
+                "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)=?1 AND line=1 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)=?2",
+                rusqlite::params![local_path,expression], |row| row.get(0),
+            ).unwrap();
+            assert_eq!(
+                status, "resolved",
+                "local property keeps its declaration: {local_path}:{expression}"
+            );
+        }
+        let local_targets: i64 = conn.query_row(
+            "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)=?1 AND e.kind='references' AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)=?1 AND dst.kind='field' AND dst.name='value'",
+            [&local_path], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(
+            local_targets, 2,
+            "local property exact targets: {local_path}"
+        );
+        let local_call: String = conn.query_row(
+            "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)=?1 AND line=2 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='item.value'",
+            [&local_path], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(
+            local_call, "unresolved",
+            "local field is not callable: {local_path}"
+        );
+    }
+    for (path, expression, expected) in [
+        ("literal_shadow.ts", "input.value.trim", "unresolved"),
+        (
+            "literal_shadow.ts",
+            "document.createElement('script').src.trim",
+            "unresolved",
+        ),
+        ("literal_write.ts", "input.value.trim", "unresolved"),
+        ("literal_unknown.ts", "dynamic.addEventListener", "external"),
+        ("literal_unknown.ts", "dynamic.value.trim", "unresolved"),
+        ("literal_unknown.ts", "missing.addEventListener", "external"),
+        ("literal_unknown.ts", "spread.addEventListener", "external"),
+        ("literal_unknown.ts", "spread.value.trim", "unresolved"),
+        ("literal_unknown.ts", "excess.addEventListener", "external"),
+        ("literal_unknown.ts", "excess.value.trim", "unresolved"),
+        ("literal_unknown.ts", "unknown.addEventListener", "external"),
+        ("literal_unknown.ts", "unknown.value.trim", "unresolved"),
+    ] {
+        let row = coverage(path, expression);
+        assert_eq!(
+            row.0, expected,
+            "literal factory boundary {path}:{expression}: {row:?}"
+        );
+    }
     drop(conn);
+    let observe = |expected: &str| {
+        let reopened = workspace.open();
+        for extension in ["ts", "js"] {
+            for (id, global, method, literal, property) in [
+                ("original", "nodeFactory", "make", "field", "payload"),
+                ("renamed", "viewFactory", "forge", "cell", "content"),
+            ] {
+                let path = format!("{id}.{extension}");
+                let ordinary_read = format!("item.{property}");
+                let direct_read = format!("{global}.{method}('{literal}').{property}");
+                for expression in [
+                    ordinary_read.as_str(),
+                    direct_read.as_str(),
+                    "a.trim",
+                    "b.trim",
+                ] {
+                    if expected == "unresolved" && expression == ordinary_read.as_str() {
+                        let absent: i64 = reopened.query_row(
+                            "SELECT count(*) FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)=?1 AND line=1 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)=?2",
+                            rusqlite::params![path,expression], |row| row.get(0),
+                        ).unwrap();
+                        assert_eq!(absent, 0, "disabled mapping has no ordinary property observation: {path}:{expression}");
+                        let targets: i64 = reopened.query_row(
+                            "SELECT count(*) FROM edge_occurrences WHERE (SELECT path FROM path_dictionary WHERE path_id=owner_id)=?1 AND kind IN ('calls','references')",
+                            [&path], |row| row.get(0),
+                        ).unwrap();
+                        assert_eq!(targets, 0, "disabled mapping has no success target: {path}");
+                        continue;
+                    }
+                    let (status, evidence): (String,String) = reopened.query_row(
+                        "SELECT status,(SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id) FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)=?1 AND line=1 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)=?2",
+                        rusqlite::params![path,expression], |row| Ok((row.get(0)?,row.get(1)?)),
+                    ).unwrap();
+                    assert_eq!(
+                        status, expected,
+                        "renamed/provider-only property {path}:{expression}: {evidence}"
+                    );
+                    if expected == "external" && !expression.ends_with(".trim") {
+                        assert!(evidence.contains("pack property-proof"), "{evidence}");
+                        assert!(
+                            evidence.contains(&format!("receiver rule {id}-")),
+                            "{evidence}"
+                        );
+                        assert!(
+                            evidence.contains(&format!(
+                                "receiver origin external import {global}.{method}"
+                            )),
+                            "{evidence}"
+                        );
+                    }
+                }
+                let call: String = reopened.query_row(
+                    "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)=?1 AND line=2 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)=?2",
+                    rusqlite::params![path,format!("{global}.{method}('{literal}').{property}")], |row| row.get(0),
+                ).unwrap();
+                assert_eq!(
+                    call, "unresolved",
+                    "renamed property stays noncallable: {path}"
+                );
+            }
+        }
+    };
+    observe("external");
+    let mut disabled = pack.clone();
+    for rule in disabled["syntax_rules"].as_array_mut().unwrap() {
+        rule["operation"]["receiver"]["argument_factories"] = serde_json::json!([]);
+    }
+    workspace.write(manifest, &toml::to_string(&disabled).unwrap());
+    workspace.delta(manifest);
+    observe("unresolved");
+    workspace.assert_cold_equivalent();
+    workspace.write(manifest, &manifest_source);
+    workspace.delta(manifest);
+    observe("external");
+    workspace.assert_cold_equivalent();
 }
 
 #[test]

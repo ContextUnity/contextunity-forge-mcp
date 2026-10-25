@@ -12,7 +12,7 @@ use contextunity_forge_mcp::{
     },
     db::traversal,
 };
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 fn database(workspace: &Workspace) -> Result<Connection> {
     let conn = Connection::open(workspace.path("graph.sqlite"))?;
     conn.execute_batch(SCHEMA_DDL)?;
@@ -138,12 +138,10 @@ fn impact_pages_explain_shortest_links_without_repeating_graph_evidence() -> Res
         },
     )?;
     assert_eq!(beyond["nodes"]["total"], 5);
-    assert!(
-        beyond["nodes"]["items"]
-            .as_array()
-            .expect("page items")
-            .is_empty()
-    );
+    assert!(beyond["nodes"]["items"]
+        .as_array()
+        .expect("page items")
+        .is_empty());
 
     let zero = traversal::traverse_with_options(
         &conn,
@@ -306,12 +304,10 @@ fn removal_assessment_names_each_indexed_blocker_without_changing_verdict() -> R
     assert_eq!(result["parse_errors"], 0);
     assert_eq!(result["safe_to_remove"], false);
     assert_eq!(result["incoming_dependencies"]["total"], 1);
-    assert!(
-        result["proof_scope"]
-            .as_str()
-            .unwrap_or("")
-            .contains("indexed static references only")
-    );
+    assert!(result["proof_scope"]
+        .as_str()
+        .unwrap_or("")
+        .contains("indexed static references only"));
 
     // Target-scoped unresolved reference blocks removal
     conn.execute(

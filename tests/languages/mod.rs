@@ -5,7 +5,6 @@ mod extractors;
 mod features;
 #[cfg(feature = "lang-html")]
 mod html;
-mod manifests;
 mod profiles;
 #[cfg(feature = "lang-proto")]
 mod proto;

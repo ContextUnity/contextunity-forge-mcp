@@ -1,7 +1,7 @@
 use crate::common::Workspace;
 use contextunity_forge_mcp::{
     core::models::{Facts, Node, NodeSemanticMeta},
-    db::writer,
+    db::{reader, writer},
     engine::{pipeline, scanner},
 };
 use rusqlite::Connection;
@@ -140,8 +140,7 @@ fn lean_symbol_catalog_retains_no_full_facts_in_memory() {
                 |row| row.get(0),
             )
             .unwrap();
-        let bytes = zstd::stream::decode_all(blob.as_slice()).unwrap();
-        let mut stored: Facts = serde_json::from_slice(&bytes).unwrap();
+        let mut stored = reader::decode_local_facts(&blob).unwrap();
         stored.nodes.retain(|node| node.kind != "component");
         stored
             .edges
@@ -195,8 +194,7 @@ fn lean_symbol_catalog_retains_no_full_facts_in_memory() {
             |row| row.get(0),
         )
         .unwrap();
-    let bytes = zstd::stream::decode_all(blob.as_slice()).unwrap();
-    let stored: Facts = serde_json::from_slice(&bytes).unwrap();
+    let stored = reader::decode_local_facts(&blob).unwrap();
     let catalog =
         SymbolCatalog::from_facts(BTreeMap::from([("catalog/urls.py".into(), stored.clone())]));
     assert_eq!(
@@ -301,11 +299,9 @@ fn cold_build_preserves_extracted_storage_across_full_and_remainder_batches() {
         );
         assert!(!generated);
         assert_eq!(storage_type, "blob");
-        let durable_json = zstd::stream::decode_all(blob.as_slice()).unwrap();
-        let fact: Facts = serde_json::from_slice(&durable_json).unwrap();
-        let json = serde_json::to_vec(&fact).unwrap();
-        assert_eq!(json, durable_json);
-        assert!(blob.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]));
+        assert!(blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"));
+        assert!(blob["FORGE-LOCAL-FACTS\0\x03".len()..].starts_with(&[0x28, 0xb5, 0x2f, 0xfd]));
+        let fact = reader::decode_local_facts(&blob).unwrap();
         durable_facts.push(fact);
     }
 
@@ -323,6 +319,13 @@ fn cold_build_preserves_extracted_storage_across_full_and_remainder_batches() {
             .unwrap();
         assert_eq!(node_id, index as i64 + 1);
         let navigation: serde_json::Value = serde_json::from_str(&details).unwrap();
+        assert!(
+            !navigation
+                .as_object()
+                .is_some_and(serde_json::Map::is_empty),
+            "empty node details must be stored as null for {}",
+            node.id
+        );
         for key in ["signature", "doc", "receiver_name"] {
             if node.details[key]
                 .as_str()
@@ -580,6 +583,7 @@ fn node_semantic_meta_persists_roundtrip_and_matches_delta_equivalence() {
     assert_eq!(meta, deserialized);
 
     let mut node = Node {
+        native_semantic: None,
         id: "func:foo".into(),
         path: "src/foo.go".into(),
         language: "go".into(),
@@ -614,6 +618,7 @@ fn node_semantic_meta_persists_roundtrip_and_matches_delta_equivalence() {
 
     // Verify hint-only metadata roundtrip without inventing receiver or receiver_type
     let mut node2 = Node {
+        native_semantic: None,
         id: "func:bar".into(),
         path: "src/bar.py".into(),
         language: "python".into(),
@@ -624,8 +629,16 @@ fn node_semantic_meta_persists_roundtrip_and_matches_delta_equivalence() {
         end_line: 5,
         is_test: false,
         generated: false,
-        details: json!({}),
+        details: serde_json::Value::Null,
     };
+    let empty_details_node = Node {
+        details: json!({}),
+        ..node2.clone()
+    };
+    assert_eq!(
+        serde_json::to_value(empty_details_node).unwrap()["details"],
+        serde_json::Value::Null
+    );
     let hint_meta = NodeSemanticMeta {
         receiver_hint: Some("Service".into()),
         ..Default::default()
@@ -641,7 +654,7 @@ fn node_semantic_meta_persists_roundtrip_and_matches_delta_equivalence() {
     let ws = Workspace::new();
     ws.write(
         "src/models.py",
-        "class Service:\n    def execute(self, value: int) -> str:\n        return str(value)\n",
+        "class Service:\n    def execute(self, value: int) -> str:\n        result = value\n        result = str(result)\n        return result\n",
     );
     ws.write("src/util.py", "def helper() -> int:\n    return 42\n");
 
@@ -658,8 +671,12 @@ fn node_semantic_meta_persists_roundtrip_and_matches_delta_equivalence() {
         .expect("query cold details succeeds");
     let cold_details: serde_json::Value =
         serde_json::from_str(&cold_details_str).expect("parse cold details succeeds");
+    assert_eq!(cold_details["param_types"]["value"], "int");
+    assert!(cold_details["bindings"].as_array().is_some());
+    assert!(cold_details["rebindings"].as_array().is_some());
 
     let mut cold_node = Node {
+        native_semantic: None,
         id: "func:Service.execute".into(),
         path: "src/models.py".into(),
         language: "python".into(),
@@ -670,7 +687,7 @@ fn node_semantic_meta_persists_roundtrip_and_matches_delta_equivalence() {
         end_line: 3,
         is_test: false,
         generated: false,
-        details: cold_details,
+        details: cold_details.clone(),
     };
     let cold_meta = cold_node.semantic_meta();
     assert_eq!(cold_meta.receiver_type.as_deref(), Some("Service"));
@@ -682,7 +699,7 @@ fn node_semantic_meta_persists_roundtrip_and_matches_delta_equivalence() {
     // Modify file and run delta indexing
     ws.write(
         "src/models.py",
-        "class Service:\n    def execute(self, value: int) -> str:\n        return f'processed:{value}'\n",
+        "class Service:\n    def execute(self, value: int) -> str:\n        result = value\n        result = str(result)\n        return f'processed:{result}'\n",
     );
     pipeline::delta(
         ws.root(),
@@ -700,7 +717,14 @@ fn node_semantic_meta_persists_roundtrip_and_matches_delta_equivalence() {
         .expect("query delta details succeeds");
     let delta_details: serde_json::Value =
         serde_json::from_str(&delta_details_str).expect("parse delta details succeeds");
+    for key in ["bindings", "rebindings", "param_types"] {
+        assert_eq!(
+            delta_details[key], cold_details[key],
+            "{key} changed in delta"
+        );
+    }
     let delta_node = Node {
+        native_semantic: None,
         id: "func:Service.execute".into(),
         path: "src/models.py".into(),
         language: "python".into(),
@@ -728,7 +752,14 @@ fn node_semantic_meta_persists_roundtrip_and_matches_delta_equivalence() {
         .expect("query fresh details succeeds");
     let fresh_details: serde_json::Value =
         serde_json::from_str(&fresh_details_str).expect("parse fresh details succeeds");
+    for key in ["bindings", "rebindings", "param_types"] {
+        assert_eq!(
+            fresh_details[key], cold_details[key],
+            "{key} changed in cold build"
+        );
+    }
     let fresh_node = Node {
+        native_semantic: None,
         id: "func:Service.execute".into(),
         path: "src/models.py".into(),
         language: "python".into(),

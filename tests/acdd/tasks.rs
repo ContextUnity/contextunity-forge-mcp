@@ -1195,13 +1195,13 @@ fn tiered_task_context_enforces_indexed_seams_and_signature_boundaries() {
                         })
                         && entries.iter().any(|entry| {
                             entry["test_path"] == "tests/external.rs"
+                                && entry["source"] == "covering_test"
                                 && entry["command"]
-                                    .as_str()
-                                    .is_some_and(|command| command.ends_with("--test external"))
+                                    == format!("{canonical_command} --test external")
                         })
                 })
             {
-                failures.push(format!("{stage}/{seam}: scoped commands must append seam and covering-test suffixes only to the canonical combined command: {scoped}"));
+                failures.push(format!("{stage}/{seam}: scoped commands must append seam and covering-test suffixes only to the canonical combined command; actual: {scoped}"));
             }
         }
         if change_signature {

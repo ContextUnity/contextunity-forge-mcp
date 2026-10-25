@@ -62,8 +62,10 @@ fn oversized_python_flow_keeps_type_only_imports_fail_closed_after_persistence()
                 |row| row.get(0),
             )
             .unwrap();
-        let facts: serde_json::Value =
-            serde_json::from_slice(&zstd::stream::decode_all(blob.as_slice()).unwrap()).unwrap();
+        let facts = serde_json::to_value(
+            contextunity_forge_mcp::db::reader::decode_local_facts(&blob).unwrap(),
+        )
+        .unwrap();
         let module = facts["nodes"]
             .as_array()
             .unwrap()

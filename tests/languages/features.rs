@@ -265,6 +265,10 @@ fn cross_layer_seams_endpoint_vue_alpine() {
     let root = &workspace.0;
     fs::create_dir_all(root.join("stores")).unwrap();
 
+    // Existing Nuxt builtins require actual project activation.
+    workspace.write("package.json", r#"{"name":"cross-layer-seam","dependencies":{"nuxt":"3.21.9","vue":"3.5.0","alpinejs":"3.14.9"}}"#);
+    workspace.write("nuxt.config.ts", "export default defineNuxtConfig({});\n");
+
     // 1. Python Django backend route + view
     fs::write(
         root.join("urls.py"),
@@ -299,11 +303,12 @@ fn cross_layer_seams_endpoint_vue_alpine() {
     )
     .unwrap();
 
-    // 5. Vue component using auto-imported store and Nuxt built-in
+    // 5. Vue component explicitly imports its store and uses an activated Nuxt builtin.
     fs::write(
         root.join("Admin.vue"),
         concat!(
             "<script setup>\n",
+            "import { useAdminStore } from './stores/admin';\n",
             "const adminStore = useAdminStore();\n",
             "navigateTo('/dashboard');\n",
             "</script>\n",
@@ -329,7 +334,7 @@ fn cross_layer_seams_endpoint_vue_alpine() {
         "calls_endpoint edges must exist"
     );
 
-    // Verify Vue auto-import resolution
+    // Verify the explicit Vue store import reaches its indexed provider.
     let admin_store_coverage: String = conn
         .query_row(
             "SELECT resolution FROM dependencies WHERE symbol='useAdminStore'",
@@ -338,6 +343,13 @@ fn cross_layer_seams_endpoint_vue_alpine() {
         )
         .unwrap();
     assert_eq!(admin_store_coverage, "resolved");
+    let canonical_store: String = conn.query_row("SELECT n.id FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path='stores/admin.ts' AND n.name='useAdminStore'", [], |row| row.get(0)).unwrap();
+    let store_targets: Vec<String> = conn.prepare("SELECT d.id FROM edge_occurrences e JOIN nodes d ON d.node_hash=e.dst_hash JOIN path_dictionary p ON p.path_id=e.owner_id WHERE p.path='Admin.vue' AND e.kind='calls' AND d.name='useAdminStore' ORDER BY d.id").unwrap().query_map([], |row| row.get(0)).unwrap().collect::<Result<_, _>>().unwrap();
+    assert_eq!(
+        store_targets,
+        [canonical_store],
+        "explicit store import preserves the actual cross-layer call"
+    );
 
     // Verify Nuxt builtin resolution (navigateTo -> external)
     let navigate_coverage: String = conn

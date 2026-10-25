@@ -12,3 +12,5 @@ mod overload_disambiguation;
 mod public_output;
 #[path = "linker/receivers/typed.rs"]
 mod typed_receivers;
+#[path = "linker/value_flow.rs"]
+mod value_flow;

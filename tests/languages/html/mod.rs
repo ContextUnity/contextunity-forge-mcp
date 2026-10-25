@@ -43,15 +43,24 @@ fn coverage_aggregate_rows(conn: &rusqlite::Connection) -> (Vec<String>, Vec<Str
     (owner_language, language_counts)
 }
 
+mod alpine_relations;
+mod browser_templates;
 #[cfg(feature = "lang-typescript")]
 #[path = "classic_wire.rs"]
 mod classic_wire;
+mod django_templates;
 #[cfg(feature = "lang-python")]
-mod framework_relations;
+mod htmx_relations;
+mod jinja_templates;
+#[cfg(feature = "lang-python")]
+mod manifest_relations;
+#[cfg(feature = "lang-python")]
+mod relation_support;
 mod syntax;
 #[path = "template_masking.rs"]
 mod template_masking;
 #[cfg(feature = "lang-python")]
 #[path = "template_origins.rs"]
 mod template_origins;
-mod templates;
+#[cfg(feature = "lang-python")]
+use relation_support::*;

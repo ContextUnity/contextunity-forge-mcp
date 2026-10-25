@@ -871,7 +871,7 @@ function shadowed(test: Function) {
     ]);
     for (selector, public) in &visibility {
         let selected = node(selector);
-        if selected["details"]["is_public"] != *public {
+        if selected["details"]["is_public"].as_bool().unwrap_or(false) != *public {
             failures.push(format!("{selector} declared-public={public}: {selected}"));
         }
     }
@@ -1020,11 +1020,9 @@ fn test_mapping_uses_lexical_fallback_when_no_test_edges_exist() {
     let lexical = &inbound["nodes"]["items"][0];
     assert_eq!(lexical["test_role"], "test_case");
     assert!(lexical["connection"].get("call_path").is_none());
-    assert!(
-        lexical["connection"]
-            .get("verified_call_path_nodes")
-            .is_none()
-    );
+    assert!(lexical["connection"]
+        .get("verified_call_path_nodes")
+        .is_none());
     let markdown = contextunity_forge_mcp::core::format::render_for_operation(
         &inbound,
         contextunity_forge_mcp::core::format::OutputFormat::Markdown,
@@ -1040,13 +1038,11 @@ fn test_mapping_uses_lexical_fallback_when_no_test_edges_exist() {
     );
     let analysis = reader::analyze_paged(&conn, "service.py", None, &options(10)).unwrap();
     let id = reader::select(&conn, "ChannelSyncEntry").unwrap()["id"].clone();
-    assert!(
-        analysis["untested_public_surface"]["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|item| item["id"] == id)
-    );
+    assert!(analysis["untested_public_surface"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["id"] == id));
 }
 
 #[test]
@@ -1190,12 +1186,10 @@ fn tests_reports_unresolved_references_in_symbol_scope() {
     let conn = workspace.build();
     let res = symbols::tests_paged(&conn, "test_one", "inbound", &options(10)).unwrap();
     assert!(res["unresolved_references"].as_u64().unwrap() >= 1);
-    assert!(
-        res["scope"]
-            .as_str()
-            .unwrap()
-            .contains("unresolved reference(s)")
-    );
+    assert!(res["scope"]
+        .as_str()
+        .unwrap()
+        .contains("unresolved reference(s)"));
 }
 
 #[test]
@@ -1214,13 +1208,11 @@ fn compact_coverage_keeps_scope_counts_and_full_detail_keeps_evidence() {
     assert!(item.get("evidence").is_none());
     assert!(item.get("path").is_none());
     assert_eq!(item["status"], "unresolved");
-    assert!(
-        coverage["statuses"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|s| { s["status"] == "unresolved" && s["total"].as_u64().unwrap() > 0 })
-    );
+    assert!(coverage["statuses"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|s| { s["status"] == "unresolved" && s["total"].as_u64().unwrap() > 0 }));
     let mut full = options(10);
     full.detail = Detail::Full;
     let detailed = reader::inspect_paged(&conn, "target_func", false, &full).unwrap();
@@ -1383,22 +1375,20 @@ fn coverage_is_opt_in_and_snippet_preserves_source_continuation() {
     )
     .unwrap();
     assert!(explained.get("coverage").is_none());
-    assert!(
-        symbols::inspect_with_options(
-            &conn,
-            &workspace.0,
-            "target",
-            &symbols::InspectOptions {
-                show_doc: false,
-                source: &source,
-                coverage: CoverageOptions {
-                    include_coverage: true,
-                },
-                page: &options(30)
-            }
-        )
-        .is_err()
-    );
+    assert!(symbols::inspect_with_options(
+        &conn,
+        &workspace.0,
+        "target",
+        &symbols::InspectOptions {
+            show_doc: false,
+            source: &source,
+            coverage: CoverageOptions {
+                include_coverage: true,
+            },
+            page: &options(30)
+        }
+    )
+    .is_err());
     let snippet =
         symbols::snippet_paged(&conn, &workspace.0, "target", &source, &options(30)).unwrap();
     assert_eq!(snippet["source"], inspect["source"]);

@@ -117,16 +117,81 @@ fn syntax_grammar_cache_isolated_by_spec_and_actual_grammar() {
     feature = "lang-typescript"
 ))]
 #[test]
-fn three_tier_profiles_preserve_delivered_public_facts_and_all_commitments() {
+fn three_tier_profiles_preserve_semantics_and_current_commitments() {
     use contextunity_forge_mcp::core::commitments;
     use contextunity_forge_mcp::core::semantic::ValueFlowFacts;
-    use rusqlite::types::ValueRef;
     use serde_json::{json, Value};
     use sha2::{Digest, Sha256};
     use std::{
         collections::BTreeSet,
         time::{Duration, UNIX_EPOCH},
     };
+
+    fn compacted_details(details: &Value, kind: &str, remove_column: bool) -> Value {
+        let Value::Object(details) = details else {
+            return details.clone();
+        };
+        let mut details = details.clone();
+        details.retain(|key, value| {
+            if (key == "column" && remove_column)
+                || (key == "is_method" && kind == "method" && value == &json!(true))
+                || ((key == "async"
+                    || key == "default_export"
+                    || key == "generic_impl"
+                    || key == "is_method"
+                    || key == "is_public"
+                    || key == "is_static")
+                    && value == &json!(false))
+                || ((key == "bases" || key == "receiver" || key == "receiver_name")
+                    && value.is_null())
+                || (key == "value_flow" && value.is_null())
+                || ((key == "bindings" || key == "rebindings")
+                    && value.as_array().is_some_and(Vec::is_empty))
+                || ((key == "decorators" || key == "bases")
+                    && value.as_array().is_some_and(Vec::is_empty))
+                || ((key == "doc" || key == "receiver" || key == "receiver_name")
+                    && value.as_str().is_some_and(str::is_empty))
+                || (key == "param_types"
+                    && value.as_object().is_some_and(serde_json::Map::is_empty))
+            {
+                return false;
+            }
+            true
+        });
+        if details.is_empty() {
+            Value::Null
+        } else {
+            Value::Object(details)
+        }
+    }
+
+    fn compacted_public_facts(facts: &Value) -> Value {
+        let mut facts = facts.clone();
+        if let Some(files) = facts.as_object_mut() {
+            for facts in files.values_mut() {
+                let Some(nodes) = facts["nodes"].as_array_mut() else {
+                    continue;
+                };
+                let mut declarations_per_line = std::collections::HashMap::new();
+                for node in nodes.iter() {
+                    if node["kind"] == "module" {
+                        continue;
+                    }
+                    *declarations_per_line
+                        .entry(node["line"].as_u64().unwrap_or_default())
+                        .or_insert(0usize) += 1;
+                }
+                for node in nodes {
+                    let kind = node["kind"].as_str().unwrap_or_default().to_owned();
+                    let line = node["line"].as_u64().unwrap_or_default();
+                    let remove_column = matches!(kind.as_str(), "function" | "method")
+                        && declarations_per_line.get(&line) == Some(&1);
+                    node["details"] = compacted_details(&node["details"], &kind, remove_column);
+                }
+            }
+        }
+        facts
+    }
 
     let baseline: Value =
         serde_json::from_str(include_str!("fixtures/three_tier/pre_refactor.json")).unwrap();
@@ -181,7 +246,12 @@ fn three_tier_profiles_preserve_delivered_public_facts_and_all_commitments() {
         if !facts.errors.is_empty() {
             failures.push(format!("{path}: {:?}", facts.errors));
         }
-        for node in &facts.nodes {
+        let projected = crate::common::assertions::projected_facts(&facts);
+        for (node, public_node) in facts
+            .nodes
+            .iter()
+            .zip(projected["nodes"].as_array().unwrap())
+        {
             if node.path != path
                 || node.language != language
                 || node.line == 0
@@ -189,11 +259,14 @@ fn three_tier_profiles_preserve_delivered_public_facts_and_all_commitments() {
             {
                 failures.push(format!("invalid public owner: {node:?}"));
             }
-            if let Some(flow) = node.details.get("value_flow") {
+            if let Some(flow) = public_node["details"].get("value_flow") {
                 let typed: ValueFlowFacts = serde_json::from_value(flow.clone()).unwrap();
                 if typed.fact_limit_exceeded {
                     failures.push(format!("unexpected bounded fact overflow: {}", node.id));
                 }
+            }
+            if public_node["details"] == json!({}) {
+                failures.push(format!("empty details object is not compact: {}", node.id));
             }
         }
         public.insert(path.into(), serde_json::to_value(&facts).unwrap());
@@ -210,19 +283,102 @@ fn three_tier_profiles_preserve_delivered_public_facts_and_all_commitments() {
                 .unwrap()
                 .iter()
                 .find(|original| original["id"] == node["id"]);
-            if original.is_some_and(|original| {
-                serde_json::to_string(&original["details"]).unwrap()
-                    != serde_json::to_string(&node["details"]).unwrap()
-            }) {
-                failures.push(format!(
-                    "{path}: serialized details changed for {}",
-                    node["id"]
-                ));
+            let kind = node["kind"].as_str().unwrap_or_default();
+            let line = node["line"].as_u64().unwrap_or_default();
+            let declarations_on_line = facts["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|candidate| {
+                    candidate["kind"] != "module" && candidate["line"].as_u64() == Some(line)
+                })
+                .count();
+            let remove_column = matches!(kind, "function" | "method") && declarations_on_line == 1;
+            if let Some(original) = original {
+                let expected = compacted_details(&original["details"], kind, remove_column);
+                let actual = compacted_details(&node["details"], kind, remove_column);
+                if expected != actual {
+                    let brief = |value: &Value| {
+                        serde_json::to_string(value)
+                            .unwrap()
+                            .chars()
+                            .take(320)
+                            .collect::<String>()
+                    };
+                    failures.push(format!(
+                        "{path}: meaningful details changed for {}: expected {}, got {}",
+                        node["id"],
+                        brief(&expected),
+                        brief(&actual),
+                    ));
+                }
             }
         }
     }
-    if expected != &Value::Object(public) {
-        failures.push("public owner/binding/return facts changed".into());
+    let expected_module_import = json!({
+        "source": "module:src/lib.rs",
+        "expression": "crate::helper",
+        "kind": "imports",
+        "line": 1,
+        "column": 0,
+        "alias": "helper",
+        "module": "crate::helper",
+        "dynamic": false,
+    });
+    let module_imports: Vec<_> = public["src/lib.rs"]["references"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|reference| {
+            !expected["src/lib.rs"]["references"]
+                .as_array()
+                .unwrap()
+                .contains(reference)
+        })
+        .cloned()
+        .collect();
+    if module_imports != [expected_module_import.clone()] {
+        failures.push(format!(
+            "unexpected additive Rust module facts: {module_imports:?}"
+        ));
+    }
+    let mut comparable_public = Value::Object(public.clone());
+    comparable_public["src/lib.rs"]["references"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|reference| reference != &expected_module_import);
+    let compacted_expected = compacted_public_facts(expected);
+    let compacted_actual = compacted_public_facts(&comparable_public);
+    if compacted_expected != compacted_actual {
+        for (path, expected_facts) in compacted_expected.as_object().unwrap() {
+            let actual_facts = &compacted_actual[path];
+            for (field, expected_value) in expected_facts.as_object().unwrap() {
+                if field == "nodes" {
+                    let without_details = |nodes: &Value| {
+                        Value::Array(
+                            nodes
+                                .as_array()
+                                .unwrap()
+                                .iter()
+                                .map(|node| {
+                                    let mut node = node.clone();
+                                    node.as_object_mut().unwrap().remove("details");
+                                    node
+                                })
+                                .collect(),
+                        )
+                    };
+                    if without_details(expected_value) != without_details(&actual_facts[field]) {
+                        failures.push(format!("{path}: non-detail node facts changed"));
+                    }
+                } else if expected_value != &actual_facts[field] {
+                    failures.push(format!(
+                        "{path}: {field} changed: expected {expected_value:?}, got {:?}",
+                        actual_facts[field]
+                    ));
+                }
+            }
+        }
     }
     #[cfg(feature = "lang-vue")]
     {
@@ -255,62 +411,50 @@ fn three_tier_profiles_preserve_delivered_public_facts_and_all_commitments() {
         .map(|(domain, _, _)| domain.as_str())
         .collect();
     assert_eq!(domains, "source_inventory files nodes edges local_facts edge_occurrences dependencies shared_owners errors resolution_coverage coverage_owner_language coverage_language_counts doc_sections node_search_postings node_search_config doc_search_postings doc_search_config".split_whitespace().collect());
-    if serde_json::to_value(actual).unwrap() != baseline["snapshot"]["commitments"] {
-        failures.push("complete 17-domain/owner-leaf commitments differ".into());
+    drop(statement);
+    drop(conn);
+    let repeated = workspace.build();
+    commitments::verify(&repeated).unwrap();
+    let mut statement = repeated.prepare("SELECT domain,p.path,CASE WHEN typeof(digest)='blob' THEN lower(hex(digest)) ELSE digest END FROM domain_commitments d LEFT JOIN path_dictionary p ON p.path_id=d.owner_id ORDER BY domain,p.path").unwrap();
+    let repeated_commitments: Vec<(String, Option<String>, String)> = statement
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    if actual != repeated_commitments {
+        failures.push("current 17-domain commitments changed on a repeated build".into());
     }
-    for (name, expected) in baseline["snapshot"]["tables"].as_object().unwrap() {
-        if name == "domain_commitments"
-            || ["node_search", "doc_search"].iter().any(|prefix| {
-                ["_data", "_idx", "_content", "_docsize"]
-                    .iter()
-                    .any(|suffix| name == &format!("{prefix}{suffix}"))
-            })
-        {
-            continue;
-        }
-        let columns: Vec<_> = expected["columns"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|c| c.as_str().unwrap())
-            .collect();
-        let quote = |s: &str| format!("\"{}\"", s.replace('"', "\"\""));
-        let sql = format!(
-            "SELECT * FROM {} ORDER BY {}",
-            quote(name),
-            columns
-                .iter()
-                .map(|c| quote(c))
-                .collect::<Vec<_>>()
-                .join(",")
-        );
-        let mut statement = conn.prepare(&sql).unwrap();
-        let rows: Vec<Vec<Value>> = statement
-            .query_map([], |row| {
-                (0..columns.len())
-                    .map(|index| {
-                        Ok(match row.get_ref(index)? {
-                            ValueRef::Null => json!({"type":"null"}),
-                            ValueRef::Integer(value) => json!({"type":"integer","value":value}),
-                            ValueRef::Text(value) => {
-                                json!({"type":"text","value":std::str::from_utf8(value).unwrap()})
-                            }
-                            ValueRef::Blob(value) => {
-                                json!({"type":"blob","hex":hex::encode(value)})
-                            }
-                            ValueRef::Real(_) => panic!(
-                                "baseline real cell requires exact observed representation: {name}"
-                            ),
-                        })
-                    })
-                    .collect::<rusqlite::Result<Vec<_>>>()
-            })
-            .unwrap()
-            .map(Result::unwrap)
-            .collect();
-        if serde_json::to_value(rows).unwrap() != expected["rows"] {
-            failures.push(format!("complete typed table {name} differs"));
-        }
+    let simple = ast::extract("simple.rs", "rust", "fn simple() {}").unwrap();
+    if simple
+        .nodes
+        .iter()
+        .find(|node| node.name == "simple")
+        .is_none_or(|node| !node.details.is_null())
+    {
+        failures.push("simple Rust function details must be null".into());
+    }
+    let simple_method = ast::extract(
+        "simple_method.rs",
+        "rust",
+        "struct Simple;\nimpl Simple {\n    fn method() {}\n}\n",
+    )
+    .unwrap();
+    if simple_method
+        .nodes
+        .iter()
+        .find(|node| node.name == "method")
+        .is_none_or(|node| node.details["is_static"] != true)
+    {
+        failures.push("Rust associated methods retain their static classification".into());
+    }
+    let same_line = ast::extract("same_line.rs", "rust", "fn first() {} fn second() {}").unwrap();
+    if same_line
+        .nodes
+        .iter()
+        .filter(|node| matches!(node.name.as_str(), "first" | "second"))
+        .any(|node| node.details["column"].as_u64().is_none())
+    {
+        failures.push("same-line declaration positions must remain available".into());
     }
     // This profile uses the supported public hook surface. Body summaries must
     // be finalized after their own descendants while retaining nested owners.
@@ -463,7 +607,10 @@ fn three_tier_profiles_preserve_delivered_public_facts_and_all_commitments() {
         ),
         (
             "scope",
-            declaration.is_some_and(|node| node.details["bindings"] == json!(["arg", "local"])),
+            declaration.is_some_and(|node| {
+                crate::common::assertions::projected_node_details(&syntax_facts, node)["bindings"]
+                    == json!(["arg", "local"])
+            }),
         ),
         (
             "comment",
@@ -593,8 +740,8 @@ fn three_tier_profiles_preserve_delivered_public_facts_and_all_commitments() {
             .iter()
             .find(|node| node.name == "outer")
             .unwrap();
-        let flow: ValueFlowFacts =
-            serde_json::from_value(outer.details["value_flow"].clone()).unwrap();
+        let details = crate::common::assertions::projected_node_details(&facts, outer);
+        let flow: ValueFlowFacts = serde_json::from_value(details["value_flow"].clone()).unwrap();
         if !flow
             .bindings
             .iter()
@@ -611,8 +758,8 @@ fn three_tier_profiles_preserve_delivered_public_facts_and_all_commitments() {
             .iter()
             .find(|node| node.name == "inner")
             .unwrap();
-        let flow: ValueFlowFacts =
-            serde_json::from_value(inner.details["value_flow"].clone()).unwrap();
+        let details = crate::common::assertions::projected_node_details(&facts, inner);
+        let flow: ValueFlowFacts = serde_json::from_value(details["value_flow"].clone()).unwrap();
         if !flow
             .bindings
             .iter()
@@ -964,9 +1111,21 @@ fn rust_named_forwarding_and_root_library_bindings_survive_delta() {
         for &(owner, expression, target, status) in probes {
             let coverage: Vec<(usize, String)> = conn.prepare("SELECT c.line,c.status FROM resolution_coverage c JOIN path_dictionary p ON p.path_id=c.path_id JOIN coverage_expressions x ON x.expression_id=c.expression_id WHERE p.path=?1 AND x.expression=?2 ORDER BY c.line,c.status").unwrap()
                 .query_map(params![owner, expression], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().collect::<rusqlite::Result<_>>().unwrap();
-            if coverage.is_empty() || coverage.iter().any(|(_, actual)| actual != status) {
+            // Acceptance3 permits unresolved/ambiguous evidence for a nonexact
+            // namespace export; direct named imports retain their strict A oracle.
+            let expected_statuses =
+                if phase == "missing becomes a distinct target" && expression == "api::partial" {
+                    &["unresolved", "ambiguous"][..]
+                } else {
+                    std::slice::from_ref(&status)
+                };
+            if coverage.is_empty()
+                || coverage
+                    .iter()
+                    .any(|(_, actual)| !expected_statuses.contains(&actual.as_str()))
+            {
                 failures.push(format!(
-                    "{phase}: {owner} {expression} coverage {coverage:?}, expected {status}"
+                    "{phase}: {owner} {expression} coverage {coverage:?}, expected {expected_statuses:?}"
                 ));
             }
             let mut actual = Vec::<String>::new();
@@ -1021,19 +1180,59 @@ fn rust_named_forwarding_and_root_library_bindings_survive_delta() {
     };
 
     let w = Workspace::new();
-    w.write("src/lib.rs", "pub mod provider;\nmod parent;\npub mod facade;\npub mod bridge;\nmod consumer;\nmod cycle_a;\nmod cycle_b;\nmod a;\nmod b;\n");
-    let provider = "pub fn build() {}\npub fn other() {}\npub struct Workspace;\nimpl Workspace { pub fn new() -> Self { Self } }\n";
+    w.write("src/lib.rs", "pub mod provider;\nmod parent;\npub mod facade;\npub mod bridge;\nmod consumer;\nmod cycle_a;\nmod cycle_b;\nmod a;\nmod b;\npub mod another;\npub mod glob_one;\npub mod glob_two;\npub mod glob_ambiguous;\npub mod glob_same;\npub mod glob_mixed;\npub mod glob_outer;\npub mod glob_cycle;\npub mod glob_missing;\nmod glob_consumer;\nmod glob_shadow;\nmod glob_named;\nmod glob_broken;\nmod glob_negative;\nmod lexical_direct;\nmod lexical_typed;\nmod lexical_transitive;\nmod lexical_block;\nmod lexical_named;\nmod lexical_broken;\nmod lexical_own;\nmod lexical_private;\nmod lexical_ambiguous;\nmod lexical_incomplete;\nmod module_facade;\nmod module_outer;\nmod module_direct;\nmod module_forwarded;\n#[path = \"other.rs\"] mod attributed;\n#[cfg(any())] mod disabled;\nfn declared_probe() {\n    provider::build();\n    undeclared::build();\n    attributed::build();\n    disabled::build();\n}\n");
+    let provider = "pub fn build() {}\npub fn other() {}\nfn hidden() {}\npub struct Workspace;\nimpl Workspace { pub fn new() -> Self { Self } pub fn work(&self) {} }\n";
     w.write("src/provider.rs", provider);
-    let parent = "use crate::provider::{build as writer, Workspace};\nmod child;\n";
+    for path in ["src/undeclared.rs", "src/attributed.rs", "src/disabled.rs"] {
+        w.write(path, "pub fn build() {}\n");
+    }
+    let parent = "use crate::provider::{build as writer, Workspace};\nuse crate::bridge::twice as inherited;\nmod child;\n";
     w.write("src/parent/mod.rs", parent);
-    w.write("src/parent/child.rs", "use super::{writer as emit, Workspace as Room};\nuse crate::provider::{self as direct};\nfn probe() {\n    emit();\n    Room::new();\n    direct::build();\n}\n");
-    let facade = "pub use crate::provider::{build as forwarded, Workspace as Room};\npub use crate::provider as tools;\npub use crate::provider::missing as absent;\npub use crate::provider::build as conflict;\npub use crate::provider::other as conflict;\npub use crate::parent::writer as leaked;\n";
+    w.write("src/parent/child.rs", "use super::{writer as emit, Workspace as Room};\nuse super::*;\nuse crate::provider::{self as direct};\nmod grandchild;\nfn probe() {\n    emit();\n    inherited();\n    Room::new();\n    direct::build();\n}\n");
+    w.write(
+        "src/parent/child/grandchild.rs",
+        "use super::*;\nfn probe() {\n    inherited();\n    writer();\n}\n",
+    );
+    let glob_one = "pub use crate::provider::*;\n";
+    for (path, source) in [
+        ("src/lexical_direct.rs", "fn probe() { use crate::provider::*;\n build();\n }\n"),
+        ("src/lexical_typed.rs", "fn probe() { use crate::glob_two::*;\n let value = Workspace::new();\n value.work();\n }\n"),
+        ("src/lexical_transitive.rs", "fn probe() { use crate::glob_two::*;\n build();\n }\n"),
+        ("src/lexical_block.rs", "fn probe() { { use crate::glob_two::*;\n build();\n } }\n"),
+        ("src/lexical_named.rs", "fn probe() { use crate::glob_two::*; use crate::provider::other as build;\n build();\n }\n"),
+        ("src/lexical_broken.rs", "fn probe() { use crate::glob_two::*; use crate::provider::missing as build;\n build();\n }\n"),
+        ("src/lexical_own.rs", "fn probe() { use crate::glob_two::*; fn build() {}\n build();\n }\n"),
+        ("src/lexical_private.rs", "fn probe() { use crate::provider::*;\n hidden();\n }\n"),
+        ("src/lexical_ambiguous.rs", "fn probe() { use crate::provider::*; use crate::another::*;\n build();\n }\n"),
+        ("src/lexical_incomplete.rs", "fn probe() { use crate::provider::*; use crate::glob_missing::*;\n build();\n }\n"),
+        ("src/module_facade/mod.rs", "pub mod nested;\nmod private_nested;\n"),
+        ("src/module_facade/nested.rs", "pub fn build() {}\n"),
+        ("src/module_facade/private_nested.rs", "pub fn build() {}\n"),
+        ("src/module_outer.rs", "pub use crate::module_facade::*;\n"),
+        ("src/module_direct.rs", "use crate::module_facade::*;\nfn probe() {\n nested::build();\n private_nested::build();\n}\n"),
+        ("src/module_forwarded.rs", "use crate::module_outer::*;\nfn probe() {\n nested::build();\n private_nested::build();\n}\n"),
+        ("src/another.rs", "pub fn build() {} pub fn private_only() {}\n"),
+        ("src/glob_one.rs", glob_one),
+        ("src/glob_two.rs", "pub use crate::{glob_one::*, provider::{Workspace as Room}};\n"),
+        ("src/glob_ambiguous.rs", "pub use crate::{provider::*, another::*};\n"),
+        ("src/glob_same.rs", "pub use crate::{glob_one::*, glob_two::*};\n"),
+        ("src/glob_mixed.rs", "pub use crate::provider::*; use crate::another::*;\n"),
+        ("src/glob_outer.rs", "pub use crate::glob_mixed::*;\n"),
+        ("src/glob_cycle.rs", "pub use crate::{provider::*, glob_cycle::*};\n"),
+        ("src/glob_missing.rs", "pub use crate::{provider::*, missing::*};\n"),
+        ("src/glob_consumer.rs", "use crate::glob_two::*;\nfn probe(value: Workspace) {\n    build();\n    Workspace::new();\n    value.work();\n    hidden();\n}\n"),
+        ("src/glob_shadow.rs", "use crate::glob_two::*; fn build() {} fn probe() { build(); }\n"),
+        ("src/glob_named.rs", "use crate::glob_two::*; use crate::provider::other as build; fn probe() { build(); }\n"),
+        ("src/glob_broken.rs", "use crate::glob_two::*; use crate::provider::missing as build; fn probe() { build(); }\n"),
+        ("src/glob_negative.rs", "use crate::glob_ambiguous::*;\nuse crate::glob_ambiguous as ambiguous;\nuse crate::glob_same as same;\nuse crate::glob_mixed as mixed;\nuse crate::glob_outer as outer;\nuse crate::glob_cycle as cyclic;\nuse crate::glob_missing as missing;\nfn probe() {\n    build();\n    ambiguous::build();\n    same::build();\n    mixed::build();\n    mixed::other();\n    mixed::private_only();\n    outer::build();\n    outer::other();\n    cyclic::build();\n    missing::build();\n}\n"),
+    ] { w.write(path, source); }
+    let facade = "pub use crate::provider::{build as forwarded, Workspace as Room};\npub use crate::provider as tools;\npub use crate::provider::missing as absent;\npub use crate::provider::build as conflict;\npub use crate::provider::other as conflict;\npub use crate::parent::writer as leaked;\npub use crate::provider::build as partial;\npub use crate::provider::missing as partial;\npub use crate::provider::build as cyclic;\npub use crate::cycle_a::ring as cyclic;\npub use crate::provider::build as same;\npub use crate::provider::build as same;\npub use crate::provider::build as hidden_mix;\npub use crate::parent::writer as hidden_mix;\npub use crate::provider::build as deep_mix;\npub use crate::bridge::depth0 as deep_mix;\n";
     w.write("src/facade.rs", facade);
     w.write(
         "src/bridge.rs",
-        "pub use crate::facade::{forwarded as twice, Room as Hall, tools};\n",
+        &format!("pub use crate::facade::{{forwarded as twice, Room as Hall, tools}};\n{}pub use crate::provider::build as depth64;\n", (0..64).map(|depth| format!("pub use self::depth{} as depth{depth};\n", depth + 1)).collect::<String>()),
     );
-    w.write("src/consumer.rs", "use crate::bridge::{twice as invoke, Hall, tools};\nuse super::facade::{self as api, absent, conflict, leaked};\nuse crate::cycle_a::ring;\nuse crate::parent::writer as private_parent;\nfn probe() {\n    invoke();\n    Hall::new();\n    tools::build();\n    api::forwarded();\n    absent();\n    conflict();\n    ring();\n    private_parent();\n    leaked();\n}\n");
+    w.write("src/consumer.rs", "use crate::bridge::{twice as invoke, Hall, tools};\nuse super::facade::{self as api, absent, conflict, leaked, partial, cyclic, same, hidden_mix, deep_mix};\nuse crate::cycle_a::ring;\nuse crate::parent::writer as private_parent;\nfn probe() {\n    invoke();\n    Hall::new();\n    tools::build();\n    api::forwarded();\n    absent();\n    conflict();\n    ring();\n    private_parent();\n    leaked();\n    partial();\n    api::partial();\n    cyclic();\n    api::cyclic();\n    same();\n    api::same();\n    hidden_mix();\n    api::hidden_mix();\n    deep_mix();\n    api::deep_mix();\n}\n");
     w.write("src/cycle_a.rs", "pub use crate::cycle_b::ring;\n");
     w.write("src/cycle_b.rs", "pub use crate::cycle_a::ring;\n");
     w.write("src/a.rs", "use crate::provider::build as hidden;\n");
@@ -1046,6 +1245,170 @@ fn rust_named_forwarding_and_root_library_bindings_survive_delta() {
         "use super::indirect;\nfn probe() {\n    indirect();\n}\n",
     );
     let probes = [
+        (
+            "src/lexical_typed.rs",
+            "Workspace::new",
+            Some(("src/provider.rs", "new")),
+            "resolved",
+        ),
+        (
+            "src/lexical_typed.rs",
+            "value.work",
+            Some(("src/provider.rs", "work")),
+            "resolved",
+        ),
+        (
+            "src/lexical_direct.rs",
+            "build",
+            Some(("src/provider.rs", "build")),
+            "resolved",
+        ),
+        (
+            "src/lexical_transitive.rs",
+            "build",
+            Some(("src/provider.rs", "build")),
+            "resolved",
+        ),
+        (
+            "src/lexical_block.rs",
+            "build",
+            Some(("src/provider.rs", "build")),
+            "resolved",
+        ),
+        (
+            "src/lexical_named.rs",
+            "build",
+            Some(("src/provider.rs", "other")),
+            "resolved",
+        ),
+        ("src/lexical_broken.rs", "build", None, "unresolved"),
+        (
+            "src/lexical_own.rs",
+            "build",
+            Some(("src/lexical_own.rs", "build")),
+            "resolved",
+        ),
+        ("src/lexical_private.rs", "hidden", None, "unresolved"),
+        ("src/lexical_ambiguous.rs", "build", None, "ambiguous"),
+        ("src/lexical_incomplete.rs", "build", None, "unresolved"),
+        (
+            "src/module_direct.rs",
+            "nested::build",
+            Some(("src/module_facade/nested.rs", "build")),
+            "resolved",
+        ),
+        (
+            "src/module_forwarded.rs",
+            "nested::build",
+            Some(("src/module_facade/nested.rs", "build")),
+            "resolved",
+        ),
+        (
+            "src/module_direct.rs",
+            "private_nested::build",
+            None,
+            "unresolved",
+        ),
+        (
+            "src/module_forwarded.rs",
+            "private_nested::build",
+            None,
+            "unresolved",
+        ),
+        (
+            "src/parent/child/grandchild.rs",
+            "inherited",
+            Some(("src/provider.rs", "build")),
+            "resolved",
+        ),
+        (
+            "src/parent/child/grandchild.rs",
+            "writer",
+            Some(("src/provider.rs", "build")),
+            "resolved",
+        ),
+        (
+            "src/glob_consumer.rs",
+            "build",
+            Some(("src/provider.rs", "build")),
+            "resolved",
+        ),
+        (
+            "src/glob_consumer.rs",
+            "Workspace::new",
+            Some(("src/provider.rs", "new")),
+            "resolved",
+        ),
+        (
+            "src/glob_consumer.rs",
+            "value.work",
+            Some(("src/provider.rs", "work")),
+            "resolved",
+        ),
+        ("src/glob_consumer.rs", "hidden", None, "unresolved"),
+        (
+            "src/glob_shadow.rs",
+            "build",
+            Some(("src/glob_shadow.rs", "build")),
+            "resolved",
+        ),
+        (
+            "src/glob_named.rs",
+            "build",
+            Some(("src/provider.rs", "other")),
+            "resolved",
+        ),
+        ("src/glob_broken.rs", "build", None, "unresolved"),
+        ("src/glob_negative.rs", "build", None, "ambiguous"),
+        (
+            "src/glob_negative.rs",
+            "ambiguous::build",
+            None,
+            "unresolved",
+        ),
+        (
+            "src/glob_negative.rs",
+            "same::build",
+            Some(("src/provider.rs", "build")),
+            "resolved",
+        ),
+        ("src/glob_negative.rs", "mixed::build", None, "unresolved"),
+        (
+            "src/glob_negative.rs",
+            "mixed::other",
+            Some(("src/provider.rs", "other")),
+            "resolved",
+        ),
+        (
+            "src/glob_negative.rs",
+            "mixed::private_only",
+            None,
+            "unresolved",
+        ),
+        ("src/glob_negative.rs", "outer::build", None, "unresolved"),
+        (
+            "src/glob_negative.rs",
+            "outer::other",
+            Some(("src/provider.rs", "other")),
+            "resolved",
+        ),
+        ("src/glob_negative.rs", "cyclic::build", None, "unresolved"),
+        ("src/glob_negative.rs", "missing::build", None, "unresolved"),
+        (
+            "src/lib.rs",
+            "provider::build",
+            Some(("src/provider.rs", "build")),
+            "resolved",
+        ),
+        ("src/lib.rs", "undeclared::build", None, "unresolved"),
+        ("src/lib.rs", "attributed::build", None, "unresolved"),
+        ("src/lib.rs", "disabled::build", None, "unresolved"),
+        (
+            "src/parent/child.rs",
+            "inherited",
+            Some(("src/provider.rs", "build")),
+            "resolved",
+        ),
         (
             "src/parent/child.rs",
             "emit",
@@ -1094,10 +1457,132 @@ fn rust_named_forwarding_and_root_library_bindings_survive_delta() {
         ("src/consumer.rs", "private_parent", None, "unresolved"),
         ("src/consumer.rs", "leaked", None, "unresolved"),
         ("src/b/child.rs", "indirect", None, "unresolved"),
+        ("src/consumer.rs", "partial", None, "unresolved"),
+        ("src/consumer.rs", "api::partial", None, "unresolved"),
+        ("src/consumer.rs", "cyclic", None, "unresolved"),
+        ("src/consumer.rs", "api::cyclic", None, "unresolved"),
+        ("src/consumer.rs", "hidden_mix", None, "unresolved"),
+        ("src/consumer.rs", "api::hidden_mix", None, "unresolved"),
+        ("src/consumer.rs", "deep_mix", None, "unresolved"),
+        ("src/consumer.rs", "api::deep_mix", None, "unresolved"),
+        (
+            "src/consumer.rs",
+            "same",
+            Some(("src/provider.rs", "build")),
+            "resolved",
+        ),
+        (
+            "src/consumer.rs",
+            "api::same",
+            Some(("src/provider.rs", "build")),
+            "resolved",
+        ),
     ];
     drop(w.build());
     observe(&w.open(), "cold forwarding", &probes, &mut failures);
     parity(&w, "cold forwarding", &mut failures);
+    let frozen_consumer = fs::read(w.0.join("src/consumer.rs")).unwrap();
+    let frozen_glob_consumer = fs::read(w.0.join("src/glob_consumer.rs")).unwrap();
+    for (phase, source, target, status) in [
+        (
+            "retarget glob",
+            "pub use crate::another::*;\n",
+            Some(("src/another.rs", "build")),
+            "resolved",
+        ),
+        ("remove glob", "", None, "unresolved"),
+        (
+            "restore glob",
+            glob_one,
+            Some(("src/provider.rs", "build")),
+            "resolved",
+        ),
+    ] {
+        w.write("src/glob_one.rs", source);
+        w.delta("src/glob_one.rs");
+        observe(
+            &w.open(),
+            phase,
+            &[("src/glob_consumer.rs", "build", target, status)],
+            &mut failures,
+        );
+        assert_eq!(
+            fs::read(w.0.join("src/glob_consumer.rs")).unwrap(),
+            frozen_glob_consumer,
+            "provider-only glob mutation"
+        );
+        parity(&w, phase, &mut failures);
+    }
+    for (phase, from, to, expression, target, status) in [
+        (
+            "missing becomes same canonical target",
+            "missing as partial",
+            "build as partial",
+            "partial",
+            Some(("src/provider.rs", "build")),
+            "resolved",
+        ),
+        (
+            "missing becomes a distinct target",
+            "missing as partial",
+            "other as partial",
+            "partial",
+            None,
+            "ambiguous",
+        ),
+        (
+            "cycle removed",
+            "pub use crate::cycle_a::ring as cyclic;",
+            "",
+            "cyclic",
+            Some(("src/provider.rs", "build")),
+            "resolved",
+        ),
+        (
+            "inaccessible alternative removed",
+            "pub use crate::parent::writer as hidden_mix;",
+            "",
+            "hidden_mix",
+            Some(("src/provider.rs", "build")),
+            "resolved",
+        ),
+        (
+            "exhausted path shortened",
+            "pub use crate::bridge::depth0 as deep_mix;",
+            "pub use crate::bridge::depth64 as deep_mix;",
+            "deep_mix",
+            Some(("src/provider.rs", "build")),
+            "resolved",
+        ),
+    ] {
+        w.write("src/facade.rs", &facade.replace(from, to));
+        w.delta("src/facade.rs");
+        let member = format!("api::{expression}");
+        observe(
+            &w.open(),
+            phase,
+            &[
+                ("src/consumer.rs", expression, target, status),
+                ("src/consumer.rs", &member, target, status),
+            ],
+            &mut failures,
+        );
+        assert_eq!(
+            fs::read(w.0.join("src/consumer.rs")).unwrap(),
+            frozen_consumer,
+            "provider-only forwarding mutation"
+        );
+        parity(&w, phase, &mut failures);
+        w.write("src/facade.rs", facade);
+        w.delta("src/facade.rs");
+        observe(
+            &w.open(),
+            "restore incomplete alternatives",
+            &probes,
+            &mut failures,
+        );
+        parity(&w, "restore incomplete alternatives", &mut failures);
+    }
     for (phase, replacement, target, status) in [
         (
             "retarget export",
@@ -1126,6 +1611,7 @@ fn rust_named_forwarding_and_root_library_bindings_survive_delta() {
             &[
                 ("src/consumer.rs", "invoke", target, status),
                 ("src/consumer.rs", "api::forwarded", target, status),
+                ("src/parent/child.rs", "inherited", target, status),
             ],
             &mut failures,
         );
@@ -1174,7 +1660,10 @@ fn rust_named_forwarding_and_root_library_bindings_survive_delta() {
         observe(
             &w.open(),
             phase,
-            &[("src/consumer.rs", "invoke", target, status)],
+            &[
+                ("src/consumer.rs", "invoke", target, status),
+                ("src/parent/child.rs", "inherited", target, status),
+            ],
             &mut failures,
         );
         parity(&w, phase, &mut failures);
