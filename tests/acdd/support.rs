@@ -229,6 +229,21 @@ pub(crate) fn git_head(root: &Path) -> String {
     String::from_utf8_lossy(&output.stdout).trim().to_owned()
 }
 
+pub(crate) fn git(root: &Path, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {:?} failed in {}: {}",
+        args,
+        root.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 pub(crate) fn review_proof(decision: &str) -> serde_json::Value {
     let contours: serde_json::Map<String, serde_json::Value> =
         contextunity_forge_mcp::core::tasks::gates::REVIEW_CONTOURS

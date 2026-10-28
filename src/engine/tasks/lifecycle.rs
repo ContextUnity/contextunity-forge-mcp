@@ -132,7 +132,7 @@ fn claim_inner(root: &Path, p: Claim) -> Result<Value> {
     context::validate_claim_gate_requirements(workspace, &task)?;
     let profile = store.profile_for_task(&task)?;
     let cursor = super::claim::claim_nested_gate(&profile, &task.stage, &p.stage)?;
-    let claimed = store.claim(&p.task_id, &cursor.stage_id, &p.worker_id, &p.worktree)?;
+    let claimed = store.claim(&p.task_id, &cursor.canonical_stage_id, &p.worker_id, &p.worktree)?;
     finish_claim(root, workspace, &mut store, claimed, cursor, p.bundle)
 }
 
@@ -179,12 +179,46 @@ fn finish_claim(
             .context("failed to release claim after milestone activation error")?;
         return Err(error);
     }
+    if cursor.gate.persistence.pre == Some(crate::core::tasks::profile::PersistenceAction::Commit) {
+        let pre_commit = (|| -> Result<()> {
+            let task_spec = store.inspect(id)?;
+            let msg = format!("pre({}): claim {}", cursor.canonical_stage_id, claimed.task_id);
+            crate::core::git::git_scoped_commit(worktree, &task_spec.spec.scope, &msg)?;
+            Ok(())
+        })();
+        if let Err(error) = pre_commit {
+            store.release_failed_claim(id, claimed.claim_revision).ok();
+            return Err(error);
+        }
+    }
+    let (pre_snapshot_commit, pre_candidate_baseline) = if cursor.gate.persistence.pre == Some(crate::core::tasks::profile::PersistenceAction::Snapshot) {
+        let pre_snapshot = (|| -> Result<(String, String)> {
+            let task_spec = store.inspect(id)?;
+            let (snapshot, baseline, mut objects) = crate::engine::tasks::git_snapshot::capture_scoped_snapshot(
+                worktree,
+                id,
+                &task_spec.spec.scope,
+            )?
+            .context("TASK_SNAPSHOT_FAILED: pre-snapshot capture requires a Git worktree")?;
+            objects.retain_pending();
+            Ok((snapshot, baseline))
+        })();
+        match pre_snapshot {
+            Ok((s, b)) => (Some(s), Some(b)),
+            Err(error) => {
+                store.release_failed_claim(id, claimed.claim_revision).ok();
+                return Err(error);
+            }
+        }
+    } else {
+        (None, None)
+    };
     let response = (|| {
         let mut details = workspace.guidance_envelope(store.inspect_details(id)?)?;
         if let Some(object) = details.as_object_mut() {
             object.insert("breadcrumb".into(), json!(breadcrumb));
             object.insert("active_gate_path".into(), json!(cursor.gate_path.clone()));
-            object.insert("active_stage_id".into(), json!(cursor.stage_id.clone()));
+            object.insert("active_stage_id".into(), json!(cursor.canonical_stage_id.clone()));
             object.insert("subagent_role".into(), json!(subagent_role));
         }
         let details = context::adapt_workspace_guidance(workspace, details)?;
@@ -227,16 +261,25 @@ fn finish_claim(
                 gate_path: cursor.gate_path.clone(),
                 transition_id: None,
                 git_tree_sha,
-                state_payload: json!({
-                    "task_id": id,
-                    "stage": cursor.stage_id.clone(),
-                    "gate_path": cursor.gate_path.clone(),
-                    "worker_id": claimed.worker_id.clone(),
-                    "claim_revision": claimed.claim_revision,
-                    "contract_revision": claimed.contract_revision,
-                    "worktree": claimed.worktree.clone(),
-                    "subagent_role": subagent_role.clone(),
-                }),
+                state_payload: {
+                    let mut payload = json!({
+                        "task_id": id,
+                        "stage": cursor.stage_id.clone(),
+                        "gate_path": cursor.gate_path.clone(),
+                        "worker_id": claimed.worker_id.clone(),
+                        "claim_revision": claimed.claim_revision,
+                        "contract_revision": claimed.contract_revision,
+                        "worktree": claimed.worktree.clone(),
+                        "subagent_role": subagent_role.clone(),
+                    });
+                    if let (Some(commit), Some(baseline)) = (&pre_snapshot_commit, &pre_candidate_baseline) {
+                        if let Some(obj) = payload.as_object_mut() {
+                            obj.insert("commit".into(), json!(commit));
+                            obj.insert("candidate_baseline_head".into(), json!(baseline));
+                        }
+                    }
+                    payload
+                },
             })?;
         }
         Ok(output)

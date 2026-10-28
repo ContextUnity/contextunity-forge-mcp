@@ -66,14 +66,21 @@ guidance:
     Decompose monolithic test files along domain and behavioral boundaries.
     Ensure every remaining test has explicit type hints and typed fixtures.
 
-  contour.coverage_invariants: >
-    Verify that NO production observable dimension was removed.
-    Confirm that test count reductions correspond strictly to subsumed duplicate cases.
-    Ensure zero weakening of production branch or edge-case coverage.
+  contour.coverage_invariants:
+    description: "Verify that no production observable dimension was removed."
+    criteria:
+      - "Confirm that test count reductions correspond strictly to subsumed duplicate cases."
+      - "Ensure zero weakening of production branch or edge-case coverage."
 
-  contour.purity: >
-    Verify tests exercise real collaborating domain components rather than synthetic stubs.
-    Ensure mocks do not mock the unit under test or leak across test boundaries.
+  contour.purity:
+    description: "Verify tests exercise real collaborating domain components rather than synthetic stubs."
+    criteria:
+      - "Ensure mocks do not mock the unit under test or leak across test boundaries."
+
+  contour.paths:
+    description: "Verify changes are confined to admitted test directories."
+    criteria:
+      - "Ensure changes stay within tests/ scope."
 
 # =============================================================================
 # 4. POLICIES CATALOG (`policies`)
@@ -115,25 +122,28 @@ gates:
             command: verify_suite_parity_and_linter
             reject_to: consolidate_and_type
 
-      # Step 3: Independent Coverage Preservation Audit
+      # Step 3: Full Test Suite Verification (Autonomous Command Gate - 0 tokens)
+      - id: full_suite_verify
+        command: verify_full_test_harness
+        proof: command
+        reject_to: refactor_cycle
+
+      # Step 4: Independent Coverage Preservation Audit
       - id: coverage_audit
         role: coverage_auditor
-        guidance:
-          - contour.coverage_invariants
-          - contour.purity
-          - contour.paths
         policy: strict_audit
         proof: review
+        contours: guidance.contours
         reject_to: refactor_cycle
 
-      # Step 4: Atomic Delivery
+      # Step 5: Atomic Delivery
       - id: deliver
         role: coverage_auditor
-        policy: default_delivery
         proof: delivery
+        receipt: true
+        review_sources:
+          - coverage_audit
         reject_to: refactor_cycle
-
-  # Autonomous Full Repository Sanity Verification
-  - id: full_suite_verify
-    command: verify_full_test_harness
-    reject_to: refactor_tasks
+        persistence:
+          immutable: true
+          post: commit

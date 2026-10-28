@@ -8,13 +8,13 @@ use contextunity_forge_mcp::db::tasks_store::{
     ClaimBoundExecutionRun, GateExecutionTrace, TasksStore,
 };
 use contextunity_forge_mcp::engine::milestones::execute_command_gate;
-use contextunity_forge_mcp::engine::tasks::Action;
 use contextunity_forge_mcp::engine::tasks::compile_evidence_envelope;
 use contextunity_forge_mcp::engine::tasks::evaluate_reject_routing;
 use contextunity_forge_mcp::engine::tasks::rebase_speculative_dependency;
 use contextunity_forge_mcp::engine::tasks::submit_zero_arg;
 use contextunity_forge_mcp::engine::tasks::telemetry_passport_note;
 use contextunity_forge_mcp::engine::tasks::verify_red_to_green;
+use contextunity_forge_mcp::engine::tasks::Action;
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -569,11 +569,9 @@ fn transition_runner_compiles_proofs_and_covers_all_task3_subtasks() {
             .unwrap()
     };
     assert!(run_git(&["add", "-A"]).status.success());
-    assert!(
-        run_git(&["commit", "-m", "capture fixture baseline"])
-            .status
-            .success()
-    );
+    assert!(run_git(&["commit", "-m", "capture fixture baseline"])
+        .status
+        .success());
     let base_head = git_head(&root.0);
     assert!(
         run_git(&["switch", "-c", "upstream-snapshot", base_head.as_str()])
@@ -582,11 +580,9 @@ fn transition_runner_compiles_proofs_and_covers_all_task3_subtasks() {
     );
     fs::write(root.0.join("upstream-note.txt"), "upstream snapshot\n").unwrap();
     assert!(run_git(&["add", "upstream-note.txt"]).status.success());
-    assert!(
-        run_git(&["commit", "-m", "advance upstream snapshot"])
-            .status
-            .success()
-    );
+    assert!(run_git(&["commit", "-m", "advance upstream snapshot"])
+        .status
+        .success());
     assert!(
         run_git(&["switch", "-c", "speculative-task", base_head.as_str()])
             .status
@@ -594,11 +590,9 @@ fn transition_runner_compiles_proofs_and_covers_all_task3_subtasks() {
     );
     fs::write(root.0.join("task-note.txt"), "speculative task\n").unwrap();
     assert!(run_git(&["add", "task-note.txt"]).status.success());
-    assert!(
-        run_git(&["commit", "-m", "speculative task change"])
-            .status
-            .success()
-    );
+    assert!(run_git(&["commit", "-m", "speculative task change"])
+        .status
+        .success());
     assert!(run_git(&["switch", "upstream-snapshot"]).status.success());
     let rebased = rebase_speculative_dependency(&root.0, "speculative-task", "upstream-snapshot");
     let upstream_is_ancestor = run_git(&[

@@ -3520,3 +3520,49 @@ fn linked_pinned_tasks_ignore_linked_workspace_profile_overrides() {
         });
     }
 }
+
+#[test]
+fn scoped_commit_commits_staged_deletion_and_preserves_unrelated_staged_work() {
+    use contextunity_forge_mcp::core::git::git_scoped_commit;
+
+    let root = ScopedWorkspace::new("scoped_commit_deletions");
+    root.write("src/a.rs", "pub fn a() -> u32 { 1 }\n");
+    root.write("src/b.rs", "pub fn b() -> u32 { 2 }\n");
+    super::super::support::git(&root.0, &["add", "src/a.rs", "src/b.rs"]);
+    super::super::support::git(&root.0, &["commit", "-m", "init"]);
+
+    // Stage unrelated change in the real index
+    root.write("README.md", "# Unrelated work\n");
+    super::super::support::git(&root.0, &["add", "README.md"]);
+
+    // Delete src/a.rs using git rm (staged deletion in real index)
+    super::super::support::git(&root.0, &["rm", "src/a.rs"]);
+
+    // Call git_scoped_commit with scope restricted strictly to src/a.rs
+    let commit = git_scoped_commit(&root.0, &["src/a.rs".into()], "remove a")
+        .expect("git_scoped_commit should commit staged deletion of scoped file");
+
+    // Verify commit tree: src/b.rs remains, src/a.rs is removed, README.md is not in commit
+    let output = std::process::Command::new("git")
+        .args(["ls-tree", "-r", "--name-only", &commit])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let tree_files = String::from_utf8_lossy(&output.stdout);
+    let files: Vec<&str> = tree_files.lines().collect();
+    assert_eq!(files, vec!["src/b.rs"], "commit must contain only src/b.rs");
+
+    // Verify that unrelated staged change README.md is still staged in .git/index
+    let status_output = std::process::Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    assert!(status_output.status.success());
+    let status = String::from_utf8_lossy(&status_output.stdout);
+    assert!(
+        status.contains("A  README.md"),
+        "real index must retain unrelated staged README.md: {status}"
+    );
+}

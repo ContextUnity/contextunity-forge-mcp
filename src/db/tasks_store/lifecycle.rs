@@ -479,9 +479,7 @@ impl TasksStore {
             let profile =
                 resolve_task_profile(context.workspace_root.as_deref(), &context.profile, &task)?;
             let gate = profile
-                .gates
-                .iter()
-                .find(|gate| gate.id == task.stage)
+                .by_stage(&task.stage)
                 .context("TASK_STAGE_UNKNOWN: dispatch candidate stage is not in its profile")?;
             let independent = gate
                 .independent_from
@@ -959,7 +957,7 @@ impl ClaimContext {
                 task.task_id,
                 task.stage,
                 profile
-                    .gates
+                    .executable_gates()
                     .iter()
                     .map(|gate| gate.id.as_str())
                     .collect::<Vec<_>>()
@@ -968,6 +966,7 @@ impl ClaimContext {
         })?;
         check_stage(id, &task.stage, stage)?;
         task.gate = task_gate;
+        task.stage = profile.gate_id(task_gate).to_owned();
         let my_scope_paths: Vec<PathBuf> = tx
             .prepare("SELECT path FROM task_scope_paths WHERE task_id=?1")?
             .query_map([id], |row| row.get::<_, String>(0).map(PathBuf::from))?

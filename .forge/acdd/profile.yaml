@@ -53,38 +53,37 @@ commands:
     command: "cargo test"
     description: "Compatibility command for legacy task evidence."
 
-policies:
-  milestone_verification:
-    container:
-      id: milestone_verification
-      gates:
-        - id: verify
-          command: check_full_repo
-          proof: command
-        - id: review
-          role: independent_reviewer
-          proof: review
-          independent_from: verify
-          contours: standard
-      fallback:
-        use: build_review_cycle
+milestone_verification:
+  id: milestone_verification
+  gates:
+    - id: verify
+      command: check_full_repo
+      proof: command
+    - id: review
+      role: independent_reviewer
+      proof: review
+      independent_from: verify
+      contours: guidance.contours
+  fallback:
+    use: build_review_cycle
+    command: check_full_repo
+    max_attempts: 2
+  deliver:
+    proof: delivery
+    persistence:
+      post: commit
+
+gate_templates:
+  build_review_cycle:
+    gates:
+      - id: build
+        role: architect
+        proof: none
+      - id: verify
         command: check_full_repo
-        max_attempts: 2
-      deliver:
-        proof: delivery
-        persistence:
-          post: commit
-    templates:
-      build_review_cycle:
-        gates:
-          - id: build
-            role: architect
-            proof: none
-          - id: verify
-            command: check_full_repo
-            proof: command
-          - id: review
-            role: independent_reviewer
-            proof: review
-            independent_from: build
-            contours: standard
+        proof: command
+      - id: review
+        role: independent_reviewer
+        proof: review
+        independent_from: build
+        contours: guidance.contours

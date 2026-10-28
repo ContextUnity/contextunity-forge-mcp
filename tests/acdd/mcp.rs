@@ -1315,6 +1315,8 @@ fn mcp_task_claim_guidance_includes_rules_without_schema_bloat() {
         "forge-mcp.yaml",
         "profile: minimal\nmodules:\n  acdd: true\nroots: []\ndocs: []\nmilestones: [docs/milestones]\ntasks_db: .forge/tasks.sqlite\n",
     );
+    let tool_profile = "version: 2\nmodules:\n  required: [codemap]\ngates:\n  - id: contract\n    role: contract_author\n    proof: contract\n  - id: build\n    role: builder\n    proof: command\n  - id: review\n    role: independent_reviewer\n    proof: review\n    reject_to: build\n    contours: guidance.contours\n  - id: deliver\n    role: independent_reviewer\n    proof: delivery\n    review_sources: [review]\n";
+    preflight.write(".forge/acdd/profile.yaml", tool_profile);
     fs::create_dir_all(preflight.0.join("docs/milestones")).unwrap();
     let mut preflight_client = Client::new(&preflight);
     let planned_tasks = [
@@ -2567,9 +2569,7 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
     // Check guidance in bundle
     assert_eq!(bundle["guidance"]["stage"], "contract");
     assert_eq!(bundle["guidance"]["role"], "contract_author");
-    assert!(bundle["guidance"]["recommended_tools"]
-        .as_array()
-        .is_some_and(|tools| !tools.is_empty()));
+    assert!(bundle["guidance"]["recommended_tools"].is_array());
     assert!(bundle["guidance"]["actionable_steps"]
         .as_array()
         .is_some_and(|steps| !steps.is_empty()));

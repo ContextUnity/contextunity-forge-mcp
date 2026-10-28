@@ -80,13 +80,28 @@ guidance:
     Author or execute Playwright MCP browser interaction flow.
     Verify DOM state transitions, cart/checkout mutations, and HTMX swap responses.
 
-  contour.django_safety: >
-    Verify migration safety (no non-nullable fields added without defaults),
-    CSRF token presence on mutation endpoints, and absence of raw unescaped SQL.
+  contour.django_safety:
+    description: "Verify migration safety, CSRF tokens, and absence of raw SQL."
+    criteria:
+      - "Verify no non-nullable fields added without defaults."
+      - "Verify CSRF token presence on mutation endpoints."
+      - "Verify absence of unescaped raw SQL."
 
-  contour.query_efficiency: >
-    Audit django.db.connection.queries count in integration test assertions
-    to prevent performance regressions on cart, catalog, and order endpoints.
+  contour.query_efficiency:
+    description: "Audit database query counts to prevent N+1 regressions."
+    criteria:
+      - "Ensure select_related and prefetch_related are used on relations."
+      - "Audit query counts in integration test assertions."
+
+  contour.paths:
+    description: "Verify changes stay within admitted scope."
+    criteria:
+      - "Compare changed files with task scope."
+
+  contour.claims:
+    description: "Verify evidence and Playwright test runs."
+    criteria:
+      - "Confirm all seam tests and Playwright flows pass."
 
 # =============================================================================
 # 4. POLICIES CATALOG (`policies`)
@@ -140,26 +155,29 @@ gates:
         proof: contract
         reject_to: implement
 
-      # Step 4: Cognitive Review
-      - id: review
-        role: reviewer
-        guidance:
-          - contour.django_safety
-          - contour.query_efficiency
-          - contour.paths
-          - contour.claims
-        policy: default_review
-        proof: review
+      # Step 4: Full-Stack Verification (0 tokens)
+      - id: full_repo_verify
+        command: check_full_repo
+        proof: command
         reject_to: implement
 
-      # Step 5: Delivery
+      # Step 5: Cognitive Review
+      - id: review
+        role: reviewer
+        policy: default_review
+        proof: review
+        contours: guidance.contours
+        reject_to: implement
+
+      # Step 6: Delivery
       - id: deliver
         role: reviewer
         policy: default_delivery
         proof: delivery
+        receipt: true
+        review_sources:
+          - review
         reject_to: implement
-
-  # Autonomous Full-Stack Pre-Handoff Verification (0 LLM Tokens)
-  - id: full_repo_verify
-    command: check_full_repo
-    reject_to: tasks_delivery
+        persistence:
+          immutable: true
+          post: commit

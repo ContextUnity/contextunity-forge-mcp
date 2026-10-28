@@ -35,28 +35,64 @@ pub(super) fn compile_evidence_envelope(root: &Path, task_id: &str, stage: &str)
         .filter(|worktree| !worktree.trim().is_empty())
         .context("TASK_STALE_CLAIM: active worktree is missing")?;
     let profile = store.profile_for_task(&task)?;
-    let gate_index = profile.index_of(stage).with_context(|| {
-        format!("TASK_STAGE_UNKNOWN: '{stage}' is not in the active task profile")
-    })?;
-    let gate = &profile.gates[gate_index];
-    let gate_path = format!("tasks.{stage}");
+    let cursor = crate::engine::tasks::claim::cursor_for_stage(&profile, stage)?;
+    let gate = &cursor.gate;
+    let gate_path = &cursor.gate_path;
     let worktree_path = Path::new(worktree).canonicalize()?;
     let candidate_head = git_stdout(
         &worktree_path,
         &["rev-parse", "--verify", "HEAD"],
         "TASK_CANDIDATE_BASELINE_INVALID",
     )?;
+    if gate.proof.kind() == Some(ProofKind::Delivery) {
+        let (candidate, candidate_baseline) = store
+            .build_snapshot_candidate(task_id)?
+            .context("TASK_SNAPSHOT_NOT_FOUND: no accepted candidate snapshot precedes delivery")?;
+        let evidence = Evidence {
+            task_id: task_id.to_owned(),
+            stage: stage.to_owned(),
+            claim_revision: task.claim_revision,
+            contract_revision: task.contract_revision,
+            worker_id: worker_id.to_owned(),
+            worktree: worktree.to_owned(),
+            commit: Some(candidate),
+            candidate_baseline_head: Some(candidate_baseline),
+            proof: json!({"delivery_proof": {"status": "passed"}}),
+        };
+        return serde_json::to_value(evidence)
+            .context("TASK_AUTO_PROOF_UNAVAILABLE: evidence envelope could not be serialized");
+    }
     let candidate_fingerprint = candidate_fingerprint(&worktree_path)?;
-    let run = store
-        .latest_claim_bound_execution_run(
+    let execution_gate_path = format!("tasks.{}", cursor.canonical_stage_id);
+    let mut run = store.latest_claim_bound_execution_run(
+        task_id,
+        &execution_gate_path,
+        task.claim_revision,
+        task.contract_revision,
+        worker_id,
+        &worktree_path.to_string_lossy(),
+    )?;
+    if run.is_none() && cursor.canonical_stage_id != cursor.stage_id {
+        run = store.latest_claim_bound_execution_run(
             task_id,
-            &gate_path,
+            &format!("tasks.{}", cursor.stage_id),
             task.claim_revision,
             task.contract_revision,
             worker_id,
             &worktree_path.to_string_lossy(),
-        )?
-        .context("TASK_AUTO_PROOF_UNAVAILABLE: no execution exists for the active claim and current candidate")?;
+        )?;
+    }
+    if run.is_none() && gate_path != &execution_gate_path {
+        run = store.latest_claim_bound_execution_run(
+            task_id,
+            gate_path,
+            task.claim_revision,
+            task.contract_revision,
+            worker_id,
+            &worktree_path.to_string_lossy(),
+        )?;
+    }
+    let run = run.context("TASK_AUTO_PROOF_UNAVAILABLE: no execution exists for the active claim and current candidate")?;
     if run.candidate_fingerprint != candidate_fingerprint {
         bail!("TASK_AUTO_PROOF_UNAVAILABLE: latest execution belongs to a different Git candidate");
     }

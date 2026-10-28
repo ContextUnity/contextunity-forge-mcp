@@ -116,20 +116,26 @@ guidance:
     and concrete subtasks.
     Update legacy plans in `docs/plans/` to `status: admitted` and reference the admitting milestone.
 
-  contour.dag_topology: >
-    Verify that all `depends_on` milestone IDs exist, have valid naming prefixes (`m-...`),
-    and form a strictly acyclic directed graph (DAG).
+  contour.dag_topology:
+    description: "Verify that all depends_on milestone IDs exist and form a strictly acyclic directed graph."
+    criteria:
+      - "Verify all referenced milestone IDs exist."
+      - "Ensure DAG is acyclic."
 
-  contour.invariant_completeness: >
-    Verify that each generated milestone defines testable, non-trivial invariants (`INV-*`)
-    protecting architectural boundaries and failure modes.
+  contour.invariant_completeness:
+    description: "Verify that each generated milestone defines testable, non-trivial invariants (INV-*)."
+    criteria:
+      - "Confirm invariants protect boundaries and failure modes."
 
-  contour.task_scope_atomicity: >
-    Verify that tasks have disjoint, bounded `scope: [...]` paths and no task spans more than
-    one public production seam.
+  contour.task_scope_atomicity:
+    description: "Verify that tasks have disjoint, bounded scope paths."
+    criteria:
+      - "Confirm scope boundaries do not overlap across parallel tasks."
 
-  contour.no_code_tampering: >
-    Verify that the git diff contains zero edits to implementation code, libraries, or test suites.
+  contour.no_code_tampering:
+    description: "Verify that the git diff contains zero edits to implementation code, libraries, or test suites."
+    criteria:
+      - "Confirm changes are strictly bounded to docs/milestones/ and docs/plans/."
 
 # =============================================================================
 # 5. GATES DEFINITION (`gates`)
@@ -138,58 +144,60 @@ gates:
   # ---------------------------------------------------------------------------
   # Gate 1: Portfolio DAG Architecture & Decomposition (Agent)
   # ---------------------------------------------------------------------------
-  contract:
+  - id: contract
     role: portfolio_architect
     proof: contract
     guidance:
       - migration.synthesize_dag
-    timeout_seconds: 900
 
   # ---------------------------------------------------------------------------
   # Gate 2: Implementation Container Gate (Manifest Authoring + Automated Guards)
   # ---------------------------------------------------------------------------
-  implement:
+  - id: implement
     gates:
       # Step 2a: Draft formal milestone contracts and reconcile legacy plans
-      author_manifests:
+      - id: author_manifests
         role: milestone_specifier
         guidance:
           - migration.draft_milestones
-        timeout_seconds: 1500
 
       # Step 2b: Guard that no source code files were edited
-      guard_code_untouched:
+      - id: guard_code_untouched
         command: guard_source_code_untouched
+        proof: command
         reject_to: author_manifests
 
       # Step 2c: Validate YAML frontmatter and milestone schema syntax
-      check_manifest_syntax:
+      - id: check_manifest_syntax
         command: validate_manifest_syntax
+        proof: command
         reject_to: author_manifests
 
       # Step 2d: Validate global DAG acyclicity across all milestone dependencies
-      check_dag_acyclicity:
+      - id: check_dag_acyclicity
         command: verify_dag_acyclicity
+        proof: command
         reject_to: author_manifests
 
   # ---------------------------------------------------------------------------
   # Gate 3: Governance & Invariant Review (Independent Agent)
   # ---------------------------------------------------------------------------
-  review:
+  - id: review
     role: governance_auditor
     policy: migration_review_policy
     proof: review
-    guidance:
-      - contour.dag_topology
-      - contour.invariant_completeness
-      - contour.task_scope_atomicity
-      - contour.no_code_tampering
-    reject_to: implement.author_manifests
-    timeout_seconds: 600
+    reject_to: implement
 
   # ---------------------------------------------------------------------------
   # Gate 4: Autonomous Delivery (Zero-Token Commit)
   # ---------------------------------------------------------------------------
-  deliver:
-    policy: migration_delivery_policy
+  - id: deliver
+    role: governance_auditor
     proof: delivery
+    receipt: true
+    review_sources:
+      - review
+    reject_to: implement
+    persistence:
+      immutable: true
+      post: commit

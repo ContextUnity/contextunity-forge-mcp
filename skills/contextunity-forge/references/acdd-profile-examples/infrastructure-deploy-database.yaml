@@ -76,12 +76,23 @@ guidance:
     Apply Terraform configs, Kubernetes manifests, or Django migration files.
     Stay strictly within admitted task.scope.
 
-  contour.infra_safety: >
-    Verify that destructive schema operations (table drop, column rename) are deferred
-    to subsequent cleanup milestones after all code consumers migrate.
+  contour.infra_safety:
+    description: "Verify that destructive schema operations (table drop, column rename) are deferred to subsequent cleanup milestones."
+    criteria:
+      - "Ensure zero-downtime expand-contract migration patterns."
+      - "Verify new database columns are nullable or have defaults."
 
-  contour.downtime_guards: >
-    Verify healthcheck endpoints, readiness probes, and database lock timeouts.
+  contour.downtime_guards:
+    description: "Verify healthcheck endpoints, readiness probes, and database lock timeouts."
+    criteria:
+      - "Check readiness probe configuration."
+      - "Verify lock timeout settings on DDL statements."
+
+  contour.claims:
+    description: "Verify evidence and migration rollback scripts."
+    criteria:
+      - "Verify dry-run verification logs are present."
+      - "Confirm rollback scripts execute cleanly."
 
 # =============================================================================
 # 4. POLICIES CATALOG (`policies`)
@@ -121,36 +132,37 @@ gates:
       # Step 3.2: Forward Migration Execution
       - id: execute_migrations
         command: apply_db_migrations
-        reject_to: live_deployment.rollback_sequence
+        reject_to: snapshot_checkpoint
 
       # Step 3.3: Rolling Deployment
       - id: apply_containers
         command: deploy_rolling_containers
-        reject_to: live_deployment.rollback_sequence
+        reject_to: snapshot_checkpoint
 
       # Step 3.4: Automated Synthetic Smoke Healthcheck
       - id: smoke_validation
         command: verify_smoke_healthcheck
-        reject_to: live_deployment.rollback_sequence
+        reject_to: snapshot_checkpoint
 
     # Fallback Subgraph: Triggered autonomously if migration or smoke check fails!
     fallback:
-      id: rollback_sequence
       command: rollback_deployment_and_db
       max_attempts: 1
 
   # Gate 4: Independent Operational Review & Release Seal
   - id: release_audit
     role: release_reviewer
-    guidance:
-      - contour.infra_safety
-      - contour.downtime_guards
-      - contour.claims
     policy: strict_release
     proof: review
 
   # Gate 5: Autonomous Final Receipt & Commit
   - id: deliver
     role: release_reviewer
-    policy: default_delivery
     proof: delivery
+    receipt: true
+    review_sources:
+      - release_audit
+    reject_to: live_deployment
+    persistence:
+      immutable: true
+      post: commit

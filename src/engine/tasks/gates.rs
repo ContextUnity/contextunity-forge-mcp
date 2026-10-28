@@ -1805,7 +1805,22 @@ impl TasksStore {
             .optional()?;
         if let Some(retry) = retry {
             let accepted: Submission = serde_json::from_str(&retry)?;
-            if accepted.evidence == *evidence
+            let mut expected_evidence = accepted.evidence.clone();
+            if evidence.commit.is_none() {
+                expected_evidence.commit = None;
+            }
+            if evidence.candidate_baseline_head.is_none() {
+                expected_evidence.candidate_baseline_head = None;
+            }
+            let commit_matches = accepted.evidence.commit == evidence.commit
+                || expected_evidence.commit == evidence.commit
+                || observed_cursor.gate.persistence.post == Some(crate::core::tasks::profile::PersistenceAction::Commit)
+                || observed_cursor.gate.auto_commit;
+            let mut expected_without_commit = expected_evidence.clone();
+            expected_without_commit.commit = evidence.commit.clone();
+            if (accepted.evidence == *evidence
+                || expected_evidence == *evidence
+                || (commit_matches && expected_without_commit == *evidence))
                 && accepted.action == action
                 && accepted.findings.as_ref() == findings
                 && accepted.task.contract_revision == task.contract_revision
@@ -1816,7 +1831,7 @@ impl TasksStore {
         }
         let cursor = super::claim::cursor_for_stage(&profile, &task.stage)?;
         let gate_index = cursor.flat_index;
-        task.gate = cursor.root_index;
+        task.gate = cursor.flat_index;
         let gate_def = cursor.gate.clone();
         check_stage(id, &task.stage, stage)?;
         if task.status != "in_progress" {
@@ -2148,8 +2163,8 @@ impl TasksStore {
             task.status = "completed".into();
         } else if action == "pass" {
             let next = super::claim::advance_gate_cursor(&profile, Some(&task.stage))?;
-            task.gate = next.root_index;
-            task.stage = next.stage_id;
+            task.gate = next.flat_index;
+            task.stage = next.canonical_stage_id;
             task.status = "ready".into();
         } else {
             let findings = findings.context("reject requires findings")?;
@@ -2157,12 +2172,62 @@ impl TasksStore {
                 "INSERT INTO task_findings VALUES(?1,?2,?3)",
                 params![id, task.claim_revision, serde_json::to_string(findings)?],
             )?;
-            if let Some(target) = gate_def.reject_to.as_deref() {
+            let mut reject_target = None;
+            if let Some(routing) = &gate_def.reject_routing {
+                if let Some(symbols_dest) = routing.symbols.as_deref() {
+                    let has_symbols = match findings {
+                        serde_json::Value::String(s) => {
+                            let lower = s.to_ascii_lowercase();
+                            lower.contains("symbol") || lower.contains("interface") || lower.contains("signature")
+                        }
+                        serde_json::Value::Object(map) => {
+                            map.get("kind").and_then(serde_json::Value::as_str).is_some_and(|k| k.contains("symbol"))
+                                || map.get("topic").and_then(serde_json::Value::as_str).is_some_and(|t| t.contains("symbol"))
+                                || map.get("category").and_then(serde_json::Value::as_str).is_some_and(|c| c.contains("symbol"))
+                                || map.values().any(|v| {
+                                    v.as_str().is_some_and(|s| {
+                                        let l = s.to_ascii_lowercase();
+                                        l.contains("symbol") || l.contains("interface")
+                                    })
+                                })
+                        }
+                        serde_json::Value::Array(items) => items.iter().any(|item| match item {
+                            serde_json::Value::String(s) => {
+                                let lower = s.to_ascii_lowercase();
+                                lower.contains("symbol") || lower.contains("interface") || lower.contains("signature")
+                            }
+                            serde_json::Value::Object(map) => {
+                                map.get("kind").and_then(serde_json::Value::as_str).is_some_and(|k| k.contains("symbol"))
+                                    || map.get("topic").and_then(serde_json::Value::as_str).is_some_and(|t| t.contains("symbol"))
+                                    || map.get("category").and_then(serde_json::Value::as_str).is_some_and(|c| c.contains("symbol"))
+                                    || map.values().any(|v| {
+                                        v.as_str().is_some_and(|s| {
+                                            let l = s.to_ascii_lowercase();
+                                            l.contains("symbol") || l.contains("interface")
+                                        })
+                                    })
+                            }
+                            _ => false,
+                        }),
+                        _ => false,
+                    };
+                    if has_symbols {
+                        reject_target = Some(symbols_dest);
+                    }
+                }
+                if reject_target.is_none() {
+                    reject_target = routing.scope.as_deref();
+                }
+            }
+            if reject_target.is_none() {
+                reject_target = gate_def.reject_to.as_deref();
+            }
+            if let Some(target) = reject_target {
                 let target = super::claim::cursor_for_stage(&profile, target).with_context(|| {
                     format!("TASK_STAGE_INVALID: task '{id}'. reject target stage '{target}' not defined in profile. Do: set reject_to to a stage that exists in the profile.")
                 })?;
-                task.gate = target.root_index;
-                task.stage = target.stage_id;
+                task.gate = target.flat_index;
+                task.stage = target.canonical_stage_id;
             }
             task.status = "ready".into();
         }
@@ -2213,8 +2278,12 @@ impl TasksStore {
                 (Some(_), None) => {
                     bail!("TASK_DELIVERY_COMMIT_REQUIRED: auto_commit delivery must create a hooked commit");
                 }
-                (None, Some(_)) => {
-                    bail!("TASK_DELIVERY_COMMIT_INVALID: unexpected commit result for this gate");
+                (None, Some(landed)) => {
+                    if gate_def.persistence.post == Some(crate::core::tasks::profile::PersistenceAction::Commit) {
+                        evidence.commit = Some(landed);
+                    } else {
+                        bail!("TASK_DELIVERY_COMMIT_INVALID: unexpected commit result for this gate");
+                    }
                 }
                 (None, None) => {}
             }
@@ -2229,7 +2298,11 @@ impl TasksStore {
             return Err(error);
         }
         tx.execute(
-            "INSERT INTO task_gates VALUES(?1,?2,?3,?4,?5)",
+            "INSERT INTO task_gates (task_id, gate, revision, state, evidence)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(task_id, gate, revision) DO UPDATE SET
+                state=excluded.state,
+                evidence=excluded.evidence",
             params![
                 id,
                 evidence.stage,
@@ -2242,6 +2315,81 @@ impl TasksStore {
                 serde_json::to_string(evidence)?
             ],
         )?;
+        if let Ok((bare_milestone, task_breadcrumb)) = super::claim::breadcrumb(id, &cursor) {
+            let namespace_prefix = format!("{}/{}/", self.repository, self.project);
+            let milestone_id = format!("{namespace_prefix}{bare_milestone}");
+            let breadcrumb = format!("{namespace_prefix}{task_breadcrumb}");
+            let subject_ref = id.rsplit_once(':').map(|(_, r)| r).unwrap_or(id);
+            let worktree = Path::new(&evidence.worktree);
+            let git_tree_sha = crate::core::git::git_stdout(
+                worktree,
+                &["rev-parse", "--verify", "HEAD^{tree}"],
+                "TASK_CHECKPOINT_STATE_INVALID",
+            )
+            .unwrap_or_default();
+            let worker_id = evidence.worker_id.clone();
+            let proof_payload = serde_json::to_string(evidence)?;
+            let action_str = if action == "pass" { "advance" } else { "reject" };
+            let proof_kind = gate_def.proof.kind().map(|k| k.as_str()).unwrap_or("none");
+            tx.execute(
+                "INSERT INTO gate_transitions (
+                    milestone_id, subject, gate_path, action, proof_kind, proof_payload,
+                    git_tree_sha, worker_id
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    milestone_id,
+                    id,
+                    cursor.gate_path,
+                    action_str,
+                    proof_kind,
+                    proof_payload,
+                    git_tree_sha,
+                    worker_id,
+                ],
+            )?;
+            let transition_id = tx.last_insert_rowid();
+
+            let checkpoint_state = serde_json::json!({
+                "task_id": id,
+                "stage": cursor.stage_id.clone(),
+                "gate_path": cursor.gate_path.clone(),
+                "action": action,
+                "transition_id": transition_id,
+                "status": task.status.clone(),
+                "next_stage": task.stage.clone(),
+                "claim_revision": task.claim_revision,
+                "contract_revision": task.contract_revision,
+            });
+            let mut payload_envelope = serde_json::Map::new();
+            payload_envelope.insert(
+                "_forge_checkpoint_payload_v1".to_owned(),
+                checkpoint_state,
+            );
+            let state_payload_str = serde_json::to_string(&serde_json::Value::Object(payload_envelope))?;
+            tx.execute(
+                "INSERT INTO gate_checkpoints (
+                    breadcrumb, milestone_id, subject, gate_path, transition_id,
+                    git_tree_sha, state_payload
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                ON CONFLICT(breadcrumb) DO UPDATE SET
+                    milestone_id=excluded.milestone_id,
+                    subject=excluded.subject,
+                    gate_path=excluded.gate_path,
+                    transition_id=excluded.transition_id,
+                    git_tree_sha=excluded.git_tree_sha,
+                    state_payload=excluded.state_payload,
+                    updated_at=CURRENT_TIMESTAMP",
+                params![
+                    breadcrumb,
+                    milestone_id,
+                    subject_ref,
+                    cursor.gate_path,
+                    transition_id,
+                    git_tree_sha,
+                    state_payload_str,
+                ],
+            )?;
+        }
         end_claim(&tx, id)?;
         task.worker_id = None;
         task.worktree = None;

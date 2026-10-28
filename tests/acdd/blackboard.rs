@@ -261,6 +261,7 @@ fn blackboard_milestone_profile_pin_routes_gates_and_fails_closed_on_tampering()
     let with_first_gate = |gate_id: &str| {
         include_str!("../../src/core/tasks/acdd.default.yaml")
             .replace("id: \"contract\"", &format!("id: \"{gate_id}\""))
+            .replace("symbols: \"contract\"", &format!("symbols: \"{gate_id}\""))
     };
     let milestone_profile = with_first_gate("plan");
     let task_profile = with_first_gate("task_plan");

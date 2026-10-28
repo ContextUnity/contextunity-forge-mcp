@@ -3366,7 +3366,7 @@ gates:
     proof: review
     reject_to: build
     independent_from: build
-    contours: standard
+    contours: guidance.contours
   - id: deliver
     role: independent_reviewer
     proof: delivery
@@ -3449,4 +3449,282 @@ gates:
             "TASK_CANDIDATE_MISMATCH: task '{task_id}'. supplied commit caller-selected-commit != candidate snapshot {candidate_snapshot}. Do: resubmit with commit {candidate_snapshot}."
         )
     );
+}
+
+#[test]
+fn on_demand_checkpoint_cannot_override_immutable_candidate_or_claim_checkpoint() {
+    let (root, store, _milestone) = fixture();
+    let task_id = "forge-mcp/m-test:first";
+
+    // 1. Contract gate
+    tasks::claim(
+        &root.0,
+        tasks::Claim {
+            task_id: task_id.into(),
+            stage: "contract".into(),
+            worker_id: "builder".into(),
+            worktree: root.0.to_str().unwrap().into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let task = store.inspect(task_id).unwrap();
+    tasks::submit(
+        &root.0,
+        tasks::Submit {
+            task_id: task_id.into(),
+            stage: "contract".into(),
+            action: tasks::Action::Pass,
+            evidence: serde_json::to_value(evidence(&task)).unwrap(),
+            findings: None,
+        },
+    )
+    .unwrap();
+
+    // 2. Build gate (creates candidate snapshot)
+    tasks::claim(
+        &root.0,
+        tasks::Claim {
+            task_id: task_id.into(),
+            stage: "build".into(),
+            worker_id: "builder".into(),
+            worktree: root.0.to_str().unwrap().into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    root.write("src/lib.rs", "pub fn updated() {}\n");
+    let task = store.inspect(task_id).unwrap();
+    tasks::submit(
+        &root.0,
+        tasks::Submit {
+            task_id: task_id.into(),
+            stage: "build".into(),
+            action: tasks::Action::Pass,
+            evidence: serde_json::to_value(evidence(&task)).unwrap(),
+            findings: None,
+        },
+    )
+    .unwrap();
+
+    // 3. Claim review gate (immutable gate)
+    let claim_res = tasks::claim(
+        &root.0,
+        tasks::Claim {
+            task_id: task_id.into(),
+            stage: "review".into(),
+            worker_id: "reviewer".into(),
+            worktree: root.0.to_str().unwrap().into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let review_breadcrumb = claim_res["breadcrumb"].as_str().unwrap();
+
+    // Attempting to overwrite the claim checkpoint via save_checkpoint_payload must fail
+    let err = store
+        .save_checkpoint_payload(
+            review_breadcrumb,
+            "1111111111111111111111111111111111111111",
+            json!({"custom": "data"}),
+        )
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("TASK_CHECKPOINT_OWNED"),
+        "overwriting claim checkpoint must fail closed: {err}"
+    );
+
+    // Supplying an on-demand checkpoint under another breadcrumb with the same milestone & subject
+    let fake_breadcrumb = "forge-mcp/forge-mcp/m-test/tasks.other/first/custom";
+    store
+        .save_checkpoint_payload(
+            fake_breadcrumb,
+            "2222222222222222222222222222222222222222",
+            json!({"commit": "3333333333333333333333333333333333333333", "candidate_baseline_head": "4444444444444444444444444444444444444444"}),
+        )
+        .unwrap();
+
+    // Now tamper with the scoped file during the immutable review gate
+    root.write("src/lib.rs", "pub fn tampered() {}\n");
+
+    // Submitting review must detect divergence and reject with TASK_CANDIDATE_MISMATCH
+    let task = store.inspect(task_id).unwrap();
+    let submit_err = tasks::submit(
+        &root.0,
+        tasks::Submit {
+            task_id: task_id.into(),
+            stage: "review".into(),
+            action: tasks::Action::Pass,
+            evidence: serde_json::to_value(evidence(&task)).unwrap(),
+            findings: None,
+        },
+    )
+    .unwrap_err();
+    assert!(
+        submit_err.to_string().contains("TASK_CANDIDATE_MISMATCH"),
+        "tampering with file during immutable gate must fail with TASK_CANDIDATE_MISMATCH: {submit_err}"
+    );
+}
+
+#[test]
+fn concurrent_pre_snapshot_immutable_gate_rejects_on_demand_checkpoint_races() {
+    let root = ScopedWorkspace::new("atomic_claim_race");
+    root.write(
+        "forge-mcp.yaml",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+    );
+    root.write(
+        ".forge/acdd/profile.yaml",
+        r#"version: 2
+roles:
+  worker:
+    mode: inline
+gates:
+  - id: sample
+    role: worker
+    proof: none
+    persistence:
+      pre: snapshot
+      immutable: true
+  - id: deliver
+    role: worker
+    proof: delivery
+"#,
+    );
+    root.write("src/lib.rs", "pub fn original() {}\n");
+    super::super::support::git(&root.0, &["add", "-A"]);
+    super::super::support::git(&root.0, &["commit", "-m", "init"]);
+
+    let manifest = "---\nid: m-atomic\nstatus: active\ndoc_type: contract\n---\n```yaml\ntask_ref: guarded\ntarget: Test atomic claim protection\nproof_policy: direct-proof\nscope: [src/]\n```\n";
+    root.write("docs/010-atomic.md", manifest);
+
+    tasks::manage(
+        &root.0,
+        serde_json::from_value(
+            json!({"action": "sync", "milestone_ref": "docs/010-atomic.md"}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+
+    let task_id = "forge-mcp/m-atomic:guarded";
+    let db_path = root.0.join(".forge/tasks.sqlite");
+    let breadcrumb = "forge-mcp/forge-mcp/m-atomic/tasks/guarded/sample".to_owned();
+
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stop_clone = stop.clone();
+    let breadcrumb_clone = breadcrumb.clone();
+    let db_path_clone = db_path.clone();
+
+    let attacker = std::thread::spawn(move || {
+        let store = TasksStore::open(&db_path_clone).unwrap();
+        while !stop_clone.load(std::sync::atomic::Ordering::Relaxed) {
+            let _ = store.save_checkpoint_payload(
+                &breadcrumb_clone,
+                "0000000000000000000000000000000000000000",
+                json!({"malicious": "replacement"}),
+            );
+            let _ = store.delete_checkpoint(&breadcrumb_clone);
+            std::thread::yield_now();
+        }
+    });
+
+    let claim_res = tasks::claim(
+        &root.0,
+        tasks::Claim {
+            task_id: task_id.into(),
+            stage: "sample".into(),
+            worker_id: "worker".into(),
+            worktree: root.0.to_str().unwrap().into(),
+            ..Default::default()
+        },
+    )
+    .expect("claiming sample gate should succeed");
+
+    assert_eq!(claim_res["status"], "in_progress");
+    assert_eq!(claim_res["breadcrumb"], breadcrumb);
+
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    attacker.join().unwrap();
+
+    let store = TasksStore::open(&db_path).unwrap();
+    let checkpoints = store.list_checkpoints().unwrap();
+    let sample_checkpoint = checkpoints
+        .iter()
+        .find(|cp| cp.breadcrumb == breadcrumb)
+        .expect("claim checkpoint must not be deleted by concurrent attacker");
+
+    assert_eq!(
+        sample_checkpoint.state_payload["task_id"],
+        task_id,
+        "checkpoint must retain engine task_id"
+    );
+    assert_eq!(
+        sample_checkpoint.state_payload["claim_revision"],
+        claim_res["claim_revision"],
+        "checkpoint must retain engine claim_revision"
+    );
+
+    let save_err = store
+        .save_checkpoint_payload(
+            &breadcrumb,
+            "1111111111111111111111111111111111111111",
+            json!({"tamper": true}),
+        )
+        .unwrap_err();
+    assert!(
+        save_err.to_string().contains("TASK_CHECKPOINT_OWNED"),
+        "overwriting active claim checkpoint must fail closed: {save_err}"
+    );
+
+    let del_err = store.delete_checkpoint(&breadcrumb).unwrap_err();
+    assert!(
+        del_err.to_string().contains("TASK_CHECKPOINT_OWNED"),
+        "deleting active claim checkpoint must fail closed: {del_err}"
+    );
+
+    root.write("src/lib.rs", "pub fn tampered() {}\n");
+
+    let evidence = contextunity_forge_mcp::core::tasks::gates::Evidence {
+        task_id: task_id.into(),
+        stage: "sample".into(),
+        claim_revision: claim_res["claim_revision"].as_u64().unwrap(),
+        contract_revision: claim_res["contract_revision"].as_u64().unwrap(),
+        worker_id: "worker".into(),
+        worktree: root.0.to_str().unwrap().into(),
+        commit: None,
+        candidate_baseline_head: None,
+        proof: json!({"none_proof": {}}),
+    };
+
+    let submit_err = tasks::submit(
+        &root.0,
+        tasks::Submit {
+            task_id: task_id.into(),
+            stage: "sample".into(),
+            action: tasks::Action::Pass,
+            evidence: serde_json::to_value(&evidence).unwrap(),
+            findings: None,
+        },
+    )
+    .unwrap_err();
+    assert!(
+        submit_err.to_string().contains("TASK_CANDIDATE_MISMATCH"),
+        "tampering with file during immutable gate must fail closed: {submit_err}"
+    );
+
+    root.write("src/lib.rs", "pub fn original() {}\n");
+    let submit_ok = tasks::submit(
+        &root.0,
+        tasks::Submit {
+            task_id: task_id.into(),
+            stage: "sample".into(),
+            action: tasks::Action::Pass,
+            evidence: serde_json::to_value(&evidence).unwrap(),
+            findings: None,
+        },
+    )
+    .expect("restoring scoped content to pre-snapshot baseline allows submission");
+    assert_eq!(submit_ok["status"], "ready");
+    assert_eq!(submit_ok["stage"], "deliver");
 }

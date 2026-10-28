@@ -43,7 +43,7 @@ git_commit_note:
 
 limits:
   max_metadata_bytes: 2048       # 2 KiB limit for arbitrary task metadata / payloads
-  max_trace_summary_bytes: 4096  # Tail output size for SQLite execution traces
+  max_trace_summary_bytes: 2048  # Tail output size for SQLite execution traces
 
 # =============================================================================
 # 1. DECLARATIVE PROOFS CATALOG (`proofs`)
@@ -216,6 +216,27 @@ guidance:
     Evaluate integrated milestone changes against milestone invariants and ADRs.
     Confirm all seam receipts and telemetry events were verified.
 
+  contour.paths:
+    description: "Verify change boundaries: all modified files must be strictly within admitted scope."
+    criteria:
+      - "Compare every changed file with task scope."
+  contour.claims:
+    description: "Verify evidence: every acceptance claim must be proven by a reproducible test run."
+    criteria:
+      - "Confirm each admitted contract claim has at least one passing seam test."
+  contour.concurrency:
+    description: "Verify thread safety, SQLite transaction fences (IMMEDIATE), and lock acquisition order."
+    criteria:
+      - "Check transaction boundaries and concurrency safety."
+  contour.project_isolation:
+    description: "Verify workspace isolation: ensure zero modification to sibling/external workspaces."
+    criteria:
+      - "Confirm workspace resolution uses active repository root."
+  contour.administration:
+    description: "Verify administrative integrity: no unauthorized edits to receipts or Git hooks."
+    criteria:
+      - "Verify profile hashes and compiled gate references fail closed on tampering."
+
 # =============================================================================
 # 5. POLICIES & TEMPLATES
 # =============================================================================
@@ -237,7 +258,6 @@ gates:
     persistence:
       pre: snapshot
       post: commit
-      restore_on_reject: true
 
   # Gate 2: Milestone Tasks Container (First-class declarative task lifecycle)
   # Default task type: type: ["code"]. Heterogeneous tasks declare type: ["doc"] or type: ["observer"].
@@ -285,6 +305,7 @@ gates:
         role: reviewer
         policy: default_review
         proof: review
+        contours: guidance.contours
         independent_from: build
         reject_to: build
         persistence:
@@ -362,6 +383,7 @@ gates:
         policy: default_review
         guidance: [milestone.review]
         proof: review
+        contours: guidance.contours
         persistence:
           immutable: true
 

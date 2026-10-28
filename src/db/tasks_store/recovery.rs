@@ -372,26 +372,38 @@ impl ActiveCheckpoint {
     }
     fn parents(&self) -> Result<Vec<String>> {
         let mut candidates = self.prepared_proofs.clone();
+        let mut proof_candidates: Vec<(Option<PathBuf>, String)> = self
+            .prepared_proofs
+            .iter()
+            .map(|s| (None, s.clone()))
+            .collect();
         for (_, _, _, evidence) in &self.gates {
             if let Some(evidence) = evidence {
                 let evidence: crate::core::tasks::gates::Evidence = serde_json::from_str(evidence)
                     .context(
                         "TASK_GATE_EVIDENCE_CORRUPTED: cannot checkpoint malformed gate evidence",
                     )?;
-                candidates.extend(
-                    evidence
-                        .commit
-                        .into_iter()
-                        .chain(evidence.candidate_baseline_head)
-                        .filter(|sha| {
-                            matches!(sha.len(), 40 | 64)
-                                && sha.bytes().all(|byte| byte.is_ascii_hexdigit())
-                        }),
-                );
+                let wt = PathBuf::from(&evidence.worktree);
+                for sha in evidence
+                    .commit
+                    .into_iter()
+                    .chain(evidence.candidate_baseline_head)
+                {
+                    if matches!(sha.len(), 40 | 64)
+                        && sha.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    {
+                        candidates.insert(sha.clone());
+                        proof_candidates.push((Some(wt.clone()), sha));
+                    }
+                }
             }
         }
-        for sha in &candidates {
-            if !git_commit_exists(&self.workspace, sha)? {
+        for (worktree, sha) in &proof_candidates {
+            let in_workspace = git_commit_exists(&self.workspace, sha)?;
+            let in_worktree = worktree
+                .as_ref()
+                .is_some_and(|w| git_commit_exists(w, sha).unwrap_or(false));
+            if !in_workspace && !in_worktree {
                 bail!("TASK_CHECKPOINT_PROOF_UNAVAILABLE: {sha} has no object home");
             }
         }

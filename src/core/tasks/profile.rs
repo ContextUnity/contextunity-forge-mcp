@@ -166,6 +166,20 @@ pub enum ProofKind {
     None,
 }
 
+impl ProofKind {
+    /// Returns the lowercase string identifier for the proof kind.
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Contract => "contract",
+            Self::Command => "command",
+            Self::Review => "review",
+            Self::SeamTest => "seam_test",
+            Self::Delivery => "delivery",
+            Self::None => "none",
+        }
+    }
+}
+
 /// Recursive data schema for `proof: { scheme: ... }` evidence.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -315,6 +329,52 @@ impl Default for ProofDef {
     }
 }
 
+/// A guidance entry: either a plain text string or a structured review lens with criteria.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum GuidanceEntry {
+    /// Direct text guidance.
+    Text(String),
+    /// Structured inspection lens with operational criteria.
+    Structured {
+        /// Short purpose statement shown to reviewers or agents.
+        description: String,
+        /// Concrete checks required for this guidance or contour.
+        #[serde(default)]
+        criteria: Vec<String>,
+    },
+}
+
+impl GuidanceEntry {
+    /// Return the textual guidance or structured description.
+    pub fn text(&self) -> &str {
+        match self {
+            Self::Text(text) => text.as_str(),
+            Self::Structured { description, .. } => description.as_str(),
+        }
+    }
+
+    /// Return operational criteria if this is a structured guidance entry.
+    pub fn criteria(&self) -> &[String] {
+        match self {
+            Self::Text(_) => &[],
+            Self::Structured { criteria, .. } => criteria.as_slice(),
+        }
+    }
+}
+
+impl From<String> for GuidanceEntry {
+    fn from(s: String) -> Self {
+        Self::Text(s)
+    }
+}
+
+impl From<&str> for GuidanceEntry {
+    fn from(s: &str) -> Self {
+        Self::Text(s.to_string())
+    }
+}
+
 /// Operational criteria attached to one review contour.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -354,7 +414,6 @@ fn validate_policy_setting(name: &str, value: &serde_yaml::Value, path: &str) ->
             | "independent_worker"
             | "require_all_contours"
             | "require_zero_exit"
-            | "restore_on_reject"
     ) && !value.is_bool()
     {
         bail!("ACDD_PROFILE_SCHEMA_INVALID: {path} must be a boolean");
@@ -378,14 +437,6 @@ fn validate_policy_setting(name: &str, value: &serde_yaml::Value, path: &str) ->
         }
     }
     Ok(())
-}
-
-/// Stable diagnostic description paired with an ACDD error identifier.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct DiagnosticDef {
-    /// Human-readable description of the diagnostic category.
-    pub description: String,
 }
 
 /// Declarative schema entry for a named proof kind.
@@ -412,16 +463,6 @@ pub struct RejectRouting {
     pub symbols: Option<String>,
 }
 
-/// A slot binding resolved through the profile guidance catalog.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct GuidanceSlotBinding {
-    /// Declared gate guidance slot.
-    pub slot: String,
-    /// Selected catalog value for the slot.
-    pub value: String,
-}
-
 /// Commands selected declaratively from source path patterns.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -446,8 +487,6 @@ pub struct PersistencePolicy {
     pub post: Option<PersistenceAction>,
     /// Whether the working tree must remain identical to the reviewed snapshot.
     pub immutable: bool,
-    /// Whether a rejected gate restores its pre-gate snapshot.
-    pub restore_on_reject: bool,
     /// Named telemetry or command policy attached as a Git note.
     pub git_commit_note: Option<String>,
 }
@@ -519,43 +558,6 @@ impl Default for GitCommitNoteLimits {
     }
 }
 
-/// Architect controls for ordering tasks into deterministic parallel waves.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default, deny_unknown_fields)]
-pub struct DagOptimizationPolicy {
-    /// Whether synthesis may reorder tasks while preserving dependency edges.
-    pub enabled: bool,
-    /// Wave construction strategy.
-    pub strategy: DagOptimizationStrategy,
-    /// Place upfront contract tasks before implementation tasks.
-    pub prioritize_contracts: bool,
-    /// Extract shared helpers before scheduling their consumers.
-    pub shared_helpers_first: bool,
-    /// Optional upper bound on tasks in one parallel wave.
-    pub max_parallel_tasks: Option<u32>,
-}
-
-impl Default for DagOptimizationPolicy {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            strategy: DagOptimizationStrategy::Topological,
-            prioritize_contracts: true,
-            shared_helpers_first: true,
-            max_parallel_tasks: None,
-        }
-    }
-}
-
-/// Supported architect wave optimization strategies.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum DagOptimizationStrategy {
-    /// Preserve dependency order and group disjoint tasks into waves.
-    #[default]
-    Topological,
-}
-
 /// Failure signatures expected from a red-seam or conditional command.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(default, deny_unknown_fields)]
@@ -601,36 +603,6 @@ pub struct GateFallback {
     pub guidance: Vec<String>,
     /// Maximum fallback attempts.
     pub max_attempts: Option<u32>,
-}
-
-/// Selected guidance catalog entry for one parameterized gate slot.
-pub fn resolve_guidance_slot<'a>(
-    gate_slots: &[String],
-    catalog: &'a BTreeMap<String, String>,
-    slot: &str,
-    value: Option<&str>,
-    defaults: &BTreeMap<String, String>,
-) -> Option<&'a str> {
-    if !gate_slots
-        .iter()
-        .any(|declared| declared == slot || declared.starts_with(&format!("{slot}.")))
-    {
-        return None;
-    }
-    let selected = value
-        .map(|value| {
-            if catalog.contains_key(value) {
-                value.to_owned()
-            } else {
-                format!("{slot}.{value}")
-            }
-        })
-        .or_else(|| defaults.get(slot).cloned());
-    selected
-        .as_deref()
-        .and_then(|key| catalog.get(key))
-        .or_else(|| catalog.get(slot))
-        .map(String::as_str)
 }
 
 /// A registered command available to command proof gates.
@@ -679,6 +651,36 @@ impl CommandDef {
             .filter(|(pattern, _)| glob_pattern_matches(pattern, path))
             .max_by_key(|(pattern, _)| pattern.len())
             .map(|(_, command)| command.as_str())
+    }
+
+    /// Resolve a matching command for a project repository root.
+    pub fn command_for_root(&self, root: &Path) -> Option<&str> {
+        let Self::Pattern(patterns) = self else {
+            return Some(self.command());
+        };
+        let mut matched_command = None;
+        let mut max_matched_len = 0;
+        let walker = walkdir::WalkDir::new(root)
+            .max_depth(5)
+            .into_iter()
+            .filter_entry(|entry| {
+                let name = entry.file_name().to_str().unwrap_or_default();
+                !matches!(name, ".git" | "target" | "node_modules" | ".venv" | "dist" | "build")
+            });
+        for entry in walker.flatten() {
+            if entry.file_type().is_file() {
+                if let Ok(rel) = entry.path().strip_prefix(root) {
+                    let rel_str = rel.to_string_lossy();
+                    for (pattern, command) in &patterns.by_pattern {
+                        if glob_pattern_matches(pattern, &rel_str) && pattern.len() > max_matched_len {
+                            max_matched_len = pattern.len();
+                            matched_command = Some(command.as_str());
+                        }
+                    }
+                }
+            }
+        }
+        matched_command.or_else(|| patterns.by_pattern.values().next().map(String::as_str))
     }
 
     fn is_valid(&self) -> bool {
@@ -889,36 +891,7 @@ fn normalize_gate_condition(condition: &str) -> Option<&'static str> {
     }
 }
 
-fn known_error_code(name: &str) -> bool {
-    matches!(
-        name,
-        "CONTRACT_MATRIX_MISMATCH"
-            | "DEPENDENCY_MUTATED"
-            | "FEATURE_DISABLED"
-            | "FEATURE_REQUIRED_BY_PROFILE"
-            | "GATE_INVALID_CONFIGURATION"
-            | "MILESTONE_DAG_CYCLE"
-            | "MILESTONE_PREFLIGHT_FAILED"
-            | "TASK_CANDIDATE_MISMATCH"
-            | "TASK_CANDIDATE_OUT_OF_SCOPE"
-            | "TASK_SCOPE_INVALID"
-            | "TASK_SCOPE_PROTECTED"
-            | "TASK_SEAM_DISCONNECTED"
-            | "TASK_SEAM_STALE"
-            | "UNADMITTED_SYMBOL_EXPANSION"
-    )
-}
 
-fn collect_guidance_slots(gate: &GateDef, profile: &GateProfile, slots: &mut BTreeSet<String>) {
-    for guidance in &gate.guidance {
-        if profile.guidance_slots.contains_key(guidance) {
-            slots.insert(guidance.clone());
-        }
-    }
-    for child in gate.child_gates() {
-        collect_guidance_slots(child, profile, slots);
-    }
-}
 fn default_auto_commit() -> bool {
     true
 }
@@ -942,27 +915,15 @@ pub struct GateProfile {
     /// Schema generation used by profile authors.
     #[serde(default)]
     pub version: Option<u32>,
-    /// Definition of done applied to every subtask.
-    #[serde(default)]
-    pub subtask_dod: Vec<String>,
-    /// Review guidance shown to reviewers.
-    #[serde(default)]
-    pub review_policy: Vec<String>,
     /// Contract proof policies that permit a zero red exit code.
     #[serde(default)]
     pub contract_zero_exit_policies: Vec<String>,
-    /// Stable shared ACDD diagnostic catalogue.
-    #[serde(default)]
-    pub error_codes: BTreeMap<String, DiagnosticDef>,
-    /// Default key selected for each declared guidance slot.
-    #[serde(default)]
-    pub guidance_slots: BTreeMap<String, String>,
     /// Named recursive evidence schemas.
     #[serde(default)]
     pub proofs: BTreeMap<String, ProofCatalogDef>,
-    /// Named guidance entries, including dotted slot keys such as `hitl.pro`.
+    /// Named guidance entries, including dotted slot keys such as `hitl.pro` and `contour.<name>`.
     #[serde(default)]
-    pub guidance: BTreeMap<String, String>,
+    pub guidance: BTreeMap<String, GuidanceEntry>,
     /// Reusable hierarchical gate subgraphs.
     #[serde(default)]
     pub gate_templates: BTreeMap<String, GateTemplate>,
@@ -975,9 +936,6 @@ pub struct GateProfile {
     /// Optional dynamic MCP subsystem selection for profile consumers.
     #[serde(default)]
     pub modules: SubsystemRegistry,
-    /// Architect-controlled task wave optimization.
-    #[serde(default)]
-    pub dag_optimization: DagOptimizationPolicy,
     /// Available agent roles and their model guidance.
     #[serde(default)]
     pub roles: BTreeMap<String, RoleDef>,
@@ -990,9 +948,6 @@ pub struct GateProfile {
     /// Hierarchical workflow policy values.
     #[serde(default)]
     pub policies: BTreeMap<String, PolicyDef>,
-    /// Named ordered sets of review contours.
-    #[serde(default)]
-    pub contours: IndexMap<String, IndexMap<String, ContourDef>>,
     /// Ordered workflow gates.
     #[serde(default)]
     pub gates: Vec<GateDef>,
@@ -1028,75 +983,188 @@ impl GateProfile {
         Some(scope_args.replace("{file_stem}", file_stem))
     }
 
+    /// Return all executable leaf gates across root gates and nested containers.
+    pub fn executable_gates(&self) -> Vec<&GateDef> {
+        let mut result = Vec::new();
+        fn collect<'a>(gates: &'a [GateDef], out: &mut Vec<&'a GateDef>) {
+            for gate in gates {
+                if !gate.gates.is_empty() || gate.tasks.is_some() {
+                    collect(&gate.gates, out);
+                    if let Some(tasks) = &gate.tasks {
+                        collect(&tasks.gates, out);
+                    }
+                } else {
+                    out.push(gate);
+                }
+            }
+        }
+        collect(&self.gates, &mut result);
+        result
+    }
+
     /// Return the gate identifier at a runtime index.
     pub fn gate_id(&self, index: usize) -> &str {
-        self.gates
+        self.executable_gates()
             .get(index)
             .map(|g| g.id.as_str())
             .unwrap_or("completed")
     }
-    /// Return a gate's runtime index by its persisted identifier.
+    /// Return a gate's runtime index by its persisted identifier or leaf alias.
     pub fn index_of(&self, id: &str) -> Option<usize> {
-        self.gates.iter().position(|g| g.id == id)
+        let gates = self.executable_gates();
+        if let Some(pos) = gates.iter().position(|g| g.id == id) {
+            return Some(pos);
+        }
+        let leaf = id.rsplit('.').next().unwrap_or(id);
+        gates.iter().position(|g| g.id == leaf || g.id.rsplit('.').next() == Some(leaf))
     }
-    /// Return a gate by its persisted identifier.
+    /// Return a gate by its persisted identifier or leaf alias.
     pub fn by_stage(&self, stage: &str) -> Option<&GateDef> {
-        self.gates.iter().find(|g| g.id == stage)
+        let gates = self.executable_gates();
+        if let Some(gate) = gates.iter().find(|g| g.id == stage) {
+            return Some(*gate);
+        }
+        let leaf = stage.rsplit('.').next().unwrap_or(stage);
+        gates.into_iter().find(|g| g.id == leaf || g.id.rsplit('.').next() == Some(leaf))
+    }
+    /// Return the definition of done criteria for subtasks, derived from `guidance["subtask.dod"]`
+    /// or `guidance["subtask_dod"]`.
+    pub fn subtask_dod_criteria(&self) -> Vec<String> {
+        if let Some(entry) = self.guidance.get("subtask.dod").or_else(|| self.guidance.get("subtask_dod")) {
+            if !entry.criteria().is_empty() {
+                return entry.criteria().to_vec();
+            } else if !entry.text().is_empty() {
+                return vec![entry.text().to_owned()];
+            }
+        }
+        vec![]
+    }
+    /// Return the review guidance criteria, derived from `guidance["review.policy"]`
+    /// or `guidance["review_policy"]`.
+    pub fn review_policy_criteria(&self) -> Vec<String> {
+        if let Some(entry) = self.guidance.get("review.policy").or_else(|| self.guidance.get("review_policy")) {
+            if !entry.criteria().is_empty() {
+                return entry.criteria().to_vec();
+            } else if !entry.text().is_empty() {
+                return vec![entry.text().to_owned()];
+            }
+        }
+        vec![]
+    }
+    /// Return proof policies that permit a zero red exit code for contract proof.
+    pub fn contract_zero_exit_policies(&self) -> Vec<String> {
+        if !self.contract_zero_exit_policies.is_empty() {
+            return self.contract_zero_exit_policies.clone();
+        }
+        vec![
+            "direct-proof".to_string(),
+            "deferred-final-test".to_string(),
+        ]
     }
     /// Return the role name and role definition assigned to a gate.
     pub fn role_for_stage(&self, stage: &str) -> Option<(&str, &RoleDef)> {
         let role_name = self.by_stage(stage)?.role.as_deref()?;
         Some((role_name, self.roles.get(role_name)?))
     }
-    /// Return a configured contour set, defaulting to `standard`.
-    pub fn contour_set(&self, name: Option<&str>) -> Option<&IndexMap<String, ContourDef>> {
-        self.contours.get(name.unwrap_or("standard"))
+    /// Return a configured contour set.
+    ///
+    /// Resolves lenses from `self.guidance` matching `contour.<name>` when `reference`
+    /// is `guidance.contours` (or `None`).
+    pub fn contour_set(&self, reference: Option<&str>) -> Option<IndexMap<String, ContourDef>> {
+        let reference = reference.unwrap_or("guidance.contours");
+        if reference != "guidance.contours" && reference != "guidance.contour" {
+            return None;
+        }
+        let mut set = IndexMap::new();
+        // Insert standard review contours in canonical order first if defined
+        for canonical in crate::core::tasks::gates::REVIEW_CONTOURS {
+            let key = format!("contour.{canonical}");
+            if let Some(entry) = self.guidance.get(&key) {
+                set.insert(
+                    canonical.to_string(),
+                    ContourDef {
+                        description: entry.text().to_owned(),
+                        criteria: if entry.criteria().is_empty() {
+                            vec![entry.text().to_owned()]
+                        } else {
+                            entry.criteria().to_vec()
+                        },
+                    },
+                );
+            }
+        }
+        // Then any additional custom contours declared under guidance (contour.<name>)
+        for (key, entry) in &self.guidance {
+            if let Some(name) = key.strip_prefix("contour.") {
+                if !set.contains_key(name) && !name.trim().is_empty() {
+                    set.insert(
+                        name.to_string(),
+                        ContourDef {
+                            description: entry.text().to_owned(),
+                            criteria: if entry.criteria().is_empty() {
+                                vec![entry.text().to_owned()]
+                            } else {
+                                entry.criteria().to_vec()
+                            },
+                        },
+                    );
+                }
+            }
+        }
+        if set.is_empty() {
+            None
+        } else {
+            Some(set)
+        }
     }
 
-    /// Resolve manifest guidance bindings and return fallback warnings for unbound slots.
+    /// Resolve a catalog key for a guidance target and replacement, supporting short values (e.g. "hitl" -> "pro" resolves to "hitl.pro").
+    fn resolve_catalog_key(&self, target_or_slot: &str, replacement: &str) -> Option<&str> {
+        if let Some((k, _)) = self.guidance.get_key_value(replacement) {
+            return Some(k.as_str());
+        }
+        let slot_prefix = target_or_slot.split('.').next().unwrap_or(target_or_slot);
+        let candidate = format!("{slot_prefix}.{replacement}");
+        if let Some((k, _)) = self.guidance.get_key_value(&candidate) {
+            return Some(k.as_str());
+        }
+        None
+    }
+
+    /// Validate manifest guidance overrides against the guidance catalog.
     pub fn validate_guidance_bindings(
         &self,
         bindings: &BTreeMap<String, String>,
     ) -> Result<Vec<String>> {
-        let mut declared = BTreeSet::new();
+        let mut declared_gate_guidance = BTreeSet::new();
+        fn collect_gate_guidance(gate: &GateDef, out: &mut BTreeSet<String>) {
+            out.extend(gate.guidance.iter().cloned());
+            for child in gate.child_gates() {
+                collect_gate_guidance(child, out);
+            }
+        }
         for gate in &self.gates {
-            collect_guidance_slots(gate, self, &mut declared);
+            collect_gate_guidance(gate, &mut declared_gate_guidance);
         }
-        let unknown: Vec<_> = bindings
-            .keys()
-            .filter(|slot| !declared.contains(*slot))
-            .cloned()
-            .collect();
-        if !unknown.is_empty() {
-            bail!(
-                "ACDD_GUIDANCE_SLOT_INVALID: manifest binds undeclared guidance slot(s): {}",
-                unknown.join(", ")
-            );
-        }
-        let mut warnings = Vec::new();
-        for slot in declared {
-            let binding = bindings.get(&slot).map(String::as_str);
-            let default = self.guidance_slots.get(&slot).map(String::as_str);
-            let resolved = binding.or(default);
-            if binding.is_none() {
-                warnings.push(format!(
-                    "ACDD_GUIDANCE_SLOT_UNBOUND: slot '{slot}' uses profile default{}",
-                    default.map(|key| format!(" '{key}'")).unwrap_or_default()
-                ));
+
+        let has_hitl_guidance = self.guidance.keys().any(|k| k.starts_with("hitl."));
+
+        for (target, replacement) in bindings {
+            let target_known = declared_gate_guidance.contains(target)
+                || self.guidance.contains_key(target)
+                || (target == "hitl" && has_hitl_guidance);
+            if !target_known {
+                bail!(
+                    "ACDD_GUIDANCE_SLOT_INVALID: manifest guidance binding '{target}: {replacement}' targets undeclared guidance key '{target}'"
+                );
             }
-            let Some(key) = resolved else {
-                continue;
-            };
-            let catalog_key = if self.guidance.contains_key(key) {
-                key.to_owned()
-            } else {
-                format!("{slot}.{key}")
-            };
-            if !self.guidance.contains_key(&catalog_key) {
-                bail!("ACDD_GUIDANCE_SLOT_INVALID: guidance slot '{slot}' references missing catalog entry '{key}'");
+            if self.resolve_catalog_key(target, replacement).is_none() {
+                bail!(
+                    "ACDD_GUIDANCE_SLOT_INVALID: manifest guidance binding '{target}: {replacement}' references missing catalog entry '{replacement}'"
+                );
             }
         }
-        Ok(warnings)
+        Ok(Vec::new())
     }
 
     /// Resolve the guidance entries declared by one gate using manifest bindings and defaults.
@@ -1108,18 +1176,26 @@ impl GateProfile {
         gate.guidance
             .iter()
             .filter_map(|requested| {
-                let resolved = if self.guidance.contains_key(requested) {
-                    self.guidance.get(requested).map(String::as_str)
+                let resolved_entry = if let Some(replacement) = bindings.get(requested) {
+                    self.resolve_catalog_key(requested, replacement)
+                        .and_then(|k| self.guidance.get(k))
+                } else if requested == "hitl" || requested.starts_with("hitl.") {
+                    if let Some(replacement) = bindings.get("hitl") {
+                        self.resolve_catalog_key("hitl", replacement)
+                            .and_then(|k| self.guidance.get(k))
+                    } else {
+                        self.guidance
+                            .get(requested)
+                            .or_else(|| self.guidance.get("hitl.pro"))
+                    }
                 } else {
-                    resolve_guidance_slot(
-                        &gate.guidance,
-                        &self.guidance,
-                        requested,
-                        bindings.get(requested).map(String::as_str),
-                        &self.guidance_slots,
-                    )
-                }?;
-                Some((requested.clone(), resolved.to_owned()))
+                    self.guidance.get(requested)
+                };
+
+                let text = resolved_entry
+                    .or_else(|| self.guidance.get(requested))
+                    .map(|entry| entry.text())?;
+                Some((requested.clone(), text.to_owned()))
             })
             .collect()
     }
@@ -1162,7 +1238,7 @@ impl GateProfile {
                 }
             }
             if let Some(set) = &gate.contours {
-                if self.contours.get(set).is_none() {
+                if self.contour_set(Some(set)).is_none() {
                     bail!(
                         "ACDD_PROFILE_INVALID: gate '{}' references undefined contour set '{set}'",
                         gate.id
@@ -1229,20 +1305,7 @@ impl GateProfile {
                 );
             }
         }
-        for (set_name, contours) in self.contours.iter() {
-            for (name, contour) in contours.iter() {
-                if name.trim().is_empty()
-                    || contour.description.trim().is_empty()
-                    || contour.criteria.is_empty()
-                    || contour
-                        .criteria
-                        .iter()
-                        .any(|criterion| criterion.trim().is_empty())
-                {
-                    bail!("ACDD_PROFILE_INVALID: contour '{set_name}.{name}' requires a description and operational criteria");
-                }
-            }
-        }
+        self.validate_contours()?;
         Ok(())
     }
 
@@ -1259,21 +1322,6 @@ impl GateProfile {
                 bail!("ACDD_PROFILE_SCHEMA_INVALID: policies contains an empty name");
             }
             policy.validate(&format!("policies.{name}"))?;
-        }
-        for (name, diagnostic) in &self.error_codes {
-            if !known_error_code(name) {
-                bail!("ACDD_PROFILE_SCHEMA_INVALID: unknown error code '{name}'");
-            }
-            if diagnostic.description.trim().is_empty() {
-                bail!(
-                    "ACDD_PROFILE_SCHEMA_INVALID: error_codes.{name}.description must not be empty"
-                );
-            }
-        }
-        for (slot, key) in &self.guidance_slots {
-            if slot.trim().is_empty() || !self.guidance.contains_key(key) {
-                bail!("ACDD_PROFILE_SCHEMA_INVALID: guidance_slots.{slot} references missing guidance '{key}'");
-            }
         }
         for (name, proof) in &self.proofs {
             if name.trim().is_empty() || proof.schema.is_none() {
@@ -1304,15 +1352,6 @@ impl GateProfile {
                     "ACDD_PROFILE_SCHEMA_INVALID: git_commit_note.format must be markdown or json"
                 );
             }
-        }
-        if self
-            .dag_optimization
-            .max_parallel_tasks
-            .is_some_and(|count| count == 0)
-        {
-            bail!(
-                "ACDD_PROFILE_SCHEMA_INVALID: dag_optimization.max_parallel_tasks must be positive"
-            );
         }
         Ok(())
     }
@@ -1382,10 +1421,7 @@ impl GateProfile {
         let verify = &container.gates[0];
         if verify.command.as_deref() != Some("check_full_repo")
             || verify.proof.kind() != Some(ProofKind::Command)
-            || matches!(
-                self.commands.get("check_full_repo"),
-                Some(CommandDef::Pattern(_))
-            )
+            || !self.commands.contains_key("check_full_repo")
         {
             bail!("MILESTONE_VERIFICATION_PROFILE_INVALID: verify must execute check_full_repo with command proof");
         }
@@ -1440,17 +1476,15 @@ impl GateProfile {
     }
 
     fn validate_contours(&self) -> Result<()> {
-        for (set_name, contours) in self.contours.iter() {
-            for (name, contour) in contours.iter() {
+        for (key, entry) in &self.guidance {
+            if let Some(name) = key.strip_prefix("contour.") {
                 if name.trim().is_empty()
-                    || contour.description.trim().is_empty()
-                    || contour.criteria.is_empty()
-                    || contour
-                        .criteria
-                        .iter()
-                        .any(|criterion| criterion.trim().is_empty())
+                    || entry.text().trim().is_empty()
+                    || (matches!(entry, GuidanceEntry::Structured { .. })
+                        && (entry.criteria().is_empty()
+                            || entry.criteria().iter().any(|c| c.trim().is_empty())))
                 {
-                    bail!("ACDD_PROFILE_INVALID: contour '{set_name}.{name}' requires a description and operational criteria");
+                    bail!("ACDD_PROFILE_INVALID: contour '{name}' requires a description and operational criteria");
                 }
             }
         }
@@ -1459,8 +1493,11 @@ impl GateProfile {
 
     fn validate_guidance_refs(&self, requested: &[String], owner: &str) -> Result<()> {
         for key in requested {
-            if !self.guidance.contains_key(key) && !self.guidance_slots.contains_key(key) {
-                bail!("GATE_INVALID_CONFIGURATION: {owner} references undefined guidance slot or catalog entry '{key}'");
+            if !self.guidance.contains_key(key) {
+                if key == "hitl" && self.guidance.keys().any(|k| k.starts_with("hitl.")) {
+                    continue;
+                }
+                bail!("GATE_INVALID_CONFIGURATION: {owner} references undefined guidance catalog entry '{key}'");
             }
         }
         Ok(())
@@ -1518,6 +1555,10 @@ impl GateProfile {
             self.validate_ordered_refs(gate, &prior, path)?;
             if !gate.id.is_empty() {
                 prior.insert(&gate.id, gate);
+                let leaf = gate.id.rsplit('.').next().unwrap_or(&gate.id);
+                if leaf != gate.id {
+                    prior.entry(leaf).or_insert(gate);
+                }
             }
         }
 
@@ -1526,11 +1567,14 @@ impl GateProfile {
             .enumerate()
             .filter(|(_, gate)| gate.proof.kind() == Some(ProofKind::Delivery))
             .collect();
-        if (require_terminal_delivery && deliveries.len() != 1)
-            || deliveries
-                .iter()
-                .any(|(index, _)| *index + 1 != gates.len())
+        let has_terminal_delivery = gates.last().is_some_and(|g| {
+            g.proof.kind() == Some(ProofKind::Delivery)
+                || g.gates.last().is_some_and(|cg| cg.proof.kind() == Some(ProofKind::Delivery))
+                || g.tasks.as_ref().and_then(|t| t.gates.last()).is_some_and(|tg| tg.proof.kind() == Some(ProofKind::Delivery))
+        });
+        if (require_terminal_delivery && !has_terminal_delivery)
             || deliveries.len() > 1
+            || (deliveries.len() == 1 && deliveries[0].0 + 1 != gates.len())
         {
             bail!("ACDD_PROFILE_INVALID: {path} must contain one terminal delivery gate when delivery is declared");
         }
@@ -1642,7 +1686,7 @@ impl GateProfile {
             && !gate
                 .id
                 .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-' || byte == b'.')
         {
             bail!(
                 "GATE_INVALID_CONFIGURATION: gate id '{}' must be a non-empty token",
@@ -1674,7 +1718,7 @@ impl GateProfile {
             }
         }
         if let Some(contours) = &gate.contours {
-            if !self.contours.contains_key(contours) {
+            if self.contour_set(Some(contours)).is_none() {
                 bail!("GATE_INVALID_CONFIGURATION: gate '{}' references undefined contour set '{contours}'", gate.id);
             }
         }
@@ -1811,17 +1855,9 @@ impl GateProfile {
         if other.version.is_some() {
             self.version = other.version;
         }
-        if !other.subtask_dod.is_empty() {
-            self.subtask_dod = other.subtask_dod;
-        }
-        if !other.review_policy.is_empty() {
-            self.review_policy = other.review_policy;
-        }
         if !other.contract_zero_exit_policies.is_empty() {
             self.contract_zero_exit_policies = other.contract_zero_exit_policies;
         }
-        self.error_codes.extend(other.error_codes);
-        self.guidance_slots.extend(other.guidance_slots);
         self.proofs.extend(other.proofs);
         self.guidance.extend(other.guidance);
         self.gate_templates.extend(other.gate_templates);
@@ -1833,9 +1869,6 @@ impl GateProfile {
         }
         if other.modules != SubsystemRegistry::default() {
             self.modules = other.modules;
-        }
-        if other.dag_optimization != DagOptimizationPolicy::default() {
-            self.dag_optimization = other.dag_optimization;
         }
         for (key, role) in other.roles {
             if let Some(current) = self.roles.get_mut(&key) {
@@ -1856,7 +1889,6 @@ impl GateProfile {
                 merge_yaml(current.settings.entry(setting).or_default(), value);
             }
         }
-        self.contours.extend(other.contours);
         if !other.gates.is_empty() {
             self.gates = other.gates;
         }
@@ -1903,7 +1935,7 @@ fn parse_profile_document(yaml_str: &str) -> Result<ParsedProfile> {
     } else {
         serde_yaml::from_str(yaml_str).map_err(|err| {
             anyhow::anyhow!(
-                "ACDD_PROFILE_SCHEMA_INVALID: {err}\nSupported fields: version, inherit, gates, gate_templates, milestone_verification, roles, commands, scope_args_by_pattern, policies, proofs, error_codes, guidance, guidance_slots, modules, contours, limits, git_commit_note, completed, subtask_dod, review_policy, contract_zero_exit_policies."
+                "ACDD_PROFILE_SCHEMA_INVALID: {err}\nSupported fields: version, inherit, gates, gate_templates, milestone_verification, roles, commands, scope_args_by_pattern, policies, proofs, guidance, modules, contours, limits, git_commit_note, completed, contract_zero_exit_policies."
             )
         })?
     };
@@ -1969,36 +2001,93 @@ fn parse_profile_document(yaml_str: &str) -> Result<ParsedProfile> {
     let commands_declared = mapping.contains_key(serde_yaml::Value::String("commands".to_owned()));
     let mut profile = serde_yaml::from_value::<GateProfile>(document).map_err(|err| {
         anyhow::anyhow!(
-            "ACDD_PROFILE_SCHEMA_INVALID: {err}\nSupported fields: version, inherit, gates, gate_templates, milestone_verification, roles, commands, scope_args_by_pattern, policies, proofs, error_codes, guidance, guidance_slots, modules, contours, limits, git_commit_note, completed, subtask_dod, review_policy, contract_zero_exit_policies."
+            "ACDD_PROFILE_SCHEMA_INVALID: {err}\nSupported fields: version, inherit, gates, gate_templates, milestone_verification, roles, commands, scope_args_by_pattern, policies, proofs, guidance, modules, contours, limits, git_commit_note, completed, contract_zero_exit_policies."
         )
     })?;
-    let (milestone_verification, milestone_templates) = profile
-        .policies
-        .get_mut("milestone_verification")
-        .map(|policy| {
-            (
-                policy.settings.remove("container"),
-                policy.settings.remove("templates"),
-            )
-        })
-        .unwrap_or_default();
-    if let Some(container) = milestone_verification {
-        profile.milestone_verification = Some(serde_yaml::from_value(container).context(
-            "ACDD_PROFILE_SCHEMA_INVALID: policies.milestone_verification.container is invalid",
-        )?);
+    if let Some(policy) = profile.policies.get_mut("milestone_verification") {
+        if profile.milestone_verification.is_none() {
+            if let Some(container) = policy.settings.remove("container") {
+                profile.milestone_verification = Some(serde_yaml::from_value(container).context(
+                    "ACDD_PROFILE_SCHEMA_INVALID: policies.milestone_verification.container is invalid",
+                )?);
+            }
+        }
+        if let Some(templates) = policy.settings.remove("templates") {
+            let templates = serde_yaml::from_value::<BTreeMap<String, GateTemplate>>(templates)
+                .context(
+                    "ACDD_PROFILE_SCHEMA_INVALID: policies.milestone_verification.templates is invalid",
+                )?;
+            profile.gate_templates.extend(templates);
+        }
     }
-    if let Some(templates) = milestone_templates {
-        let templates = serde_yaml::from_value::<BTreeMap<String, GateTemplate>>(templates)
-            .context(
-                "ACDD_PROFILE_SCHEMA_INVALID: policies.milestone_verification.templates is invalid",
-            )?;
-        profile.gate_templates.extend(templates);
+    for gate in &mut profile.gates {
+        normalize_gate(gate);
+    }
+    for template in profile.gate_templates.values_mut() {
+        for gate in &mut template.gates {
+            normalize_gate(gate);
+        }
+    }
+    if let Some(container) = &mut profile.milestone_verification {
+        normalize_gate(container);
     }
     Ok(ParsedProfile {
         profile,
         inherit_defaults,
         commands_declared,
     })
+}
+
+fn normalize_gate(gate: &mut GateDef) {
+    normalize_gate_hierarchy(None, gate);
+}
+
+fn normalize_gate_hierarchy(parent_id: Option<&str>, gate: &mut GateDef) {
+    if let Some(parent) = parent_id {
+        if !parent.is_empty()
+            && parent != "milestone_verification"
+            && !gate.id.is_empty()
+            && !gate.id.starts_with(&format!("{parent}."))
+        {
+            gate.id = format!("{parent}.{}", gate.id);
+        }
+    }
+    if gate.persistence.post == Some(PersistenceAction::Snapshot) {
+        gate.sha_snapshot = true;
+    } else if gate.sha_snapshot && gate.persistence.post.is_none() {
+        gate.persistence.post = Some(PersistenceAction::Snapshot);
+    }
+    if gate.proof.kind() == Some(ProofKind::Delivery) {
+        if !gate.auto_commit {
+            if gate.persistence.post == Some(PersistenceAction::Commit) {
+                gate.persistence.post = None;
+            }
+        } else if gate.persistence.post == Some(PersistenceAction::Commit) {
+            gate.auto_commit = true;
+        } else if gate.persistence.post.is_none() {
+            gate.persistence.post = Some(PersistenceAction::Commit);
+        }
+    } else {
+        gate.auto_commit = false;
+    }
+    if gate.reject_to.is_none() {
+        if let Some(routing) = &gate.reject_routing {
+            gate.reject_to = routing.scope.clone();
+        }
+    }
+    let my_id = if gate.id.is_empty() {
+        parent_id.unwrap_or("")
+    } else {
+        &gate.id
+    };
+    for child in &mut gate.gates {
+        normalize_gate_hierarchy(Some(my_id), child);
+    }
+    if let Some(tasks) = &mut gate.tasks {
+        for child in &mut tasks.gates {
+            normalize_gate_hierarchy(Some(my_id), child);
+        }
+    }
 }
 
 fn merge_profile_document(base: &mut GateProfile, document: ParsedProfile) {
@@ -2008,6 +2097,12 @@ fn merge_profile_document(base: &mut GateProfile, document: ParsedProfile) {
     }
     if document.commands_declared && document.profile.commands.is_empty() {
         base.commands.clear();
+        if document.profile.gate_templates.is_empty() {
+            base.gate_templates.clear();
+        }
+        if document.profile.milestone_verification.is_none() {
+            base.milestone_verification = None;
+        }
     }
     base.merge_override(document.profile);
 }

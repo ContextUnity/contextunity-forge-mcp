@@ -223,15 +223,74 @@ impl TasksStore {
         state_payload: serde_json::Value,
     ) -> Result<()> {
         let (milestone_id, gate_path, subject) = checkpoint_identity(&self.namespace, breadcrumb)?;
-        self.save_checkpoint(&GateCheckpoint {
-            breadcrumb: breadcrumb.to_owned(),
-            milestone_id,
-            subject,
-            gate_path,
-            transition_id: None,
-            git_tree_sha: git_tree_sha.to_owned(),
+        if is_engine_owned_checkpoint(&subject, &gate_path) {
+            bail!("TASK_CHECKPOINT_OWNED: milestone verification checkpoints are engine-owned");
+        }
+        if state_payload.get("task_id").is_some() || state_payload.get("claim_revision").is_some() {
+            bail!("TASK_CHECKPOINT_OWNED: on-demand checkpoints cannot define task lifecycle identity");
+        }
+        for (field, value) in [
+            ("breadcrumb", breadcrumb),
+            ("milestone_id", milestone_id.as_str()),
+            ("subject", subject.as_str()),
+            ("gate_path", gate_path.as_str()),
+            ("git_tree_sha", git_tree_sha),
+        ] {
+            if value.trim().is_empty() {
+                bail!("TASK_CHECKPOINT_INVALID: {field} must not be empty");
+            }
+        }
+        let mut payload_envelope = serde_json::Map::new();
+        payload_envelope.insert(
+            CHECKPOINT_PAYLOAD_KEY.to_owned(),
             state_payload,
-        })
+        );
+        let state_payload_str = serde_json::to_string(&serde_json::Value::Object(payload_envelope))?;
+        let changed = self.connection.execute(
+            "INSERT INTO gate_checkpoints (
+                breadcrumb, milestone_id, subject, gate_path, transition_id,
+                git_tree_sha, state_payload, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+             ON CONFLICT(breadcrumb) DO UPDATE SET
+                git_tree_sha=excluded.git_tree_sha,
+                state_payload=excluded.state_payload,
+                updated_at=CURRENT_TIMESTAMP
+             WHERE gate_checkpoints.transition_id IS NULL
+               AND json_extract(gate_checkpoints.state_payload, '$._forge_checkpoint_payload_v1.task_id') IS NULL
+               AND json_extract(gate_checkpoints.state_payload, '$.task_id') IS NULL",
+            params![
+                breadcrumb,
+                milestone_id,
+                subject,
+                gate_path,
+                git_tree_sha,
+                state_payload_str,
+            ],
+        )?;
+        if changed == 0 {
+            let row: Option<(Option<i64>, Option<String>)> = self
+                .connection
+                .query_row(
+                    "SELECT transition_id,
+                            COALESCE(
+                                json_extract(state_payload, '$._forge_checkpoint_payload_v1.task_id'),
+                                json_extract(state_payload, '$.task_id')
+                            )
+                     FROM gate_checkpoints WHERE breadcrumb=?1 AND milestone_id=?2",
+                    params![breadcrumb, milestone_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?;
+            if let Some((transition_id, task_id)) = row {
+                if transition_id.is_some() {
+                    bail!("TASK_CHECKPOINT_OWNED: lifecycle checkpoint is owned by its gate transition");
+                }
+                if task_id.is_some() {
+                    bail!("TASK_CHECKPOINT_OWNED: lifecycle checkpoint is owned by active task claim");
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Insert or replace the checkpoint associated with one turn breadcrumb.
@@ -266,7 +325,7 @@ impl TasksStore {
             checkpoint.state_payload.clone(),
         );
         let state_payload = serde_json::to_string(&serde_json::Value::Object(payload_envelope))?;
-        let changed = self.connection.execute(
+        self.connection.execute(
             "INSERT INTO gate_checkpoints (
                 breadcrumb, milestone_id, subject, gate_path, transition_id,
                 git_tree_sha, state_payload
@@ -278,9 +337,7 @@ impl TasksStore {
                 transition_id=excluded.transition_id,
                 git_tree_sha=excluded.git_tree_sha,
                 state_payload=excluded.state_payload,
-                updated_at=CURRENT_TIMESTAMP
-             WHERE gate_checkpoints.transition_id IS NULL
-                OR excluded.transition_id IS NOT NULL",
+                updated_at=CURRENT_TIMESTAMP",
             params![
                 checkpoint.breadcrumb,
                 checkpoint.milestone_id,
@@ -291,9 +348,6 @@ impl TasksStore {
                 state_payload,
             ],
         )?;
-        if changed == 0 && checkpoint.transition_id.is_none() {
-            bail!("TASK_CHECKPOINT_OWNED: lifecycle checkpoint is owned by its gate transition");
-        }
         Ok(())
     }
 
@@ -358,23 +412,36 @@ impl TasksStore {
         }
         let changed = self.connection.execute(
             "DELETE FROM gate_checkpoints
-             WHERE breadcrumb=?1 AND milestone_id=?2 AND transition_id IS NULL",
+             WHERE breadcrumb=?1 AND milestone_id=?2
+               AND transition_id IS NULL
+               AND json_extract(state_payload, '$._forge_checkpoint_payload_v1.task_id') IS NULL
+               AND json_extract(state_payload, '$.task_id') IS NULL",
             params![breadcrumb, milestone_id],
         )?;
         if changed > 0 {
             return Ok(true);
         }
-        let transition_id: Option<Option<i64>> = self
+        let row: Option<(Option<i64>, Option<String>)> = self
             .connection
             .query_row(
-                "SELECT transition_id FROM gate_checkpoints
+                "SELECT transition_id,
+                        COALESCE(
+                            json_extract(state_payload, '$._forge_checkpoint_payload_v1.task_id'),
+                            json_extract(state_payload, '$.task_id')
+                        )
+                 FROM gate_checkpoints
                  WHERE breadcrumb=?1 AND milestone_id=?2",
                 params![breadcrumb, milestone_id],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?;
-        if transition_id.flatten().is_some() {
-            bail!("TASK_CHECKPOINT_OWNED: lifecycle checkpoint is owned by its gate transition");
+        if let Some((transition_id, task_id)) = row {
+            if transition_id.is_some() {
+                bail!("TASK_CHECKPOINT_OWNED: lifecycle checkpoint is owned by its gate transition");
+            }
+            if task_id.is_some() {
+                bail!("TASK_CHECKPOINT_OWNED: lifecycle checkpoint is owned by active task claim");
+            }
         }
         Ok(false)
     }

@@ -3,7 +3,7 @@ use anyhow::{bail, Context, Result};
 
 /// Active leaf gate selected from the task lifecycle container.
 #[derive(Debug, Clone)]
-pub(super) struct GateCursor {
+pub(crate) struct GateCursor {
     /// Locator of the parent container, rooted at the task lifecycle.
     pub gate_path: String,
     /// Stage value persisted on the task and used for claim/submission equality.
@@ -38,8 +38,18 @@ fn collect_cursors(profile: &GateProfile) -> Result<Vec<GateCursor>> {
                 if gate.id.trim().is_empty() {
                     bail!("TASK_GATE_CURSOR_INVALID: executable gate has no id");
                 }
-                let canonical_stage_id = path.join(".");
-                let parent_path = path[..path.len().saturating_sub(1)].join(".");
+                let canonical_stage_id = if gate.id.contains('.') {
+                    gate.id.clone()
+                } else if !path.is_empty() {
+                    path.join(".")
+                } else {
+                    gate.id.clone()
+                };
+                let parent_path = if canonical_stage_id.contains('.') {
+                    canonical_stage_id.rsplit_once('.').map(|(p, _)| p).unwrap_or("").to_owned()
+                } else {
+                    path[..path.len().saturating_sub(1)].join(".")
+                };
                 let gate_path = if parent_path.is_empty() || parent_path == "tasks" {
                     "tasks".to_owned()
                 } else {
@@ -204,7 +214,7 @@ fn cursor_for_path(profile: &GateProfile, stage: &str) -> Result<(GateCursor, us
                 && cursor.canonical_stage_id.starts_with(&format!("{path}."))
         }) {
             let mut selected = cursor.clone();
-            selected.stage_id = stage.to_owned();
+            selected.stage_id = cursor.canonical_stage_id.clone();
             return Ok((selected, index));
         }
     } else if matching_paths.len() > 1 {
@@ -214,7 +224,11 @@ fn cursor_for_path(profile: &GateProfile, stage: &str) -> Result<(GateCursor, us
     let matches = cursors
         .iter()
         .enumerate()
-        .filter(|(_, cursor)| cursor.gate.id == stage)
+        .filter(|(_, cursor)| {
+            cursor.canonical_stage_id == stage
+                || cursor.gate.id == stage
+                || cursor.canonical_stage_id.rsplit('.').next() == Some(stage)
+        })
         .collect::<Vec<_>>();
     match matches.as_slice() {
         [(index, cursor)] => Ok(((*cursor).clone(), *index)),
@@ -224,7 +238,7 @@ fn cursor_for_path(profile: &GateProfile, stage: &str) -> Result<(GateCursor, us
 }
 
 /// Resolve one persisted stage to its executable leaf gate.
-pub(super) fn cursor_for_stage(profile: &GateProfile, stage: &str) -> Result<GateCursor> {
+pub(crate) fn cursor_for_stage(profile: &GateProfile, stage: &str) -> Result<GateCursor> {
     cursor_for_path(profile, stage).map(|(cursor, _)| cursor)
 }
 
@@ -260,7 +274,7 @@ pub(super) fn claim_nested_gate(
             if error.to_string().contains("TASK_STAGE_UNKNOWN") {
                 anyhow::anyhow!(
                     "TASK_STAGE_INVALID: active gate is '{}'; requested '{}'. Omit stage to claim from persisted task state.",
-                    cursor.stage_id,
+                    cursor.canonical_stage_id,
                     requested_stage
                 )
             } else {
@@ -270,7 +284,7 @@ pub(super) fn claim_nested_gate(
         if requested.canonical_stage_id != cursor.canonical_stage_id {
             bail!(
                 "TASK_STAGE_INVALID: active gate is '{}'; requested '{}'. Omit stage to claim from persisted task state.",
-                cursor.stage_id,
+                cursor.canonical_stage_id,
                 requested_stage
             );
         }
@@ -287,7 +301,7 @@ pub(super) fn resolve_subagent_role(cursor: &GateCursor) -> Option<String> {
 }
 
 /// Build the stable breadcrumb key for a task gate claim.
-pub(super) fn breadcrumb(task_id: &str, cursor: &GateCursor) -> Result<(String, String)> {
+pub(crate) fn breadcrumb(task_id: &str, cursor: &GateCursor) -> Result<(String, String)> {
     let (milestone, task_ref) = task_id
         .split_once(':')
         .context("TASK_BREADCRUMB_INVALID: task id must contain a milestone and task reference")?;
@@ -299,9 +313,14 @@ pub(super) fn breadcrumb(task_id: &str, cursor: &GateCursor) -> Result<(String, 
     if task_ref.trim().is_empty() {
         bail!("TASK_BREADCRUMB_INVALID: task reference is missing");
     }
+    let leaf_stage = cursor
+        .canonical_stage_id
+        .rsplit_once('.')
+        .map(|(_, leaf)| leaf)
+        .unwrap_or(&cursor.stage_id);
     let breadcrumb = format!(
-        "{milestone_id}/{}/{task_ref}/{}",
-        cursor.gate_path, cursor.stage_id
+        "{milestone_id}/{}/{task_ref}/{leaf_stage}",
+        cursor.gate_path
     );
     Ok((milestone_id.to_owned(), breadcrumb))
 }

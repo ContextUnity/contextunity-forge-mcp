@@ -32,7 +32,7 @@ Forge resolves the active profile in the following order:
 
 Profiles merge with the embedded or workspace base by default. Set `inherit: none`
 to compile a clean-room profile from its own declarations, without inheriting the
-base roles, gates, commands, policies, proofs, guidance, or contours. The profile
+base roles, gates, commands, policies, proofs, or guidance entries. The profile
 must then declare the roles and gates it needs. An explicit `commands: {}` clears
 an inherited command catalog; omit `commands` to keep the inherited catalog. A
 profile with an empty catalog must not declare gates that require command proof.
@@ -41,48 +41,7 @@ A complete profile YAML consists of the primary sections shown below:
 
 ```yaml
 # .forge/acdd/profile.yaml
-gates:
-  - id: contract
-    role: contract_author
-    proof: contract
-    steps:
-      - "Author a sensitive failing seam test."
-  - id: build
-    role: builder
-    proof: command
-    sha_snapshot: true
-    steps:
-      - "Implement approved contract inside the declared allowed_write_scope."
-  - id: review
-    role: independent_reviewer
-    proof: review
-    independent_from: build
-    reject_to: build
-    contours: standard
-    steps:
-      - "Inspect candidate diff and verify contours."
-  - id: deliver
-    role: independent_reviewer
-    proof: delivery
-    auto_commit: true
-    independent_from: build
-    review_sources:
-      - review
-    reject_to: build
-    contours: standard
-    steps:
-      - "Submit delivery proof."
-
-contours:
-  standard:
-    paths:
-      description: "Verify changes stay within the task's admitted write perimeter."
-      criteria:
-        - "Compare every changed file with the task's initial scope."
-    claims:
-      description: "Verify each accepted contract claim is implemented."
-      criteria:
-        - "Trace every invariant to the production code path."
+version: 2
 
 roles:
   contract_author:
@@ -90,44 +49,127 @@ roles:
     reuse_on_reject: true
     models:
       - 'sol-6.1:high'
-    guidance: "Define the production-seam contract."
+    guidance: "As contract author, define the production-seam contract and runtime-red proof."
 
   builder:
     mode: subagent
     reuse_on_reject: true
     models:
       - 'gpt6-luna:xhigh'
-    guidance: "Implement passing production code and green unit tests."
+    guidance: "Implement the approved contract inside declared allowed_write_scope."
 
   independent_reviewer:
     mode: subagent
     reuse_on_reject: true
     models:
       - 'sol-6.1:xhigh'
-    guidance: "Audit the candidate diff across the quality contours."
+    guidance: "Review independently, then claim and submit delivery in the same reviewer session."
 
 commands:
   rust-check-and-test:
-    command: "cargo clippy --all-targets --all-features -- -D warnings && cargo test"
+    by_pattern:
+      "**/*.rs": "cargo clippy --all-targets --all-features -- -D warnings && cargo test"
     description: "Run strict Rust checks followed by the repository's test suite."
+  check_full_repo:
+    by_pattern:
+      "**/*.rs": "cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets"
+    description: "Run milestone handoff verification commands from TESTS.md."
   test:
-    command: "cargo test"
-    description: "Run test suite."
+    by_pattern:
+      "**/*.rs": "cargo test"
+    description: "Compatibility command for legacy task evidence."
 
-scope_args_by_pattern:
-  "src/main.rs": "--bin contextunity-forge-mcp"
-  "src/**/*.rs": "--lib"
-  "tests/*.rs": "--test {file_stem}"
+guidance:
+  task.contract: "Define a production-seam proof and keep the task contract inside admitted scope."
+  task.code: "Implement the accepted seam with the smallest change that satisfies the contract."
+  task.review: "Review the candidate against scope, contract, concurrency, isolation, and administration evidence."
+  hitl.pro: "HITL level PRO: allow internal helpers and non-breaking implementation changes; escalate public APIs."
+  contour.paths:
+    description: "Verify changes stay within the task's admitted write perimeter."
+    criteria:
+      - "Compare every changed file with the task's initial scope."
+  contour.claims:
+    description: "Verify each accepted contract claim is implemented."
+    criteria:
+      - "Trace every invariant to the production code path."
 
 policies:
-  delivery:
-    atomic_receipt: true
-  proof:
-    command:
-      require_zero_exit: true
-  review:
+  default_review:
     independent_worker: true
     require_all_contours: true
+    audit_extended_scope: true
+
+gates:
+  - id: contract
+    role: contract_author
+    guidance: [task.contract, hitl.pro]
+    proof: contract
+    persistence:
+      post: snapshot
+
+  - id: build
+    role: builder
+    guidance: [task.code, hitl.pro]
+    command: rust-check-and-test
+    proof: command
+    persistence:
+      pre: snapshot
+      post: snapshot
+
+  - id: review
+    role: independent_reviewer
+    guidance: [task.review, hitl.pro]
+    policy: default_review
+    proof: review
+    contours: guidance.contours
+    independent_from: build
+    reject_to: build
+    reject_routing:
+      scope: build
+      symbols: contract
+    persistence:
+      immutable: true
+
+  - id: deliver
+    role: independent_reviewer
+    guidance: [hitl.pro]
+    proof: delivery
+    receipt: true
+    review_sources:
+      - review
+    independent_from: build
+    reject_to: build
+    persistence:
+      immutable: true
+      post: commit
+      git_commit_note: telemetry
+
+milestone_verification:
+  id: milestone_verification
+  gates:
+    - id: verify
+      command: check_full_repo
+      proof: command
+    - id: review
+      role: independent_reviewer
+      policy: default_review
+      guidance: [milestone.review]
+      proof: review
+      contours: guidance.contours
+      independent_from: verify
+      persistence:
+        immutable: true
+  fallback:
+    use: build_review_cycle
+    command: check_full_repo
+    guidance: [milestone.polish]
+    max_attempts: 2
+  deliver:
+    proof: delivery
+    receipt: true
+    persistence:
+      immutable: true
+      post: commit
 ```
 
 The embedded profile also registers `test: cargo test` for compatibility with
@@ -158,11 +200,25 @@ stage, revisions, worker, and worktree.
 Each gate declares a stable identifier (`id`) and a proof specification (`proof`):
 - `contract`: Verifies a red seam test (default `seam-test-first` expecting non-zero exit code) or invariant baseline (`direct-proof`).
 - `command`: Executes and verifies a registered CLI command (must exit with code 0).
-- `review`: Evaluates 5 review contours and enforces worker separation (`independent_from`).
+- `review`: Evaluates cognitive review contours (`contours: guidance.contours`) and enforces worker separation (`independent_from`).
 - `delivery`: Terminal gate that writes the durable receipt into SQLite and milestone Markdown.
 - `scheme`: A custom recursive JSON schema validation under `proof: { scheme: ... }`.
 
-### 2. Worker Independence and Role Guidance
+### 2. Review Focus Lenses (`contours: guidance.contours`)
+
+Review contours are declared directly under `guidance:` using the `contour.<name>` prefix as structured entries with `description` and operational `criteria`:
+
+```yaml
+guidance:
+  contour.paths:
+    description: "Verify changes stay within the task's admitted write perimeter."
+    criteria:
+      - "Compare every changed file with the task's initial scope."
+```
+
+Review gates bind explicitly to these lenses using `contours: guidance.contours`. The review proof engine and `workflow_guidance` extract the structured criteria to drive reviewer checklists and evaluate evidence.
+
+### 3. Worker Independence and Role Guidance
 
 - **`independent_from`**: Enforces that the worker claiming this gate cannot share the same `worker_id` as the builder.
 - **`reject_to`**: Specifies which prior gate to rewind to if review fails.
@@ -171,7 +227,7 @@ Each gate declares a stable identifier (`id`) and a proof specification (`proof`
 - **`models`**: Ordered list of recommended LLM models and reasoning tiers for that specific role.
 - The embedded `independent_reviewer` owns both review and delivery, so continue the same reviewer session through those gates. Its `NO_PREFLIGHT_SUBAGENTS` workflow rule prohibits launching preliminary subagents before the active gate work.
 
-### 3. Boundary Context and Static Gates
+### 4. Boundary Context and Static Gates
 
 Contract and build context exposes indexed `external_callers`, one-hop indexed
 callers outside scope, plus `covering_tests`, which includes direct and two-hop
@@ -190,7 +246,7 @@ out-of-scope indexed callers using `TASK_SCOPE_INCOMPLETE`. Rust methods in a
 visible trait inherit that trait's visibility for signature-boundary checks,
 whether the method has a body or only a declaration.
 
-### 4. Anti-Tampering & SHA-256 Pinning
+### 5. Anti-Tampering & SHA-256 Pinning
 
 For auditability and protection against prompt injection or rogue agents altering workflow rules mid-execution:
 - Pin custom profiles at planning time using the format `<path>:<sha256_prefix>`:
@@ -205,5 +261,5 @@ For auditability and protection against prompt injection or rogue agents alterin
 
 ## Reference Examples
 
-- See the canonical executable profile example in [`skills/contextunity-forge/references/acdd_profile.current.yaml.example`](../../skills/contextunity-forge/references/acdd_profile.current.yaml.example). The separate [`v2 proposal`](../../skills/contextunity-forge/references/acdd_profile.yaml.example) is not supported by the current parser.
+- See the canonical executable profile example in [`skills/contextunity-forge/references/acdd_profile.yaml.example`](../../skills/contextunity-forge/references/acdd_profile.yaml.example).
 - See [Workspace configuration](configuration.md#declarative-acdd-profile-and-role-configuration) for full schema details and adapter settings.

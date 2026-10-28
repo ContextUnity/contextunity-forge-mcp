@@ -34,14 +34,12 @@ pub(super) fn execute_command_gate(
         .strip_prefix("tasks.")
         .filter(|stage| !stage.trim().is_empty())
         .context("TASK_COMMAND_INVALID: gate_path must be 'tasks.<stage>'")?;
-    if task.stage != stage || task.status != "in_progress" {
+    let profile = store.profile_for_task(&task)?;
+    let cursor = crate::engine::tasks::claim::cursor_for_stage(&profile, &task.stage)?;
+    if (cursor.canonical_stage_id != stage && cursor.stage_id != stage) || task.status != "in_progress" {
         bail!("TASK_STALE_CLAIM: task '{task_id}' is not actively claimed at gate '{gate_path}'");
     }
-    let profile = store.profile_for_task(&task)?;
-    let gate =
-        profile.gates.iter().find(|gate| gate.id == stage).context(
-            "TASK_STAGE_UNKNOWN: task command gate is not present in the active profile",
-        )?;
+    let gate = cursor.gate;
     let registered_name = gate
         .command
         .as_deref()

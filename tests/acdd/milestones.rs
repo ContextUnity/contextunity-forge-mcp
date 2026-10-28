@@ -3465,13 +3465,13 @@ fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
     proof: review
     independent_from: candidate_final
     reject_to: candidate_final
-    contours: standard
+    contours: guidance.contours
   - id: security_review
     role: independent_reviewer
     proof: review
     independent_from: candidate_final
     reject_to: candidate_final
-    contours: standard
+    contours: guidance.contours
   - id: deliver
     role: independent_reviewer
     proof: delivery
@@ -3701,7 +3701,7 @@ fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
     proof: review
     independent_from: build
     reject_to: build
-    contours: standard
+    contours: guidance.contours
   - id: candidate_final
     role: builder
     proof: command
@@ -3711,7 +3711,7 @@ fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
     proof: review
     independent_from: candidate_final
     reject_to: candidate_final
-    contours: standard
+    contours: guidance.contours
   - id: deliver
     role: independent_reviewer
     proof: delivery
@@ -7298,7 +7298,7 @@ policies:
           role: independent_reviewer
           proof: review
           independent_from: verify
-          contours: standard
+          contours: guidance.contours
       fallback:
         use: build_review_cycle
         command: check_full_repo
@@ -7320,7 +7320,7 @@ policies:
             role: independent_reviewer
             proof: review
             independent_from: build
-            contours: standard
+            contours: guidance.contours
 "####,
     );
     let milestone = Milestone::parse(manifest, "forge-mcp").unwrap();

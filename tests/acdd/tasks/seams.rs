@@ -522,12 +522,18 @@ fn tiered_task_context_enforces_indexed_seams_and_signature_boundaries() {
                 "{stage}/{seam}: task guidance must prohibit preflight subagents"
             ));
         }
-        if !guidance["steps"].as_array().unwrap().iter().any(|step| {
-            step.as_str()
-                .is_some_and(|step| step.contains("gate=\"build\"") || step.contains("gate=build"))
-        }) {
+        let has_build_handoff = guidance["role_guide"]
+            .as_str()
+            .is_some_and(|guide| guide.contains("build-targeted draft") || guide.contains("builder"))
+            || guidance["steps"].as_array().is_some_and(|steps| {
+                steps.iter().any(|step| {
+                    step.as_str()
+                        .is_some_and(|step| step.contains("gate=\"build\"") || step.contains("gate=build"))
+                })
+            });
+        if !has_build_handoff {
             failures.push(format!(
-                "{stage}/{seam}: contract steps must require the build-targeted blackboard handoff"
+                "{stage}/{seam}: contract guidance must require the build-targeted blackboard handoff"
             ));
         }
         let template = &guidance["expected_evidence_template"];

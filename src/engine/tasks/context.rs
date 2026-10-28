@@ -875,10 +875,9 @@ pub(super) fn context_bundle(
         guidance_map.insert("actionable_steps".into(), steps);
         let subtask_dod = workspace
             .gates
-            .subtask_dod
-            .iter()
+            .subtask_dod_criteria()
+            .into_iter()
             .filter(|criterion| blackboard_enabled || !criterion.contains("task_blackboard"))
-            .cloned()
             .collect::<Vec<_>>();
         guidance_map.insert("subtask_dod".into(), json!(subtask_dod));
         let targeted_messages = blackboard_messages.as_ref().map(|messages| {

@@ -260,12 +260,29 @@ pub(crate) fn validate_gate_proof(
     passed: bool,
     proof_policy: &str,
 ) -> Result<()> {
+    let mut catalog_schema_validated = false;
+    if let Some(kind) = gate.proof.kind() {
+        if let Some(catalog_entry) = profile.proofs.get(kind.as_str()) {
+            if let Some(schema) = &catalog_entry.schema {
+                let key = format!("{}_proof", kind.as_str());
+                if passed || matches!(kind, ProofKind::Review) {
+                    if schema.properties.contains_key(&key) || schema.required.contains(&key) {
+                        schema.validate_value(evidence, "$")?;
+                    } else {
+                        let payload = proof_payload(evidence, &key)?;
+                        schema.validate_value(payload, &format!("$.{key}"))?;
+                    }
+                    catalog_schema_validated = true;
+                }
+            }
+        }
+    }
     match &gate.proof {
         ProofDef::Kind(ProofKind::Contract) => validate_contract(
             evidence,
             proof_policy,
             passed,
-            &profile.contract_zero_exit_policies,
+            &profile.contract_zero_exit_policies(),
         ),
         ProofDef::Kind(ProofKind::Command) => validate_command(evidence, passed, &profile.commands),
         ProofDef::Kind(ProofKind::SeamTest) => validate_seam_test(evidence, passed),
@@ -282,7 +299,12 @@ pub(crate) fn validate_gate_proof(
         ProofDef::Kind(ProofKind::Delivery) => {
             proof_payload(evidence, "delivery_proof").map(|_| ())
         }
-        ProofDef::Kind(ProofKind::None) => validate_none(evidence),
+        ProofDef::Kind(ProofKind::None) => {
+            if !catalog_schema_validated {
+                validate_none(evidence)?;
+            }
+            Ok(())
+        }
         ProofDef::Scheme { scheme } => {
             let value = proof_payload(evidence, "scheme_proof")?;
             scheme.validate_value(value, "$.scheme_proof")

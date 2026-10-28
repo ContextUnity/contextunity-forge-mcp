@@ -219,8 +219,12 @@ pub(super) fn run_milestone_check(
             command.as_str(),
             Duration::from_secs(timeout_seconds.unwrap_or(300).max(1)),
         ),
-        CommandDef::Pattern(_) => {
-            bail!("MILESTONE_VERIFICATION_PROFILE_INVALID: check_full_repo must be a single registered command")
+        CommandDef::Pattern(patterns) => {
+            let cmd = command.command_for_root(root).context(
+                "MILESTONE_VERIFICATION_PROFILE_INVALID: no matching pattern command found for repository root",
+            )?;
+            let timeout = Duration::from_secs(patterns.timeout_seconds.unwrap_or(600).max(1));
+            (cmd, timeout)
         }
     };
     let started = Instant::now();

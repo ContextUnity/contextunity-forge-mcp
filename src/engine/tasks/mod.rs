@@ -19,7 +19,7 @@ pub(crate) use workspaces::{numbered_manifests, Registry};
 mod context;
 use context::context_bundle;
 mod blackboard;
-mod claim;
+pub(crate) mod claim;
 mod gates;
 mod git_snapshot;
 mod lifecycle;
@@ -1005,7 +1005,9 @@ fn submit_inner(root: &Path, p: Submit) -> Result<Value> {
                 .join(", ")
         )
     })?;
-    let gate = &profile.gates[gate_index];
+    let gate = profile.by_stage(&p.stage).with_context(|| {
+        format!("TASK_STAGE_UNKNOWN: '{}' is not in active profile", p.stage)
+    })?;
     let is_delivery = gate.proof.kind() == Some(crate::core::tasks::profile::ProofKind::Delivery);
     store.lock_checkpoint()?;
     let task = store.inspect(&p.task_id)?;
@@ -1036,11 +1038,12 @@ fn submit_inner(root: &Path, p: Submit) -> Result<Value> {
     }
     let worktree = Path::new(&evidence.worktree);
     let explicit_commit = evidence.commit.clone();
-    let prior_snapshot = profile.gates[..gate_index]
+    let exec_gates = profile.executable_gates();
+    let prior_snapshot = exec_gates[..gate_index]
         .iter()
         .rev()
         .find(|prior| prior.sha_snapshot);
-    let needs_candidate = !gate.sha_snapshot && prior_snapshot.is_some();
+    let needs_candidate = !gate.sha_snapshot && (prior_snapshot.is_some() || gate.persistence.immutable);
     let mut candidate_commit = None;
     let mut provisional_objects = None;
     let mut delivery_rollback = None;
@@ -1123,13 +1126,15 @@ fn submit_inner(root: &Path, p: Submit) -> Result<Value> {
                 }
             }
             evidence.commit = Some(candidate.clone());
-            if matches!(
-                gate.proof.kind(),
-                Some(
-                    crate::core::tasks::profile::ProofKind::Review
-                        | crate::core::tasks::profile::ProofKind::Delivery
+            if gate.persistence.immutable
+                || matches!(
+                    gate.proof.kind(),
+                    Some(
+                        crate::core::tasks::profile::ProofKind::Review
+                            | crate::core::tasks::profile::ProofKind::Delivery
+                    )
                 )
-            ) {
+            {
                 let (current, _, _objects) =
                     git_snapshot::capture_scoped_snapshot(worktree, &p.task_id, &task.spec.scope)?
                         .context(
@@ -1224,6 +1229,14 @@ fn submit_inner(root: &Path, p: Submit) -> Result<Value> {
                 delivery_rollback = rollback;
                 crate::core::git::retain_proof_commit(Path::new(&snapshot_worktree), &landed)?;
                 return Ok(Some(landed));
+            }
+            if p.action.name() == "pass"
+                && gate.persistence.post == Some(crate::core::tasks::profile::PersistenceAction::Commit)
+            {
+                let worktree = Path::new(&snapshot_worktree);
+                let msg = format!("post({}): pass {}", p.stage, p.task_id);
+                let head = crate::core::git::git_scoped_commit(worktree, &task.spec.scope, &msg)?;
+                return Ok(Some(head));
             }
             Ok(None)
         },

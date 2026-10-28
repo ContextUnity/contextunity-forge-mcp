@@ -602,7 +602,12 @@ impl Workspace {
             Value::Null
         };
         let review_policy = if needs_independent_reviewer {
-            Some(profile.review_policy.clone())
+            let criteria = profile.review_policy_criteria();
+            if criteria.is_empty() {
+                None
+            } else {
+                Some(criteria)
+            }
         } else {
             None
         };

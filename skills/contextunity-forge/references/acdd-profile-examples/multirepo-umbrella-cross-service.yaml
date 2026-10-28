@@ -68,13 +68,21 @@ guidance:
     Implement production code confined to the assigned service repository worktree.
     Adhere strictly to the published cross-repo schema in `milestone_contract_matrix`.
 
-  contour.cross_repo_compatibility: >
-    Verify backward and forward wire compatibility.
-    Ensure that schema additions are non-breaking and default-tolerant.
+  contour.cross_repo_compatibility:
+    description: "Verify backward and forward wire compatibility."
+    criteria:
+      - "Ensure that schema additions are non-breaking and default-tolerant."
+      - "Check that protobuf/OpenAPI/event schema changes preserve wire compatibility."
 
-  contour.isolation: >
-    Verify that commits in service A do not introduce hard dependencies on unreleased
-    runtime states of service B.
+  contour.isolation:
+    description: "Verify service isolation across repositories."
+    criteria:
+      - "Verify that commits in service A do not introduce hard runtime dependencies on unreleased states of service B."
+
+  contour.paths:
+    description: "Verify repository boundaries and file perimeters."
+    criteria:
+      - "Ensure changes are confined to the assigned service repository worktree."
 
 # =============================================================================
 # 4. POLICIES CATALOG (`policies`)
@@ -118,30 +126,35 @@ gates:
             command: check_task
             reject_to: code
 
-      # 2.3 Service Review
-      - id: review
-        role: integration_reviewer
-        guidance:
-          - contour.cross_repo_compatibility
-          - contour.isolation
-          - contour.paths
-        policy: umbrella_review
-        proof: review
+      # 2.3 Cross-Repo Integration Verification
+      - id: umbrella_integration_verify
+        command: verify_cross_repo_e2e
+        proof: command
         reject_to: implement
 
-      # 2.4 Service Delivery
+      # 2.4 Final Coordinated Verification
+      - id: full_umbrella_verify
+        command: check_all_services
+        proof: command
+        reject_to: implement
+
+      # 2.5 Service Review
+      - id: review
+        role: integration_reviewer
+        policy: umbrella_review
+        proof: review
+        contours: guidance.contours
+        reject_to: implement
+
+      # 2.6 Service Delivery
       - id: deliver
         role: integration_reviewer
         policy: umbrella_delivery
         proof: delivery
+        receipt: true
+        review_sources:
+          - review
         reject_to: implement
-
-  # Gate 3: Autonomous Cross-Repo Integration Gate (0 LLM Tokens)
-  - id: umbrella_integration_verify
-    command: verify_cross_repo_e2e
-    reject_to: tasks_delivery
-
-  # Gate 4: Final Coordinated Milestone Verification
-  - id: full_umbrella_verify
-    command: check_all_services
-    reject_to: tasks_delivery
+        persistence:
+          immutable: true
+          post: commit

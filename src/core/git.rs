@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use std::{
     io::Write,
     path::Path,
@@ -522,4 +522,103 @@ pub fn git_clean_file_merge_matches(
         bail!("TASK_MERGE_INVALID: result blob is unavailable");
     }
     Ok(merged.stdout == expected.stdout)
+}
+
+/// Create a scoped commit on branch HEAD containing only the files in `scope`,
+/// preserving unrelated worktree and index changes.
+pub fn git_scoped_commit(
+    worktree: &Path,
+    scope: &[String],
+    msg: &str,
+) -> Result<String> {
+    let git_dir = git_command(worktree, &["rev-parse", "--git-dir"])
+        .context("TASK_PERSISTENCE_FAILED: git worktree check failed")?;
+    if !git_dir.status.success() {
+        bail!("TASK_PERSISTENCE_FAILED: scoped commit requires a Git worktree");
+    }
+
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let temp_index = std::env::temp_dir().join(format!(
+        "forge-scoped-commit-{}-{nonce}.index",
+        std::process::id()
+    ));
+    struct IndexCleanup(std::path::PathBuf);
+    impl Drop for IndexCleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let _cleanup = IndexCleanup(temp_index.clone());
+    let temp_index_str = temp_index.to_string_lossy();
+
+    // 1. Initialize temp index with current HEAD tree
+    let read_tree = Command::new("git")
+        .args(["read-tree", "HEAD"])
+        .env("GIT_INDEX_FILE", &*temp_index_str)
+        .current_dir(worktree)
+        .output()
+        .context("TASK_PERSISTENCE_FAILED: git read-tree failed")?;
+    if !read_tree.status.success() {
+        let empty_read = Command::new("git")
+            .args(["read-tree", "--empty"])
+            .env("GIT_INDEX_FILE", &*temp_index_str)
+            .current_dir(worktree)
+            .output()
+            .context("TASK_PERSISTENCE_FAILED: git read-tree --empty failed")?;
+        if !empty_read.status.success() {
+            let stderr = String::from_utf8_lossy(&empty_read.stderr);
+            bail!("TASK_PERSISTENCE_FAILED: git read-tree failed: {}", stderr.trim());
+        }
+    }
+
+    // 2. Stage only paths in scope into temp index
+    let mut valid_paths = Vec::new();
+    for path in scope {
+        if worktree.join(path).exists() {
+            valid_paths.push(path.as_str());
+        } else {
+            let tracked = Command::new("git")
+                .args(["ls-files", "--", path])
+                .env("GIT_INDEX_FILE", &*temp_index_str)
+                .current_dir(worktree)
+                .output()
+                .map(|out| out.status.success() && !out.stdout.is_empty())
+                .unwrap_or(false);
+            if tracked {
+                valid_paths.push(path.as_str());
+            }
+        }
+    }
+
+    if !valid_paths.is_empty() {
+        let mut cmd = Command::new("git");
+        cmd.args(["add", "-A", "--"]);
+        cmd.args(&valid_paths);
+        cmd.env("GIT_INDEX_FILE", &*temp_index_str);
+        cmd.current_dir(worktree);
+        let out = cmd.output().context("TASK_PERSISTENCE_FAILED: git add failed")?;
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            bail!("TASK_PERSISTENCE_FAILED: git add failed: {}", stderr.trim());
+        }
+    }
+
+    // 3. Commit from temp index (runs all git hooks!)
+    let mut cmd = Command::new("git");
+    cmd.args(["commit", "-m", msg, "--allow-empty"]);
+    cmd.env("GIT_INDEX_FILE", &*temp_index_str);
+    cmd.current_dir(worktree);
+    let commit_res = cmd.output().context("TASK_PERSISTENCE_FAILED: git commit failed")?;
+    if !commit_res.status.success() {
+        let stderr = String::from_utf8_lossy(&commit_res.stderr);
+        bail!("TASK_PERSISTENCE_FAILED: commit hook failed: {}", stderr.trim());
+    }
+
+    let head = git_stdout(worktree, &["rev-parse", "HEAD"], "TASK_GIT_FAILED")?;
+    let head = head.trim().to_owned();
+    retain_proof_commit(worktree, &head)?;
+    Ok(head)
 }

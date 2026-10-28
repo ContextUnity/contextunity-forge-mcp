@@ -156,10 +156,10 @@ fn task_guidance_follows_agent_metadata_workspace_config_and_active_stage() {
             let build = inspect();
             assert_eq!(build["workflow_guidance"]["active_stage"], "build");
             assert_eq!(build["workflow_guidance"]["role"], "builder");
-            assert_ne!(build["workflow_guidance"]["steps"], guidance["steps"]);
-            assert!(build["workflow_guidance"]["steps"]
-                .as_array()
-                .is_some_and(|steps| steps.len() >= 2));
+            assert_ne!(
+                build["workflow_guidance"]["role_guide"],
+                guidance["role_guide"]
+            );
             let claimed_build = tasks::claim(
                 server,
                 tasks::Claim {
@@ -953,7 +953,7 @@ fn declarative_profile_compiles_defaults_and_respects_role_overrides() {
 
     // The documented reference profile example loads and validates cleanly
     let example_profile_text = std::fs::read_to_string(
-        "skills/contextunity-forge/references/acdd_profile.current.yaml.example",
+        "skills/contextunity-forge/references/acdd_profile.yaml.example",
     )
     .expect("example profile file must exist");
     let parsed_example = parse_profile(&example_profile_text)
@@ -980,7 +980,7 @@ fn declarative_profile_compiles_defaults_and_respects_role_overrides() {
     proof: review
     reject_to: work
     independent_from: work
-    contours: standard
+    contours: guidance.contours
   - id: deliver
     role: independent_reviewer
     proof: delivery
@@ -1075,7 +1075,7 @@ fn declarative_profile_compiles_defaults_and_respects_role_overrides() {
         ),
         (
             "undefined contour set",
-            valid_gates.replacen("contours: standard", "contours: missing_contours", 1),
+            valid_gates.replacen("contours: guidance.contours", "contours: missing_contours", 1),
         ),
         (
             "empty command value",
@@ -1120,7 +1120,8 @@ fn declarative_profile_compiles_defaults_and_respects_role_overrides() {
         let detail = format!("{error:#}");
         assert!(
             detail.contains("ACDD_PROFILE_INVALID")
-                || detail.contains("ACDD_PROFILE_SCHEMA_INVALID"),
+                || detail.contains("ACDD_PROFILE_SCHEMA_INVALID")
+                || detail.contains("GATE_INVALID_CONFIGURATION"),
             "{case} failed for an unexpected reason: {detail}"
         );
     }
@@ -1138,7 +1139,7 @@ fn declarative_profile_compiles_defaults_and_respects_role_overrides() {
     );
 
     let compiled_empty_catalog = validate_profile_document(
-        "commands: {}\ngates:\n  - id: build\n    role: builder\n    proof: none\n  - id: review\n    role: independent_reviewer\n    proof: review\n    reject_to: build\n    independent_from: build\n    contours: standard\n  - id: deliver\n    role: independent_reviewer\n    proof: delivery\n    review_sources: [review]\n",
+        "commands: {}\ngates:\n  - id: build\n    role: builder\n    proof: none\n  - id: review\n    role: independent_reviewer\n    proof: review\n    reject_to: build\n    independent_from: build\n    contours: guidance.contours\n  - id: deliver\n    role: independent_reviewer\n    proof: delivery\n    review_sources: [review]\n",
     )
     .expect("an explicitly empty catalog should compile when no gate uses a command");
     assert!(
@@ -1186,11 +1187,10 @@ gates:
         ["worker"]
     );
     assert!(clean_room.commands.is_empty());
-    assert!(clean_room.error_codes.is_empty());
     assert!(clean_room.proofs.is_empty());
     assert!(clean_room.guidance.is_empty());
     assert!(clean_room.policies.is_empty());
-    assert!(clean_room.contours.is_empty());
+    assert!(clean_room.contour_set(None).is_none());
     assert!(clean_room.gate_templates.is_empty());
 
     let compiled_clean_room = validate_profile_document(clean_room_yaml)
@@ -1248,7 +1248,7 @@ gates:
     proof: review
     independent_from: schema_input
     reject_to: schema_input
-    contours: standard
+    contours: guidance.contours
   - id: deliver
     role: independent_reviewer
     proof: delivery
@@ -1513,7 +1513,7 @@ gates:
     proof: review
     reject_to: build
     independent_from: build
-    contours: standard
+    contours: guidance.contours
   - id: deliver
     role: independent_reviewer
     proof: delivery

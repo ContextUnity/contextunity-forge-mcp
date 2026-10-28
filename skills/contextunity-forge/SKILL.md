@@ -100,9 +100,8 @@ Healthy-first enrollment preserves active runtime provenance. With missing/corru
 The [task reference](https://github.com/ContextUnity/contextunity-forge-mcp/blob/main/docs/reference/tasks.md) owns operation/evidence schemas. The active profile and claim's
 `workflow_guidance` own gates/order, proof policy, roles/models, review contours, and profile-specific
 behavior. Do not infer a fixed workflow from this skill. Use the
-[current runnable profile example](references/acdd_profile.current.yaml.example)
-for the supported parser. The separate [v2 profile proposal](https://github.com/ContextUnity/contextunity-forge-mcp/blob/main/docs/future/references/acdd_profile.v2.yaml.example)
-records future design and is not runnable on the current engine. Milestone contracts follow the domain taxonomy in [docs/milestones/README.md](https://github.com/ContextUnity/contextunity-forge-mcp/blob/main/docs/milestones/README.md#milestone-taxonomy-and-naming-groups); milestone numbers are domain decades (01x-06x), not sequential counters.
+[canonical profile example](references/acdd_profile.yaml.example)
+for the supported v2 profile format. Milestone contracts follow the domain taxonomy in [docs/milestones/README.md](https://github.com/ContextUnity/contextunity-forge-mcp/blob/main/docs/milestones/README.md#milestone-taxonomy-and-naming-groups); milestone numbers are domain decades (01x-06x), not sequential counters.
 
 Milestone handoff prunes terminal SQLite state by default across all workflows.
 The archive manifest retains the durable record; directory task sync skips

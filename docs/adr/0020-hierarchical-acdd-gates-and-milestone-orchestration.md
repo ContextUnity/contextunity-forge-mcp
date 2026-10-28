@@ -612,7 +612,6 @@ persistence:
   pre: snapshot              # snapshot | commit (omitted = None). Captured on claim/entry.
   post: commit               # snapshot | commit (omitted = None). Captured/landed on pass/exit.
   immutable: true            # bool (default false). Enforces zero working tree deviation from snapshot.
-  restore_on_reject: true    # bool (default false). Restores tree to pre-snapshot if stage is rejected.
   git_commit_note: command.benchmark # Shorthand: attaches structured output of configured command to refs/notes/forge
 ```
 
@@ -638,9 +637,7 @@ persistence:
    - `post`: Runs when the stage passes (`task submit --action pass`), locking in verified changes.
 4. **`immutable: true`**:
    - Replaces ad-hoc candidate baseline checks. When set (e.g. during `review` or `deliver`), Forge verifies that working tree files match the active candidate snapshot. Any modification fails closed with `TASK_CANDIDATE_MISMATCH`.
-5. **`restore_on_reject: true`**:
-   - When an attempt is rejected or rolled back, Forge automatically restores the working tree to the `pre` snapshot, eliminating dirty worktree stalls. Upstream rejection automatically invalidates downstream speculative tasks with `DEPENDENCY_MUTATED`.
-6. **`git_commit_note`: Full Automated Telemetry Passport (Markdown-First)**:
+5. **`git_commit_note`: Full Automated Telemetry Passport (Markdown-First)**:
    - Git commit notes serve as an **automated engineering passport** for every delivered task, computed in milliseconds by Forge directly from Git diffs, AST parsing, and SQLite timestamps without requiring any manual flags or agent inputs:
      ```markdown
      ### Forge Telemetry
@@ -678,7 +675,7 @@ persistence:
      2. Performance benchmarks and resource budgets (cold start, throughput, binary size) when configured via `git_commit_note: command.<id>`.
    - **Explicit Overflow Guard (`git_commit_note: limits: max_bytes: 2048`)**: Note payloads are strictly bounded by `max_bytes` (default `2048` bytes / 2 KiB). The complete telemetry passport comfortably fits within ~750 bytes. If a custom command output exceeds 2048 bytes, Forge writes a compact in-budget Markdown fallback (`command_id`, `status: exceeded_budget`, `original_bytes`, `sha256`), never writing broken/sliced JSON.
    - Anyone inspecting the repository can cleanly view notes without noise: `git log --show-notes=forge` or `git notes --ref=forge show <commit>`.
-7. **Lifecycle Pruning & Telemetry at Milestone Handoff**:
+6. **Lifecycle Pruning & Telemetry at Milestone Handoff**:
    - Upon milestone handoff (`INV-HANDOFF-SQLITE-PRUNING`), completed milestone tasks, claims, revisions, gate transitions, execution traces, checkpoints, and task blackboard rows are purged from SQLite.
    - The markdown archive (`docs/milestones/archive/*.md`) and Git commits are the permanent, durable ground truth.
    - `milestone_tombstones` in SQLite serves as a fast local cache to satisfy cross-milestone dependencies without zombie tasks; safe eviction occurs only when discovery across all linked worktrees (`git worktree list --porcelain`) proves no active manifest remains for that milestone and the archive contains a verified handoff proof token.

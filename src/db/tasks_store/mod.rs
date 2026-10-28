@@ -643,17 +643,43 @@ impl TasksStore {
                 task.task_id, task.stage
             )
         })?;
-        let snapshot_gate = profile.gates[..stage_index]
+        let exec_gates = profile.executable_gates();
+        let current_gate = &exec_gates[stage_index];
+        if current_gate.persistence.pre == Some(crate::core::tasks::profile::PersistenceAction::Snapshot) {
+            let cursor = crate::engine::tasks::claim::cursor_for_stage(&profile, &task.stage)?;
+            let (_, task_breadcrumb) = crate::engine::tasks::claim::breadcrumb(task_id, &cursor)?;
+            let namespace_prefix = format!("{}/{}/", self.repository, self.project);
+            let canonical_breadcrumb = format!("{namespace_prefix}{task_breadcrumb}");
+            let state_str: Option<String> = self.connection.query_row(
+                "SELECT state_payload FROM gate_checkpoints
+                 WHERE breadcrumb=?1",
+                params![canonical_breadcrumb],
+                |r| r.get(0),
+            ).optional()?;
+            if let Some(state_str) = state_str {
+                let payload: serde_json::Value = serde_json::from_str(&state_str)?;
+                let inner = payload.get("_forge_checkpoint_payload_v1").unwrap_or(&payload);
+                let task_id_matches = inner.get("task_id").and_then(|v| v.as_str()) == Some(task_id);
+                let revision_matches = inner.get("claim_revision").and_then(|v| v.as_u64()) == Some(task.claim_revision);
+                if task_id_matches && revision_matches {
+                    if let (Some(c), Some(b)) = (inner.get("commit").and_then(|v| v.as_str()), inner.get("candidate_baseline_head").and_then(|v| v.as_str())) {
+                        return Ok(Some((c.to_owned(), b.to_owned())));
+                    }
+                }
+            }
+        }
+        let snapshot_gate = exec_gates[..stage_index]
             .iter()
             .rev()
             .find(|gate| gate.sha_snapshot)
             .context(
                 "TASK_SNAPSHOT_NOT_FOUND: no accepted candidate snapshot precedes this gate",
             )?;
+        let leaf_alias = snapshot_gate.id.rsplit('.').next().unwrap_or(&snapshot_gate.id);
         let evidence: Option<String> = self
             .connection
-            .prepare("SELECT evidence FROM task_gates WHERE task_id=?1 AND gate=?2 AND state='passed' ORDER BY revision DESC LIMIT 1")?
-            .query_row(params![task_id, snapshot_gate.id], |r| r.get(0))
+            .prepare("SELECT evidence FROM task_gates WHERE task_id=?1 AND (gate=?2 OR gate=?3) AND state='passed' ORDER BY revision DESC LIMIT 1")?
+            .query_row(params![task_id, snapshot_gate.id, leaf_alias], |r| r.get(0))
             .optional()?;
         Ok(evidence.and_then(|ev| {
             let evidence = serde_json::from_str::<serde_json::Value>(&ev).ok()?;
@@ -1789,12 +1815,15 @@ pub(crate) fn end_claim(conn: &Connection, id: &str) -> Result<()> {
     Ok(())
 }
 pub(crate) fn check_stage(task_id: &str, active_gate: &str, stage: &str) -> Result<()> {
-    if active_gate != stage {
-        bail!(
-            "TASK_STAGE_INVALID: task '{task_id}'. submitted stage '{stage}' does not match active stage '{active_gate}'. Do: submit for active stage '{active_gate}'."
-        );
+    if active_gate == stage
+        || active_gate.rsplit('.').next() == Some(stage)
+        || stage.rsplit('.').next() == Some(active_gate)
+    {
+        return Ok(());
     }
-    Ok(())
+    bail!(
+        "TASK_STAGE_INVALID: task '{task_id}'. submitted stage '{stage}' does not match active stage '{active_gate}'. Do: submit for active stage '{active_gate}'."
+    );
 }
 pub(crate) fn unsatisfied_dependencies(
     conn: &Connection,

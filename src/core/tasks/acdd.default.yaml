@@ -1,59 +1,100 @@
-subtask_dod:
-  - "Contract slice resolution: Demonstrably resolves an explicit, bounded slice of the contract without breaking boundaries."
-  - "Milestone & ADR alignment: Builds upon and strengthens existing architectural and test seams rather than authoring isolated patches or duplicate test functions."
-  - "Production-seam evidence: Validates through real production paths rather than synthetic stubs mocking away system complexity."
-  - "Systemic non-regression: Zero warnings/lints and complete behavioral preservation of untouched invariants."
-  - "Anti-looping invariant: If an approach fails after 2 iterations, halt, post blockers to task_blackboard, retain fail-closed behavior, and escalate."
+version: 2
 
-review_policy:
-  - "Route adjacent defects to their owning task or admit scope before edits; record deferred findings durably before delivery."
-  - "Reviewers must accept legitimate defect fixes and verify changes against the declared scope (preventing uncontracted scope creep or overengineering)."
+limits:
+  max_metadata_bytes: 2048
+  max_trace_summary_bytes: 2048
 
-contract_zero_exit_policies:
-  - "direct-proof"
-  - "deferred-final-test"
+git_commit_note:
+  limits:
+    max_bytes: 2048
+  format: markdown
+  telemetry:
+    format: markdown
+    sections:
+      - duration: true
+      - tasks_summary: true
+      - review_cycles: true
+      - diff_breakdown: true
+      - ast_delta: true
+      - test_suite: true
+      - topology: true
 
-error_codes:
-  CONTRACT_MATRIX_MISMATCH:
-    description: "A dependency or matrix entry does not match the milestone contract."
-  DEPENDENCY_MUTATED:
-    description: "An upstream dependency changed after the task contract was admitted."
-  FEATURE_DISABLED:
-    description: "A requested Forge subsystem is disabled."
-  FEATURE_REQUIRED_BY_PROFILE:
-    description: "The active profile requires a disabled subsystem."
-  GATE_INVALID_CONFIGURATION:
-    description: "A gate has missing, conflicting, or invalid driver fields."
-  MILESTONE_DAG_CYCLE:
-    description: "The task dependency graph contains a cycle."
-  MILESTONE_PREFLIGHT_FAILED:
-    description: "Manifest, skill, repository, or worktree preflight failed."
-  TASK_CANDIDATE_MISMATCH:
-    description: "The delivery tree differs from the reviewed immutable candidate."
-  TASK_CANDIDATE_OUT_OF_SCOPE:
-    description: "The task candidate changes a path outside admitted scope."
-  TASK_SCOPE_INVALID:
-    description: "A scope path is malformed or outside declared roots."
-  TASK_SCOPE_PROTECTED:
-    description: "A protected path cannot be added to task scope."
-  TASK_SEAM_DISCONNECTED:
-    description: "No current, proven test-to-production path reaches the target."
-  TASK_SEAM_STALE:
-    description: "Source drift invalidated indexed seam evidence; refresh the index."
-  UNADMITTED_SYMBOL_EXPANSION:
-    description: "A public symbol change was not admitted at the contract gate."
+proofs:
+  contract:
+    description: "Proof of runtime assertion failure (exit 101/1/134) proving red seam baseline"
+    schema:
+      type: object
+      required: [contract_proof]
+      properties:
+        contract_proof:
+          type: object
+          required: [seam_test_ref, red_exit_code]
+          properties:
+            seam_test_ref: { type: string }
+            red_exit_code: { type: integer }
 
-guidance_slots:
-  hitl: hitl.pro
+  command:
+    description: "Autonomous command execution proof (exit code 0, passed linters/tests)"
+    schema:
+      type: object
+      required: [command_proof]
+      properties:
+        command_proof:
+          type: object
+          required: [command, exit_code]
+          properties:
+            command: { type: string }
+            exit_code: { type: integer, const: 0 }
+            tests_passed: { type: integer }
+            tests_failed: { type: integer, const: 0 }
 
-guidance:
-  task.contract: "Define a production-seam proof and keep the task contract inside admitted scope and symbols."
-  task.code: "Implement the accepted seam with the smallest change that satisfies the task contract."
-  task.review: "Review the complete candidate against scope, contract, concurrency, isolation, and administration evidence."
-  hitl.careless: "HITL level CARELESS: allow autonomous contract and implementation changes; escalate only for unrecoverable infrastructure or circular milestone dependencies."
-  hitl.curious: "HITL level CURIOUS: report interface evolution as telemetry; escalate breaking public APIs, irreversible storage changes, or new external dependencies."
-  hitl.pro: "HITL level PRO: allow internal helpers and non-breaking implementation changes; escalate public APIs, CLI/MCP surfaces, storage schemas, and cross-milestone contracts."
-  hitl.paranoic: "HITL level PARANOIC: require explicit human approval for every new symbol or signature before contract admission."
+  review:
+    description: "Independent cognitive review sign-off across focus lenses"
+    schema:
+      type: object
+      required: [review_proof]
+      properties:
+        review_proof:
+          type: object
+          required: [decision, contours]
+          properties:
+            decision: { type: string, enum: ["pass", "reject"] }
+            contours: { type: object }
+            extended_scope_review:
+              type: object
+              properties:
+                approved_paths: { type: array, items: { type: string } }
+                reason_verified: { type: boolean }
+            notes: { type: string }
+
+  seam_test:
+    description: "Joint seam integration proof verifying all referenced cross-task tests passed"
+    schema:
+      type: object
+      required: [seam_test_proof]
+      properties:
+        seam_test_proof:
+          type: object
+          required: [exit_code, seam_test_refs]
+          properties:
+            exit_code: { type: integer, const: 0 }
+            seam_test_refs: { type: array, items: { type: string } }
+            tests_passed: { type: integer }
+            tests_failed: { type: integer, const: 0 }
+
+  delivery:
+    description: "Autonomous delivery receipt and atomic Git commit proof"
+    schema:
+      type: object
+      required: [delivery_proof]
+      properties:
+        delivery_proof:
+          type: object
+          properties:
+            status: { type: string }
+            delivered: { type: boolean }
+            commit_sha: { type: string }
+            receipt_id: { type: string }
 
 roles:
   contract_author:
@@ -74,16 +115,88 @@ roles:
     models:
       - 'sol-6.1:xhigh'
     guidance: "Review independently, then claim and submit delivery in the same reviewer session."
+  architect:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'sol-6.1:high'
+    guidance: "Repair cross-milestone verification findings within the admitted milestone branch, then return the candidate for a fresh full check and independent review."
 
 commands:
   rust-check-and-test:
     by_pattern:
       "**/*.rs": "cargo clippy --all-targets --all-features -- -D warnings && cargo test"
     description: "Run strict Rust checks followed by the repository's test suite. Append --test <target> to focus the test command."
+  check_full_repo:
+    by_pattern:
+      "**/*.py": "pytest"
+      "**/*.{ts,tsx,vue}": "npm test"
+      "**/*.rs": "cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets"
+    description: "Run the milestone handoff verification commands from TESTS.md."
+    timeout_seconds: 600
   test:
     by_pattern:
       "**/*.rs": "cargo test"
     description: "Compatibility command for legacy task evidence; workflow guidance selects rust-check-and-test."
+
+guidance:
+  task.contract: "Define a production-seam proof and keep the task contract inside admitted scope and symbols."
+  task.code: "Implement the accepted seam with the smallest change that satisfies the task contract."
+  task.review: "Review the complete candidate against scope, contract, concurrency, isolation, and administration evidence."
+  task.deferred_final_test: "Run the registered verification command and submit passing seam test proof."
+  task.seam_review: "Review joint seam changes across interdependent tasks."
+  hitl.careless: "HITL level CARELESS: allow autonomous contract and implementation changes; escalate only for unrecoverable infrastructure or circular milestone dependencies."
+  hitl.curious: "HITL level CURIOUS: report interface evolution as telemetry; escalate breaking public APIs, irreversible storage changes, or new external dependencies."
+  hitl.pro: "HITL level PRO: allow internal helpers and non-breaking implementation changes; escalate public APIs, CLI/MCP surfaces, storage schemas, and cross-milestone contracts."
+  hitl.paranoic: "HITL level PARANOIC: require explicit human approval for every new symbol or signature before contract admission."
+  subtask.dod:
+    description: "Definition of done for all subtasks"
+    criteria:
+      - "Contract slice resolution: Demonstrably resolves an explicit, bounded slice of the contract without breaking boundaries."
+      - "Milestone & ADR alignment: Builds upon and strengthens existing architectural and test seams rather than authoring isolated patches or duplicate test functions."
+      - "Production-seam evidence: Validates through real production paths rather than synthetic stubs mocking away system complexity."
+      - "Systemic non-regression: Zero warnings/lints and complete behavioral preservation of untouched invariants."
+      - "Anti-looping invariant: If an approach fails after 2 iterations, halt, post blockers to task_blackboard, retain fail-closed behavior, and escalate."
+  review.policy:
+    description: "Defect routing and scope boundaries for review gates"
+    criteria:
+      - "Route adjacent defects to their owning task or admit scope before edits; record deferred findings durably before delivery."
+      - "Reviewers must accept legitimate defect fixes and verify changes against the declared scope (preventing uncontracted scope creep or overengineering)."
+  contour.paths:
+    description: "Verify changes stay within the task's admitted write perimeter and preserve protected paths."
+    criteria:
+      - "Compare every changed, staged, untracked, and generated file with the task's initial scope and admitted extensions."
+      - "Check that profile, repository configuration, credentials, generated state, and neighboring project paths were not changed outside their explicit scope."
+      - "Confirm each changed file contributes directly to an accepted invariant or seam proof."
+  contour.claims:
+    description: "Verify each accepted contract claim is implemented and supported by production-seam evidence."
+    criteria:
+      - "Trace every invariant and acceptance criterion to the production code path that enforces it."
+      - "Inspect the named seam test and confirm it reaches real storage, engine, CLI, or delivery behavior rather than a substitute implementation."
+      - "Check that failure cases reject malformed or missing evidence and that diagnostics identify the violated contract."
+  contour.concurrency:
+    description: "Verify concurrent operations cannot admit stale authority, lose receipts, or publish partial task state."
+    criteria:
+      - "Check transaction boundaries, revision fencing, claim ownership, and candidate baseline comparisons under competing updates."
+      - "Verify rollback restores the prior task and receipt state after a failed filesystem or Git operation."
+      - "Ensure lock ordering and shared-database operations cannot deadlock or cross task namespaces."
+  contour.project_isolation:
+    description: "Verify task data, profiles, paths, and Git operations stay within the owning workspace and project."
+    criteria:
+      - "Confirm workspace resolution uses the active repository root and ignores profile configuration from linked workspaces."
+      - "Check task identifiers, milestone paths, database rows, and profile paths are confined to their configured repository and project."
+      - "Verify symlinks, traversal segments, and malformed paths fail closed before mutation."
+  contour.administration:
+    description: "Verify protected configuration, migration, profile pins, and privileged delivery behavior remain governed."
+    criteria:
+      - "Check schema migrations are atomic, one-time, and do not alter unrelated blackboard topics or archived historical receipts."
+      - "Verify profile hashes and compiled gate references fail closed on tampering or unresolved names."
+      - "Confirm Git hooks run, candidate commits retain the validated parent, and receipts record the landed task SHA."
+  milestone.synthesis: "Analyze requirements across all milestone tasks, optimize execution waves, and extract shared helpers into Wave 0."
+  milestone.review: "Evaluate integrated milestone changes against milestone invariants, ADRs, and cross-task seam boundaries."
+  milestone.polish: "Resolve integration failures or reviewer findings on the integrated milestone branch."
+  milestone.doc: "Audit all milestone changes against documentation scope and reconcile documentation with live code and tests."
+  milestone.handoff: "Terminal milestone delivery, capturing telemetry passport and archiving milestone."
 
 policies:
   proof:
@@ -95,111 +208,96 @@ policies:
     require_all_contours: true
   delivery:
     atomic_receipt: true
+  default_review:
+    independent_worker: true
+    require_all_contours: true
+    audit_extended_scope: true
 
-contours:
-  standard:
-    paths:
-      description: "Verify changes stay within the task's admitted write perimeter and preserve protected paths."
-      criteria:
-        - "Compare every changed, staged, untracked, and generated file with the task's initial scope and admitted extensions."
-        - "Check that profile, repository configuration, credentials, generated state, and neighboring project paths were not changed outside their explicit scope."
-        - "Confirm each changed file contributes directly to an accepted invariant or seam proof."
-    claims:
-      description: "Verify each accepted contract claim is implemented and supported by production-seam evidence."
-      criteria:
-        - "Trace every invariant and acceptance criterion to the production code path that enforces it."
-        - "Inspect the named seam test and confirm it reaches real storage, engine, CLI, or delivery behavior rather than a substitute implementation."
-        - "Check that failure cases reject malformed or missing evidence and that diagnostics identify the violated contract."
-    concurrency:
-      description: "Verify concurrent operations cannot admit stale authority, lose receipts, or publish partial task state."
-      criteria:
-        - "Check transaction boundaries, revision fencing, claim ownership, and candidate baseline comparisons under competing updates."
-        - "Verify rollback restores the prior task and receipt state after a failed filesystem or Git operation."
-        - "Ensure lock ordering and shared-database operations cannot deadlock or cross task namespaces."
-    project_isolation:
-      description: "Verify task data, profiles, paths, and Git operations stay within the owning workspace and project."
-      criteria:
-        - "Confirm workspace resolution uses the active repository root and ignores profile configuration from linked workspaces."
-        - "Check task identifiers, milestone paths, database rows, and profile paths are confined to their configured repository and project."
-        - "Verify symlinks, traversal segments, and malformed paths fail closed before mutation."
-    administration:
-      description: "Verify protected configuration, migration, profile pins, and privileged delivery behavior remain governed."
-      criteria:
-        - "Check schema migrations are atomic, one-time, and do not alter unrelated blackboard topics or archived historical receipts."
-        - "Verify profile hashes and compiled gate references fail closed on tampering or unresolved names."
-        - "Confirm Git hooks run, candidate commits retain the validated parent, and receipts record the landed task SHA."
+gate_templates:
+  build_review_cycle:
+    gates:
+      - id: "build"
+        role: "builder"
+        command: "check_full_repo"
+        proof: "command"
+      - id: "review"
+        role: "independent_reviewer"
+        policy: "default_review"
+        proof: "review"
+        contours: "guidance.contours"
+        independent_from: "build"
 
 gates:
   - id: "contract"
     role: "contract_author"
-    guidance: [task.contract, hitl]
+    guidance: [task.contract, hitl.pro]
     proof: "contract"
-    sha_snapshot: true
-    tools:
-      - "code_map_overview"
-      - "get_doc"
-      - "search_docs"
-      - "code_map_inspect"
-    steps:
-      - "Author or extend a sensitive failing seam test in the designated test suite (extend existing domain seam tests for existing capabilities, subsuming weaker duplicates; for greenfield, create minimal compiling stubs; or verify existing seam directly with exit code 0 if direct-proof/deferred-final-test)."
-      - "Post the contract draft to task_blackboard with topic=draft and gate=\"build\" so the builder receives a targeted handoff."
-      - "Submit contract proof with seam test and red_exit_code."
+    expected_failure:
+      exit_codes: [1, 101, 134]
+      stderr_contains: "assertion failed"
+    persistence:
+      post: snapshot
 
   - id: "build"
     role: "builder"
-    guidance: [task.code, hitl]
+    guidance: [task.code, hitl.pro]
+    command: "rust-check-and-test"
     proof: "command"
-    sha_snapshot: true
-    tools:
-      - "ast_grep_search"
-      - "code_map_inspect"
-      - "code_map_explain"
-      - "task_manage"
-    steps:
-      - "Implement approved contract inside the declared allowed_write_scope."
-      - "Verify the seam and run the repository's focused tests and verification checks."
-      - "Submit passing command proof with command, exit code 0, and passed counts."
+    persistence:
+      pre: snapshot
+      post: snapshot
 
   - id: "review"
     role: "independent_reviewer"
-    guidance: [task.review, hitl]
+    guidance: [task.review, hitl.pro]
+    policy: "default_review"
     proof: "review"
-    sha_snapshot: false
+    contours: "guidance.contours"
     independent_from: "build"
     reject_to: "build"
-    contours: "standard"
-    tools:
-      - "code_map_impact"
-      - "code_map_prove_removal"
-      - "code_map_tests"
-    steps:
-      - "Verify reviewer is distinct from builder (different worker_id)."
-      - "Inspect candidate diff using inspect_cmd."
-      - "Apply every criterion in the configured review contour set."
-      - "Accept legitimate defect fixes within scope and submit review proof."
+    reject_routing:
+      scope: "build"
+      symbols: "contract"
+    persistence:
+      immutable: true
 
   - id: "deliver"
     role: "independent_reviewer"
-    guidance: [hitl]
+    guidance: [hitl.pro]
     proof: "delivery"
-    sha_snapshot: false
-    auto_commit: true
-    independent_from: "build"
-    receipt_review: "review"
+    receipt: true
     review_sources:
       - "review"
+    independent_from: "build"
     reject_to: "build"
-    contours: "standard"
-    tools:
-      - "task_submit"
-      - "milestone show"
-    steps:
-      - "Continue with the same independent reviewer subagent session used for review; keep its worker_id distinct from the builder."
-      - "Submit delivery proof first; Forge verifies proofs, writes typed receipt into milestone, and clears blackboard."
-      - "With auto_commit enabled, Forge commits the candidate tree and receipt automatically; with auto_commit disabled, create one scoped delivery commit."
+    persistence:
+      immutable: true
+      post: commit
+      git_commit_note: telemetry
 
-completed:
-  tools:
-    - "task_manage"
-  steps:
-    - "Read the durable task receipt for completed work."
+milestone_verification:
+  id: "milestone_verification"
+  gates:
+    - id: "verify"
+      command: "check_full_repo"
+      proof: "command"
+    - id: "review"
+      role: "independent_reviewer"
+      policy: "default_review"
+      guidance: [milestone.review]
+      proof: "review"
+      contours: "guidance.contours"
+      independent_from: "verify"
+      persistence:
+        immutable: true
+  fallback:
+    use: "build_review_cycle"
+    command: "check_full_repo"
+    guidance: [milestone.polish]
+    max_attempts: 2
+  deliver:
+    proof: "delivery"
+    receipt: true
+    persistence:
+      immutable: true
+      post: commit

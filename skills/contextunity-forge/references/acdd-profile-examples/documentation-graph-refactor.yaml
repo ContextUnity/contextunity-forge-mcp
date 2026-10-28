@@ -87,17 +87,27 @@ guidance:
     Ensure all referenced files and symbols use clickable markdown links (`file:///...`).
     Keep invariant headers intact. Remove dead explanations and historical cruft.
 
-  contour.link_integrity: >
-    Verify that all markdown links, file:// links, and anchor fragments point to valid targets on disk.
+  contour.link_integrity:
+    description: "Verify that all markdown links, file:// links, and anchor fragments point to valid targets on disk."
+    criteria:
+      - "Check that every file:/// link exists on the filesystem."
+      - "Verify all internal document anchors resolve."
 
-  contour.symbol_parity: >
-    Verify that every function, class, tool, and CLI argument described in docs matches live source code.
+  contour.symbol_parity:
+    description: "Verify that every function, class, tool, and CLI argument described in docs matches live source code."
+    criteria:
+      - "Match documented CLI flags against CLI command definitions."
+      - "Ensure code signatures and types match current codebase."
 
-  contour.no_code_tampering: >
-    Verify that the git diff contains zero changes to production source code or test suites.
+  contour.no_code_tampering:
+    description: "Verify that the git diff contains zero changes to production source code or test suites."
+    criteria:
+      - "Confirm changes are strictly bounded to docs/, skills/, and markdown files."
 
-  contour.instruction_clarity: >
-    Verify that revised AGENTS.md, SKILL.md, or guides are unambiguous, actionable, and token-efficient.
+  contour.instruction_clarity:
+    description: "Verify that revised AGENTS.md, SKILL.md, or guides are unambiguous, actionable, and token-efficient."
+    criteria:
+      - "Check adherence to concise agent instruction guidelines."
 
 # =============================================================================
 # 5. GATES DEFINITION (`gates`)
@@ -106,53 +116,54 @@ gates:
   # ---------------------------------------------------------------------------
   # Gate 1: Contract & Drift Audit Gate (Agent)
   # ---------------------------------------------------------------------------
-  contract:
+  - id: contract
     role: docs_architect
     proof: contract
     guidance:
       - docs.drift_scan
-    timeout_seconds: 600
 
   # ---------------------------------------------------------------------------
   # Gate 2: Implementation Container Gate (Composite: Builder + Autonomous Verification)
   # ---------------------------------------------------------------------------
-  implement:
+  - id: implement
     gates:
       # Step 2a: Documentation Builder edits Markdown files
-      write_docs:
+      - id: write_docs
         role: docs_builder
         guidance:
           - docs.reconcile_and_tighten
-        timeout_seconds: 1200
 
       # Step 2b: Autonomous Command Guard - verify zero code touched
-      guard_code_untouched:
+      - id: guard_code_untouched
         command: verify_no_code_tampering
+        proof: command
         reject_to: write_docs
 
       # Step 2c: Autonomous Link and Anchor Verification
-      verify_links:
+      - id: verify_links
         command: verify_markdown_links_and_anchors
+        proof: command
         reject_to: write_docs
 
   # ---------------------------------------------------------------------------
   # Gate 3: Independent Cognitive Review (Agent)
   # ---------------------------------------------------------------------------
-  review:
+  - id: review
     role: docs_reviewer
     policy: docs_review_policy
     proof: review
-    guidance:
-      - contour.link_integrity
-      - contour.symbol_parity
-      - contour.no_code_tampering
-      - contour.instruction_clarity
-    reject_to: implement.write_docs
-    timeout_seconds: 600
+    reject_to: implement
 
   # ---------------------------------------------------------------------------
   # Gate 4: Autonomous Delivery (Zero-Token Commit)
   # ---------------------------------------------------------------------------
-  deliver:
-    policy: docs_delivery_policy
+  - id: deliver
+    role: docs_reviewer
     proof: delivery
+    receipt: true
+    review_sources:
+      - review
+    reject_to: implement
+    persistence:
+      immutable: true
+      post: commit
