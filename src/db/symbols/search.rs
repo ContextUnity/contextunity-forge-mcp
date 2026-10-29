@@ -131,16 +131,23 @@ pub fn search_with_options(
             .split(|c: char| !c.is_alphanumeric())
             .filter(|s| !s.is_empty())
             .collect::<Vec<_>>();
-        let has_type_match = if tokens.len() == 1 && candidates["total"].as_u64() != Some(0) {
-            let query = format!(
-                "\"forgetakes{}\" OR \"forgereturns{}\"",
-                tokens[0], tokens[0]
-            );
-            conn.query_row(
+        let has_type_match = if !tokens.is_empty() && candidates["total"].as_u64() != Some(0) {
+            let term = |prefix| {
+                tokens
+                    .iter()
+                    .map(|token| format!("\"{prefix}{token}\""))
+                    .collect::<Vec<_>>()
+                    .join(" AND ")
+            };
+            let query = format!("({}) OR ({})", term("forgetakes"), term("forgereturns"));
+            let budget = reader::QueryBudget::new(conn);
+            let matched = conn.query_row(
                 "SELECT EXISTS(SELECT 1 FROM node_search JOIN nodes n ON n.node_hash=node_search.rowid JOIN path_dictionary pd ON pd.path_id=n.path_id WHERE node_search MATCH ?1 AND (?2='' OR n.kind=?2 OR (?2='method' AND n.kind='function') OR (?2='function' AND n.kind='method')) AND (?3='' OR pd.path=?3 OR (pd.path>=?4 AND pd.path<?5)) AND (?6=1 OR n.language!='markdown'))",
                 rusqlite::params![query, kind, path, path_start, path_end, include_docs],
                 |row| row.get::<_, bool>(0),
-            )?
+            )?;
+            budget.check()?;
+            matched
         } else {
             false
         };

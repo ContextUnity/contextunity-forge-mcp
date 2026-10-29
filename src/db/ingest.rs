@@ -248,20 +248,22 @@ fn persist_files_impl(
                             .filter(|node| node.id == n.id)
                             .or_else(|| detail_facts.nodes.iter().find(|node| node.id == n.id))
                             .context("staged node is missing matching navigation facts")?;
-                        let mut details = serde_json::to_value(
-                            navigation_node.navigation_details_with_documentation(&n.details),
-                        )?;
-                        if let Some(return_type) =
+                        let navigation =
+                            navigation_node.navigation_details_with_documentation(&n.details);
+                        let details = if let Some(return_type) =
                             declared_return_type(navigation_node, detail_facts)
                         {
+                            let mut details = serde_json::to_value(navigation)?;
                             if details.is_null() {
                                 details = Value::Object(Default::default());
                             }
                             if let Some(map) = details.as_object_mut() {
                                 map.insert("return_type".into(), Value::String(return_type));
                             }
-                        }
-                        let details = serde_json::to_vec(&details)?;
+                            serde_json::to_vec(&details)?
+                        } else {
+                            serde_json::to_vec(&navigation)?
+                        };
                         Ok((node_index, details))
                     })
                     .collect::<Result<Vec<_>>>()
@@ -672,7 +674,12 @@ fn declared_return_type(node: &Node, facts: &TypedFacts) -> Option<String> {
                             .then(|| tail.strip_prefix(':'))
                             .flatten()
                     }) {
-                        let annotation = annotation.trim().trim_end_matches(':').trim();
+                        let annotation = annotation
+                            .split_once(" where ")
+                            .map_or(annotation, |(result, _)| result)
+                            .trim()
+                            .trim_end_matches(':')
+                            .trim();
                         if !annotation.is_empty() {
                             return Some(annotation.to_owned());
                         }

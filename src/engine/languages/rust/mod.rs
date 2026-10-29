@@ -1066,6 +1066,13 @@ impl LanguageProfile for Rust {
         _file: &FileContext,
     ) -> SymbolMetadata {
         let mut param_types = BTreeMap::new();
+        let mut decorators = Vec::new();
+        let mut previous = node.prev_named_sibling();
+        while let Some(attribute) = previous.filter(|sibling| sibling.kind() == "attribute_item") {
+            decorators.push(text(attribute, source).chars().take(512).collect());
+            previous = attribute.prev_named_sibling();
+        }
+        decorators.reverse();
         if matches!(node.kind(), "function_item" | "function_signature_item") {
             if let Some(parameters) = node.child_by_field_name("parameters") {
                 let mut cursor = parameters.walk();
@@ -1099,6 +1106,7 @@ impl LanguageProfile for Rust {
         let Some(owner) = method_owner(node) else {
             return SymbolMetadata {
                 param_types,
+                decorators,
                 is_async: value_flow::is_async(node, source),
                 is_public: Some(unrestricted_public(node, source)),
                 ..Default::default()
@@ -1122,6 +1130,7 @@ impl LanguageProfile for Rust {
             });
         SymbolMetadata {
             param_types,
+            decorators,
             is_async: value_flow::is_async(node, source),
             receiver_name: has_receiver.then(|| "self".into()),
             receiver_type,

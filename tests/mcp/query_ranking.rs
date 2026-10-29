@@ -25,6 +25,7 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
         "@pytest.fixture\ndef typed_query(order: GateProfile) -> Result:\n    return order\n\ndef returns_gate() -> GateProfile:\n    return None\n\ndef takes_result(value: Result) -> Other:\n    return value\n\n@pytest.other\ndef other_decorator():\n    return 1\n\n@other.fixture\ndef unrelated_fixture():\n    return 1\n",
     );
     ws.write("types.py", "class GateProfile:\n    pass\n");
+    ws.write("underscored.py", "class Gate_Profile:\n    pass\ndef accepts_profile(value: Gate_Profile):\n    return value\n");
     ws.write("types.rs", "#[derive(Debug)]\nstruct Example {}\n");
     let db_path = ws.root().join(".forge/code-map.sqlite");
     writer::build(ws.root(), &db_path, None).unwrap();
@@ -69,6 +70,8 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
         ("returns:GateProfile", &["returns_gate"][..]),
         ("takes:Result", &["takes_result"][..]),
         ("takes:order", &[][..]),
+        ("takes:%", &[][..]),
+        ("takes:_", &[][..]),
         ("@pytest.fixture", &["typed_query"][..]),
     ] {
         let result = symbols::search_with_options(
@@ -132,11 +135,38 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
         all_names.contains(&"typed_query") && all_names.contains(&"returns_gate"),
         "{all_types}"
     );
+    let underscored = symbols::search_with_options(
+        &conn,
+        "Gate_Profile",
+        &symbols::SearchOptions {
+            kind: None,
+            path: Some("underscored.py"),
+            include_docs: false,
+            exact: false,
+            page: &options,
+        },
+    )
+    .unwrap();
+    let names: Vec<_> = underscored["nodes"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names.first(), Some(&"Gate_Profile"));
+    assert!(names.contains(&"accepts_profile"), "{underscored}");
     let attributes = symbols::search_with_options(
         &conn,
         "derive",
-        &symbols::SearchOptions { kind: Some("struct"), path: Some("types.rs"), include_docs: false, exact: false, page: &options },
-    ).unwrap();
+        &symbols::SearchOptions {
+            kind: Some("struct"),
+            path: Some("types.rs"),
+            include_docs: false,
+            exact: false,
+            page: &options,
+        },
+    )
+    .unwrap();
     assert_eq!(attributes["nodes"]["items"][0]["name"], "Example");
     {
         let mut client = crate::common::mcp_client::StdioClient::new(&ws);
@@ -196,7 +226,8 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
         "signature.py",
         "def updated(value: NewProfile) -> NewResult:\n    return value\n",
     );
-    ws.delta(&["signature.py"]);
+    ws.write("types.rs", "struct Example {}\n");
+    ws.delta(&["signature.py", "types.rs"]);
     let incremental = ws.open();
     let changed = symbols::search_with_options(
         &incremental,
@@ -224,6 +255,19 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
     )
     .unwrap();
     assert_eq!(old["nodes"]["total"], 0);
+    let removed_attribute = symbols::search_with_options(
+        &incremental,
+        "derive",
+        &symbols::SearchOptions {
+            kind: Some("struct"),
+            path: Some("types.rs"),
+            include_docs: false,
+            exact: false,
+            page: &options,
+        },
+    )
+    .unwrap();
+    assert_eq!(removed_attribute["nodes"]["total"], 0);
     let incremental_root: String = incremental
         .query_row(
             "SELECT value FROM metadata WHERE key='output_root'",
@@ -247,6 +291,18 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
         "signature FTS must be cold/delta deterministic"
     );
     drop(cold);
+    let stale = rusqlite::Connection::open(&cold_path).unwrap();
+    stale.execute(
+        "UPDATE metadata SET value='10:compact-storage-v8:legacy' WHERE key='index_semantics_version'",
+        [],
+    ).unwrap();
+    contextunity_forge_mcp::core::commitments::seal(&stale).unwrap();
+    drop(stale);
+    let error = reader::open(&cold_path, ws.root()).unwrap_err();
+    assert!(
+        error.to_string().contains("incompatible index semantics"),
+        "{error:#}"
+    );
 
     let catalog: String = (0..501)
         .map(|index| format!("def rankterm_{index:03}():\n    return 1\n"))

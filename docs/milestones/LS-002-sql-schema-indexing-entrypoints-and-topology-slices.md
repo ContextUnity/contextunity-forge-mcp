@@ -554,31 +554,92 @@ receipt:
 
 ```yaml
 task_ref: type-and-signature-aware-node-search-and-ergonomics
-target: "Index param_types, return_type, and decorators into FTS5 node_search, add signature filters to code_map_search, and update agent skill guidance"
+target: Index param_types, return_type, and decorators into FTS5 node_search, add signature filters to code_map_search, and update agent skill guidance
 proof_policy: seam-test-first
-contract_revision: 4
+contract_revision: 7
 depends_on:
-  - directory-boundary-slice-and-module-topology
+- directory-boundary-slice-and-module-topology
 concurrency:
   mode: speculative
   sync_on: snapshot
 scope:
-  - src/db/ingest.rs
-  - src/db/symbols/search.rs
-  - src/mcp/tools.rs
-  - skills/contextunity-forge/SKILL.md
-  - docs/reference/tools.md
-status: ready
+- src/engine/languages/rust/mod.rs
+- src/db/ingest.rs
+- src/db/writer.rs
+- src/db/symbols/search.rs
+- src/core/config.rs
+- src/mcp/tools.rs
+- skills/contextunity-forge/SKILL.md
+- docs/reference/tools.md
+- docs/reference/mcp-tools.md
+- tests/mcp/query_ranking.rs
+status: completed
 subtasks:
-  - subtask_ref: fts5-signature-and-decorator-indexing
-    title: "Update write_node_search_text in src/db/ingest.rs to include param_types, return_type, and decorators in FTS5 node_search"
-    status: pending
-  - subtask_ref: type-query-filter-support
-    title: "Add returns: and takes: query prefix evaluation in src/db/symbols/search.rs leveraging JSON details columns"
-    status: pending
-  - subtask_ref: agent-skill-and-tool-schema-type-guidance
-    title: "Document type-aware search patterns in skills/contextunity-forge/SKILL.md and update MCP tool descriptions"
-    status: pending
+- subtask_ref: fts5-signature-and-decorator-indexing
+  title: Update write_node_search_text in src/db/ingest.rs to include param_types, return_type, and decorators in FTS5 node_search
+  status: completed
+  evidence: Snapshot dfafada; strict Clippy and MCP 90/90, real production seam and independent review passed.
+- subtask_ref: type-query-filter-support
+  title: 'Add returns: and takes: query prefix evaluation in src/db/symbols/search.rs leveraging JSON details columns'
+  status: completed
+  evidence: Snapshot dfafada; strict Clippy and MCP 90/90, real production seam and independent review passed.
+- subtask_ref: agent-skill-and-tool-schema-type-guidance
+  title: Document type-aware search patterns in skills/contextunity-forge/SKILL.md and update MCP tool descriptions
+  status: completed
+  evidence: Snapshot dfafada; strict Clippy and MCP 90/90, real production seam and independent review passed.
+extended_scope:
+- docs/reference/mcp-tools.md
+receipt:
+  contract_revision: 7
+  passed_at: 2026-10-29T22:24:08.474214454+00:00
+  evidence:
+    seam_test_proof:
+      exit_code: 0
+      seam_test_refs:
+      - tests/mcp/query_ranking.rs
+      tests_passed: 90
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: Reviewer verified 9 changed paths against rev7 scope; Cargo.toml and build.rs unchanged.
+        claims:
+          applicable: true
+          evidence: Traced typed parameter/return/decorator through cold/delta FTS and JSON to bound filters and CLI/MCP; tests include collision, literals and Rust attributes; builder reports MCP 90/90.
+        concurrency:
+          applicable: true
+          evidence: Existing transactional delta and verified cache paths retained; semantics version invalidates old indexes.
+        project_isolation:
+          applicable: true
+          evidence: Path bounds, parameter binding, pagination and workspace-scoped production seams reviewed.
+        administration:
+          applicable: true
+          evidence: Semantics version bumped without schema change; scoped candidate snapshot verified.
+      extended_scope_review:
+        approved_paths:
+        - docs/reference/mcp-tools.md
+        reason_verified: true
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-SQL-ZERO-SOURCE-IO-DELTA: SQL DDL declarations (CREATE TABLE, CREATE VIEW, ALTER TABLE) and query table references (SELECT/INSERT/UPDATE/DELETE) are extracted into Facts during file parsing so delta rebuilds preserve INV-DELTA-NO-SOURCE-IO and bit-identical cold-vs-delta commitments (forge-owner-sha256-v2).'
+    - 'INV-ENTRYPOINT-UNWIRED-PRECISION: Semantic entrypoints (main functions, CLI subcommands, HTTP/WebSocket route handlers, MCP tool handlers, event/cron handlers, and test roots) are deterministically tagged during extraction/linking and excluded from default dead-code (unwired) false positives.'
+    - 'INV-BOUNDARY-SLICE-COMPACTNESS: Directory-level code_map_query(operation="slice") computes 1-hop inbound and outbound module boundary contracts (neighborMap equivalent) directly from SQLite edges in O(E_dir) without loading unrelated file bodies.'
+    - 'INV-DUAL-SURFACE-PARITY: Every new overview aspect (entrypoints, topology), slice boundary contract, and SQL graph relation is exposed with identical semantics on both MCP and CLI surfaces.'
+    architectural_notes:
+    - 'decisions: Synthesis rev 6: preserve existing language extraction and caller surfaces; no Cargo.toml/build.rs or DB schema change. Python/Rust extract param_types into Node native_semantic (Node::parameter_types), decorators into metadata/details, and return annotations in TypedFacts.flows (FlowStore::get(node).return_type); plain node.details alone misses them. src/db/writer.rs::prepare_catalog_rows prepares cold search texts before stripping details; src/db/ingest.rs::persist_files_impl either uses those prepared texts or calls write_node_search_text for incremental, so one shared projection must receive real typed flow on both paths and remain deterministic, bounded and free of full-source FTS. Delta deletes old owner postings and repersists facts; exercise changed/deleted values, reopen, cold-vs-delta output_root. Search via src/db/symbols/search.rs has exact-name-first early return and FTS tokenization: incorporate type matches without breaking name priority and provide returns:/takes: role-sensitive filters, not a global match on types; preserve path, kind, exact, ranking, paging/generation and 2s bounds. Current navigation_details strips value_flow and need not expose return_type: implement filter against an intentionally persisted bounded projection or FTS representation without assuming json_extract(n.details,''$.return_type'') exists. Resolve malformed/wildcard filter inputs safely. INDEX_SEMANTICS_VERSION in src/core/config.rs incorporates FORGE_LANGUAGE_PROFILE_DIGEST, whose build.rs input includes writer.rs but not ingest.rs: bump version explicitly on changed projection to force stale persisted indices/caches to rebuild, with no build.rs edit. Scope amended to exact tests/mcp/query_ranking.rs, src/db/writer.rs and src/core/config.rs for these verified owners; correct docs/reference/mcp-tools.md admitted (tools.md is absent). Entry point/topology downstream already delivered; keep outputs unchanged. Red proof: cargo test --test mcp query_ranking::hybrid_search_ranks_connected_exact_symbols_before_path_order exit 101 at runtime for missing GateProfile; returns:/takes:/decorator cases are present but not reached and are not yet proven. Contract author/build must add negative/role collision, return-only, decorators, MCP+CLI, changed/delete/reopen and cold/delta root cases to same seam; run full mcp target and strict Clippy before review. Test-owned temp workspace; no external services. Baseline exact-name ordering is asserted first.'
+    - 'decisions: Replan: acceptance explicitly requires Rust derive attribute search. Rust LanguageProfile::metadata owner src/engine/languages/rust/mod.rs:1061 returns SymbolMetadata without decorators for both owner/no-owner paths. Visitor calls the LanguageProfile metadata seam; indexing cannot recover missing attribute from persisted metadata. Add exactly that production owner to task scope; preserve existing contract, no schema change. Builder red `cargo test --test mcp query_ranking::hybrid_search_ranks_connected_exact_symbols_before_path_order` exit 101, left Null / right Example for #[derive(Debug)] struct Example, archive 2ab7e48ef50a2281; other typed assertions passed before this assertion. Require actual Rust production extraction -> stored metadata -> FTS -> MCP result; cold/delta and cache invalidation remain necessary. Builder retains unstaged production changes; do not reset.'
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Implementation Guide (Step-by-Step for Builders)
