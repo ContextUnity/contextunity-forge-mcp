@@ -360,6 +360,21 @@ fn package_reexports_follow_callable_alias_targets() {
 fn module_assignment_exports_and_reexports_persist_exact_targets() {
     let (primary, second) = linked_python_roots();
     for w in [&primary, &second] {
+        w.write("pyproject.toml", "[project]\nname='scripts'\nversion='1'\n[project.scripts]\nclean='clean:run'\nloop='loop:run'\naug='aug:run'\nassignment='assignment:run'\nimported='imported:run'\nduplicate='duplicate_script:run'\nlambda='lambda_script:run'\ndeleted='deleted:run'\nconditional='conditional:run'\nexception='exception:run'\ndecorated='decorated:run'\n");
+        w.write("src/clean.py", "def run(): pass\n");
+        w.write("src/loop.py", "def run(): pass\nfor run in []: pass\n");
+        w.write("src/aug.py", "def run(): pass\nrun += 1\n");
+        w.write("src/assignment.py", "def run(): pass\nrun = other\n");
+        w.write("src/imported.py", "def run(): pass\nfrom other import run\n");
+        w.write("src/duplicate_script.py", "def run(): pass\ndef run(): pass\n");
+        w.write("src/lambda_script.py", "def run(): pass\nrun = lambda: None\n");
+        w.write("src/deleted.py", "def run(): pass\ndel run\n");
+        w.write("src/conditional.py", "if False:\n    def run(): pass\n");
+        w.write("src/exception.py", "try:\n    def run(): pass\nexcept Exception: pass\n");
+        w.write("src/decorated.py", "@identity\ndef run(): pass\n");
+        w.write("src/guard_conditional.py", "if False:\n    def run(): pass\nif __name__ == '__main__':\n    run()\n");
+        w.write("src/guard_try.py", "try:\n    def run(): pass\nexcept Exception: pass\nif __name__ == '__main__':\n    run()\n");
+        w.write("src/guard_decorated.py", "@identity\ndef run(): pass\nif __name__ == '__main__':\n    run()\n");
         w.write("src/pkg/__init__.py", "# package\n");
         w.write("src/pkg/catalog.py", "CONSTANT = 7\nfactory_value = make_value()\ndef implementation(): return 1\ncallable_alias = implementation\ndef named(): return 2\n");
         w.write("src/pkg/facade.py", "from .catalog import CONSTANT\n");
@@ -374,6 +389,10 @@ fn module_assignment_exports_and_reexports_persist_exact_targets() {
         w.write("src/consumer.py", "from pkg.catalog import CONSTANT\nfrom pkg.catalog import factory_value\nfrom pkg.catalog import callable_alias\nfrom pkg.facade import CONSTANT as reexported\nfrom pkg.catalog import named\nfrom pkg.catalog import absent\nfrom pkg.duplicate import VALUE\nfrom pkg.rebound import CONSTANT as rebound\nfrom pkg.rebound_declarations import Foo\nfrom pkg.rebound_declarations import make\nfrom pkg.rebound_declarations import PRE\nfrom rebound_pkg import Foo as rebound_foo\n");
     }
     let conn = primary.build();
+    for (path, expected) in [("src/guard_conditional.py", 0), ("src/clean.py", 1), ("src/loop.py", 0), ("src/aug.py", 0), ("src/assignment.py", 0), ("src/imported.py", 0), ("src/duplicate_script.py", 0), ("src/lambda_script.py", 0), ("src/deleted.py", 0), ("src/conditional.py", 0), ("src/exception.py", 0), ("src/decorated.py", 1), ("src/guard_try.py", 0), ("src/guard_decorated.py", 1)] {
+        let actual: i64 = conn.query_row("SELECT count(*) FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path=?1 AND n.kind='function' AND n.name='run' AND json_extract(n.details, '$.entrypoint')='main'", [path], |row| row.get(0)).unwrap();
+        assert_eq!(actual, expected, "{path}");
+    }
     for (consumer, prefix) in [
         ("src/consumer.py", "src/"),
         ("[second]/src/consumer.py", "[second]/src/"),
@@ -487,6 +506,20 @@ fn module_assignment_exports_and_reexports_persist_exact_targets() {
                 .any(|target| target.starts_with(&format!("{prefix}rebound_pkg/Foo.py:"))),
             "rebound Foo selected child module: {targets:?}"
         );
+    }
+    drop(conn);
+    primary.write("src/clean.py", "def run(): pass\nfor run in []: pass\n");
+    primary.write("src/loop.py", "def run(): pass\n");
+    primary.write("src/conditional.py", "@identity\ndef run(): pass\n");
+    primary.write("src/decorated.py", "if False:\n    def run(): pass\n");
+    primary.write("src/guard_conditional.py", "@identity\ndef run(): pass\nif __name__ == '__main__':\n    run()\n");
+    primary.write("src/guard_decorated.py", "if False:\n    def run(): pass\nif __name__ == '__main__':\n    run()\n");
+    let db = primary.0.join(".forge/code-map.sqlite");
+    contextunity_forge_mcp::db::writer::delta(&primary.0, &db, &[PathBuf::from("src/clean.py"), PathBuf::from("src/loop.py"), PathBuf::from("src/conditional.py"), PathBuf::from("src/decorated.py"), PathBuf::from("src/guard_conditional.py"), PathBuf::from("src/guard_decorated.py")]).unwrap();
+    let conn = contextunity_forge_mcp::db::reader::open(&db, &primary.0).unwrap();
+    for (path, expected) in [("src/clean.py", 0), ("src/loop.py", 1), ("src/conditional.py", 1), ("src/decorated.py", 0), ("src/guard_conditional.py", 1), ("src/guard_decorated.py", 0)] {
+        let count: i64 = conn.query_row("SELECT count(*) FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path=?1 AND n.kind='function' AND n.name='run' AND json_extract(n.details, '$.entrypoint')='main'", [path], |row| row.get(0)).unwrap();
+        assert_eq!(count, expected, "delta {path}");
     }
 }
 

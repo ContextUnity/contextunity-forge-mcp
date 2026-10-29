@@ -152,12 +152,18 @@ thread_local! {
 }
 
 impl TypeScript {
+    fn type_only_import(node: Syntax<'_>) -> bool {
+        let mut cursor = node.walk();
+        let found = node.children(&mut cursor).any(|child| child.kind() == "type");
+        found
+    }
     fn imported_test_runners(root: Syntax<'_>, source: &str, file: &mut FileContext) {
         let mut cursor = root.walk();
         for import in root
             .named_children(&mut cursor)
             .filter(|node| node.kind() == "import_statement")
         {
+            if Self::type_only_import(import) { continue; }
             if field(import, source, "source")
                 .is_none_or(|module| module.trim_matches(['\'', '"']) != "node:test")
             {
@@ -166,6 +172,7 @@ impl TypeScript {
             let mut pending = vec![import];
             while let Some(node) = pending.pop() {
                 if node.kind() == "import_specifier" {
+                    if Self::type_only_import(node) { continue; }
                     let imported = field(node, source, "name").unwrap_or_default();
                     let local = field(node, source, "alias").unwrap_or(imported);
                     match imported {
@@ -214,6 +221,73 @@ impl TypeScript {
         found
     }
 
+    fn configured_test_runners(root: Syntax<'_>, source: &str, file: &mut FileContext) {
+        use super::manifests::syntax::SyntaxOperation;
+        let mut cursor = root.walk();
+        for import in root.named_children(&mut cursor).filter(|node| node.kind() == "import_statement") {
+            if Self::type_only_import(import) { continue; }
+            let Some(module) = field(import, source, "source").map(|value| value.trim_matches(['\'', '"'])) else { continue };
+            let mut pending = vec![import];
+            while let Some(node) = pending.pop() {
+                if node.kind() == "import_specifier" {
+                    if Self::type_only_import(node) { continue; }
+                    let imported = field(node, source, "name").unwrap_or_default();
+                    let local = field(node, source, "alias").unwrap_or(imported);
+                    if file.rules.syntax_rules.iter().any(|rule| matches!(&rule.operation,
+                        SyntaxOperation::TestRunner { modules, members }
+                            if modules.iter().any(|value| value == module) && members.iter().any(|value| value == imported))) {
+                        file.test_case_imports.insert(local.to_owned());
+                    }
+                    continue;
+                }
+                let mut cursor = node.walk();
+                pending.extend(node.named_children(&mut cursor));
+            }
+        }
+        if file.test_case_imports.is_empty() && file.test_fixture_imports.is_empty() { return; }
+        let mut imported_names = std::collections::HashMap::<String, usize>::new();
+        let mut cursor = root.walk();
+        for import in root.named_children(&mut cursor).filter(|node| node.kind() == "import_statement") {
+            let mut pending = vec![import];
+            while let Some(node) = pending.pop() {
+                if node.kind() == "import_specifier" {
+                    if let Some(name) = field(node, source, "alias").or_else(|| field(node, source, "name")) {
+                        *imported_names.entry(name.to_owned()).or_default() += 1;
+                    }
+                    continue;
+                }
+                if node.kind() == "identifier" && node.parent().is_some_and(|parent| matches!(parent.kind(), "import_clause" | "namespace_import")) {
+                    *imported_names.entry(text(node, source).to_owned()).or_default() += 1;
+                }
+                let mut cursor = node.walk();
+                pending.extend(node.named_children(&mut cursor));
+            }
+        }
+        file.test_case_imports.retain(|name| imported_names.get(name) == Some(&1));
+        file.test_fixture_imports.retain(|name| imported_names.get(name) == Some(&1));
+        let mut pending = vec![root];
+        while let Some(node) = pending.pop() {
+            if matches!(node.kind(), "assignment_expression" | "augmented_assignment_expression" | "update_expression" | "for_in_statement") {
+                let mut declaration_cursor = node.walk();
+                if node.kind() == "for_in_statement" && node.children(&mut declaration_cursor).any(|child| matches!(child.kind(), "const" | "let")) {
+                    let mut cursor = node.walk();
+                    pending.extend(node.named_children(&mut cursor));
+                    continue;
+                }
+                if let Some(target) = node.child_by_field_name("left").or_else(|| node.child_by_field_name("argument")) {
+                    let mut names = Vec::new();
+                    collect_pattern_binding_names(target, source, &mut names);
+                    for name in names {
+                        file.test_case_imports.remove(&name);
+                        file.test_fixture_imports.remove(&name);
+                    }
+                }
+            }
+            let mut cursor = node.walk();
+            pending.extend(node.named_children(&mut cursor));
+        }
+    }
+
     fn callback_runner(node: Syntax<'_>, source: &str, file: &FileContext) -> Option<&'static str> {
         if file.test_case_imports.is_empty() && file.test_fixture_imports.is_empty() {
             return None;
@@ -228,10 +302,25 @@ impl TypeScript {
                     .child_by_field_name("function")
                     .filter(|candidate| candidate.kind() == "identifier")?;
                 let local = text(callee, source).trim();
+                if file.test_case_imports.contains(local) {
+                    let mut cursor = parent.walk();
+                    let arguments: Vec<_> = parent.named_children(&mut cursor).collect();
+                    if arguments.len() != 2 || arguments[0].kind() != "string" || arguments[1].id() != current.id() { return None; }
+                }
                 let mut scope = call.parent();
                 let mut shadowed = false;
                 while let Some(ancestor) = scope {
-                    if (ancestor.kind() == "statement_block"
+                    if ancestor.kind() == "for_in_statement" {
+                        if let Some(target) = ancestor.child_by_field_name("left") {
+                            let mut names = Vec::new();
+                            collect_pattern_binding_names(target, source, &mut names);
+                            if names.iter().any(|name| name == local) {
+                                shadowed = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (matches!(ancestor.kind(), "statement_block" | "program")
                         && Self::block_binds_name(ancestor, source, local))
                         || (matches!(
                             ancestor.kind(),
@@ -1484,6 +1573,18 @@ impl LanguageProfile for TypeScript {
                 }
             }
         }
+        file
+    }
+
+    fn prepare_with_context(
+        &self,
+        root: Syntax<'_>,
+        source: &str,
+        rules: &std::sync::Arc<LanguageContext>,
+    ) -> FileContext {
+        let mut file = self.prepare(root, source);
+        file.rules = std::sync::Arc::clone(rules);
+        Self::configured_test_runners(root, source, &mut file);
         file
     }
 

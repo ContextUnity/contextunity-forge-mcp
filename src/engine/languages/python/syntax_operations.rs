@@ -1,8 +1,8 @@
 use crate::core::models::Facts;
 use crate::core::semantic::{SourcePosition, TemplateContextFact};
 use crate::engine::ast::{field, text};
-use crate::engine::languages::manifests::syntax::{SyntaxOperation, SyntaxRule};
 use crate::engine::languages::LanguageContext;
+use crate::engine::languages::manifests::syntax::{SyntaxOperation, SyntaxRule};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -23,6 +23,9 @@ struct PreparedSyntaxContext {
     model_factories: HashMap<String, Vec<(String, usize)>>,
     model_attributes: HashMap<(String, Option<String>, String), Option<String>>,
     model_index: Option<ModelIndex>,
+    class_registration_bindings: Option<super::template_loaders::BindingWrites>,
+    class_registration_members: HashMap<usize, super::template_loaders::BindingWrites>,
+    class_registration_imports: HashSet<(String, String, String)>,
 }
 
 #[derive(Clone)]
@@ -166,6 +169,30 @@ pub(super) fn prepare_file(root: Node<'_>, source: &str, language_context: &Arc<
             }
         }
     }
+    let mut class_registration_members = HashMap::new();
+    if rules.iter().any(|rule| {
+        matches!(
+            rule.operation,
+            SyntaxOperation::ClassMethodRegistration { .. }
+        )
+    }) {
+        let mut cursor = root.walk();
+        for statement in root.named_children(&mut cursor) {
+            let class = if statement.kind() == "decorated_definition" {
+                statement.child_by_field_name("definition")
+            } else {
+                Some(statement)
+            };
+            if let Some(class) = class.filter(|node| node.kind() == "class_definition") {
+                if let Some(body) = class.child_by_field_name("body") {
+                    class_registration_members.insert(
+                        class.start_position().row + 1,
+                        super::template_loaders::binding_counts(body, source),
+                    );
+                }
+            }
+        }
+    }
     PREPARED_SYNTAX_CONTEXT.with(|context| {
         *context.borrow_mut() = Some(PreparedSyntaxContext {
             language_context: Arc::clone(language_context),
@@ -181,6 +208,28 @@ pub(super) fn prepare_file(root: Node<'_>, source: &str, language_context: &Arc<
             model_factories: HashMap::new(),
             model_attributes: HashMap::new(),
             model_index: None,
+            class_registration_members,
+            class_registration_imports: imports
+                .iter()
+                .flat_map(|((module, name), aliases)| {
+                    aliases.iter().map(move |(alias, _)| {
+                        (
+                            (*module).to_owned(),
+                            (*name).to_owned(),
+                            (*alias).to_owned(),
+                        )
+                    })
+                })
+                .collect(),
+            class_registration_bindings: rules
+                .iter()
+                .any(|rule| {
+                    matches!(
+                        rule.operation,
+                        SyntaxOperation::ClassMethodRegistration { .. }
+                    )
+                })
+                .then(|| super::template_loaders::binding_counts(root, source)),
         });
     });
 }
@@ -232,6 +281,55 @@ pub(super) fn for_each_decorated_registration_rule(mut visit: impl FnMut(&Syntax
 
 pub(super) fn clear_file_context() {
     PREPARED_SYNTAX_CONTEXT.with(|context| *context.borrow_mut() = None);
+}
+
+pub(super) fn extract_class_method_registrations(facts: &mut Facts) {
+    PREPARED_SYNTAX_CONTEXT.with(|context| {
+        let context = context.borrow();
+        let Some(context) = context.as_ref() else { return };
+        let Some(bindings) = context.class_registration_bindings.as_ref() else { return };
+        let Some(module) = facts.nodes.iter().find(|node| node.kind == "module") else { return };
+        let module_id = module.id.clone();
+        let module_qualname = module.qualname.clone();
+        let mut registrations = Vec::new();
+        for rule in &context.language_context.syntax_rules {
+            let SyntaxOperation::ClassMethodRegistration { module: import_module, base, member, .. } = &rule.operation else { continue };
+            let mut proven_classes = HashSet::new();
+            for class in facts.nodes.iter().filter(|node| node.kind == "class" && facts.edges.iter().any(|edge| edge.kind == "contains" && edge.src == module_id && edge.dst == node.id)) {
+                let proven = facts.references.iter().filter(|reference| reference.kind == "inherits" && reference.source == class.id).any(|parent| {
+                    let (alias, suffix) = parent.expression.split_once('.').unwrap_or((&parent.expression, ""));
+                    bindings.count(alias) == 1 && (suffix.is_empty() && proven_classes.contains(alias) || facts.references.iter().filter(|reference| {
+                        reference.kind == "imports" && reference.source == module_id && reference.alias.as_deref() == Some(alias) && reference.line < class.line &&
+                        suffix.is_empty() && reference.module.as_deref() == Some(import_module.as_str()) && reference.expression == *base && context.class_registration_imports.contains(&(import_module.clone(), base.clone(), alias.to_owned()))
+                    }).count() == 1)
+                });
+                if !proven { continue; }
+                proven_classes.insert(class.name.as_str());
+                if !context.class_registration_members.get(&class.line).is_some_and(|writes| writes.count(member) == 1) { continue; }
+                for method in facts.nodes.iter().filter(|node| node.kind == "method" && node.name == *member && facts.edges.iter().any(|edge| edge.kind == "contains" && edge.src == class.id && edge.dst == node.id)) {
+                    registrations.push((rule, class, method));
+                }
+            }
+        }
+        let additions: Vec<_> = registrations.into_iter().map(|(rule, class, method)| {
+            let SyntaxOperation::ClassMethodRegistration { provider, .. } = &rule.operation else { unreachable!() };
+            let id = format!("cli_command_registration:{}:{}:{}:{}:{}", method.path, class.line, class.name, rule.pack, rule.id);
+            let node = crate::core::models::Node {
+                native_semantic: None, id: id.clone(), kind: "cli_command_registration".into(), name: class.name.clone(),
+                qualname: format!("{}.command.{}", module_qualname, class.name), path: method.path.clone(), line: class.line,
+                end_line: class.line, is_test: method.is_test, language: "python".into(), generated: false,
+                details: serde_json::json!({"framework":provider,"pack":rule.pack,"rule":rule.id,"handler":method.id,"value_flow":crate::core::semantic::ValueFlowFacts { framework: Some(Box::new(crate::core::semantic::FrameworkScopeFacts { facts: vec![crate::core::semantic::FrameworkFact::RuleOrigin(crate::core::semantic::ExtractionRuleOrigin { pack: rule.pack.clone(), rule: rule.id.clone() })], ..Default::default() })), ..Default::default() }}),
+            };
+            let edge = |src: String, dst: String, kind: &str| crate::core::models::Edge { src, dst, kind: kind.into(), path: method.path.clone(), line: class.line, evidence: "configured class method registration".into(), confidence: "exact".into() };
+            let edges = [edge(module_id.clone(), id.clone(), "contains"), edge(id, method.id.clone(), "handles")];
+            (node, edges)
+        }).collect();
+        for (node, edges) in additions {
+            facts.pending_flow_nodes.push(facts.nodes.len());
+            facts.nodes.push(node);
+            facts.edges.extend(edges);
+        }
+    });
 }
 
 fn module_imports<'a>(

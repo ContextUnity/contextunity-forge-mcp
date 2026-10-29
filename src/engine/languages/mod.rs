@@ -195,8 +195,6 @@ pub struct FileContext {
     pub test_case_imports: HashSet<String>,
     /// Local bindings imported from `node:test` as test fixtures.
     pub test_fixture_imports: HashSet<String>,
-    /// Direct local functions invoked by a Python module's main guard.
-    pub python_main_calls: HashSet<String>,
     /// Package namespace when the source belongs to a package.
     pub package: Option<String>,
     /// Scope identifiers where a local binding shadows CommonJS `require`.
@@ -677,8 +675,6 @@ pub struct LazyExport {
 #[derive(Default)]
 /// Compact semantic metadata projected into an indexed symbol.
 pub struct SymbolMetadata {
-    /// Source-local entrypoint classification, before graph-derived projection.
-    pub entrypoint_base: Option<&'static str>,
     /// Optional return type value.
     pub return_type: Option<crate::core::semantic::TypeExpr>,
     /// The param types value.
@@ -968,6 +964,16 @@ pub trait LanguageProfile: Send + Sync {
         _node: Syntax<'_>,
         _source: &str,
         _path: &str,
+        _file: &FileContext,
+    ) -> Option<&'static str> {
+        None
+    }
+    /// Returns a proven source-local entrypoint category for this declaration.
+    fn entrypoint_role(
+        &self,
+        _node: Syntax<'_>,
+        _source: &str,
+        _name: &str,
         _file: &FileContext,
     ) -> Option<&'static str> {
         None

@@ -1,4 +1,4 @@
-use anyhow::{ensure, Result};
+use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 
 use super::projections::{Api, NamedBindingForm};
@@ -88,6 +88,24 @@ pub(crate) enum SyntaxOperation {
         imported_decorator: bool,
         #[serde(default)]
         category: RegistrationCategory,
+    },
+    ClassMethodRegistration {
+        module: String,
+        base: String,
+        member: String,
+        provider: String,
+    },
+    CommandDispatch {
+        module: String,
+        field_attribute: String,
+        field_marker: String,
+        parser_derive: String,
+        subcommand_derive: String,
+        parse_method: String,
+    },
+    TestRunner {
+        modules: Vec<String>,
+        members: Vec<String>,
     },
     TemplateLoader {
         package: String,
@@ -651,6 +669,61 @@ impl SyntaxRule {
                         provider.as_str(),
                     ])
                     .collect()
+            }
+            SyntaxOperation::ClassMethodRegistration {
+                module,
+                base,
+                member,
+                provider,
+            } => {
+                ensure!(
+                    self.language == "python" && key_identifier(base) && key_identifier(member),
+                    "invalid class method registration"
+                );
+                vec![module, base, member, provider]
+            }
+            SyntaxOperation::TestRunner { modules, members } => {
+                ensure!(
+                    matches!(self.language.as_str(), "javascript" | "typescript")
+                        && !modules.is_empty()
+                        && modules.len() <= 128
+                        && !members.is_empty()
+                        && members.len() <= 128
+                        && members.iter().all(|member| key_identifier(member)),
+                    "invalid test runner operation"
+                );
+                modules.iter().chain(members).map(String::as_str).collect()
+            }
+            SyntaxOperation::CommandDispatch {
+                module,
+                field_attribute,
+                field_marker,
+                parser_derive,
+                subcommand_derive,
+                parse_method,
+            } => {
+                ensure!(
+                    self.language == "rust"
+                        && [
+                            module,
+                            field_attribute,
+                            field_marker,
+                            parser_derive,
+                            subcommand_derive,
+                            parse_method
+                        ]
+                        .iter()
+                        .all(|value| key_identifier(value)),
+                    "invalid command dispatch operation"
+                );
+                vec![
+                    module,
+                    field_attribute,
+                    field_marker,
+                    parser_derive,
+                    subcommand_derive,
+                    parse_method,
+                ]
             }
             SyntaxOperation::TemplateLoader {
                 package,

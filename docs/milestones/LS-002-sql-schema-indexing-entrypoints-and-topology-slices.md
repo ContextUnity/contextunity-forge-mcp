@@ -257,35 +257,145 @@ receipt:
 
 ```yaml
 task_ref: deterministic-entrypoint-classification-and-unwired-filtering
-target: "Classify semantic entrypoints during extraction/linking, expose aspects=['entrypoints'] in code_map_overview, and prevent false-positive entrypoint reporting in code_map_query(operation='unwired')"
+target: Classify semantic entrypoints during extraction/linking, expose aspects=['entrypoints'] in code_map_overview, and prevent false-positive entrypoint reporting in code_map_query(operation='unwired')
 proof_policy: seam-test-first
-contract_revision: 4
+contract_revision: 7
 depends_on:
-  - sql-schema-extractor-and-orm-table-linking
+- sql-schema-extractor-and-orm-table-linking
 concurrency:
   mode: speculative
   sync_on: snapshot
 scope:
-  - src/engine/linker/resolution/mod.rs
-  - src/engine/linker/framework_relations.rs
-  - src/db/reader.rs
-  - src/db/traversal.rs
-  - src/mcp/tools.rs
-  - src/cli/mod.rs
-  - docs/reference/tools.md
-  - docs/reference/cli.md
-  - tests/mcp/
-status: ready
+- src/engine/linker/resolution/mod.rs
+- src/engine/linker/framework_relations.rs
+- src/db/reader.rs
+- src/db/traversal.rs
+- src/mcp/tools.rs
+- src/cli/mod.rs
+- docs/reference/tools.md
+- docs/reference/cli.md
+- tests/mcp/
+- src/mcp/tools/inputs.rs
+- docs/reference/mcp-tools.md
+- src/db/writer.rs
+- src/db/delta.rs
+- src/db/writer/entrypoints.rs
+- src/core/commitments.rs
+- tests/incremental/
+- src/engine/languages/rust/mod.rs
+- src/engine/languages/mod.rs
+- src/engine/ast/visitor.rs
+- src/engine/languages/python/mod.rs
+- src/engine/languages/python/decorated_registration.rs
+- src/engine/languages/python/syntax_operations.rs
+- src/engine/languages/typescript/mod.rs
+- src/engine/languages/manifests/syntax.rs
+- src/engine/languages/manifests/framework.rs
+- src/engine/languages/manifests/semantic.rs
+- src/engine/languages/manifests/click.toml
+- src/engine/languages/manifests/typer.toml
+- src/engine/languages/manifests/celery.toml
+- tests/languages/
+- docs/reference/framework-manifests.md
+- src/engine/languages/dependency_registry.rs
+- src/engine/ast/mod.rs
+- src/engine/languages/manifests/django.toml
+- src/engine/linker/entrypoints.rs
+- src/engine/linker.rs
+- src/engine/languages/manifests/clap.toml
+- src/engine/languages/rust/cli_registration.rs
+- src/engine/languages/manifests/jest.toml
+- src/engine/languages/manifests/vitest.toml
+status: completed
 subtasks:
-  - subtask_ref: classify-entrypoints-across-languages-and-frameworks
-    title: "Tag entrypoint nodes with details.entrypoint ('main', 'cli_command', 'http_route', 'mcp_tool', 'event_handler', 'test') during extraction and framework linking"
-    status: pending
-  - subtask_ref: add-entrypoints-aspect-to-code-map-overview
-    title: "Extend overview_with_options in src/db/reader.rs to support aspects=['entrypoints'], returning grouped entrypoints with kind, signature, path:line, and downstream fan-out"
-    status: pending
-  - subtask_ref: filter-entrypoints-in-unwired-query
-    title: "Update operation='unwired' in src/db/traversal.rs to exclude classified entrypoints by default (and report excluded_entrypoints_count in summary)"
-    status: pending
+- subtask_ref: classify-entrypoints-across-languages-and-frameworks
+  title: Tag entrypoint nodes with details.entrypoint ('main', 'cli_command', 'http_route', 'mcp_tool', 'event_handler', 'test') during extraction and framework linking
+  status: completed
+  evidence: Production seams tests/mcp/context.rs and tests/languages/python/modules.rs; Clippy, MCP 90/90, languages 250/250, incremental 31/31 (#1292), independent review candidate 774979.
+- subtask_ref: add-entrypoints-aspect-to-code-map-overview
+  title: Extend overview_with_options in src/db/reader.rs to support aspects=['entrypoints'], returning grouped entrypoints with kind, signature, path:line, and downstream fan-out
+  status: completed
+  evidence: Production seams tests/mcp/context.rs and tests/languages/python/modules.rs; Clippy, MCP 90/90, languages 250/250, incremental 31/31 (#1292), independent review candidate 774979.
+- subtask_ref: filter-entrypoints-in-unwired-query
+  title: Update operation='unwired' in src/db/traversal.rs to exclude classified entrypoints by default (and report excluded_entrypoints_count in summary)
+  status: completed
+  evidence: Production seams tests/mcp/context.rs and tests/languages/python/modules.rs; Clippy, MCP 90/90, languages 250/250, incremental 31/31 (#1292), independent review candidate 774979.
+extended_scope:
+- src/mcp/tools/inputs.rs
+- docs/reference/mcp-tools.md
+- src/engine/languages/dependency_registry.rs
+- src/engine/ast/mod.rs
+- src/engine/languages/manifests/django.toml
+- src/engine/linker/entrypoints.rs
+- src/engine/languages/manifests/clap.toml
+- src/engine/languages/rust/cli_registration.rs
+- src/engine/languages/manifests/jest.toml
+- src/engine/languages/manifests/vitest.toml
+receipt:
+  contract_revision: 7
+  passed_at: 2026-10-29T21:22:08.981792830+00:00
+  evidence:
+    seam_test_proof:
+      exit_code: 0
+      seam_test_refs:
+      - tests/mcp/context.rs
+      - tests/languages/python/modules.rs
+      tests_passed: 371
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: Independent auditor reviewed candidate 774979, prior findings and scope; no new confirmed defect. Builder reports Clippy and targets green (#1292), auditor did not rerun. Conditional transition has state assertions but no dedicated cold root comparison.
+        claims:
+          applicable: true
+          evidence: Independent auditor reviewed candidate 774979, prior findings and scope; no new confirmed defect. Builder reports Clippy and targets green (#1292), auditor did not rerun. Conditional transition has state assertions but no dedicated cold root comparison.
+        concurrency:
+          applicable: true
+          evidence: Independent auditor reviewed candidate 774979, prior findings and scope; no new confirmed defect. Builder reports Clippy and targets green (#1292), auditor did not rerun. Conditional transition has state assertions but no dedicated cold root comparison.
+        project_isolation:
+          applicable: true
+          evidence: Independent auditor reviewed candidate 774979, prior findings and scope; no new confirmed defect. Builder reports Clippy and targets green (#1292), auditor did not rerun. Conditional transition has state assertions but no dedicated cold root comparison.
+        administration:
+          applicable: true
+          evidence: Independent auditor reviewed candidate 774979, prior findings and scope; no new confirmed defect. Builder reports Clippy and targets green (#1292), auditor did not rerun. Conditional transition has state assertions but no dedicated cold root comparison.
+      extended_scope_review:
+        approved_paths:
+        - src/mcp/tools/inputs.rs
+        - docs/reference/mcp-tools.md
+        - src/engine/languages/dependency_registry.rs
+        - src/engine/ast/mod.rs
+        - src/engine/languages/manifests/django.toml
+        - src/engine/linker/entrypoints.rs
+        - src/engine/languages/manifests/clap.toml
+        - src/engine/languages/rust/cli_registration.rs
+        - src/engine/languages/manifests/jest.toml
+        - src/engine/languages/manifests/vitest.toml
+        reason_verified: true
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-SQL-ZERO-SOURCE-IO-DELTA: SQL DDL declarations (CREATE TABLE, CREATE VIEW, ALTER TABLE) and query table references (SELECT/INSERT/UPDATE/DELETE) are extracted into Facts during file parsing so delta rebuilds preserve INV-DELTA-NO-SOURCE-IO and bit-identical cold-vs-delta commitments (forge-owner-sha256-v2).'
+    - 'INV-ENTRYPOINT-UNWIRED-PRECISION: Semantic entrypoints (main functions, CLI subcommands, HTTP/WebSocket route handlers, MCP tool handlers, event/cron handlers, and test roots) are deterministically tagged during extraction/linking and excluded from default dead-code (unwired) false positives.'
+    - 'INV-BOUNDARY-SLICE-COMPACTNESS: Directory-level code_map_query(operation="slice") computes 1-hop inbound and outbound module boundary contracts (neighborMap equivalent) directly from SQLite edges in O(E_dir) without loading unrelated file bodies.'
+    - 'INV-DUAL-SURFACE-PARITY: Every new overview aspect (entrypoints, topology), slice boundary contract, and SQL graph relation is exposed with identical semantics on both MCP and CLI surfaces.'
+    architectural_notes:
+    - 'decisions: Adjacent SQL lint fixture repair: stored_syntax_lint_covers_compiled_profiles_without_mutating_index previously panicked because SQL is now an indexed grammarless language profile. Added a valid SQL fixture, kept SQL in indexed coverage, and exclude it only from the set required to have stored parser diagnostics. cargo test --test mcp lint_tools::stored_syntax_lint_covers_compiled_profiles_without_mutating_index passed (1 passed). This green repair is not entrypoint contract-red evidence.'
+    - 'decisions: Build owner scope extension: src/mcp/tools/inputs.rs holds the MCP overview input schema, and docs/reference/mcp-tools.md is the actual documentation owner (the task''s docs/reference/tools.md does not exist). These are needed to present and document the admitted entrypoints aspect. Classification requires persisted node projection consistent with cold and delta commitments; architecture investigation continues before extending its storage owners.'
+    - 'decisions: Contract revision 5 adds the minimum storage, language extraction, manifest and test owners necessary to satisfy the existing task: cold/delta node commitments and cross-file registration reclassification, plus declarative Click/Typer/Celery registration rules and their proofs. Persisted local extraction details.entrypoint_base supplies main/test; exact handles edges from route, tool_registration, cli_command_registration and event_handler_registration supply linked categories. Effective details.entrypoint precedence is test > main > http_route > mcp_tool > cli_command > event_handler. No framework-specific API matching in generic linker/storage. Retain current in-progress reader/CLI/traversal and red tests across re-admission; rerun the contract gates for revision 5.'
+    - 'decisions: To implement existing guide rules for pyproject scripts and package main/bin, scope now admits dependency_registry, AST integration, Django manifest and linker entrypoints helper. linker.rs is outside prior scope roots; revision 7 admits that phase owner. Manifest metadata is indexed within dependency context; exact proven Python script targets and TypeScript top-level calls are represented by main_registration -> handles edges, consumed by the existing graph-to-node projection. Package path alone does not establish a specific exported function. Changes to dependency manifests trigger the existing full rebuild. Preserve current code and tests while re-running contract gates.'
+    - 'decisions: Extended scope with manifests/clap.toml and rust/cli_registration.rs inside admitted roots for the already specified clap Parser/Subcommand dispatch rule. The production-seam fixture uses a temporary workspace Cargo manifest to activate clap; no repository Cargo.toml change is required. The fixture verifies an exact parse/match handler and an unrelated local enum negative.'
+    - 'decisions: Extended scope for jest.toml and vitest.toml within admitted manifest roots to cover the guide''s test()/it() roots. Require verified imported runner and activated dependency; a dependency alone does not prove that unconfigured globals are test APIs. MCP fixture includes node:test, Jest and Vitest imported callbacks plus lexical shadow negatives.'
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Implementation Guide (Step-by-Step for Builders)

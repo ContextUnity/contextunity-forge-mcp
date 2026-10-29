@@ -1,6 +1,7 @@
 use super::*;
 use crate::core::models::ReceiverHint;
 use crate::engine::ast::relations;
+mod cli_registration;
 pub(crate) mod linker;
 pub(crate) mod patterns;
 pub(crate) mod value_flow;
@@ -409,6 +410,21 @@ impl LanguageProfile for Rust {
         facts: &mut Facts,
     ) -> Result<()> {
         parse_file(self, path, source, module, facts)
+    }
+    fn prepare_with_context(
+        &self,
+        root: Syntax<'_>,
+        source: &str,
+        rules: &std::sync::Arc<LanguageContext>,
+    ) -> FileContext {
+        cli_registration::prepare(root, source, rules);
+        FileContext {
+            rules: std::sync::Arc::clone(rules),
+            ..FileContext::default()
+        }
+    }
+    fn finish(&self, _facts: &mut Facts) {
+        cli_registration::clear();
     }
     fn module_exports_with_bindings(
         &self,
@@ -1046,7 +1062,7 @@ impl LanguageProfile for Rust {
         &self,
         node: Syntax<'_>,
         source: &str,
-        name: &str,
+        _name: &str,
         _file: &FileContext,
     ) -> SymbolMetadata {
         let mut param_types = BTreeMap::new();
@@ -1085,11 +1101,6 @@ impl LanguageProfile for Rust {
                 param_types,
                 is_async: value_flow::is_async(node, source),
                 is_public: Some(unrestricted_public(node, source)),
-                entrypoint_base: (node.kind() == "function_item"
-                    && ((name == "main"
-                        && node.parent().is_some_and(|parent| parent.kind() == "source_file"))
-                        || has_main_attribute(node, source)))
-                .then_some("main"),
                 ..Default::default()
             };
         };
@@ -1155,6 +1166,15 @@ impl LanguageProfile for Rust {
             previous = attr.prev_named_sibling();
         }
         false
+    }
+    fn entrypoint_role(&self, node: Syntax<'_>, source: &str, name: &str, _file: &FileContext) -> Option<&'static str> {
+        if node.kind() != "function_item" || method_owner(node).is_some() { return None; }
+        let root = node.parent().is_some_and(|parent| parent.kind() == "source_file");
+        if (root && name == "main") || has_main_attribute(node, source) {
+            Some("main")
+        } else if root && cli_registration::contains(name) {
+            Some("cli_command")
+        } else { None }
     }
     fn test_role(
         &self,

@@ -233,6 +233,61 @@ pub(crate) fn extract_typed(path: &str, language: &str, source: &str) -> Result<
     extract_typed_with_registry(path, language, source, &registry)
 }
 
+fn manifest_entrypoint_candidates(
+    path: &str,
+    language: &str,
+    registry: &languages::dependency_registry::DependencyRegistry,
+    facts: &mut Facts,
+) {
+    for entry in registry.manifest_entrypoints() {
+        let relative = if entry.scope.is_empty() {
+            Some(path)
+        } else {
+            path.strip_prefix(&entry.scope).and_then(|rest| rest.strip_prefix('/'))
+        };
+        let Some(relative) = relative else { continue };
+        let callable = if entry.python && language == "python" {
+            let Some((module, callable)) = entry.target.split_once(':') else { continue };
+            if module.is_empty() || callable.is_empty()
+                || !module.split('.').all(|part| !part.is_empty() && part.chars().all(|c| c.is_alphanumeric() || c == '_'))
+                || !callable.chars().all(|c| c.is_alphanumeric() || c == '_')
+            { continue; }
+            let module_path = module.replace('.', "/");
+            let source_path = relative.strip_prefix("src/").unwrap_or(relative);
+            if source_path != format!("{module_path}.py") && source_path != format!("{module_path}/__init__.py") { continue; }
+            Some(callable)
+        } else if !entry.python && matches!(language, "typescript" | "javascript") {
+            let target = entry.target.strip_prefix("./").unwrap_or(&entry.target);
+            if target != relative || target.split('/').any(|part| part == "..") { continue; }
+            None
+        } else { continue };
+        let direct_module = callable.is_some_and(|callable| {
+            let Some(module) = facts.nodes.iter().find(|node| node.kind == "module") else { return false };
+            let qualified = format!("{}.{}", module.qualname, callable);
+            let mut targets = facts.nodes.iter().filter(|node| node.kind == "function" && node.qualname == qualified);
+            let Some(target) = targets.next() else { return false };
+            target.details["entrypoint_direct_module"] == true && targets.next().is_none()
+        });
+        let id = format!("main-registration:{}:{}:{}", entry.origin, entry.name, path);
+        facts.nodes.push(Node {
+            native_semantic: None,
+            id, kind: "main_registration".into(), name: entry.name.clone(),
+            qualname: entry.target.clone(), path: path.to_owned(), line: 1, end_line: 1,
+            is_test: is_test(path), language: language.into(), generated: false,
+            details: serde_json::json!({"manifest_origin": entry.origin, "manifest_name": entry.name, "callable": callable, "direct_module": direct_module}),
+        });
+    }
+    if language == "python" { clear_direct_module_markers(facts); }
+}
+
+fn clear_direct_module_markers(facts: &mut Facts) {
+    for node in &mut facts.nodes {
+        if let Some(details) = node.details.as_object_mut() {
+            details.remove("entrypoint_direct_module");
+        }
+    }
+}
+
 pub(crate) fn extract_typed_with_registry(
     path: &str,
     language: &str,
@@ -309,6 +364,7 @@ pub(crate) fn extract_typed_with_registry(
             }
         }
     }
+    manifest_entrypoint_candidates(path, language, registry, &mut typed.facts);
     languages::semantic::file_providers(&mut typed.facts, &language_context);
     // Only generated declarations retain a parser-owned JSON flow projection.
     // Body scopes publish directly into their canonical native store.
@@ -351,6 +407,7 @@ pub(crate) fn extract_tree(
         None,
         &language_context,
     );
+    if profile.id() == "python" { clear_direct_module_markers(facts); }
     facts.semantic.mark_complete();
     compact_node_details(facts, path);
 }

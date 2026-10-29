@@ -1155,6 +1155,7 @@ fn link_compact_impl<'a, 'maps, 'uncertainties, F: AsRef<Facts> + Sync>(
             result.coverage.extend(graph.coverage);
         }
     }
+    manifest_entrypoint_edges(all, owners, &mut result);
     if !sort_per_file
         || !result
             .edges
@@ -1169,6 +1170,53 @@ fn link_compact_impl<'a, 'maps, 'uncertainties, F: AsRef<Facts> + Sync>(
     }
     mark("graph merge and sort");
     result
+}
+
+fn manifest_entrypoint_edges<F: AsRef<Facts>>(
+    all: &BTreeMap<String, F>,
+    owners: Option<&std::collections::BTreeSet<String>>,
+    graph: &mut Graph,
+) {
+    let mut candidates: HashMap<(String, String), Vec<&Node>> = HashMap::new();
+    for node in all.values().flat_map(|file| &file.as_ref().nodes) {
+        if node.kind != "main_registration" { continue; }
+        let Some(origin) = node.details["manifest_origin"].as_str() else { continue };
+        let Some(name) = node.details["manifest_name"].as_str() else { continue };
+        candidates.entry((origin.to_owned(), name.to_owned())).or_default().push(node);
+    }
+    let mut exact_calls: HashMap<&str, HashSet<&str>> = HashMap::new();
+    for edge in &graph.edges {
+        if edge.kind.as_str() == "calls" && edge.confidence.as_str() == "exact" {
+            exact_calls.entry(&edge.src).or_default().insert(&edge.dst);
+        }
+    }
+    let mut resolved = Vec::new();
+    for registrations in candidates.values().filter(|nodes| nodes.len() == 1) {
+        let registration = registrations[0];
+        if owners.is_some_and(|owners| !owners.contains(&registration.path)) { continue; }
+        let Some(file) = all.get(&registration.path).map(AsRef::as_ref) else { continue };
+        let Some(module) = file.nodes.iter().find(|node| node.kind == "module") else { continue };
+        let targets: Vec<&Node> = if let Some(callable) = registration.details["callable"].as_str() {
+            if registration.details["direct_module"] != true { continue; }
+            let qualified = format!("{}.{}", module.qualname, callable);
+            if module.rebinding_names().any(|name| name == callable)
+                || file.nodes.iter().any(|node| node.kind != "function" && node.qualname == qualified)
+                || file.references.iter().any(|reference| reference.source == module.id && reference.kind == "imports" && reference.alias.as_deref() == Some(callable)) {
+                continue;
+            }
+            file.nodes.iter().filter(|node| node.kind == "function" && node.qualname == qualified).collect()
+        } else {
+            file.nodes.iter().filter(|node| node.kind == "function" && exact_calls.get(module.id.as_str()).is_some_and(|calls| calls.contains(node.id.as_str()))).collect()
+        };
+        if targets.len() != 1 { continue; }
+        resolved.push(Edge {
+            src: registration.id.clone(), dst: targets[0].id.clone(), kind: "handles".into(),
+            path: std::sync::Arc::from(registration.path.as_str()), line: 1,
+            evidence: "manifest entrypoint".into(), confidence: "exact".into(),
+        });
+    }
+    drop(exact_calls);
+    graph.edges.extend(resolved);
 }
 
 fn compare_edges(a: &Edge, b: &Edge) -> std::cmp::Ordering {

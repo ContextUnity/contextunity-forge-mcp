@@ -647,7 +647,16 @@ impl SinglePassExtractor<'_> {
             #[cfg(feature = "lang-python")]
             deferred: Vec::new(),
         };
+        #[cfg(feature = "lang-python")]
+        let mut main_guards = (context.language == "python")
+            .then(languages::python::MainGuardTracker::default);
         walk_in_order(node, false, &mut |node, entering| {
+            #[cfg(feature = "lang-python")]
+            if entering {
+                if let Some(tracker) = &mut main_guards {
+                    tracker.observe(node, context.source);
+                }
+            }
             if let Some(builder) = &mut summary_builder {
                 let prepared_bindings = builder.observe(node, entering);
                 if !entering && prepared_bindings {
@@ -666,6 +675,10 @@ impl SinglePassExtractor<'_> {
                 entering,
             );
         });
+        #[cfg(feature = "lang-python")]
+        if let (Some(tracker), Some(bindings)) = (main_guards, state.root_summary.as_ref()) {
+            tracker.finish(context.module, bindings, facts);
+        }
         #[cfg(feature = "lang-python")]
         if let Some(builder) = summary_builder {
             let lexical = builder.finish();
@@ -1023,7 +1036,7 @@ impl SinglePassExtractor<'_> {
             if let Some(entrypoint) = if test_role == Some("test_case") {
                 Some("test")
             } else {
-                metadata.entrypoint_base
+                context.profile.entrypoint_role(node, source, &name, context.file)
             } {
                 details.insert("entrypoint_base".into(), json!(entrypoint));
             }

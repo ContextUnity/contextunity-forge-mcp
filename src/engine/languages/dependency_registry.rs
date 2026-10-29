@@ -18,6 +18,15 @@ use std::{
 
 type LanguageContextKey = (String, Vec<(String, String)>);
 
+#[derive(Clone, Debug)]
+pub(crate) struct ManifestEntrypoint {
+    pub origin: String,
+    pub scope: String,
+    pub name: String,
+    pub target: String,
+    pub python: bool,
+}
+
 thread_local! {
     // Compatibility-only reuse for direct bundled/manual registry callers.
     // Collected inventories use the immutable registry-owned contexts below.
@@ -44,9 +53,13 @@ pub struct DependencyRegistry {
     #[cfg(feature = "lang-rust")]
     rust_root_crates: HashMap<String, String>,
     digest: String,
+    manifest_entrypoints: Vec<ManifestEntrypoint>,
 }
 
 impl DependencyRegistry {
+    pub(crate) fn manifest_entrypoints(&self) -> &[ManifestEntrypoint] {
+        &self.manifest_entrypoints
+    }
     /// Loads the built-in framework rules without requiring dependency manifests.
     pub(crate) fn bundled_framework_rules() -> Self {
         let mut registry = Self::default();
@@ -590,6 +603,24 @@ impl DependencyRegistry {
                 let scope = scope.trim_end_matches('/').to_owned();
                 if filename == "package.json" {
                     if let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) {
+                        let mut record = |name: &str, target: &str| {
+                            registry.manifest_entrypoints.push(ManifestEntrypoint {
+                                origin: origin.clone(), scope: scope.clone(),
+                                name: name.to_owned(), target: target.to_owned(), python: false,
+                            });
+                        };
+                        if let Some(target) = value.get("main").and_then(serde_json::Value::as_str) {
+                            record("main", target);
+                        }
+                        if let Some(bin) = value.get("bin") {
+                            if let Some(target) = bin.as_str() {
+                                record("bin:", target);
+                            } else if let Some(bins) = bin.as_object() {
+                                for (name, target) in bins {
+                                    if let Some(target) = target.as_str() { record(&format!("bin:{name}"), target); }
+                                }
+                            }
+                        }
                         if let Some(name) = value.get("name").and_then(serde_json::Value::as_str) {
                             registry
                                 .own_packages
@@ -600,6 +631,14 @@ impl DependencyRegistry {
                     }
                 } else if filename == "pyproject.toml" {
                     super::toml_manifest::visit_toml_pairs(&content, &mut |key, value| {
+                        if let Some(name) = key.strip_prefix("project.scripts.") {
+                            if let Some(target) = super::toml_manifest::toml_string(value, &content) {
+                                registry.manifest_entrypoints.push(ManifestEntrypoint {
+                                    origin: origin.clone(), scope: scope.clone(),
+                                    name: name.to_owned(), target, python: true,
+                                });
+                            }
+                        }
                         if matches!(key, "project.name" | "tool.poetry.name") {
                             if let Some(name) = super::toml_manifest::toml_string(value, &content) {
                                 registry

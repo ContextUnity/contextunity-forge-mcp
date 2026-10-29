@@ -37,6 +37,12 @@ bases = ["django.core.management.base.BaseCommand"]
 provider = "django.core.management.base.BaseCommand"
 members = ["stdout.write", "stderr.write", "add_arguments", "execute", "run_from_argv", "check", "check_migrations", "print_help", "create_parser"]
 
+[[syntax_rules]]
+id = "management-command"
+language = "python"
+activation = [{ kind = "package", name = "django" }]
+operation = { kind = "class_method_registration", module = "django.core.management.base", base = "BaseCommand", member = "handle", provider = "django" }
+
 [[class_hierarchy_receivers]]
 bases = ["django.http.HttpRequest", "django.http.request.HttpRequest"]
 provider = "django.http.HttpRequest"

@@ -66,7 +66,7 @@ impl PageInput {
 #[derive(Default, Deserialize, JsonSchema)]
 /// Represents overview input data.
 pub struct OverviewInput {
-    /// Optional database aspects: 'counts', 'components', 'languages', 'coverage_by_workspace', 'cycles', 'entrypoints', 'compiled_profiles', or 'metadata'. The discovery adapter also accepts 'discovery', 'manifest_components', 'documentation_hubs', and 'milestones'. An omitted or empty list selects every database aspect except 'cycles' and 'entrypoints' and includes discovery; unsupported values report all accepted names.
+    /// Optional database aspects: 'counts', 'components', 'languages', 'coverage_by_workspace', 'cycles', 'entrypoints', 'entrypoints_with_tests', 'compiled_profiles', or 'metadata'. The discovery adapter also accepts 'discovery', 'manifest_components', 'documentation_hubs', and 'milestones'. 'entrypoints' excludes tests; 'entrypoints_with_tests' includes them. An omitted or empty list selects every database aspect except 'cycles' and both entrypoint aspects and includes discovery; unsupported values report all accepted names.
     pub aspects: Option<Vec<String>>,
     #[serde(flatten)]
     /// The page value.

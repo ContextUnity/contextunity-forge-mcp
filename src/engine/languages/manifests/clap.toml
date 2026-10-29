@@ -1,0 +1,5 @@
+[[syntax_rules]]
+id = "command-dispatch"
+language = "rust"
+activation = [{ kind = "package", name = "clap" }]
+operation = { kind = "command_dispatch", module = "clap", parser_derive = "Parser", subcommand_derive = "Subcommand", parse_method = "parse", field_attribute = "command", field_marker = "subcommand" }

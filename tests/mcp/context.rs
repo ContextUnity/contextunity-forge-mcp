@@ -776,8 +776,13 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
         (Some("app:second"), None, Some("main")),
         (None, None, None),
     ] {
-        let entry = target.map_or_else(String::new, |target| format!("\n[project.scripts]\nsample='{target}'\n"));
-        scripts.write("pyproject.toml", &format!("[project]\nname='sample'\nversion='1'\n{entry}"));
+        let entry = target.map_or_else(String::new, |target| {
+            format!("\n[project.scripts]\nsample='{target}'\n")
+        });
+        scripts.write(
+            "pyproject.toml",
+            &format!("[project]\nname='sample'\nversion='1'\n{entry}"),
+        );
         let delta = scripts.delta(&["pyproject.toml"]);
         let cold = scripts.build_to(scripts.path(".forge/cold.sqlite"));
         assert_eq!(delta["output_root"], cold["output_root"], "{delta}");
@@ -794,13 +799,39 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
         "src/main.rs",
         "fn main() { helper(); }\nfn helper() {}\nfn ordinary_unwired() {}\n#[test]\nfn test_root() {}\n",
     );
-    roots.write("requirements.txt", "fastapi\nclick\ncelery\nmcp\ntyper\ndjango\n");
+    roots.write(
+        "requirements.txt",
+        "fastapi\nclick\ncelery\nmcp\ntyper\ndjango\n",
+    );
+    roots.write(
+        "Cargo.toml",
+        "[package]\nname='fixture'\nversion='0.1.0'\n[dependencies]\nclap='4'\n",
+    );
+    roots.write("src/clap_tool.rs", "use clap::{Parser, Subcommand};\n#[derive(Parser)]\nstruct Cli { #[command(subcommand)] command: Commands }\n#[derive(Subcommand)]\nenum Commands { Run }\nfn run_job() {}\nfn dispatch() { let cli = Cli::parse(); match cli.command { Commands::Run => run_job() } }\n");
+    roots.write("src/unrelated.rs", "enum Local { Run }\nfn unrelated_job() {}\nfn dispatch(value: Local) { match value { Local::Run => unrelated_job() } }\n");
+    roots.write("src/clap_rebound.rs", "use clap::{Parser, Subcommand};\n#[derive(Parser)]\nstruct Cli { #[command(subcommand)] command: Commands }\n#[derive(Subcommand)]\nenum Commands { Run }\nfn rebound_job() {}\nfn dispatch(other: Cli) { let mut cli = Cli::parse(); cli = other; match cli.command { Commands::Run => rebound_job() } }\n");
+    roots.write("src/clap_shadow.rs", "use fake::{Parser, Subcommand};\n#[derive(Parser)]\nstruct Cli { command: Commands }\n#[derive(Subcommand)]\nenum Commands { Run }\nfn fake_job() {}\nfn dispatch() { let cli = Cli::parse(); match cli.command { Commands::Run => fake_job() } }\n");
+    roots.write("src/clap_local.rs", "mod clap {}\nuse clap::{Parser, Subcommand};\n#[derive(Parser)]\nstruct Cli { #[command(subcommand)] command: Commands }\n#[derive(Subcommand)]\nenum Commands { Run }\nfn local_job() {}\nfn dispatch() { let cli = Cli::parse(); match cli.command { Commands::Run => local_job() } }\n");
+    roots.write("src/clap_override.rs", "use clap::{Parser, Subcommand};\n#[derive(Parser)]\nstruct Cli { #[command(subcommand)] command: Commands }\n#[derive(Subcommand)]\nenum Commands { Run }\nimpl Cli { fn parse() -> Self { todo!() } }\nfn override_job() {}\nfn dispatch() { let cli = Cli::parse(); match cli.command { Commands::Run => override_job() } }\n");
     roots.write("pyproject.toml", "[project]\nname = 'entry-fixture'\nversion = '0.1.0'\n[project.scripts]\nfixture = 'package:script_main'\n");
-    roots.write("package.py", "def script_main(): pass\ndef guarded_main(): pass\nif __name__ == '__main__':\n    guarded_main()\n");
+    roots.write("package.py", "def script_main(): pass\ndef guarded_main(): pass\ndef not_guarded(): pass\nif __name__ == '__main__':\n    guarded_main()\nif __name__ != '__main__':\n    not_guarded()\n");
     roots.write("command.py", "from django.core.management.base import BaseCommand\nclass Command(BaseCommand):\n    def handle(self, *args, **options): pass\n");
-    roots.write("package.json", "{\"name\":\"fixture\",\"main\":\"src/start.ts\",\"bin\":{\"fixture\":\"src/cli.ts\"}}\n");
+    roots.write("alias_command.py", "from django.core.management.base import BaseCommand as Parent\nclass Alias(Parent):\n    def handle(self): pass\n");
+    roots.write("shadow_command.py", "from django.core.management.base import BaseCommand\nBaseCommand = object\nclass Shadow(BaseCommand):\n    def handle(self): pass\n");
+    roots.write("wrong_command.py", "from unrelated import BaseCommand\nclass Wrong(BaseCommand):\n    def handle(self): pass\n");
+    roots.write("rebound_command.py", "from django.core.management.base import BaseCommand\ndef replacement(self): pass\nclass Rebound(BaseCommand):\n    def handle(self): pass\n    handle = replacement\n");
+    roots.write("inherited_command.py", "from django.core.management.base import BaseCommand\nclass Parent(BaseCommand): pass\nclass Child(Parent):\n    def handle(self): pass\n");
+    roots.write("package.json", "{\"name\":\"fixture\",\"main\":\"src/start.ts\",\"bin\":{\"fixture\":\"src/cli.ts\"},\"devDependencies\":{\"jest\":\"1\",\"vitest\":\"1\"}}\n");
     roots.write("src/start.ts", "export function main() {}\nmain();\n");
     roots.write("src/cli.ts", "export function main() {}\nmain();\n");
+    roots.write("tests/node.test.ts", "import { test, it } from 'node:test';\ntest('node', function node_case() {});\nit('node it', function node_it_case() {});\nfunction shadow(test: Function) { test('no', function node_shadow() {}); }\n");
+    roots.write("tests/jest.test.ts", "import { test, it } from '@jest/globals';\ntest('jest', function jest_case() {});\nit('jest it', function jest_it_case() {});\n");
+    roots.write("tests/vitest.test.ts", "import { test, it } from 'vitest';\ntest('vitest', function vitest_case() {});\nit('vitest it', function vitest_it_case() {});\nfunction shadow(test: Function) { test('no', function vitest_shadow() {}); }\n{ const {test} = fake; test('no', function destructured_shadow() {}); }\nfor (const test of runners) { test('no', function loop_shadow() {}); }\ntest(function first_argument() {}, () => {});\n");
+    roots.write(
+        "tests/type_only.test.ts",
+        "import type { test } from 'vitest';\ntest('not runtime', function type_only_case() {});\n",
+    );
+    roots.write("tests/type_comment.test.ts", "import /* type import */ type { test } from 'vitest';\ntest('not runtime', function type_comment_case() {});\n");
     roots.write(
         "service.py",
         "from fastapi import FastAPI\nimport click\nfrom celery import shared_task\nfrom mcp.server.fastmcp import FastMCP\napp = FastAPI()\nmcp = FastMCP('test')\n@app.get('/items')\ndef route_handler(): pass\n@click.command()\ndef command_handler(): pass\n@shared_task\ndef event_handler(): pass\n@mcp.tool()\ndef tool_handler(): pass\n",
@@ -840,11 +871,50 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
     );
     assert!(!entries.contains("ordinary_unwired"), "{overview}");
     assert!(!entries.contains("test_root"), "{overview}");
+    let test_aspects = vec!["entrypoints_with_tests".to_string()];
+    let with_tests = reader::overview_with_options(
+        &conn,
+        &reader::OverviewOptions {
+            aspects: Some(&test_aspects),
+            page: &page,
+        },
+    )
+    .unwrap();
+    let test_items = with_tests["entrypoints"]["items"].as_array().unwrap();
+    assert!(
+        test_items
+            .iter()
+            .any(|item| item["name"] == "test_root" && item["category"] == "test"),
+        "{with_tests}"
+    );
+    assert!(test_items.len() > overview["entrypoints"]["items"].as_array().unwrap().len());
+    let stale_page = contextunity_forge_mcp::core::response::QueryOptions::resolve(
+        &ResponsePolicy::default(),
+        Some(1),
+        1,
+        None,
+        Some("stale-generation".to_string()),
+    )
+    .unwrap();
+    assert!(reader::overview_with_options(
+        &conn,
+        &reader::OverviewOptions {
+            aspects: Some(&test_aspects),
+            page: &stale_page,
+        },
+    )
+    .is_err());
     let items = overview["entrypoints"]["items"].as_array().unwrap();
-    let main_entry = items.iter().find(|item| item["name"] == "main").unwrap();
+    let main_entry = items
+        .iter()
+        .find(|item| item["name"] == "main" && item["path"] == "src/main.rs")
+        .unwrap();
     assert_eq!(main_entry["category"], "main");
     assert_eq!(main_entry["path"], "src/main.rs");
     assert_eq!(main_entry["start_line"], 1);
+    assert!(main_entry["signature"]
+        .as_str()
+        .is_some_and(|value| value.contains("fn main")));
     assert_eq!(main_entry["outgoing_calls"], 1);
     for pair in items.windows(2) {
         let left = (
@@ -908,11 +978,121 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
         );
         assert_eq!(node["node"]["details"]["entrypoint"], "main", "{node}");
     }
-    let command = roots_client.payload("code_map_inspect", json!({"selector":"command.py:method:handle","detail":"full"}));
-    assert_eq!(command["node"]["details"]["entrypoint"], "cli_command", "{command}");
+    let not_guarded = roots_client.payload(
+        "code_map_inspect",
+        json!({"selector":"package.py:function:not_guarded","detail":"full"}),
+    );
+    assert!(
+        not_guarded["node"]["details"].get("entrypoint").is_none(),
+        "{not_guarded}"
+    );
+    let command = roots_client.payload(
+        "code_map_inspect",
+        json!({"selector":"command.py:method:handle","detail":"full"}),
+    );
+    assert_eq!(
+        command["node"]["details"]["entrypoint"], "cli_command",
+        "{command}"
+    );
+    let alias = roots_client.payload(
+        "code_map_inspect",
+        json!({"selector":"alias_command.py:method:handle","detail":"full"}),
+    );
+    assert_eq!(
+        alias["node"]["details"]["entrypoint"], "cli_command",
+        "{alias}"
+    );
+    let inherited = roots_client.payload(
+        "code_map_inspect",
+        json!({"selector":"inherited_command.py:method:handle","detail":"full"}),
+    );
+    assert_eq!(
+        inherited["node"]["details"]["entrypoint"], "cli_command",
+        "{inherited}"
+    );
+    for path in [
+        "shadow_command.py",
+        "wrong_command.py",
+        "rebound_command.py",
+    ] {
+        let node = roots_client.payload(
+            "code_map_inspect",
+            json!({"selector":format!("{path}:method:handle"),"detail":"full"}),
+        );
+        assert!(
+            node["node"]["details"].get("entrypoint").is_none(),
+            "{node}"
+        );
+    }
     for path in ["src/start.ts", "src/cli.ts"] {
-        let node = roots_client.payload("code_map_inspect", json!({"selector":format!("{path}:function:main"),"detail":"full"}));
+        let node = roots_client.payload(
+            "code_map_inspect",
+            json!({"selector":format!("{path}:function:main"),"detail":"full"}),
+        );
         assert_eq!(node["node"]["details"]["entrypoint"], "main", "{node}");
+    }
+    let clap = roots_client.payload(
+        "code_map_inspect",
+        json!({"selector":"src/clap_tool.rs:function:run_job","detail":"full"}),
+    );
+    assert_eq!(
+        clap["node"]["details"]["entrypoint"], "cli_command",
+        "{clap}"
+    );
+    let unrelated = roots_client.payload(
+        "code_map_inspect",
+        json!({"selector":"src/unrelated.rs:function:unrelated_job","detail":"full"}),
+    );
+    assert!(
+        unrelated["node"]["details"].get("entrypoint").is_none(),
+        "{unrelated}"
+    );
+    for (path, name) in [
+        ("src/clap_rebound.rs", "rebound_job"),
+        ("src/clap_shadow.rs", "fake_job"),
+        ("src/clap_local.rs", "local_job"),
+        ("src/clap_override.rs", "override_job"),
+    ] {
+        let node = roots_client.payload(
+            "code_map_inspect",
+            json!({"selector":format!("{path}:function:{name}"),"detail":"full"}),
+        );
+        assert!(
+            node["node"]["details"].get("entrypoint").is_none(),
+            "{node}"
+        );
+    }
+    for (path, name) in [
+        ("tests/node.test.ts", "node_case"),
+        ("tests/node.test.ts", "node_it_case"),
+        ("tests/jest.test.ts", "jest_case"),
+        ("tests/jest.test.ts", "jest_it_case"),
+        ("tests/vitest.test.ts", "vitest_case"),
+        ("tests/vitest.test.ts", "vitest_it_case"),
+    ] {
+        let node = roots_client.payload(
+            "code_map_inspect",
+            json!({"selector":format!("{path}:function:{name}"),"detail":"full"}),
+        );
+        assert_eq!(node["node"]["details"]["entrypoint"], "test", "{node}");
+    }
+    for (path, name) in [
+        ("tests/node.test.ts", "node_shadow"),
+        ("tests/vitest.test.ts", "vitest_shadow"),
+        ("tests/vitest.test.ts", "destructured_shadow"),
+        ("tests/vitest.test.ts", "loop_shadow"),
+        ("tests/vitest.test.ts", "first_argument"),
+        ("tests/type_only.test.ts", "type_only_case"),
+        ("tests/type_comment.test.ts", "type_comment_case"),
+    ] {
+        let node = roots_client.payload(
+            "code_map_inspect",
+            json!({"selector":format!("{path}:function:{name}"),"detail":"full"}),
+        );
+        assert!(
+            node["node"]["details"].get("entrypoint").is_none(),
+            "{node}"
+        );
     }
     for name in ["shadowed_click", "shadowed_task", "local_task"] {
         let node = roots_client.payload(
@@ -964,6 +1144,53 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
     assertions::assert_command_succeeded(&cli);
     let cli: Value = serde_json::from_slice(&cli.stdout).unwrap();
     assert_eq!(cli["entrypoints"], overview["entrypoints"]);
+    let with_tests_mcp = roots_client.payload(
+        "code_map_overview",
+        json!({"aspects":["entrypoints_with_tests"],"limit":100}),
+    );
+    assert_eq!(with_tests_mcp["entrypoints"], with_tests["entrypoints"]);
+    let combined = roots_client.payload(
+        "code_map_overview",
+        json!({"aspects":["entrypoints", "entrypoints_with_tests"],"limit":100}),
+    );
+    assert_eq!(combined["entrypoints"], with_tests["entrypoints"]);
+    let generation = with_tests_mcp["entrypoints"]["generation"]
+        .as_str()
+        .unwrap();
+    let mut paged_tests = Vec::new();
+    let mut offset = 0;
+    loop {
+        let page = roots_client.payload(
+            "code_map_overview",
+            json!({"aspects":["entrypoints_with_tests"],"limit":1,"offset":offset,"generation":generation}),
+        );
+        paged_tests.extend(
+            page["entrypoints"]["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .cloned(),
+        );
+        match page["entrypoints"]["next_offset"].as_u64() {
+            Some(next) => offset = next,
+            None => break,
+        }
+    }
+    assert_eq!(&paged_tests, test_items);
+    let cli = run_cli_json(
+        &roots,
+        &[
+            "query",
+            "overview",
+            "--aspects",
+            "entrypoints_with_tests",
+            "--limit",
+            "100",
+        ],
+    );
+    assertions::assert_command_succeeded(&cli);
+    let cli: Value = serde_json::from_slice(&cli.stdout).unwrap();
+    assert_eq!(cli["entrypoints"], with_tests["entrypoints"]);
     let unwired =
         roots_client.payload("code_map_query", json!({"operation":"unwired","limit":100}));
     let unwired_nodes = unwired["nodes"]["items"].to_string();
@@ -1004,8 +1231,6 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
         json!({"selector":"jobs.py:job","detail":"full"}),
     );
     assert!(job["node"]["details"].get("entrypoint").is_none(), "{job}");
-
-
 }
 
 #[test]

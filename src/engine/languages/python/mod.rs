@@ -452,64 +452,78 @@ fn is_python_stub_body(node: Syntax<'_>, source: &str) -> bool {
 pub struct Python;
 /// Shared python language profile.
 pub static PYTHON: Python = Python;
+/// Collect main-guard calls during the shared syntax walk, then apply only
+/// declarations whose module binding remains unambiguous.
+#[derive(Default)]
+pub(crate) struct MainGuardTracker {
+    calls: HashMap<String, (usize, usize)>,
+    declarations: HashMap<String, (usize, usize, bool)>,
+    callable_assignments: HashSet<String>,
+}
 
-fn main_guard_calls(root: Syntax<'_>, source: &str) -> std::collections::HashSet<String> {
-    let mut result = std::collections::HashSet::new();
-    let mut cursor = root.walk();
-    for statement in root.named_children(&mut cursor).filter(|n| n.kind() == "if_statement") {
-        let Some(condition) = statement.child_by_field_name("condition") else { continue };
-        let mut parts = condition.walk();
-        let operands: Vec<_> = condition.named_children(&mut parts).collect();
-        if condition.kind() != "comparison_operator" || operands.len() != 2 {
-            continue;
-        }
-        let lhs = text(operands[0], source).trim();
-        let rhs = text(operands[1], source).trim();
-        let is_main = |value: &str| value == "'__main__'" || value == "\"__main__\"";
-        if !((lhs == "__name__" && is_main(rhs)) || (rhs == "__name__" && is_main(lhs)))
-            || !text(condition, source).contains("==")
+impl MainGuardTracker {
+    pub(crate) fn observe(&mut self, node: Syntax<'_>, source: &str) {
+        if node.kind() == "assignment" && module_scope(node)
+            && node.child_by_field_name("right").is_some_and(|right| right.kind() == "lambda")
         {
-            continue;
+            if let Some(left) = node.child_by_field_name("left").filter(|left| left.kind() == "identifier") {
+                self.callable_assignments.insert(text(left, source).to_owned());
+            }
         }
-        let Some(body) = statement.child_by_field_name("consequence") else { continue };
-        let mut body_cursor = body.walk();
-        for expression in body.named_children(&mut body_cursor) {
-            if expression.kind() != "expression_statement" { continue; }
-            let Some(call) = expression.named_child(0).filter(|n| n.kind() == "call") else { continue };
-            if let Some(function) = call.child_by_field_name("function").filter(|n| n.kind() == "identifier") {
-                let name = text(function, source);
-                let mut declarations = 0;
-                let mut unambiguous = true;
-                let mut siblings = body.walk();
-                if body.named_children(&mut siblings).any(|other| {
-                    other.id() != expression.id() && text(other, source).contains(name)
-                }) {
-                    continue;
-                }
-                let mut module_cursor = root.walk();
-                for item in root.named_children(&mut module_cursor) {
-                    let definition = if item.kind() == "decorated_definition" {
-                        item.child_by_field_name("definition")
-                    } else {
-                        Some(item)
-                    };
-                    if let Some(definition) = definition.filter(|n| n.kind() == "function_definition") {
-                        if field(definition, source, "name") == Some(name) {
-                            declarations += 1;
-                            unambiguous &= item.start_byte() < statement.start_byte();
-                        }
-                    } else if item.id() != statement.id() && text(item, source).contains(name) {
-                        // Other module-level occurrences can rebind the name; fail closed.
-                        unambiguous = false;
-                    }
-                }
-                if declarations == 1 && unambiguous {
-                    result.insert(name.to_owned());
-                }
+        if node.kind() == "function_definition" && module_scope(node) {
+            if let Some(name) = field(node, source, "name") {
+                let direct = node.parent().is_some_and(|parent| {
+                    parent.kind() == "module"
+                        || (parent.kind() == "decorated_definition"
+                            && parent.parent().is_some_and(|outer| outer.kind() == "module"))
+                });
+                let entry = self.declarations.entry(name.to_owned()).or_insert((0, node.start_byte(), direct));
+                entry.0 += 1;
+            }
+            return;
+        }
+        if node.kind() != "expression_statement" { return; }
+        let Some(body) = node.parent().filter(|n| n.kind() == "block") else { return };
+        let Some(guard) = body.parent().filter(|n| n.kind() == "if_statement") else { return };
+        if !guard.parent().is_some_and(|n| n.kind() == "module")
+            || guard.child_by_field_name("consequence") != Some(body) { return; }
+        let Some(condition) = guard.child_by_field_name("condition") else { return };
+        let mut cursor = condition.walk();
+        let mut operands = condition.named_children(&mut cursor);
+        let (Some(left), Some(right), None) = (operands.next(), operands.next(), operands.next()) else { return };
+        let lhs = text(left, source).trim();
+        let rhs = text(right, source).trim();
+        let is_main = |s: &str| s == "'__main__'" || s == "\"__main__\"";
+        if condition.kind() != "comparison_operator"
+            || !((lhs == "__name__" && is_main(rhs)) || (rhs == "__name__" && is_main(lhs)))
+            || !text(condition, source).contains("==") { return; }
+        let Some(call) = node.named_child(0).filter(|n| n.kind() == "call") else { return };
+        let Some(function) = call.child_by_field_name("function").filter(|n| n.kind() == "identifier") else { return };
+        let entry = self.calls.entry(text(function, source).to_owned()).or_insert((0, guard.start_byte()));
+        entry.0 += 1;
+    }
+
+    pub(crate) fn finish(self, module: &str, bindings: &ast::ScopeBindings, facts: &mut Facts) {
+        let rebound: HashSet<&str> = bindings.rebindings.iter().map(String::as_str).collect();
+        let imported: HashSet<&str> = facts.references.iter()
+            .filter(|r| r.kind == "imports" && r.source.starts_with("module:"))
+            .filter_map(|r| r.alias.as_deref()).collect();
+        for node in &mut facts.nodes {
+            if node.kind != "function"
+                || node.qualname.strip_prefix(module).and_then(|s| s.strip_prefix('.')) != Some(node.name.as_str()) { continue; }
+            let Some(definitions) = self.declarations.get(&node.name) else { continue };
+            if definitions.0 == 1 && definitions.2 {
+                node.details["entrypoint_direct_module"] = serde_json::json!(true);
+            }
+            if node.details.get("entrypoint_base").is_some() || !definitions.2
+                || rebound.contains(node.name.as_str()) || imported.contains(node.name.as_str())
+                || self.callable_assignments.contains(node.name.as_str()) { continue; }
+            let Some(calls) = self.calls.get(&node.name) else { continue };
+            if calls.0 == 1 && definitions.0 == 1 && definitions.1 < calls.1 {
+                node.details["entrypoint_base"] = serde_json::json!("main");
             }
         }
     }
-    result
 }
 impl LanguageProfile for Python {
     fn scope_analysis<'source, 'tree>(
@@ -617,7 +631,6 @@ impl LanguageProfile for Python {
         module_exports::prepare(root, source, &mut type_checking_aliases);
         FileContext {
             type_checking_aliases,
-            python_main_calls: main_guard_calls(root, source),
             ..FileContext::default()
         }
     }
@@ -1037,10 +1050,6 @@ impl LanguageProfile for Python {
             is_stub,
             is_conditional: conditional_class_member(node),
             is_public: Some(module_scope(node) && !_name.starts_with('_')),
-            entrypoint_base: (node.kind() == "function_definition"
-                && module_scope(node)
-                && file.python_main_calls.contains(_name))
-            .then_some("main"),
             ..Default::default()
         }
     }
@@ -1271,6 +1280,7 @@ impl LanguageProfile for Python {
         projections::clear();
         relations::implicit_fields(facts);
         decorated_registration::registrations(facts);
+        syntax_operations::extract_class_method_registrations(facts);
         syntax_operations::clear_file_context();
     }
     fn ast_search_capabilities(&self) -> AstSearchCapabilities {

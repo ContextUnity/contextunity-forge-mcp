@@ -1,0 +1,5 @@
+[[syntax_rules]]
+id = "test-runner"
+language = "typescript"
+activation = [{ kind = "package", name = "vitest" }]
+operation = { kind = "test_runner", modules = ["vitest"], members = ["test", "it"] }

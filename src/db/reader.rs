@@ -23,13 +23,14 @@ pub(crate) use selectors::{select_detail, select_detail_with_path};
 const MAX_SQLITE_VALUE_BYTES: i32 = 8 * 1024 * 1024;
 const MAX_QUERY_RESULT_BYTES: usize = MAX_SQLITE_VALUE_BYTES as usize;
 const QUERY_RESULT_TOO_LARGE: &str = "query result exceeds the 8 MiB row budget; narrow the selector or path, request detail='compact' with a smaller limit, or select fewer and smaller SQL columns. Continue paged requests with the returned offset and generation";
-const VALID_OVERVIEW_ASPECTS: [&str; 12] = [
+const VALID_OVERVIEW_ASPECTS: [&str; 13] = [
     "counts",
     "components",
     "languages",
     "coverage_by_workspace",
     "cycles",
     "entrypoints",
+    "entrypoints_with_tests",
     "compiled_profiles",
     "metadata",
     "discovery",
@@ -748,10 +749,10 @@ pub fn overview_with_options(conn: &Connection, request: &OverviewOptions<'_>) -
     }
     let has_aspect = |name: &str| -> bool {
         match aspects {
-            None => !matches!(name, "cycles" | "entrypoints"),
+            None => !matches!(name, "cycles" | "entrypoints" | "entrypoints_with_tests"),
             Some(list) => {
                 if list.is_empty() {
-                    !matches!(name, "cycles" | "entrypoints")
+                    !matches!(name, "cycles" | "entrypoints" | "entrypoints_with_tests")
                 } else {
                     list.iter().any(|a| a.eq_ignore_ascii_case(name))
                 }
@@ -761,10 +762,10 @@ pub fn overview_with_options(conn: &Connection, request: &OverviewOptions<'_>) -
 
     let mut result = serde_json::Map::new();
 
-    if has_aspect("entrypoints") {
+    if has_aspect("entrypoints") || has_aspect("entrypoints_with_tests") {
         let entrypoints = paging::query(conn,
-            "SELECT json_extract(n.details,'$.entrypoint') category,n.id,n.kind,n.name,n.qualname,p.path,n.line AS start_line,json_extract(n.details,'$.signature') signature,(SELECT count(*) FROM edges e WHERE e.src_hash=n.node_hash AND e.kind='calls') outgoing_calls FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE json_extract(n.details,'$.entrypoint') IS NOT NULL AND json_extract(n.details,'$.entrypoint') <> 'test' ORDER BY category,outgoing_calls DESC,n.id ASC",
-            &[], options)?;
+            "SELECT json_extract(n.details,'$.entrypoint') category,n.id,n.kind,n.name,n.qualname,p.path,n.line AS start_line,json_extract(n.details,'$.signature') signature,(SELECT count(*) FROM edges e WHERE e.src_hash=n.node_hash AND e.kind='calls') outgoing_calls FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE json_extract(n.details,'$.entrypoint') IS NOT NULL AND (?1 OR json_extract(n.details,'$.entrypoint') <> 'test') ORDER BY category,outgoing_calls DESC,n.id ASC",
+            &[&has_aspect("entrypoints_with_tests")], options)?;
         result.insert("entrypoints".into(), entrypoints);
     }
 
