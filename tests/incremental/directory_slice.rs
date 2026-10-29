@@ -2,7 +2,7 @@
 
 use contextunity_forge_mcp::{
     core::response::{CoverageOptions, QueryOptions, ResponsePolicy},
-    db::traversal,
+    db::{reader, traversal},
 };
 use std::time::Instant;
 
@@ -16,7 +16,17 @@ fn options(limit: usize) -> QueryOptions {
 fn directory_suffix_lists_real_nodes_and_exact_file_keeps_graph_traversal() {
     let ws = Workspace::new();
     let file = "extensions/commerce/src/contextunity/commerce/ingestion/worker.py";
-    ws.write(file, "def publish():\n    return 1\n");
+    ws.write(file, "from contextunity.commerce.connectors.horoshop.client import fetch\ndef publish():\n    return fetch()\n");
+    ws.write(
+        "extensions/commerce/src/contextunity/commerce/consumer.py",
+        "from contextunity.commerce.ingestion.worker import publish\ndef consume():\n    return publish()\n",
+    );
+    ws.write(
+        "extensions/commerce/src/contextunity/commerce/ingestion2/unrelated.py",
+        "def unrelated(): pass\n",
+    );
+    ws.write("alpha/a.py", "from beta.b import target\ndef run():\n    return target()\n");
+    ws.write("beta/b.py", "def target():\n    return 1\n");
     ws.write(
         "extensions/commerce/src/contextunity/commerce/connectors/horoshop/client.py",
         "def fetch(): pass\n",
@@ -47,8 +57,71 @@ fn directory_suffix_lists_real_nodes_and_exact_file_keeps_graph_traversal() {
     assert_eq!(result["requested_depth"], 1);
     assert_eq!(result["graph_depth_applied"], 0);
     for field in ["exported_symbols", "inbound_modules", "outbound_modules"] {
-        assert!(result["boundary_contract"][field].is_array(), "{field}: {result}");
+        assert!(
+            result["boundary_contract"][field].is_array(),
+            "{field}: {result}"
+        );
     }
+    let boundary = &result["boundary_contract"];
+    assert!(
+        boundary["exported_symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|node| node["name"] == "publish"
+                && node["external_caller_count"].as_u64().unwrap_or(0) > 0),
+        "{boundary}"
+    );
+    assert!(
+        boundary["inbound_modules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|module| module["module"] == "extensions/commerce/src/contextunity/commerce"),
+        "{boundary}"
+    );
+    assert!(
+        boundary["outbound_modules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|module| module["module"]
+                == "extensions/commerce/src/contextunity/commerce/connectors/horoshop"),
+        "{boundary}"
+    );
+    assert!(!boundary["exported_symbols"]
+        .to_string()
+        .contains("unrelated"));
+    let aspects = vec!["topology".to_owned()];
+    let topology = reader::overview_with_options(
+        &conn,
+        &reader::OverviewOptions {
+            aspects: Some(&aspects),
+            page: &options(100),
+        },
+    )
+    .unwrap();
+    let modules = topology["topology"]["modules"]["items"].as_array().unwrap();
+    assert!(
+        modules
+            .iter()
+            .any(|module| module["module"] == "extensions/commerce"
+                && module["symbol_count"].as_u64().unwrap() > 0),
+        "{topology}"
+    );
+    assert!(modules.iter().any(|module| module["module"] == "alpha" && module["role"] == "adapter_or_entrypoint"), "{topology}");
+    assert!(modules.iter().any(|module| module["module"] == "beta" && module["role"] == "foundation"), "{topology}");
+    assert_eq!(
+        topology,
+        reader::overview_with_options(
+            &conn,
+            &reader::OverviewOptions {
+                aspects: Some(&aspects),
+                page: &options(100)
+            }
+        )
+        .unwrap()
+    );
     assert!(result["nodes"]["items"]
         .as_array()
         .unwrap()

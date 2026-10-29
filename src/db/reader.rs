@@ -23,7 +23,7 @@ pub(crate) use selectors::{select_detail, select_detail_with_path};
 const MAX_SQLITE_VALUE_BYTES: i32 = 8 * 1024 * 1024;
 const MAX_QUERY_RESULT_BYTES: usize = MAX_SQLITE_VALUE_BYTES as usize;
 const QUERY_RESULT_TOO_LARGE: &str = "query result exceeds the 8 MiB row budget; narrow the selector or path, request detail='compact' with a smaller limit, or select fewer and smaller SQL columns. Continue paged requests with the returned offset and generation";
-const VALID_OVERVIEW_ASPECTS: [&str; 13] = [
+const VALID_OVERVIEW_ASPECTS: [&str; 14] = [
     "counts",
     "components",
     "languages",
@@ -31,6 +31,7 @@ const VALID_OVERVIEW_ASPECTS: [&str; 13] = [
     "cycles",
     "entrypoints",
     "entrypoints_with_tests",
+    "topology",
     "compiled_profiles",
     "metadata",
     "discovery",
@@ -749,10 +750,16 @@ pub fn overview_with_options(conn: &Connection, request: &OverviewOptions<'_>) -
     }
     let has_aspect = |name: &str| -> bool {
         match aspects {
-            None => !matches!(name, "cycles" | "entrypoints" | "entrypoints_with_tests"),
+            None => !matches!(
+                name,
+                "cycles" | "entrypoints" | "entrypoints_with_tests" | "topology"
+            ),
             Some(list) => {
                 if list.is_empty() {
-                    !matches!(name, "cycles" | "entrypoints" | "entrypoints_with_tests")
+                    !matches!(
+                        name,
+                        "cycles" | "entrypoints" | "entrypoints_with_tests" | "topology"
+                    )
                 } else {
                     list.iter().any(|a| a.eq_ignore_ascii_case(name))
                 }
@@ -762,6 +769,12 @@ pub fn overview_with_options(conn: &Connection, request: &OverviewOptions<'_>) -
 
     let mut result = serde_json::Map::new();
 
+    if has_aspect("topology") {
+        result.insert(
+            "topology".into(),
+            module_topology(conn, options, &generation)?,
+        );
+    }
     if has_aspect("entrypoints") || has_aspect("entrypoints_with_tests") {
         let entrypoints = paging::query(conn,
             "SELECT json_extract(n.details,'$.entrypoint') category,n.id,n.kind,n.name,n.qualname,p.path,n.line AS start_line,json_extract(n.details,'$.signature') signature,(SELECT count(*) FROM edges e WHERE e.src_hash=n.node_hash AND e.kind='calls') outgoing_calls FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE json_extract(n.details,'$.entrypoint') IS NOT NULL AND (?1 OR json_extract(n.details,'$.entrypoint') <> 'test') ORDER BY category,outgoing_calls DESC,n.id ASC",
@@ -839,6 +852,128 @@ pub fn overview_with_options(conn: &Connection, request: &OverviewOptions<'_>) -
     result.insert("generation".into(), serde_json::Value::String(generation));
 
     Ok(serde_json::Value::Object(result))
+}
+
+#[derive(Default)]
+struct ModuleTopology {
+    symbols: usize,
+    tables: usize,
+    entrypoints: usize,
+    adapters: usize,
+    internal: usize,
+    inbound: usize,
+    outbound: usize,
+    table_queries: usize,
+    neighbors: BTreeSet<String>,
+}
+
+fn topology_module(path: &str, kind: &str) -> String {
+    let parent = if kind == "component" {
+        path
+    } else {
+        path.rsplit_once('/').map_or("", |(parent, _)| parent)
+    };
+    let parts: Vec<_> = parent.split('/').filter(|part| !part.is_empty()).collect();
+    let depth = if parts.first() == Some(&"src") && parts.get(1) == Some(&"engine") {
+        3
+    } else {
+        2
+    };
+    parts.into_iter().take(depth).collect::<Vec<_>>().join("/")
+}
+
+fn module_topology(conn: &Connection, options: &QueryOptions, generation: &str) -> Result<Value> {
+    let mut modules: BTreeMap<String, ModuleTopology> = BTreeMap::new();
+    let mut edges: BTreeMap<(String, String), BTreeMap<String, usize>> = BTreeMap::new();
+    let budget = QueryBudget::new(conn);
+    {
+        let mut statement = conn.prepare("SELECT p.path,n.kind,json_extract(n.details,'$.entrypoint') FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id")?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            budget.check()?;
+            let path: String = row.get(0)?;
+            let kind: String = row.get(1)?;
+            let entrypoint: Option<String> = row.get(2)?;
+            let module = modules.entry(topology_module(&path, &kind)).or_default();
+            module.symbols += 1;
+            module.tables += usize::from(kind == "table");
+            module.entrypoints += usize::from(entrypoint.is_some());
+            module.adapters += usize::from(matches!(
+                entrypoint.as_deref(),
+                Some("mcp_tool" | "cli_command" | "http_route")
+            ));
+        }
+    }
+    {
+        let mut statement = conn.prepare("SELECT sp.path,tp.path,e.kind,s.kind,t.kind FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes t ON t.node_hash=e.dst_hash JOIN path_dictionary sp ON sp.path_id=s.path_id JOIN path_dictionary tp ON tp.path_id=t.path_id")?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            budget.check()?;
+            let source = topology_module(&row.get::<_, String>(0)?, &row.get::<_, String>(3)?);
+            let target = topology_module(&row.get::<_, String>(1)?, &row.get::<_, String>(4)?);
+            let kind: String = row.get(2)?;
+            let is_table_query = matches!(kind.as_str(), "queries_table" | "mutates_table");
+            if source == target {
+                let module = modules.entry(source).or_default();
+                module.internal += 1;
+                module.table_queries += usize::from(is_table_query);
+            } else {
+                let from = modules.entry(source.clone()).or_default();
+                from.outbound += 1;
+                from.table_queries += usize::from(is_table_query);
+                from.neighbors.insert(target.clone());
+                let to = modules.entry(target.clone()).or_default();
+                to.inbound += 1;
+                to.neighbors.insert(source.clone());
+                *edges
+                    .entry((source, target))
+                    .or_default()
+                    .entry(kind)
+                    .or_default() += 1;
+            }
+        }
+    }
+    let module_rows: Vec<Value> = modules.into_iter().map(|(module, stats)| {
+        let external = stats.inbound + stats.outbound;
+        let role = if stats.adapters > 0 || (stats.inbound == 0 && stats.outbound > 0) {
+            "adapter_or_entrypoint"
+        } else if stats.outbound == 0 && stats.inbound > 0 {
+            "foundation"
+        } else if stats.tables > 0 && stats.tables * 10 >= stats.symbols || stats.table_queries >= 3 {
+            "data_access"
+        } else if stats.inbound >= 3 && stats.outbound >= 3 && stats.neighbors.len() >= 3 {
+            "orchestrator"
+        } else {
+            "domain"
+        };
+        let total = stats.internal + external;
+        json!({"module":module,"role":role,"symbol_count":stats.symbols,"table_count":stats.tables,"internal_edges":stats.internal,"inbound_external_edges":stats.inbound,"outbound_external_edges":stats.outbound,"entrypoint_count":stats.entrypoints,"table_query_count":stats.table_queries,"cohesion_ratio":if total == 0 { 0.0 } else { stats.internal as f64 / total as f64 }})
+    }).collect();
+    let mut edge_rows: Vec<Value> = edges.into_iter().map(|((source,target),kinds)| {
+        let count: usize = kinds.values().sum();
+        let dominant = kinds.into_iter().max_by(|a,b| a.1.cmp(&b.1).then_with(|| b.0.cmp(&a.0))).map(|(kind,_)| kind).unwrap_or_default();
+        json!({"source_module":source,"target_module":target,"edge_count":count,"dominant_kind":dominant})
+    }).collect();
+    edge_rows.sort_by(|a, b| {
+        b["edge_count"]
+            .as_u64()
+            .cmp(&a["edge_count"].as_u64())
+            .then_with(|| {
+                a["source_module"]
+                    .as_str()
+                    .cmp(&b["source_module"].as_str())
+            })
+            .then_with(|| {
+                a["target_module"]
+                    .as_str()
+                    .cmp(&b["target_module"].as_str())
+            })
+    });
+    let module_total = module_rows.len();
+    let edge_total = edge_rows.len();
+    Ok(
+        json!({"modules":paging::value(module_rows.into_iter().skip(options.offset).take(options.limit).collect(),module_total,options,generation),"module_edges":paging::value(edge_rows.into_iter().skip(options.offset).take(options.limit).collect(),edge_total,options,generation)}),
+    )
 }
 
 /// Pages one indexed entry point per Markdown document for workspace discovery.

@@ -36,6 +36,7 @@ contextunity-forge-mcp delta . src/module.py src/other.py
 contextunity-forge-mcp query overview
 contextunity-forge-mcp query overview --aspects entrypoints
 contextunity-forge-mcp query overview --aspects entrypoints_with_tests
+contextunity-forge-mcp query overview --aspects topology
 contextunity-forge-mcp query search 'parse*' --kind function --limit 30
 contextunity-forge-mcp query inspect 'src/module.py:parse' --show-source
 contextunity-forge-mcp query explain 'src/module.py:parse'
@@ -45,10 +46,16 @@ contextunity-forge-mcp query tests 'src/module.py:parse' --direction inbound
 contextunity-forge-mcp query remove 'src/module.py:parse'
 contextunity-forge-mcp query analyze 'SELECT name FROM nodes ORDER BY name'
 contextunity-forge-mcp query run slice 'src/module.py:parse' --depth 1 --limit 30
+contextunity-forge-mcp query run slice src/db --limit 30
 contextunity-forge-mcp --format json query overview
 ```
 
 `query overview --aspects` accepts comma-separated aspect names. `entrypoints` excludes tests; `entrypoints_with_tests` includes them in the same `entrypoints` result. Repeat the chosen aspect and use `--limit`, `--offset`, and the previous page's `--generation` to continue a bounded aspect page.
+
+`topology` is opt-in and returns paged module statistics and dependency edges;
+see the [MCP reference](mcp-tools.md#selectors-and-graph-queries) for grouping
+and role rules. Directory slices include bounded inbound and outbound boundary
+summaries. CLI and MCP read the same index and return the same graph data.
 
 `query impact` defaults to one edge and accepts exactly one symbol selector or `--changes staged|unstaged|head`; `--path` can restrict a change view to a workspace-relative path. Use `--limit` from 1 to 100 (default 100) for page size and `--offset` to request a later page; a nonzero offset requires the preceding page's `--generation`. A change view returns changed symbols, impacted nodes and tests, plus explicit unmapped changes. It maps ranges only when the selected Git postimage matches the indexed file, and sets `complete` to false when some changes cannot be mapped. Its continuation generation binds the graph and captured Git change snapshot. Depth-one results include the selected edge on each non-seed node; full detail includes stored edge evidence. `query run impact` keeps its depth 2 default; both accept `--depth` to override it. `query tests` also accepts `--direction outbound` for dependencies of a test. `query run` accepts `overview`, `inspect`, `explain`, `impact`, `slice`, and `unwired`. `query analyze` accepts an indexed path, an empty target for the workspace, or one read-only `SELECT`/`WITH` statement. Its diagnostic form computes cycles; the MCP form requires `include_cycles: true`.
 

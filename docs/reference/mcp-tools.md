@@ -159,7 +159,29 @@ For an exact indexed file, diagnostic locations include the source line as `snip
 
 Declared-public rules are language-specific: Python includes module-level names without a leading underscore, excluding nested declarations; Rust includes declarations written with unrestricted `pub`, even inside a private module; TypeScript includes local declarations in explicit named or default module exports and public/default-public members of exported classes, excluding private, protected, and `#private` members. The report does not infer whole-project re-export reachability, honor Python `__all__`, or treat type-only declarations as runtime call targets. Profiles without a declared-public rule leave visibility unknown.
 
-Compact and full `code_map_explain` edge rows include both public endpoint IDs and direction relative to the selected node; full detail also includes stored edge evidence. `code_map_inspect` reports an empty linked-document set as `{ "total": 0 }`. `code_map_overview` provides the workspace root, schema version, counts, and page generation. Its database aspects are `counts`, `components`, `languages`, `coverage_by_workspace`, `cycles`, `entrypoints`, `entrypoints_with_tests`, `compiled_profiles`, and `metadata`. The discovery adapter additionally accepts `discovery`, `manifest_components`, `documentation_hubs`, and `milestones`; `components` also includes discovery components. An omitted or empty aspect list selects every database aspect except opt-in `cycles` and both entrypoint aspects and includes discovery. The `entrypoints` aspect excludes tests; `entrypoints_with_tests` includes them in the same `entrypoints` page. If both are requested, tests are included. Repeat the selected aspect when continuing with the returned offset and generation. Entries are ordered by category, descending outgoing call count, and symbol ID; each includes its kind, signature, path, and start line. Unsupported aspects fail and list all accepted names. The `coverage_by_workspace` aspect pages counts from persisted primary and linked workspace metadata; linked paths retain their workspace identity after reopening the index.
+Compact and full `code_map_explain` edge rows include both public endpoint IDs and direction relative to the selected node; full detail also includes stored edge evidence. `code_map_inspect` reports an empty linked-document set as `{ "total": 0 }`. `code_map_overview` provides the workspace root, schema version, counts, and page generation. Its database aspects are `counts`, `components`, `languages`, `coverage_by_workspace`, `cycles`, `entrypoints`, `entrypoints_with_tests`, `topology`, `compiled_profiles`, and `metadata`. The discovery adapter additionally accepts `discovery`, `manifest_components`, `documentation_hubs`, and `milestones`; `components` also includes discovery components. An omitted or empty aspect list selects every database aspect except opt-in `cycles`, `topology`, and both entrypoint aspects and includes discovery. The `entrypoints` aspect excludes tests; `entrypoints_with_tests` includes them in the same `entrypoints` page. If both are requested, tests are included. Repeat the selected aspect when continuing with the returned offset and generation. Entries are ordered by category, descending outgoing call count, and symbol ID; each includes its kind, signature, path, and start line. Unsupported aspects fail and list all accepted names. The `coverage_by_workspace` aspect pages counts from persisted primary and linked workspace metadata; linked paths retain their workspace identity after reopening the index.
+
+Request `{"operation":"slice","selector":"src/db"}` from `code_map_query`
+to include `boundary_contract` for an indexed directory. The contract lists
+externally used internal symbols and groups incoming and outgoing edges by the
+external file's parent directory. Counts include all indexed edge kinds; exported
+caller counts are distinct source symbols. Arrays are limited by the request
+limit, with total counts alongside them; each module includes at most five
+representative edges. File and explicit symbol slices retain graph traversal.
+
+Request `{"aspects":["topology"]}` from `code_map_overview` for opt-in
+`topology.modules` and `topology.module_edges` pages. Module names use the
+first two directory components, except `src/engine` uses three where available;
+root files belong to the empty module. Counts use indexed nodes and edges.
+Cohesion is internal edges divided by internal plus inbound and outbound edges,
+or zero for a module without edges. Roles are assigned in this order: an adapter
+entrypoint or no inbound with outbound is `adapter_or_entrypoint`; no outbound
+with inbound is `foundation`; at least 10% table nodes or three table-query
+edges is `data_access`; at least three incoming and three outgoing edges to
+at least three distinct neighbors is `orchestrator`; remaining modules are
+`domain`. Module edges sort by decreasing count and then module names; ties
+for dominant kind use the lexicographically first kind. Both pages use the
+request offset, limit and generation.
 
 Depth-one `code_map_impact` results include the exact selected edge on each non-seed node, with both endpoint IDs, kind, path, line, direction, confidence, and occurrence count; full detail includes stored edge evidence. At greater depths, nodes retain their shortest `via` predecessor.
 

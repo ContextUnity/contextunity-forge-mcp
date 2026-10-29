@@ -102,6 +102,16 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
             vec!["query", "overview"],
             json!({"limit":100}),
         ),
+        (
+            "code_map_overview",
+            vec!["query", "overview", "--aspects", "topology"],
+            json!({"aspects":["topology"],"limit":100}),
+        ),
+        (
+            "code_map_query",
+            vec!["query", "run", "slice", "nested", "--limit", "100"],
+            json!({"operation":"slice","selector":"nested","limit":100}),
+        ),
         ("task_list", vec!["task", "list"], json!({})),
         (
             "code_map_inspect",
@@ -230,6 +240,9 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
         assertions::assert_command_succeeded(&cli_markdown);
         let cli_text = std::str::from_utf8(&cli_markdown.stdout).unwrap();
         let cli_text = cli_text.strip_suffix('\n').unwrap_or(cli_text);
+        if arguments["aspects"] == json!(["topology"]) {
+            assert!(cli_text.contains("Module topology"), "{cli_text}");
+        }
         let mut explicit_cli_args = Vec::with_capacity(cli_args.len() + 2);
         explicit_cli_args.extend(["--format", "markdown"]);
         explicit_cli_args.extend(cli_args.iter().copied());
@@ -319,6 +332,22 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
             }
         }
         assert_eq!(cli_json, mcp_json, "{tool} parsed JSON parity");
+        if arguments["aspects"] == json!(["topology"]) {
+            assert!(
+                mcp_json["topology"]["modules"]["items"].is_array(),
+                "{mcp_json}"
+            );
+            assert!(
+                mcp_json["topology"]["module_edges"]["items"].is_array(),
+                "{mcp_json}"
+            );
+        }
+        if arguments["operation"] == "slice" {
+            assert!(
+                mcp_json["boundary_contract"]["exported_symbols"].is_array(),
+                "{mcp_json}"
+            );
+        }
 
         if tool == "ast_grep_search" {
             let page = &mcp_json["matches"];
