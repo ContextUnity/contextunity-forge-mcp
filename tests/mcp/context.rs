@@ -8,7 +8,7 @@ use contextunity_forge_mcp::{
         format::OutputFormat,
         response::{ResponsePolicy, MAX_OUTPUT_BYTES},
     },
-    db::reader,
+    db::{reader, traversal},
     engine::scanner,
     mcp::response,
 };
@@ -73,7 +73,7 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
     );
     workspace.write(
         "service.py",
-        "def entry():\n    return target()\ndef target():\n    return 1\n",
+        "def entry():\n    return target()\ndef target():\n    return 1\nclass Base:\n    pass\nclass Child(Base):\n    pass\n",
     );
     workspace.write("other.py", "def target():\n    return 2\n");
     workspace.write(
@@ -98,6 +98,33 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
         "from service import entry\ndef unique_nested():\n    return entry()\n",
     );
     let mut client = Client::new(&workspace);
+
+    let untested = client.payload(
+        "code_map_query",
+        json!({"operation":"untested","target":"service.py","limit":100}),
+    );
+    let untested_names = untested["nodes"]["items"].to_string();
+    assert!(untested_names.contains("target"), "{untested}");
+    assert!(!untested_names.contains("entry"), "{untested}");
+    let direct = traversal::query_with_options(
+        &workspace.open(),
+        "untested",
+        Some("service.py"),
+        &traversal::GraphQueryOptions {
+            depth: 1,
+            direction: None,
+            coverage: Default::default(),
+            page: &contextunity_forge_mcp::core::response::QueryOptions::resolve(
+                &ResponsePolicy::default(), Some(100), 0, None, None,
+            ).unwrap(),
+        },
+    ).unwrap();
+    assert!(direct["nodes"]["items"].to_string().contains("target"), "{direct}");
+    let implementations = client.payload(
+        "code_map_query",
+        json!({"operation":"implementations","selector":"service.py:Base","limit":100}),
+    );
+    assert!(implementations.to_string().contains("Child"), "{implementations}");
 
     let parity_cases = [
         (
