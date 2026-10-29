@@ -27,6 +27,25 @@ The embedded ACDD profile registers `rust-check-and-test` as strict Clippy follo
 When authoring contracts for existing capabilities, strengthen existing seam tests (in `tests/`) with additive parameterized cases rather than creating duplicate standalone test functions. Ensure tests compile cleanly and produce runtime assertion failures (exit code 101) for `contract` gate proof.
 <!-- acdd-forge:agents-verification:end -->
 
+<!-- acdd-forge:contract-synthesis:start -->
+## Architectural Contract Synthesis Gate (contract_synthesis)
+
+The initial gate of the milestone workflow is `contract_synthesis` (role: `architect`).
+**DO NOT AUTOPILOT OR BYPASS THIS GATE BY MERELY PRODUCING A RED TEST:**
+
+1. **Architectural Exploration**: Inspect how the feature fits into the existing codebase using Forge tools (`code_map_inspect`, `code_map_impact`, `ast_grep_search`, `ctx_read`). For example, for SQL indexing, inspect `src/engine/languages/mod.rs` and understand how languages and facts are registered.
+2. **Strict Scope & Configuration Guardrail**:
+   - Check that the proposed implementation fits entirely within the task's `scope:` without needing changes to protected project configuration (`Cargo.toml`, `build.rs`, `.forge/**`).
+   - If an approach suggests modifying `Cargo.toml` or creating new Cargo features, that approach is **REJECTED**: use lightweight internal engine lexers/parsers in `src/engine/languages/` and register them via internal registries instead.
+3. **Blackboard Decision Record**:
+   - Before submitting `contract_synthesis`, post an explicit decision to `task_blackboard` (topic: `decisions`) detailing:
+     - The confirmed architectural design and module entrypoints.
+     - Confirmation that no out-of-scope or protected configuration files are required.
+     - The chosen seam test location and expectations.
+4. **Compile Red Seam Test Baseline**:
+   - Author or strengthen an additive domain seam test in `tests/` that compiles cleanly and triggers a runtime assertion failure (exit code 101).
+<!-- acdd-forge:contract-synthesis:end -->
+
 ## Documentation scan before handoff
 
 Before milestone handoff, launch a documentation agent in the milestone worktree.

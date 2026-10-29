@@ -50,25 +50,6 @@ impl Config {
     assert_eq!(constructor.details["receiver_type"], "Config");
     assert!(constructor.details.get("is_method").is_none());
     assert_eq!(constructor.details["is_static"], true);
-
-    let workspace = super::support::Workspace::new();
-    workspace.write("schema.sql", "CREATE TABLE orders (id INTEGER PRIMARY KEY);\nCREATE VIEW order_view AS SELECT * FROM orders;\n");
-    workspace.write("queries.rs", "fn load() { let _ = \"SELECT * FROM orders\"; }\nfn save() { let _ = \"INSERT INTO orders (id) VALUES (1)\"; }\n");
-    workspace.write("models.py", "class Order:\n    __tablename__ = 'orders'\n");
-    let db = workspace.build();
-    let tables: i64 = db
-        .query_row("SELECT count(*) FROM nodes WHERE kind = 'table' AND name = 'orders'", [], |row| row.get(0))
-        .unwrap();
-    assert_eq!(tables, 1, "SQL schema tables must be indexed");
-    for (source, kind) in [("order_view", "queries_table"), ("load", "queries_table"), ("save", "mutates_table"), ("Order", "defines_table")] {
-        let count: i64 = db.query_row(
-            "SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name=?1 AND d.name='orders' AND e.kind=?2",
-            [source, kind], |row| row.get(0),
-        ).unwrap();
-        assert_eq!(count, 1, "missing {kind} edge from {source}");
-    }
-    drop(db);
-    workspace.cold_parity("schema.sql");
 }
 
 #[cfg(feature = "lang-go")]

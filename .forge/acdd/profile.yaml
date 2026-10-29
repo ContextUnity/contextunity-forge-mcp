@@ -46,7 +46,17 @@ roles:
     reuse_on_reject: true
     models:
       - 'sol-6.1:high'
-    guidance: "Repair cross-milestone verification findings within the admitted milestone branch, then return the candidate for a fresh full check and independent review."
+    guidance: "As Architect, lead architectural contract synthesis and arbitration. You MUST perform a thorough architectural audit of codebase extension points before coding. Verify that task scopes are sufficient without touching Cargo.toml or build.rs. Define cross-task seam contracts, establish compiling red tests (exit 101), and record architectural decisions on task_blackboard."
+
+guidance:
+  milestone.synthesis:
+    description: "MANDATORY ARCHITECTURAL AUDIT & CONTRACT SYNTHESIS GATE — DO NOT BYPASS"
+    criteria:
+      - "ARCHITECTURAL EXTENSION POINTS: Inspect existing parser and linker registries using code_map_* and ctx_read. For languages, inspect src/engine/languages/mod.rs. Do NOT invent new Tree-sitter Cargo features or attempt to edit Cargo.toml."
+      - "SCOPE & PERIMETER VERIFICATION: Confirm that all planned files are within task allowed_write_scope. Protected files (Cargo.toml, build.rs, .forge/**) are strictly off-limits. If an approach requires Cargo.toml, reject that approach immediately in favor of internal registries."
+      - "SEAM CONTRACT & BASELINE: Author an additive domain seam test in tests/languages/extractors.rs that compiles cleanly and proves the red baseline (exit code 101)."
+      - "RECORD ARCHITECTURAL DECISION: Before submitting this gate, post an explicit synthesis decision to task_blackboard (topic: decisions) detailing the chosen implementation path."
+      - "ANTI-AUTOPILOT INVARIANT: Do NOT blindly submit a failing test without completing the architectural audit and posting the decision to the blackboard."
 
 commands:
   rust-check-and-test:
@@ -100,7 +110,23 @@ gates:
   - id: contract_synthesis
     role: architect
     guidance: [milestone.synthesis, hitl]
+    tools:
+      - code_map_inspect
+      - code_map_impact
+      - code_map_overview
+      - code_map_search
+      - ast_grep_search
+      - task_blackboard
+    steps:
+      - "1. ARCHITECTURAL AUDIT: Inspect existing codebase extension points using code_map_* and ctx_read. Do NOT assume Tree-sitter or Cargo.toml changes are needed."
+      - "2. SCOPE VERIFICATION: Verify all implementation files are inside allowed_write_scope. Protected files (Cargo.toml, build.rs) must NOT be edited."
+      - "3. SEAM TEST: Strengthen existing domain seam tests additively in tests/ with a cleanly compiling test that triggers runtime assertion failure (exit 101)."
+      - "4. BLACKBOARD RECORD: Post architectural synthesis decision to task_blackboard (topic: decisions) detailing the chosen implementation path."
+      - "5. SUBMIT: Submit contract proof with seam_test_ref and red_exit_code: 101."
     proof: contract
+    expected_failure:
+      exit_codes: [1, 101, 134]
+      stderr_contains: "assertion failed"
     persistence:
       pre: snapshot
       post: commit
