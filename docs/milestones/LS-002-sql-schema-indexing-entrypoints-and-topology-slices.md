@@ -64,31 +64,166 @@ The five feature tasks below belong to LS-002:
 
 ```yaml
 task_ref: sql-schema-extractor-and-orm-table-linking
-target: "Index .sql DDL/migrations and embedded SQL queries into table/column nodes and link ORM models and application functions via defines_table, queries_table, and mutates_table edges"
+target: Index .sql DDL/migrations and embedded SQL queries into table/column nodes and link ORM models and application functions via defines_table, queries_table, and mutates_table edges
 proof_policy: seam-test-first
-contract_revision: 4
+contract_revision: 7
 depends_on: []
 scope:
-  - src/engine/languages/mod.rs
-  - src/engine/languages/sql.rs
-  - src/engine/languages/rust.rs
-  - src/engine/languages/python.rs
-  - src/engine/languages/typescript/mod.rs
-  - src/engine/linker/framework_relations.rs
-  - src/engine/linker/resolution/mod.rs
-  - docs/architecture/indexing.md
-  - tests/languages/
-status: ready
+- src/engine/languages/mod.rs
+- src/engine/languages/sql.rs
+- src/engine/languages/rust.rs
+- src/engine/languages/python.rs
+- src/engine/languages/typescript/mod.rs
+- src/engine/ast/routes.rs
+- src/engine/linker/framework_relations.rs
+- src/engine/linker/resolution/mod.rs
+- src/db/traversal.rs
+- docs/architecture/indexing.md
+- docs/reference/framework-manifests.md
+- tests/languages/
+- src/engine/languages/rust
+- src/engine/languages/python
+- src/engine/languages/manifests
+- src/engine/languages/manifests.rs
+- src/engine/languages/dependency_registry.rs
+- src/engine/languages/sql
+- src/engine/languages/manifests/projections.rs
+- src/engine/languages/manifests/syntax.rs
+- src/engine/languages/manifests/semantic.rs
+- src/engine/languages/python/mod.rs
+- src/engine/languages/python/syntax_operations.rs
+- src/engine/languages/rust/mod.rs
+- src/engine/languages/python/dependencies.rs
+- src/engine/languages/sql/mod.rs
+- src/engine/languages/semantic.rs
+- src/engine/languages/python/lazy_exports.rs
+- src/engine/languages/python/module_exports.rs
+- src/engine/languages/python/linker.rs
+- src/engine/languages/python/template_loaders.rs
+- src/engine/languages/python/computed_receivers.rs
+- src/engine/languages/python/value_flow.rs
+- src/engine/languages/rust/linker.rs
+- src/engine/languages/rust/value_flow.rs
+status: completed
 subtasks:
-  - subtask_ref: implement-sql-file-ddl-and-dml-extractor
-    title: "Create src/engine/languages/sql.rs (and register .sql in src/engine/languages/mod.rs) to extract CREATE TABLE, CREATE VIEW, ALTER TABLE, columns, foreign keys (references_table), and DML table usages from .sql schema and migration files"
-    status: pending
-  - subtask_ref: extract-embedded-sql-and-orm-table-facts
-    title: "Extract embedded SQL table references (SELECT FROM, INSERT INTO, UPDATE, DELETE FROM) from Rust/Python/TS string literals and ORM table bindings (Django Meta.db_table / model name, SQLAlchemy __tablename__) into Facts"
-    status: pending
-  - subtask_ref: link-orm-models-and-queries-to-sql-tables
-    title: "In src/engine/linker/framework_relations.rs, resolve extracted SQL table facts and ORM bindings to table nodes, emitting defines_table, queries_table, mutates_table, and references_table edges"
-    status: pending
+- subtask_ref: implement-sql-file-ddl-and-dml-extractor
+  title: Create src/engine/languages/sql.rs (and register .sql in src/engine/languages/mod.rs) to extract CREATE TABLE, CREATE VIEW, ALTER TABLE, columns, foreign keys (references_table), and DML table usages from .sql schema and migration files
+  status: completed
+  evidence: 'Production seam tests/languages/extractors.rs; cargo test --test languages 250/250 and strict Clippy exit 0, receipt #1279; independent review candidate d9a53b.'
+- subtask_ref: extract-embedded-sql-and-orm-table-facts
+  title: Extract embedded SQL table references (SELECT FROM, INSERT INTO, UPDATE, DELETE FROM) from Rust/Python/TS string literals and ORM table bindings (Django Meta.db_table / model name, SQLAlchemy __tablename__) into Facts
+  status: completed
+  evidence: 'Production seam tests/languages/extractors.rs; cargo test --test languages 250/250 and strict Clippy exit 0, receipt #1279; independent review candidate d9a53b.'
+- subtask_ref: link-orm-models-and-queries-to-sql-tables
+  title: In src/engine/linker/framework_relations.rs, resolve extracted SQL table facts and ORM bindings to table nodes, emitting defines_table, queries_table, mutates_table, and references_table edges
+  status: completed
+  evidence: 'Production seam tests/languages/extractors.rs; cargo test --test languages 250/250 and strict Clippy exit 0, receipt #1279; independent review candidate d9a53b.'
+extended_scope:
+- src/engine/languages/rust
+- src/engine/languages/python
+- src/engine/languages/manifests
+- src/engine/languages/manifests.rs
+- src/engine/languages/dependency_registry.rs
+- src/engine/languages/sql
+- src/engine/languages/manifests/projections.rs
+- src/engine/languages/manifests/syntax.rs
+- src/engine/languages/manifests/semantic.rs
+- src/engine/languages/python/mod.rs
+- src/engine/languages/python/syntax_operations.rs
+- src/engine/languages/rust/mod.rs
+- src/engine/languages/python/dependencies.rs
+- src/engine/languages/sql/mod.rs
+- src/engine/languages/semantic.rs
+- src/engine/languages/python/lazy_exports.rs
+- src/engine/languages/python/module_exports.rs
+- src/engine/languages/python/linker.rs
+- src/engine/languages/python/template_loaders.rs
+- src/engine/languages/python/computed_receivers.rs
+- src/engine/languages/python/value_flow.rs
+- src/engine/languages/rust/linker.rs
+- src/engine/languages/rust/value_flow.rs
+receipt:
+  contract_revision: 7
+  passed_at: 2026-10-29T19:59:15.546768700+00:00
+  evidence:
+    seam_test_proof:
+      exit_code: 0
+      seam_test_refs:
+      - tests/languages/extractors.rs
+      tests_passed: 250
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: 'Independent source review candidate d9a53b, prior findings verified closed; rev7 scope justified by #1270-1277 and actual Forge outputs; tests and Clippy builder receipts #1279; no benchmark.'
+        claims:
+          applicable: true
+          evidence: 'Independent source review candidate d9a53b, prior findings verified closed; rev7 scope justified by #1270-1277 and actual Forge outputs; tests and Clippy builder receipts #1279; no benchmark.'
+        concurrency:
+          applicable: true
+          evidence: 'Independent source review candidate d9a53b, prior findings verified closed; rev7 scope justified by #1270-1277 and actual Forge outputs; tests and Clippy builder receipts #1279; no benchmark.'
+        project_isolation:
+          applicable: true
+          evidence: 'Independent source review candidate d9a53b, prior findings verified closed; rev7 scope justified by #1270-1277 and actual Forge outputs; tests and Clippy builder receipts #1279; no benchmark.'
+        administration:
+          applicable: true
+          evidence: 'Independent source review candidate d9a53b, prior findings verified closed; rev7 scope justified by #1270-1277 and actual Forge outputs; tests and Clippy builder receipts #1279; no benchmark.'
+      extended_scope_review:
+        approved_paths:
+        - src/engine/languages/rust
+        - src/engine/languages/python
+        - src/engine/languages/manifests
+        - src/engine/languages/manifests.rs
+        - src/engine/languages/dependency_registry.rs
+        - src/engine/languages/sql
+        - src/engine/languages/manifests/projections.rs
+        - src/engine/languages/manifests/syntax.rs
+        - src/engine/languages/manifests/semantic.rs
+        - src/engine/languages/python/mod.rs
+        - src/engine/languages/python/syntax_operations.rs
+        - src/engine/languages/rust/mod.rs
+        - src/engine/languages/python/dependencies.rs
+        - src/engine/languages/sql/mod.rs
+        - src/engine/languages/semantic.rs
+        - src/engine/languages/python/lazy_exports.rs
+        - src/engine/languages/python/module_exports.rs
+        - src/engine/languages/python/linker.rs
+        - src/engine/languages/python/template_loaders.rs
+        - src/engine/languages/python/computed_receivers.rs
+        - src/engine/languages/python/value_flow.rs
+        - src/engine/languages/rust/linker.rs
+        - src/engine/languages/rust/value_flow.rs
+        reason_verified: true
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-SQL-ZERO-SOURCE-IO-DELTA: SQL DDL declarations (CREATE TABLE, CREATE VIEW, ALTER TABLE) and query table references (SELECT/INSERT/UPDATE/DELETE) are extracted into Facts during file parsing so delta rebuilds preserve INV-DELTA-NO-SOURCE-IO and bit-identical cold-vs-delta commitments (forge-owner-sha256-v2).'
+    - 'INV-ENTRYPOINT-UNWIRED-PRECISION: Semantic entrypoints (main functions, CLI subcommands, HTTP/WebSocket route handlers, MCP tool handlers, event/cron handlers, and test roots) are deterministically tagged during extraction/linking and excluded from default dead-code (unwired) false positives.'
+    - 'INV-BOUNDARY-SLICE-COMPACTNESS: Directory-level code_map_query(operation="slice") computes 1-hop inbound and outbound module boundary contracts (neighborMap equivalent) directly from SQLite edges in O(E_dir) without loading unrelated file bodies.'
+    - 'INV-DUAL-SURFACE-PARITY: Every new overview aspect (entrypoints, topology), slice boundary contract, and SQL graph relation is exposed with identical semantics on both MCP and CLI surfaces.'
+    architectural_notes:
+    - 'decisions: Scope extension needed: Rust and Python profiles now live at src/engine/languages/{rust,python}/mod.rs (manifest points to nonexistent flat files); SQL profile registration uses Cargo.toml lang-* feature. ORM bindings must remain manifest-driven per src/engine/languages/AGENTS.md, requiring manifests and their generic rule processing owners. Existing References are persistable, but delta invalidation must be verified before claiming full scope.'
+    - 'decisions: Correction to blocker #1246: mandatory Cargo.toml/Tree-sitter was not established. The accepted task explicitly permits a dependency-free SQL scanner, and extraction already invokes LanguageProfile::extract_file for non-AST special cases. Manual profile registration plus a grammar-optional path is a candidate; code paths that currently assume grammar are identified in milestone draft #1247. Do not treat prior Cargo scope rejection as a proved blocker. Other task requirements (persistent SQL facts and declarative framework semantics) remain to be implemented and tested; candidate design must handle unsupported AST search safely.'
+    - 'decisions: Admitted manifests.rs and dependency_registry.rs to guard grammar-bound preparation for dependency-free SQL scanner profile. Semantic manifest operations project configured literal class attributes and Django model defaults to table references during extraction; linker consumes persisted references. Cargo.toml is unchanged. SQL impact default traversal omits new relation kinds; Forge denied traversal scope due downstream task ownership. Acceptance impact remains unproved until shared owner coordination; docs/reference/framework-manifests.md scope also rejected.'
+    - 'decisions: Admitted src/engine/languages/sql/ and moved the grammar-free profile to sql/mod.rs: generated registry treats every flat .rs file as an available lang-* feature, so sql.rs would incorrectly advertise a nonexistent Cargo feature. Directory profile remains manually registered and requires no Cargo manifest edit.'
+    - 'decisions: Rev 5 architectural synthesis: reuse grammar-free SQL LanguageProfile manually registered in languages/mod.rs, parsed by extract_file to persisted Facts, existing manifest-driven ORM projections and framework_relations linker. No Cargo.toml or build.rs edits. Impact uses src/db/traversal.rs resolve_traversal_kinds shared by traversal and changed-node callers; admit file as initial scope before downstream owners so default table impact can include SQL relation kinds, preserve default behavior for non-table selectors. Document new semantic rules in admitted docs/reference/framework-manifests.md; scope ordering synchronized as defined in tasks.md. Existing seam tests/languages/extractors.rs executes real writer, reader, linker, impact, and cold/delta. On rev 5 candidate cargo test --test languages extractors::test_rust_ast_extractor compiled and failed 101 at missing SQL view in impact (earlier table, edge and ORM assertions passed; subsequent cold/delta not yet reached). Full task acceptance and independent review remain required.'
+    - 'decisions: Rev 5: SQLx derive alone is not table evidence. A package-activated declarative macro_type_to_table rule recognizes explicit sqlx::query_as! and persists a syntax candidate. Linker accepts a unique same-file same-lexical-parent struct and unique indexed table; imported/ambiguous/shadowed/unconfigured identities fail closed. SQL table relations participate in default traversal. Runtime seam proves SQL schema, embedded SQL, ORM, SQLx, impact and cold/delta output-root equality. Focused cargo test --test languages extractors::test_rust_ast_extractor exit 0, 1 passed; cargo clippy --all-targets --all-features -- -D warnings && cargo test --test languages exit 0, 250 passed. Resolves impact/docs blockers #1253. SQLx cross-file/imported result types deliberately unresolved; SQL scope remains bounded and no table inferred from derive.'
+    - 'decisions: Review-repair clusters: SQL scanner/Facts/linker preserve schema-qualified table IDs and fail closed for ambiguous short names, including synthesized embedded tables; comma FROM and BEGIN/PRAGMA batches are exercised through workspace SQLite indexing. Django configured model proof guards Meta override, non-model and reassigned alias; public grammarless parse_file dispatches profile extraction. Focused seam failed before repairs (exit 101) and passed during repair; full strict Clippy and languages lane underway on final candidate. Matrix: qualified/short/ambiguous/embedded, default/explicit/non-model/reassigned, batch/list, public parser. Mutation runs are not yet established per cluster; independent review must not treat this as a closure receipt.'
+    - 'decisions: Contract revision 6 architectural synthesis: source-verified python_summary_candidates gates RouteContextBuilder; ORM-only files currently have lexical_write_count 0 and fail the runtime seam despite real model import. Extend initial scope solely to src/engine/ast/routes.rs so active declarative table-base rules admit the existing shared main-walk collector, with exact tests and no extra module walk. Changes use existing manifest IR, dependency activation, statement-aware scanner, and linker. No Cargo.toml/build.rs or protected milestone field changes. code_map impact shows two RouteContext callers, existing production seam tests/lang extractor cover downstream SQLite/cold-delta; prior audit and cross-task sequencing #1255, current red matrix #1260. Scope sync approved; other milestone tasks remain in their prior stages.'
+    - 'decisions: Second systemic replan, independently checked by sql_architect. Shared SQL scanner: typed tokens, quote/comment and statement boundaries, context/depth-aware FROM and update parser shared by schema/literal/macro, ignore transaction/control statements yet process later DDL/DML; fail closed unproven dynamic and CTE identities. ORM: once per file build immutable indexes from completed Facts (owner, module imports with provenance, classes, inheritance and factory initializers); memoized bounded traversal with source order and existing lexical write counts, admitted factory identities configured declaratively, no per-class scan of all Facts. Matrix includes COMMIT/ROLLBACK, ONLY/AS/bare alias, mixed joins/lists and nested ON, fake UPDATE in UPSERT/FK, quoted identities; SQLAlchemy factory aliases, reassignment/nonmodel/no dependency/local Base, graph cycle, cold/delta. Compiling runtime red fe7872e6a3b4b9b8 exit 101; existing source remains in-scope; do not claim pass before proof.'
+    - 'decisions: Fourth-round design review by independent sql_architect: shared segment codec canonicalizes unquoted lowercase and quoted exact without preserving quote marker (orders == \"orders\", Foo == foo == \"foo\", != \"Foo\"; quoted dot is one segment). Linker full/short maps, DDL/query/SQLx and CTE use same codec. CTE parser reads WITH [RECURSIVE] name [(column list)] AS [NOT MATERIALIZED] (balanced body), per-statement visibility spans distinguish recursive/self/prior and qualified physical tables. Embedded fast precheck scans entire literal bytes without allocation for effect tokens (FROM/JOIN/INTO/UPDATE/REFERENCES/CREATE/ALTER), retaining transaction/control/comment prefixes. Main visitor assignment event indexes direct and nested configured class attrs by owner/container/attribute and static/dynamic value; deferred rules read keyed index, never rescan bodies per rule. Test matrix and red seam added; no benchmarks.'
+    - 'decisions: Revision 7 architecture retains rev6 design #1261 and #1267, grammar-free SQL scanner -> persisted Facts -> existing manifest-driven ORM projections and linker, indexed Python ownership/attribute collection via existing walk, SQL table impact in traversal; no Cargo/build changes. Sole revision removes 13 unused individually listed paths from scope and extended_scope, preserving all production and documentation edits and protected milestone authority. The precise historical Forge errors and absence of individual evidence for removals are in #1270. This correction does not alter outcome, existing acceptance seam, prior architectural rationale, or cross-task ordering. Forge may demand specific callers on contract submit: admit only the exact reported paths, record the error, then repeat. Red proof rerun uses an isolated copy with SQL identifier equivalence deliberately regressed, retaining actual production seam and leaving task candidate intact; prior mutation matrix #1268 remains applicable.'
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Implementation Guide (Step-by-Step for Builders)
