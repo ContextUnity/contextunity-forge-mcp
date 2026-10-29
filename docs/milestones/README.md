@@ -5,11 +5,11 @@ doc_type: guide
 
 # Milestones
 
-Milestone commitment files in this directory (`0XX-*.md`) define the repository's execution queue and lifecycle commitments.
+Milestone commitment files in this directory (`0XX-*.md`, `TAG-NNN-*.md`) define the repository's execution queue and lifecycle commitments.
 
 ## Ownership and Truth
 
-- **Single Source of Truth:** Each milestone file (`docs/milestones/0XX-*.md`) owns its status (`active`, `planned`, `completed`, or `cancelled`), invariants, task breakdown, and acceptance outcomes. A cancelled milestone records a non-empty `closure.reason`.
+- **Single Source of Truth:** Each milestone file (`docs/milestones/0XX-*.md`, `docs/milestones/TAG-NNN-*.md`) owns its status (`active`, `planned`, `completed`, or `cancelled`), invariants, task breakdown, and acceptance outcomes. A cancelled milestone records a non-empty `closure.reason`.
 - **Queue Order:** Numeric filename prefixes (`010-*.md`, `020-*.md`, ...) supply the queue execution order. Supported milestone filenames also admit tagged prefixes such as `P-001-*.md` or `EC-001-*.md`.
 - **Archive:** Completed and cancelled milestones are retained in [archive/](archive/README.md) with their durable receipts and rationale. Sync prunes operational task state for cancelled milestones.
 
@@ -31,7 +31,6 @@ Milestones use a 2-letter domain prefix and a 3-digit sequence number (`TAG-NNN-
 | **`AR`** | **Architecture & Modularity** | Engine architecture, traits (`LanguageLinker`), god-file decomposition | `AR-001` .. `AR-999` |
 | **`UX`** | **Agent UX & Ergonomics** | MCP response compaction, token efficiency, Markdown-first dual-surface | `UX-001` .. `UX-999` |
 | **`IN`** | **Installer & Onboarding** | Multi-flavor distribution, `install.sh`, packaging, repo onboarding | `IN-001` .. `IN-999` |
-
 ### Legacy Phase 0 Series (`010`–`056`)
 
 Archived milestones with 3-digit pure numbers (`010`–`056`) represent the foundational Phase 0 implementation. They map to the new domain taxonomy as follows:
@@ -42,6 +41,11 @@ Archived milestones with 3-digit pure numbers (`010`–`056`) represent the foun
 - `050`–`056` $\to$ Phase 0 predecessors of **`UX`** (`Agent Ergonomics & MCP`).
 
 Active commitments migrate to the `TAG-NNN` standard; archived milestone files and receipts remain untouched in [archive/](archive/README.md) to preserve historical commit and receipt integrity.
+
+### Active and Planned Milestones
+
+- **`LS-002`**: [SQL schema and query indexing, deterministic entrypoint classification, 1-hop directory boundary slices, and module topology](LS-002-sql-schema-indexing-entrypoints-and-topology-slices.md) (`active`).
+- **`PF-001`**: [Cold-build performance, RSS bound, HTML endpoint resolution repair, and Cargo workspace split](PF-001-cold-build-rss-bound-and-linker-diet.md) (`planned`) — Cold-build throughput and HTML resolution repair, plus splitting the Cargo Workspace into 3 independent crates (`forge-core`, `forge-index`, and `forge-tasks`).
 
 ---
 
@@ -104,4 +108,3 @@ subtasks:
 
 - **Gate progression**: The active profile defines task gates and milestone containers. Task dependencies determine execution waves, and review findings route through the configured `reject_routing` policy.
 - **Review and escalation**: Reviewers evaluate every configured contour and explicitly approve non-empty `extended_scope`. Escalate unadmitted public-interface changes through the milestone's architect and HITL guidance.
-
