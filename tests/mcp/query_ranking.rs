@@ -20,6 +20,10 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
         "caller.py",
         "from z import process, process_work\n\ndef run():\n    process_work()\n    return process()\n",
     );
+    ws.write(
+        "signature.py",
+        "@pytest.fixture\ndef typed_query(order: GateProfile) -> Result:\n    return order\n\ndef other(value: Unrelated) -> OtherResult:\n    return value\n",
+    );
     let db_path = ws.root().join(".forge/code-map.sqlite");
     writer::build(ws.root(), &db_path, None).unwrap();
     let conn = reader::open(&db_path, ws.root()).unwrap();
@@ -54,6 +58,25 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
     assert_eq!(nodes[0]["name"], "process");
     assert_eq!(nodes[1]["name"], "process");
     assert_eq!(nodes[0]["match_reason"], "exact_name");
+    for pattern in ["GateProfile", "returns:Result", "takes:GateProfile", "@pytest.fixture"] {
+        let result = symbols::search_with_options(
+            &conn,
+            pattern,
+            &symbols::SearchOptions {
+                kind: Some("function"),
+                path: Some("signature.py"),
+                include_docs: false,
+                exact: false,
+                page: &options,
+            },
+        )
+        .unwrap();
+        let hits = result["nodes"]["items"].as_array().unwrap();
+        assert!(
+            hits.iter().any(|node| node["name"] == "typed_query"),
+            "signature search {pattern} must find typed_query: {result}"
+        );
+    }
     let prefix = symbols::search_with_options(
         &conn,
         "process_*",
