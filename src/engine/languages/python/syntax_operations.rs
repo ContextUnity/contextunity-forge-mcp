@@ -20,6 +20,76 @@ struct PreparedSyntaxContext {
     receiver_fact_reference_cursor: usize,
     receiver_class_ids: HashSet<String>,
     receiver_imported_class_counts: HashMap<String, usize>,
+    model_factories: HashMap<String, Vec<(String, usize)>>,
+    model_attributes: HashMap<(String, Option<String>, String), Option<String>>,
+    model_index: Option<ModelIndex>,
+}
+
+#[derive(Clone)]
+struct ModelClass {
+    id: String,
+    name: String,
+    path: String,
+    line: usize,
+}
+
+#[derive(Default)]
+struct ModelIndex {
+    owners: HashMap<String, ModelClass>,
+    classes: HashMap<String, Vec<ModelClass>>,
+    imports: HashMap<String, Vec<(String, String, usize)>>,
+    parents: HashMap<String, Vec<String>>,
+    explicit: HashSet<String>,
+    factories: HashMap<String, Vec<(String, usize)>>,
+    cache: HashMap<String, Vec<String>>,
+}
+
+impl ModelIndex {
+    fn build(facts: &Facts, factories: HashMap<String, Vec<(String, usize)>>) -> Self {
+        let mut result = Self {
+            factories,
+            ..Self::default()
+        };
+        for node in &facts.nodes {
+            if node.kind == "class" {
+                let class = ModelClass {
+                    id: node.id.clone(),
+                    name: node.name.clone(),
+                    path: node.path.clone(),
+                    line: node.line,
+                };
+                result.owners.insert(node.id.clone(), class.clone());
+                result
+                    .classes
+                    .entry(node.name.clone())
+                    .or_default()
+                    .push(class);
+            }
+        }
+        for reference in &facts.references {
+            match reference.kind.as_str() {
+                "imports" if reference.source.starts_with("module:") => {
+                    if let (Some(alias), Some(module)) = (&reference.alias, &reference.module) {
+                        result.imports.entry(alias.clone()).or_default().push((
+                            module.clone(),
+                            reference.expression.clone(),
+                            reference.line,
+                        ));
+                    }
+                }
+                "inherits" => result
+                    .parents
+                    .entry(reference.source.clone())
+                    .or_default()
+                    .push(reference.expression.clone()),
+                "defines_table" => {
+                    result.explicit.insert(reference.source.clone());
+                }
+                _ => {}
+            }
+        }
+        result
+    }
 }
 
 thread_local! {
@@ -108,6 +178,9 @@ pub(super) fn prepare_file(root: Node<'_>, source: &str, language_context: &Arc<
             receiver_fact_reference_cursor: 0,
             receiver_class_ids: HashSet::new(),
             receiver_imported_class_counts: HashMap::new(),
+            model_factories: HashMap::new(),
+            model_attributes: HashMap::new(),
+            model_index: None,
         });
     });
 }
@@ -812,6 +885,111 @@ fn static_symbol(node: Node<'_>, source: &str) -> Option<String> {
     }
 }
 
+pub(super) fn record_model_factory(ctx: &super::super::SyntaxContext<'_, '_>) {
+    let Some(parent) = ctx
+        .node
+        .parent()
+        .filter(|node| node.kind() == "expression_statement")
+    else {
+        return;
+    };
+    if !parent.parent().is_some_and(|node| node.kind() == "module") {
+        return;
+    }
+    let Some(left) = ctx
+        .node
+        .child_by_field_name("left")
+        .filter(|node| node.kind() == "identifier")
+    else {
+        return;
+    };
+    let Some(callee) = ctx
+        .node
+        .child_by_field_name("right")
+        .filter(|node| node.kind() == "call")
+        .and_then(|node| node.child_by_field_name("function"))
+        .and_then(|node| static_symbol(node, ctx.source))
+    else {
+        return;
+    };
+    PREPARED_SYNTAX_CONTEXT.with(|state| {
+        if let Some(state) = state.borrow_mut().as_mut() {
+            state
+                .model_factories
+                .entry(text(left, ctx.source).to_owned())
+                .or_default()
+                .push((callee, ctx.line()));
+        }
+    });
+}
+
+pub(super) fn record_model_attribute(
+    ctx: &super::super::SyntaxContext<'_, '_>,
+    symbols: &HashMap<usize, String>,
+    context: &super::super::LanguageContext,
+) {
+    let Some(left) = ctx
+        .node
+        .child_by_field_name("left")
+        .filter(|node| node.kind() == "identifier")
+    else {
+        return;
+    };
+    let attribute = text(left, ctx.source);
+    if !context
+        .prepared_projections("python")
+        .is_some_and(|rules| rules.class_attributes.contains_key(attribute))
+    {
+        return;
+    }
+    let Some(statement) = ctx
+        .node
+        .parent()
+        .filter(|node| node.kind() == "expression_statement")
+    else {
+        return;
+    };
+    let Some(class) = statement
+        .parent()
+        .filter(|node| node.kind() == "block")
+        .and_then(|node| node.parent())
+        .filter(|node| node.kind() == "class_definition")
+    else {
+        return;
+    };
+    let parent_class = class
+        .parent()
+        .filter(|node| node.kind() == "block")
+        .and_then(|node| node.parent())
+        .filter(|node| node.kind() == "class_definition");
+    let (owner, container) = if let Some(parent) = parent_class {
+        let Some(owner) = symbols.get(&parent.id()) else {
+            return;
+        };
+        let Some(name) = field(class, ctx.source, "name") else {
+            return;
+        };
+        (owner.clone(), Some(name.to_owned()))
+    } else {
+        let Some(owner) = symbols.get(&class.id()) else {
+            return;
+        };
+        (owner.clone(), None)
+    };
+    let value = ctx
+        .node
+        .child_by_field_name("right")
+        .and_then(|value| super::template_loaders::literal(value, ctx.source))
+        .map(str::to_owned);
+    PREPARED_SYNTAX_CONTEXT.with(|state| {
+        if let Some(state) = state.borrow_mut().as_mut() {
+            state
+                .model_attributes
+                .insert((owner, container, attribute.to_owned()), value);
+        }
+    });
+}
+
 pub(super) fn extract_class_attribute(
     node: Node<'_>,
     source: &str,
@@ -860,7 +1038,8 @@ pub(super) fn extract_class_attribute(
         &context.semantic_rules,
         indices.iter().copied(),
     ) {
-        if matches!(&effective.rule.operation, super::super::manifests::semantic::SemanticOperation::ClassAttributeToTable { bases, .. } if !bases.is_empty()) {
+        if matches!(&effective.rule.operation, super::super::manifests::semantic::SemanticOperation::ClassAttributeToTable { bases, .. } if !bases.is_empty())
+        {
             continue;
         }
         super::super::manifests::semantic::execute_class_attribute_rule(
@@ -886,82 +1065,205 @@ pub(super) fn extract_default_table(
     context: &super::super::LanguageContext,
     lexical: &crate::engine::ast::routes::RouteContext,
 ) {
-    let Some(node) = facts
-        .nodes
-        .iter()
-        .find(|node| node.id == ctx.owner && node.kind == "class")
-    else {
-        return;
-    };
     let Some(bases) = ctx.node.child_by_field_name("superclasses") else {
         return;
     };
-    let mut cursor = bases.walk();
-    let resolved: Vec<_> = bases
-        .named_children(&mut cursor)
-        .filter_map(|base| {
-            let name = text(base, ctx.source);
-            let (head, tail) = name
-                .split_once('.')
-                .map_or((name, ""), |(head, tail)| (head, tail));
-            let mut root = ctx.node;
-            while let Some(parent) = root.parent() { root = parent; }
-            if lexical.lexical_write_count(root.id(), head) != 1 {
-                return None;
-            }
-            let mut imports = facts.references.iter().filter(|reference| {
-                reference.kind == "imports" && reference.alias.as_deref() == Some(head) && reference.line < ctx.line()
-            });
-            let import = imports.next()?;
-            if imports.next().is_some() {
-                return None;
-            }
-            let module = import.module.as_deref()?;
-            let prefix = if import.expression == module {
-                if name.starts_with(module) {
-                    return Some(name.to_owned());
-                }
-                module.to_owned()
-            } else {
-                format!("{module}.{}", import.expression)
-            };
-            Some(if tail.is_empty() {
-                prefix
-            } else {
-                format!("{prefix}.{tail}")
+    let mut root = ctx.node;
+    while let Some(parent) = root.parent() {
+        root = parent;
+    }
+    let prepared = PREPARED_SYNTAX_CONTEXT.with(|state| {
+        let mut state = state.borrow_mut();
+        let state = state.as_mut()?;
+        if state.model_index.is_none() {
+            state.model_index = Some(ModelIndex::build(facts, state.model_factories.clone()));
+        }
+        let index = state.model_index.as_mut()?;
+        let node = index.owners.get(ctx.owner)?.clone();
+        let mut cursor = bases.walk();
+        let resolved: Vec<_> = bases
+            .named_children(&mut cursor)
+            .flat_map(|base| {
+                resolve_model_base(
+                    text(base, ctx.source),
+                    ctx.line(),
+                    root.id(),
+                    &node.path,
+                    index,
+                    lexical,
+                    &mut HashSet::new(),
+                )
             })
-        })
-        .collect();
+            .collect();
+        Some((
+            node.path,
+            node.name,
+            resolved,
+            index.explicit.contains(ctx.owner),
+        ))
+    });
+    let Some((node_path, node_name, resolved, has_explicit)) = prepared else {
+        return;
+    };
     use super::super::manifests::semantic::SemanticOperation;
     for effective in context.semantic_rules.iter().filter(|rule| rule.active) {
-        let SemanticOperation::ClassAttributeToTable { language, attribute, container, bases } = &effective.rule.operation else { continue };
-        if language != "python" || bases.is_empty() || !bases.iter().any(|base| resolved.contains(base)) { continue; }
-        let Some(body) = ctx.node.child_by_field_name("body") else { continue };
-        let mut cursor = body.walk();
-        let mut found = None;
-        for child in body.named_children(&mut cursor) {
-            let target = if let Some(expected) = container {
-                if child.kind() != "class_definition" || field(child, ctx.source, "name") != Some(expected) { continue; }
-                child.child_by_field_name("body")
-            } else { Some(body) };
-            let Some(target) = target else { continue };
-            let mut assignments = target.walk();
-            for statement in target.named_children(&mut assignments) {
-                let assignment = statement.named_child(0).unwrap_or(statement);
-                if assignment.kind() == "assignment" && field(assignment, ctx.source, "left") == Some(attribute) {
-                    found = Some(assignment.child_by_field_name("right").and_then(|value| super::template_loaders::literal(value, ctx.source)).map(str::to_owned));
-                }
-            }
-            if container.is_none() { break; }
+        let SemanticOperation::ClassAttributeToTable {
+            language,
+            attribute,
+            container,
+            bases,
+        } = &effective.rule.operation
+        else {
+            continue;
+        };
+        if language != "python"
+            || bases.is_empty()
+            || !bases.iter().any(|base| resolved.contains(base))
+        {
+            continue;
         }
+        let found = PREPARED_SYNTAX_CONTEXT.with(|state| {
+            state.borrow().as_ref().and_then(|state| {
+                state
+                    .model_attributes
+                    .get(&(ctx.owner.to_owned(), container.clone(), attribute.clone()))
+                    .cloned()
+            })
+        });
         let name = match found {
             Some(Some(name)) if !name.is_empty() => Some(name),
             Some(_) => None,
-            None if context.semantic_rules.iter().any(|rule| rule.active && rule.pack == effective.pack && matches!(&rule.rule.operation, SemanticOperation::ClassDefaultTable { bases, .. } if bases.iter().any(|base| resolved.contains(base)))) => std::path::Path::new(&node.path).parent().and_then(|path| path.file_name()).and_then(|name| name.to_str()).map(|app| format!("{}_{}", app.to_lowercase(), node.name.to_lowercase())),
+            None if context.semantic_rules.iter().any(|rule| rule.active && rule.pack == effective.pack && matches!(&rule.rule.operation, SemanticOperation::ClassDefaultTable { bases, .. } if bases.iter().any(|base| resolved.contains(base)))) => std::path::Path::new(&node_path).parent().and_then(|path| path.file_name()).and_then(|name| name.to_str()).map(|app| format!("{}_{}", app.to_lowercase(), node_name.to_lowercase())),
             None => None,
         };
-        if let Some(name) = name { facts.references.push(crate::core::models::Reference { source: ctx.owner.into(), expression: name, kind: "defines_table".into(), line: ctx.line(), column: ctx.node.start_position().column, alias: None, module: None, dynamic: false, receiver_hint: None }); }
+        if let Some(name) = name {
+            facts.references.push(crate::core::models::Reference {
+                source: ctx.owner.into(),
+                expression: name,
+                kind: "defines_table".into(),
+                line: ctx.line(),
+                column: ctx.node.start_position().column,
+                alias: None,
+                module: None,
+                dynamic: false,
+                receiver_hint: None,
+            });
+        }
     }
+    for rule in context.semantic_rules.iter().filter(|rule| rule.active) {
+        let SemanticOperation::ClassDefaultTable { language, bases } = &rule.rule.operation else {
+            continue;
+        };
+        let has_explicit_rule = context.semantic_rules.iter().any(|other| other.active && other.pack == rule.pack && matches!(&other.rule.operation, SemanticOperation::ClassAttributeToTable { bases, .. } if !bases.is_empty()));
+        if language != "python"
+            || has_explicit_rule
+            || !bases.iter().any(|base| resolved.contains(base))
+            || has_explicit
+        {
+            continue;
+        }
+        if let Some(app) = std::path::Path::new(&node_path)
+            .parent()
+            .and_then(|path| path.file_name())
+            .and_then(|name| name.to_str())
+        {
+            facts.references.push(crate::core::models::Reference {
+                source: ctx.owner.into(),
+                expression: format!("{}_{}", app.to_lowercase(), node_name.to_lowercase()),
+                kind: "defines_table".into(),
+                line: ctx.line(),
+                column: ctx.node.start_position().column,
+                alias: None,
+                module: None,
+                dynamic: false,
+                receiver_hint: None,
+            });
+        }
+    }
+}
+
+fn resolve_model_base(
+    name: &str,
+    before: usize,
+    root: usize,
+    path: &str,
+    index: &mut ModelIndex,
+    lexical: &crate::engine::ast::routes::RouteContext,
+    visiting: &mut HashSet<String>,
+) -> Vec<String> {
+    if visiting.len() >= 16 {
+        return Vec::new();
+    }
+    let (head, tail) = name
+        .split_once('.')
+        .map_or((name, ""), |(head, tail)| (head, tail));
+    if lexical.lexical_write_count(root, head) != 1 {
+        return Vec::new();
+    }
+    let mut imports = index
+        .imports
+        .get(head)
+        .into_iter()
+        .flatten()
+        .filter(|(_, _, line)| *line < before);
+    if let Some((module, expression, _)) = imports.next() {
+        if imports.next().is_some() {
+            return Vec::new();
+        }
+        let prefix = if expression == module {
+            module.clone()
+        } else {
+            format!("{module}.{expression}")
+        };
+        return vec![if tail.is_empty() {
+            prefix
+        } else {
+            format!("{prefix}.{tail}")
+        }];
+    }
+    if !tail.is_empty() {
+        return Vec::new();
+    }
+    let factories = index.factories.get(head).cloned().unwrap_or_default();
+    if factories.len() == 1 && factories[0].1 < before {
+        return resolve_model_base(
+            &factories[0].0,
+            factories[0].1,
+            root,
+            path,
+            index,
+            lexical,
+            visiting,
+        );
+    }
+    let classes: Vec<_> = index
+        .classes
+        .get(head)
+        .into_iter()
+        .flatten()
+        .filter(|class| class.path == path && class.line < before)
+        .cloned()
+        .collect();
+    if classes.len() != 1 {
+        return Vec::new();
+    }
+    let class = &classes[0];
+    if let Some(cached) = index.cache.get(&class.id) {
+        return cached.clone();
+    }
+    if !visiting.insert(class.id.clone()) {
+        return Vec::new();
+    }
+    let parents = index.parents.get(&class.id).cloned().unwrap_or_default();
+    let resolved: Vec<String> = parents
+        .iter()
+        .flat_map(|parent| {
+            resolve_model_base(parent, class.line, root, path, index, lexical, visiting)
+        })
+        .collect();
+    visiting.remove(&class.id);
+    index.cache.insert(class.id.clone(), resolved.clone());
+    resolved
 }
 
 fn positional_argument<'tree>(node: Node<'tree>, index: usize) -> Option<Node<'tree>> {

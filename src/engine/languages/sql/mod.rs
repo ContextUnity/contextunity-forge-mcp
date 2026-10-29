@@ -68,7 +68,24 @@ fn tokens(source: &str) -> Vec<Token<'_>> {
         }
         let start = i;
         let token_line = line;
-        if matches!(bytes[i], b'\'' | b'"' | b'`' | b'[') {
+        if bytes[i] == b'$'
+            && source[i + 1..].find('$').is_some_and(|end| {
+                source[i + 1..i + 1 + end]
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            })
+        {
+            let end = source[i + 1..].find('$').expect("checked tag") + i + 1;
+            let delimiter = &source[i..=end];
+            i = end + 1;
+            if let Some(close) = source[i..].find(delimiter) {
+                let next = i + close + delimiter.len();
+                line += source[i..next].bytes().filter(|b| *b == b'\n').count();
+                i = next;
+            } else {
+                i = bytes.len();
+            }
+        } else if matches!(bytes[i], b'\'' | b'"' | b'`' | b'[') {
             let close = if bytes[i] == b'[' { b']' } else { bytes[i] };
             i += 1;
             while i < bytes.len() {
@@ -102,16 +119,26 @@ fn tokens(source: &str) -> Vec<Token<'_>> {
 }
 
 fn keyword(token: Option<&Token<'_>>, value: &str) -> bool {
-    token.is_some_and(|t| t.text.eq_ignore_ascii_case(value))
+    token.is_some_and(|t| {
+        !t.text.starts_with(['\'', '"', '`', '[', '$']) && t.text.eq_ignore_ascii_case(value)
+    })
 }
 
 fn name_at(tokens: &[Token<'_>], mut i: usize) -> Option<(String, usize)> {
     let component = |text: &str| {
         let unquoted = text.trim_matches(['"', '`', '[', ']']);
-        if unquoted.contains('.') { format!("\"{unquoted}\"") } else { unquoted.to_owned() }
+        if text.starts_with(['"', '`', '[']) {
+            format!("\"{unquoted}\"")
+        } else {
+            unquoted.to_owned()
+        }
     };
+    if tokens.get(i)?.text.starts_with(['\'', '$']) {
+        return None;
+    }
     let mut name = component(tokens.get(i)?.text);
-    if !name.trim_start_matches('"')
+    if !name
+        .trim_start_matches('"')
         .as_bytes()
         .first()
         .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_')
@@ -127,69 +154,247 @@ fn name_at(tokens: &[Token<'_>], mut i: usize) -> Option<(String, usize)> {
     Some((name, i))
 }
 
+/// Canonicalize segment identity: quoting controls case, not equality.
+pub(crate) fn identifier_keys(name: &str) -> (String, String, bool) {
+    let mut parts = Vec::new();
+    let mut part = String::new();
+    let mut chars = name.chars().peekable();
+    let mut quoted = false;
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' if quoted && chars.peek() == Some(&'"') => {
+                chars.next();
+                part.push('"');
+            }
+            '"' => quoted = !quoted,
+            '.' if !quoted => {
+                parts.push(std::mem::take(&mut part));
+            }
+            _ if quoted => part.push(ch),
+            _ => part.push(ch.to_ascii_lowercase()),
+        }
+    }
+    parts.push(part);
+    let encode = |part: &str| format!("{}:{part}", part.len());
+    let short = encode(parts.last().expect("one identifier segment"));
+    let qualified = parts.len() > 1;
+    let full = parts.iter().map(|part| encode(part)).collect();
+    (full, short, qualified)
+}
+
+fn identifier_key(name: &str) -> String {
+    identifier_keys(name).0
+}
+
 fn short_name(name: &str) -> &str {
     let mut quoted = false;
     let mut start = 0;
     for (i, ch) in name.char_indices() {
-        if ch == '"' { quoted = !quoted; }
-        if ch == '.' && !quoted { start = i + 1; }
+        if ch == '"' {
+            quoted = !quoted;
+        }
+        if ch == '.' && !quoted {
+            start = i + 1;
+        }
     }
     name[start..].trim_matches('"')
 }
 
+fn cte_events(
+    tokens: &[Token<'_>],
+) -> Option<std::collections::HashMap<usize, Vec<(String, bool)>>> {
+    let mut matching = vec![None; tokens.len()];
+    let mut stack = Vec::new();
+    for (i, token) in tokens.iter().enumerate() {
+        if token.text == "(" {
+            stack.push(i);
+        }
+        if token.text == ")" {
+            let open = stack.pop()?;
+            matching[open] = Some(i);
+        }
+    }
+    if !stack.is_empty() {
+        return None;
+    }
+    let mut events: std::collections::HashMap<usize, Vec<(String, bool)>> =
+        std::collections::HashMap::new();
+    for (i, token) in tokens.iter().enumerate() {
+        if token.text == "(" {
+            stack.push(i);
+            continue;
+        }
+        if token.text == ")" {
+            stack.pop();
+            continue;
+        }
+        if !keyword(Some(token), "WITH") || (i > 0 && tokens[i - 1].text != "(") {
+            continue;
+        }
+        let end = stack
+            .last()
+            .and_then(|open| matching[*open])
+            .unwrap_or(tokens.len());
+        let recursive = keyword(tokens.get(i + 1), "RECURSIVE");
+        let mut pos = i + 1 + usize::from(recursive);
+        loop {
+            let (name, mut next) = name_at(tokens, pos)?;
+            if identifier_keys(&name).2 {
+                return None;
+            }
+            if tokens.get(next).is_some_and(|token| token.text == "(") {
+                next = matching[next]? + 1;
+            }
+            if !keyword(tokens.get(next), "AS") {
+                return None;
+            }
+            next += 1;
+            if keyword(tokens.get(next), "NOT") {
+                next += 1;
+            }
+            if keyword(tokens.get(next), "MATERIALIZED") {
+                next += 1;
+            }
+            if !tokens.get(next).is_some_and(|token| token.text == "(") {
+                return None;
+            }
+            let close = matching[next]?;
+            if close >= end {
+                return None;
+            }
+            let key = identifier_key(&name);
+            let visible = if recursive { next + 1 } else { close + 1 };
+            events.entry(visible).or_default().push((key.clone(), true));
+            events.entry(end).or_default().push((key, false));
+            pos = close + 1;
+            if !tokens.get(pos).is_some_and(|token| token.text == ",") {
+                break;
+            }
+            pos += 1;
+        }
+    }
+    Some(events)
+}
+
 fn table_uses(tokens: &[Token<'_>]) -> Vec<(String, &'static str, usize)> {
     let mut uses = Vec::new();
-    for (i, token) in tokens.iter().enumerate() {
-        let (kind, mut next) =
-            if token.text.eq_ignore_ascii_case("FROM") || token.text.eq_ignore_ascii_case("JOIN") {
-                (
-                    if i > 0 && keyword(tokens.get(i - 1), "DELETE") {
-                        "mutates_table"
-                    } else {
-                        "queries_table"
-                    },
-                    i + 1,
-                )
-            } else if token.text.eq_ignore_ascii_case("INTO") || (token.text.eq_ignore_ascii_case("UPDATE")
-                && name_at(tokens, i + 1).is_some_and(|(_, after)| keyword(tokens.get(after), "SET"))) {
-                ("mutates_table", i + 1)
-            } else if token.text.eq_ignore_ascii_case("REFERENCES") {
-                ("references_table", i + 1)
-            } else {
+    let Some(events) = cte_events(tokens) else {
+        return uses;
+    };
+    let mut ctes = std::collections::HashMap::<String, usize>::new();
+    let mut operation = 0;
+    if keyword(tokens.first(), "WITH") {
+        let mut nesting = 0usize;
+        for (i, token) in tokens.iter().enumerate().skip(1) {
+            if token.text == "(" {
+                nesting += 1;
                 continue;
-            };
-        if keyword(tokens.get(next), "ONLY") {
-            next += 1;
+            }
+            if token.text == ")" {
+                nesting = nesting.saturating_sub(1);
+                continue;
+            }
+            if nesting == 0
+                && ["SELECT", "INSERT", "UPDATE", "DELETE"]
+                    .iter()
+                    .any(|word| keyword(Some(token), word))
+            {
+                operation = i;
+                break;
+            }
         }
-        if let Some((name, after)) = name_at(tokens, next) {
-            uses.push((name, kind, token.line));
-            if token.text.eq_ignore_ascii_case("FROM") && kind == "queries_table" {
-                let mut j = after;
-                while j < tokens.len() {
-                    if tokens[j].text == "," {
-                        if let Some((name, end)) = name_at(tokens, j + 1) {
-                            uses.push((name, kind, tokens[j].line));
-                            j = end;
-                            continue;
-                        }
-                        break;
-                    }
-                    if matches!(
-                        tokens[j].text.to_ascii_uppercase().as_str(),
-                        "WHERE"
-                            | "JOIN"
-                            | "ON"
-                            | "GROUP"
-                            | "ORDER"
-                            | "LIMIT"
-                            | "UNION"
-                            | "HAVING"
-                            | ";"
-                            | ")"
-                    ) {
-                        break;
-                    }
-                    j += 1;
+    }
+    let mut relations = vec![false];
+    let mut depth = 0usize;
+    if keyword(tokens.get(operation), "UPDATE") {
+        let mut start = operation + 1 + usize::from(keyword(tokens.get(operation + 1), "ONLY"));
+        let wrapped = tokens.get(start).is_some_and(|token| token.text == "(");
+        start += usize::from(wrapped);
+        if let Some((name, mut end)) = name_at(tokens, start) {
+            if wrapped {
+                if !tokens.get(end).is_some_and(|token| token.text == ")") {
+                    return uses;
+                }
+                end += 1;
+            }
+            if keyword(tokens.get(end), "AS") {
+                end += 2;
+            } else if !keyword(tokens.get(end), "SET") && name_at(tokens, end).is_some() {
+                end += 1;
+            }
+            if keyword(tokens.get(end), "SET") {
+                uses.push((name, "mutates_table", tokens[operation].line));
+            }
+        }
+    }
+    for (i, token) in tokens.iter().enumerate() {
+        if let Some(changes) = events.get(&i) {
+            for (key, add) in changes {
+                let count = ctes.entry(key.clone()).or_default();
+                if *add {
+                    *count += 1;
+                } else {
+                    *count = count.saturating_sub(1);
+                }
+            }
+        }
+        if token.text == "(" {
+            depth += 1;
+            relations.push(false);
+            continue;
+        }
+        if token.text == ")" {
+            if depth > 0 {
+                depth -= 1;
+                relations.pop();
+            }
+            continue;
+        }
+        let from = keyword(Some(token), "FROM");
+        let join = keyword(Some(token), "JOIN");
+        if from {
+            relations[depth] = true;
+        }
+        if [
+            "WHERE",
+            "GROUP",
+            "ORDER",
+            "HAVING",
+            "LIMIT",
+            "UNION",
+            "RETURNING",
+            "SET",
+        ]
+        .iter()
+        .any(|word| keyword(Some(token), word))
+        {
+            relations[depth] = false;
+        }
+        let kind = if from || join || (token.text == "," && relations[depth]) {
+            Some(if from && i > 0 && keyword(tokens.get(i - 1), "DELETE") {
+                "mutates_table"
+            } else {
+                "queries_table"
+            })
+        } else if keyword(Some(token), "INTO")
+            && (keyword(tokens.get(operation), "INSERT")
+                || keyword(tokens.get(operation), "REPLACE"))
+        {
+            Some("mutates_table")
+        } else if keyword(Some(token), "REFERENCES") {
+            Some("references_table")
+        } else {
+            None
+        };
+        if let Some(kind) = kind {
+            let mut next = i + 1;
+            if keyword(tokens.get(next), "ONLY") {
+                next += 1;
+            }
+            if let Some((name, _)) = name_at(tokens, next) {
+                let (key, _, qualified) = identifier_keys(&name);
+                if qualified || ctes.get(&key).copied().unwrap_or_default() == 0 {
+                    uses.push((name, kind, token.line));
                 }
             }
         }
@@ -199,46 +404,54 @@ fn table_uses(tokens: &[Token<'_>]) -> Vec<(String, &'static str, usize)> {
 
 /// Extract table names and relation kinds from an SQL statement.
 pub fn extract_embedded_sql_tables(literal: &str) -> Vec<(String, &'static str)> {
-    let first = literal
-        .trim_start()
-        .as_bytes()
-        .first()
-        .map(u8::to_ascii_uppercase);
-    if !matches!(
-        first,
-        Some(b'S' | b'W' | b'I' | b'U' | b'D' | b'C' | b'B' | b'P' | b'-' | b'/')
-    ) {
-        return Vec::new();
-    }
-    let tokens = tokens(literal);
-    if !tokens.first().is_some_and(|token| {
-        [
-            "SELECT", "WITH", "INSERT", "UPDATE", "DELETE", "CREATE", "BEGIN", "PRAGMA", "SET",
-        ]
-        .iter()
-        .any(|word| token.text.eq_ignore_ascii_case(word))
+    const EFFECTS: &[&[u8]] = &[
+        b"FROM",
+        b"JOIN",
+        b"INTO",
+        b"UPDATE",
+        b"REFERENCES",
+        b"CREATE",
+        b"ALTER",
+    ];
+    if !EFFECTS.iter().any(|effect| {
+        literal
+            .as_bytes()
+            .windows(effect.len())
+            .any(|window| window.eq_ignore_ascii_case(effect))
     }) {
         return Vec::new();
     }
-    let mut output: Vec<_> = tokens.split(|token| token.text == ";")
+    let tokens = tokens(literal);
+    let statements = tokens.split(|token| token.text == ";");
+    let mut output: Vec<_> = statements
+        .clone()
+        .filter(|statement| {
+            statement.first().is_some_and(|token| {
+                [
+                    "SELECT", "WITH", "INSERT", "UPDATE", "DELETE", "CREATE", "ALTER",
+                ]
+                .iter()
+                .any(|word| token.text.eq_ignore_ascii_case(word))
+            })
+        })
         .flat_map(table_uses)
         .map(|(name, kind, _)| (name, kind))
         .collect();
-    for i in 0..tokens.len() {
-        if keyword(tokens.get(i), "CREATE") {
-            let mut j = i + 1;
-            if keyword(tokens.get(j), "TEMP") || keyword(tokens.get(j), "TEMPORARY") {
+    for statement in statements {
+        if keyword(statement.first(), "CREATE") {
+            let mut j = 1;
+            if keyword(statement.get(j), "TEMP") || keyword(statement.get(j), "TEMPORARY") {
                 j += 1;
             }
-            if keyword(tokens.get(j), "TABLE") {
+            if keyword(statement.get(j), "TABLE") {
                 j += 1;
-                if keyword(tokens.get(j), "IF")
-                    && keyword(tokens.get(j + 1), "NOT")
-                    && keyword(tokens.get(j + 2), "EXISTS")
+                if keyword(statement.get(j), "IF")
+                    && keyword(statement.get(j + 1), "NOT")
+                    && keyword(statement.get(j + 2), "EXISTS")
                 {
                     j += 3;
                 }
-                if let Some((name, _)) = name_at(&tokens, j) {
+                if let Some((name, _)) = name_at(statement, j) {
                     output.push((name.to_owned(), "defines_table"));
                 }
             }

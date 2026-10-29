@@ -21,6 +21,8 @@ pub(crate) fn prepare_deferred_event<'tree>(
 ) -> Option<DeferredEvent<'tree>> {
     let kind = ctx.node.kind();
     if matches!(kind, "assignment" | "annotated_assignment") {
+        syntax_operations::record_model_factory(ctx);
+        syntax_operations::record_model_attribute(ctx, symbols, rules);
         syntax_operations::extract_class_attribute(
             ctx.node, ctx.source, ctx.owner, ctx.offset, facts, rules,
         );
@@ -58,15 +60,16 @@ pub(crate) fn prepare_deferred_event<'tree>(
     Python.extract_routes(ctx, facts, symbols);
     let projection = projections::candidate(ctx, rules);
     let registration_guards = registration_guards.into_inner();
-    (kind == "class_definition" || declaration || !registration_guards.is_empty() || projection).then(|| DeferredEvent {
-        node: ctx.node,
-        owner: ctx.owner.to_owned(),
-        frontiers,
-        reference_frontier: facts.references.len(),
-        declaration,
-        registration_guards,
-        projection,
-    })
+    (kind == "class_definition" || declaration || !registration_guards.is_empty() || projection)
+        .then(|| DeferredEvent {
+            node: ctx.node,
+            owner: ctx.owner.to_owned(),
+            frontiers,
+            reference_frontier: facts.references.len(),
+            declaration,
+            registration_guards,
+            projection,
+        })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1161,6 +1164,8 @@ impl LanguageProfile for Python {
             syntax_operations::extract_default_table(ctx, facts, rules, route_context);
         }
         if matches!(ctx.node.kind(), "assignment" | "annotated_assignment") {
+            syntax_operations::record_model_factory(ctx);
+            syntax_operations::record_model_attribute(ctx, symbols, rules);
             syntax_operations::extract_class_attribute(
                 ctx.node, ctx.source, ctx.owner, ctx.offset, facts, rules,
             );

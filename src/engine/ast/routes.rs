@@ -245,6 +245,15 @@ fn python_summary_candidates(source: &str, rules: &languages::LanguageContext) -
                 } if language == "python" => {
                     api_candidate(callee) && api_candidate(&attachment.callee)
                 }
+                SemanticOperation::ClassAttributeToTable {
+                    language,
+                    attribute,
+                    bases,
+                    ..
+                } if language == "python" && !bases.is_empty() => source.contains(attribute),
+                SemanticOperation::ClassDefaultTable { language, .. } if language == "python" => {
+                    source.contains("class")
+                }
                 _ => false,
             })
         || rules

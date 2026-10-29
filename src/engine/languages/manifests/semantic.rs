@@ -416,7 +416,10 @@ impl SemanticRule {
                     container.as_ref().is_none_or(|name| !name.is_empty()),
                     "empty container"
                 );
-                ensure!(bases.iter().all(|base| !base.is_empty()), "empty model base");
+                ensure!(
+                    bases.iter().all(|base| !base.is_empty()),
+                    "empty model base"
+                );
             }
             SemanticOperation::ClassDefaultTable { language, bases } => {
                 ensure!(

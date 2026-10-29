@@ -299,20 +299,14 @@ pub(super) fn compose<'a, F: AsRef<Facts> + Sync>(
     } = input;
     let interner = prepared.interner;
     let mut sql_tables = HashMap::<String, Vec<&Node>>::new();
+    let mut sql_qualified = HashMap::<String, Vec<&Node>>::new();
     for node in nodes
         .iter()
         .filter(|node| matches!(node.kind.as_str(), "table" | "view"))
     {
-        sql_tables
-            .entry(node.name.to_ascii_lowercase())
-            .or_default()
-            .push(node);
-        if !node.qualname.eq_ignore_ascii_case(&node.name) {
-            sql_tables
-                .entry(node.qualname.to_ascii_lowercase())
-                .or_default()
-                .push(node);
-        }
+        let (full, short, _) = languages::sql::identifier_keys(&node.qualname);
+        sql_tables.entry(short).or_default().push(node);
+        sql_qualified.entry(full).or_default().push(node);
     }
     let route_index = routes::RouteIndex::build(nodes);
     let http_target_contexts = routes::HttpTargetContexts::build(
@@ -390,7 +384,9 @@ pub(super) fn compose<'a, F: AsRef<Facts> + Sync>(
                 }
             }
             for reference in facts.references.iter().filter(|reference| matches!(reference.kind.as_str(), "defines_table" | "queries_table" | "mutates_table" | "references_table")) {
-                if let Some(targets) = sql_tables.get(&reference.expression.to_ascii_lowercase()) {
+                let (full, short, qualified) = languages::sql::identifier_keys(&reference.expression);
+                let (tables, key) = if qualified { (&sql_qualified, full) } else { (&sql_tables, short) };
+                if let Some(targets) = tables.get(&key) {
                     let mut physical = targets.iter().filter(|node| !node.generated);
                     let first = physical.next();
                     let target = if first.is_some() && physical.next().is_none() {
@@ -417,7 +413,9 @@ pub(super) fn compose<'a, F: AsRef<Facts> + Sync>(
                     || imports.contains(macro_head)
                     || imports.contains(type_name)
                 { continue; }
-                if let Some(targets) = sql_tables.get(&reference.expression.to_ascii_lowercase()) {
+                let (full, short, qualified) = languages::sql::identifier_keys(&reference.expression);
+                let (tables, key) = if qualified { (&sql_qualified, full) } else { (&sql_tables, short) };
+                if let Some(targets) = tables.get(&key) {
                     let mut physical = targets.iter().filter(|node| !node.generated);
                     let first = physical.next();
                     let target = if first.is_some() && physical.next().is_none() { first }
