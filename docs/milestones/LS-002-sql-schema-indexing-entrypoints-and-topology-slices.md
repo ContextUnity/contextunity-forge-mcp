@@ -8,6 +8,9 @@ depends_on:
 - m-framework-indexing-regression-repair
 guidance:
   hitl: pro
+concurrency:
+  mode: speculative
+  sync_on: snapshot
 owners:
 - src/engine/languages/
 - src/engine/linker/
@@ -66,7 +69,7 @@ Complete the two regression repairs in
 task_ref: sql-schema-extractor-and-orm-table-linking
 target: "Index .sql DDL/migrations and embedded SQL queries into table/column nodes and link ORM models and application functions via defines_table, queries_table, and mutates_table edges"
 proof_policy: seam-test-first
-contract_revision: 2
+contract_revision: 3
 depends_on: []
 scope:
   - src/engine/languages/mod.rs
@@ -124,9 +127,12 @@ subtasks:
 task_ref: deterministic-entrypoint-classification-and-unwired-filtering
 target: "Classify semantic entrypoints during extraction/linking, expose aspects=['entrypoints'] in code_map_overview, and prevent false-positive entrypoint reporting in code_map_query(operation='unwired')"
 proof_policy: seam-test-first
-contract_revision: 2
+contract_revision: 3
 depends_on:
   - sql-schema-extractor-and-orm-table-linking
+concurrency:
+  mode: speculative
+  sync_on: snapshot
 scope:
   - src/engine/linker/resolution/mod.rs
   - src/engine/linker/framework_relations.rs
@@ -180,9 +186,12 @@ subtasks:
 task_ref: directory-boundary-slice-and-module-topology
 target: "Enhance code_map_query(operation='slice') for directories with 1-hop inbound/outbound boundary contracts (neighborMap) and add aspects=['topology'] to code_map_overview"
 proof_policy: seam-test-first
-contract_revision: 2
+contract_revision: 3
 depends_on:
   - deterministic-entrypoint-classification-and-unwired-filtering
+concurrency:
+  mode: speculative
+  sync_on: snapshot
 scope:
   - src/db/traversal.rs
   - src/db/reader.rs
@@ -242,9 +251,12 @@ subtasks:
 task_ref: type-and-signature-aware-node-search-and-ergonomics
 target: "Index param_types, return_type, and decorators into FTS5 node_search, add signature filters to code_map_search, and update agent skill guidance"
 proof_policy: seam-test-first
-contract_revision: 2
+contract_revision: 3
 depends_on:
   - directory-boundary-slice-and-module-topology
+concurrency:
+  mode: speculative
+  sync_on: snapshot
 scope:
   - src/db/ingest.rs
   - src/db/symbols/search.rs
@@ -294,9 +306,12 @@ subtasks:
 task_ref: test-gap-and-hierarchy-traversal-operations
 target: "Add operation='untested' and operation='implementations' to code_map_query and traversal engine, surfacing test coverage gaps and class/trait hierarchies from existing SQLite edges"
 proof_policy: seam-test-first
-contract_revision: 2
+contract_revision: 3
 depends_on:
   - type-and-signature-aware-node-search-and-ergonomics
+concurrency:
+  mode: speculative
+  sync_on: snapshot
 scope:
   - src/db/traversal.rs
   - src/mcp/tools.rs
