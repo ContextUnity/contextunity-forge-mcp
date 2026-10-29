@@ -6,6 +6,8 @@ status: active
 depends_on:
 - m-declarative-framework-manifests-and-ecosystem-packs
 - m-framework-indexing-regression-repair
+guidance:
+  hitl: pro
 owners:
 - src/engine/languages/
 - src/engine/linker/
@@ -18,6 +20,9 @@ owners:
 - docs/architecture/
 - docs/reference/
 - skills/contextunity-forge/
+required_skills:
+- contextunity-forge
+- agent-instructions
 invariants:
 - 'INV-SQL-ZERO-SOURCE-IO-DELTA: SQL DDL declarations (CREATE TABLE, CREATE VIEW, ALTER TABLE) and query table references (SELECT/INSERT/UPDATE/DELETE) are extracted into Facts during file parsing so delta rebuilds preserve INV-DELTA-NO-SOURCE-IO and bit-identical cold-vs-delta commitments (forge-owner-sha256-v2).'
 - 'INV-ENTRYPOINT-UNWIRED-PRECISION: Semantic entrypoints (main functions, CLI subcommands, HTTP/WebSocket route handlers, MCP tool handlers, event/cron handlers, and test roots) are deterministically tagged during extraction/linking and excluded from default dead-code (unwired) false positives.'
@@ -61,7 +66,8 @@ Complete the two regression repairs in
 task_ref: sql-schema-extractor-and-orm-table-linking
 target: "Index .sql DDL/migrations and embedded SQL queries into table/column nodes and link ORM models and application functions via defines_table, queries_table, and mutates_table edges"
 proof_policy: seam-test-first
-contract_revision: 1
+contract_revision: 2
+depends_on: []
 scope:
   - src/engine/languages/mod.rs
   - src/engine/languages/sql.rs
@@ -69,9 +75,8 @@ scope:
   - src/engine/languages/python.rs
   - src/engine/languages/typescript/mod.rs
   - src/engine/linker/framework_relations.rs
-  - src/engine/linker/resolution.rs
+  - src/engine/linker/resolution/mod.rs
   - docs/architecture/indexing.md
-  - docs/reference/tools.md
   - tests/languages/
 status: ready
 subtasks:
@@ -119,9 +124,11 @@ subtasks:
 task_ref: deterministic-entrypoint-classification-and-unwired-filtering
 target: "Classify semantic entrypoints during extraction/linking, expose aspects=['entrypoints'] in code_map_overview, and prevent false-positive entrypoint reporting in code_map_query(operation='unwired')"
 proof_policy: seam-test-first
-contract_revision: 1
+contract_revision: 2
+depends_on:
+  - sql-schema-extractor-and-orm-table-linking
 scope:
-  - src/engine/linker/resolution.rs
+  - src/engine/linker/resolution/mod.rs
   - src/engine/linker/framework_relations.rs
   - src/db/reader.rs
   - src/db/traversal.rs
@@ -173,7 +180,9 @@ subtasks:
 task_ref: directory-boundary-slice-and-module-topology
 target: "Enhance code_map_query(operation='slice') for directories with 1-hop inbound/outbound boundary contracts (neighborMap) and add aspects=['topology'] to code_map_overview"
 proof_policy: seam-test-first
-contract_revision: 1
+contract_revision: 2
+depends_on:
+  - deterministic-entrypoint-classification-and-unwired-filtering
 scope:
   - src/db/traversal.rs
   - src/db/reader.rs
@@ -233,7 +242,9 @@ subtasks:
 task_ref: type-and-signature-aware-node-search-and-ergonomics
 target: "Index param_types, return_type, and decorators into FTS5 node_search, add signature filters to code_map_search, and update agent skill guidance"
 proof_policy: seam-test-first
-contract_revision: 1
+contract_revision: 2
+depends_on:
+  - directory-boundary-slice-and-module-topology
 scope:
   - src/db/ingest.rs
   - src/db/symbols/search.rs
@@ -283,7 +294,9 @@ subtasks:
 task_ref: test-gap-and-hierarchy-traversal-operations
 target: "Add operation='untested' and operation='implementations' to code_map_query and traversal engine, surfacing test coverage gaps and class/trait hierarchies from existing SQLite edges"
 proof_policy: seam-test-first
-contract_revision: 1
+contract_revision: 2
+depends_on:
+  - type-and-signature-aware-node-search-and-ergonomics
 scope:
   - src/db/traversal.rs
   - src/mcp/tools.rs

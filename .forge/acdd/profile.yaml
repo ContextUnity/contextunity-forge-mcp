@@ -1,35 +1,57 @@
-# Workspace override. Unspecified gates, commands, policies, and contours use
-# the embedded defaults in src/core/tasks/acdd.default.yaml.
+version: 2
+
+limits:
+  max_metadata_bytes: 2048
+  max_trace_summary_bytes: 2048
+
+git_commit_note:
+  limits:
+    max_bytes: 2048
+  format: markdown
+  telemetry:
+    format: markdown
+    sections:
+      - duration: true
+      - tasks_summary: true
+      - review_cycles: true
+      - diff_breakdown: true
+      - ast_delta: true
+      - test_suite: true
+      - topology: true
+
 roles:
   contract_author:
     mode: subagent
     reuse_on_reject: true
     models:
       - 'sol-6.1:high'
-    guidance: "As contract author, define the production-seam contract and red proof, then post a build-targeted draft for the builder."
+    guidance: "As contract author, define the production-seam contract and runtime-red proof (exit code 101). For existing capabilities, extend existing domain seam tests additively and subsume weaker duplicates; author new tests only for greenfield boundaries with compiling production stubs. Post a build-targeted draft for the builder."
+
   builder:
     mode: subagent
     reuse_on_reject: true
     models:
       - 'gpt6-luna:xhigh'
     guidance: "Implement the approved contract inside the declared allowed_write_scope and verify tests."
+
   independent_reviewer:
     mode: subagent
     reuse_on_reject: true
     models:
       - 'sol-6.1:xhigh'
     guidance: "Use a reviewer worker independent from the builder. Submit review proof across contours, then claim and submit deliver in the same reviewer session."
+
   architect:
     mode: subagent
     reuse_on_reject: true
     models:
       - 'sol-6.1:high'
     guidance: "Repair cross-milestone verification findings within the admitted milestone branch, then return the candidate for a fresh full check and independent review."
+
 commands:
   rust-check-and-test:
     command: "cargo clippy --all-targets --all-features -- -D warnings && cargo test"
     description: "Run strict Rust checks followed by the repository's test suite."
-    # New readers lift this profile-wide map; older readers ignore this nested extension.
     scope_args_by_pattern:
       "src/main.rs": "--bin contextunity-forge-mcp"
       "src/**/*.rs": "--lib"
@@ -53,25 +75,11 @@ commands:
     command: "cargo test"
     description: "Compatibility command for legacy task evidence."
 
-milestone_verification:
-  id: milestone_verification
-  gates:
-    - id: verify
-      command: check_full_repo
-      proof: command
-    - id: review
-      role: independent_reviewer
-      proof: review
-      independent_from: verify
-      contours: guidance.contours
-  fallback:
-    use: build_review_cycle
-    command: check_full_repo
-    max_attempts: 2
-  deliver:
-    proof: delivery
-    persistence:
-      post: commit
+policies:
+  default_review:
+    independent_worker: true
+    require_all_contours: true
+    audit_extended_scope: true
 
 gate_templates:
   build_review_cycle:
@@ -87,3 +95,110 @@ gate_templates:
         proof: review
         independent_from: build
         contours: guidance.contours
+
+gates:
+  - id: contract_synthesis
+    role: architect
+    guidance: [milestone.synthesis, hitl]
+    proof: contract
+    persistence:
+      pre: snapshot
+      post: commit
+
+  - tasks:
+      gates:
+        - id: contract
+          role: contract_author
+          guidance: [task.contract, hitl.pro]
+          proof: contract
+          expected_failure:
+            exit_codes: [1, 101, 134]
+            stderr_contains: "assertion failed"
+          persistence:
+            post: snapshot
+
+        - id: build
+          role: builder
+          guidance: [task.code, hitl.pro]
+          command: rust-check-and-test
+          proof: command
+          persistence:
+            pre: snapshot
+            post: snapshot
+
+        - id: review
+          role: independent_reviewer
+          guidance: [task.review, hitl.pro]
+          policy: default_review
+          proof: review
+          contours: guidance.contours
+          independent_from: build
+          reject_to: build
+          reject_routing:
+            scope: build
+            symbols: contract
+          persistence:
+            immutable: true
+
+        - id: seam
+          when: seam
+          gates:
+            - id: integrate
+              role: builder
+              command: rust-check-and-test
+              proof: seam_test
+              persistence:
+                pre: snapshot
+                post: snapshot
+            - id: review
+              role: independent_reviewer
+              proof: review
+              contours: guidance.contours
+              independent_from: integrate
+              reject_to: integrate
+              reject_routing:
+                scope: integrate
+                symbols: contract
+              persistence:
+                immutable: true
+
+        - id: deliver
+          role: independent_reviewer
+          guidance: [hitl.pro]
+          proof: delivery
+          receipt: true
+          review_sources:
+            - review
+          independent_from: build
+          reject_to: build
+          persistence:
+            immutable: true
+            post: commit
+            git_commit_note: telemetry
+
+milestone_verification:
+  id: milestone_verification
+  gates:
+    - id: verify
+      command: check_full_repo
+      proof: command
+    - id: review
+      role: independent_reviewer
+      policy: default_review
+      guidance: [milestone.review]
+      proof: review
+      contours: guidance.contours
+      independent_from: verify
+      persistence:
+        immutable: true
+  fallback:
+    use: build_review_cycle
+    command: check_full_repo
+    guidance: [milestone.polish]
+    max_attempts: 2
+  deliver:
+    proof: delivery
+    receipt: true
+    persistence:
+      immutable: true
+      post: commit
