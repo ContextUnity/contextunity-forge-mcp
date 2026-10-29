@@ -1499,9 +1499,13 @@ pub(crate) fn query_with_path_options(
             },
         ),
         "slice" => slice_paged(conn, selector.unwrap_or(""), path, depth, options),
-        "unwired" => Ok(
-            json!({"nodes":paging::query(conn, &format!("SELECT {} FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.kind IN('function','method') AND NOT EXISTS(SELECT 1 FROM edges e WHERE e.dst_hash=n.node_hash AND e.kind='calls') ORDER BY p.path,n.line,n.id", paging::nodes_with_path("n", options.detail, "p.path")), &[], options)?, "meaning":"no indexed static caller; not a dead-code proof"}),
-        ),
+        "unwired" => {
+            let candidates = "n.kind IN('function','method') AND NOT EXISTS(SELECT 1 FROM edges e WHERE e.dst_hash=n.node_hash AND e.kind='calls')";
+            let excluded = paging::count(conn, &format!("SELECT count(*) FROM nodes n WHERE {candidates} AND json_extract(n.details,'$.entrypoint') IS NOT NULL"), &[])?;
+            Ok(
+                json!({"nodes":paging::query(conn, &format!("SELECT {} FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE {candidates} AND json_extract(n.details,'$.entrypoint') IS NULL ORDER BY p.path,n.line,n.id", paging::nodes_with_path("n", options.detail, "p.path")), &[], options)?, "summary":{"excluded_entrypoints_count":excluded}, "meaning":"no indexed static caller; not a dead-code proof"}),
+            )
+        }
         "sql" => reader::analyze_paged(conn, sql_selector(selector)?, None, options),
         "doctor" => reader::overview_with_options(
             conn,

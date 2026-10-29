@@ -714,33 +714,173 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
     assert_eq!(rejected_search["error"]["code"], "rejected_arguments");
 
     let roots = Workspace::new();
-    roots.write("src/main.rs", "fn main() {}\nfn ordinary_unwired() {}\n#[test]\nfn test_root() {}\n");
+    roots.write(
+        "src/main.rs",
+        "fn main() { helper(); }\nfn helper() {}\nfn ordinary_unwired() {}\n#[test]\nfn test_root() {}\n",
+    );
+    roots.write("requirements.txt", "fastapi\nclick\ncelery\nmcp\n");
+    roots.write(
+        "service.py",
+        "from fastapi import FastAPI\nimport click\nfrom celery import shared_task\nfrom mcp.server.fastmcp import FastMCP\napp = FastAPI()\nmcp = FastMCP('test')\n@app.get('/items')\ndef route_handler(): pass\n@click.command()\ndef command_handler(): pass\n@shared_task\ndef event_handler(): pass\n@mcp.tool()\ndef tool_handler(): pass\n",
+    );
     roots.build();
     let conn = roots.open();
     let page = contextunity_forge_mcp::core::response::QueryOptions::resolve(
-        &ResponsePolicy::default(), Some(100), 0, None, None,
-    ).unwrap();
+        &ResponsePolicy::default(),
+        Some(100),
+        0,
+        None,
+        None,
+    )
+    .unwrap();
     let aspects = vec!["entrypoints".to_string()];
     let overview = reader::overview_with_options(
         &conn,
-        &reader::OverviewOptions { aspects: Some(&aspects), page: &page },
+        &reader::OverviewOptions {
+            aspects: Some(&aspects),
+            page: &page,
+        },
     );
-    assert!(overview.is_ok(), "entrypoints aspect must be supported: {overview:?}");
+    assert!(
+        overview.is_ok(),
+        "entrypoints aspect must be supported: {overview:?}"
+    );
     let overview = overview.unwrap();
     let entries = overview["entrypoints"].to_string();
-    assert!(entries.contains("main") && entries.contains("src/main.rs"), "{overview}");
+    assert!(
+        entries.contains("main") && entries.contains("src/main.rs"),
+        "{overview}"
+    );
     assert!(!entries.contains("ordinary_unwired"), "{overview}");
+    assert!(!entries.contains("test_root"), "{overview}");
+    let items = overview["entrypoints"]["items"].as_array().unwrap();
+    let main_entry = items.iter().find(|item| item["name"] == "main").unwrap();
+    assert_eq!(main_entry["category"], "main");
+    assert_eq!(main_entry["path"], "src/main.rs");
+    assert_eq!(main_entry["start_line"], 1);
+    assert_eq!(main_entry["outgoing_calls"], 1);
+    for pair in items.windows(2) {
+        let left = (&pair[0]["category"], &pair[0]["outgoing_calls"], &pair[0]["id"]);
+        let right = (&pair[1]["category"], &pair[1]["outgoing_calls"], &pair[1]["id"]);
+        let left_category = left.0.as_str().unwrap();
+        let right_category = right.0.as_str().unwrap();
+        assert!(left_category < right_category || (left_category == right_category
+            && (left.1.as_u64().unwrap() > right.1.as_u64().unwrap()
+                || (left.1 == right.1 && left.2.as_str().unwrap() <= right.2.as_str().unwrap()))));
+    }
     let mut roots_client = Client::new(&roots);
-    let mcp = roots_client.payload("code_map_overview", json!({"aspects":["entrypoints"],"limit":100}));
+    let main = roots_client.payload("code_map_inspect", json!({"selector":"src/main.rs:main","detail":"full"}));
+    assert_eq!(main["node"]["details"]["entrypoint"], "main");
+    assert_eq!(main["node"]["line"], 1);
+    let test = roots_client.payload(
+        "code_map_inspect",
+        json!({"selector":"src/main.rs:test_root","detail":"full"}),
+    );
+    assert_eq!(test["node"]["details"]["entrypoint"], "test");
+    for (name, category, line) in [
+        ("route_handler", "http_route", 8),
+        ("command_handler", "cli_command", 10),
+        ("event_handler", "event_handler", 12),
+        ("tool_handler", "mcp_tool", 14),
+    ] {
+        let node = roots_client.payload(
+            "code_map_inspect",
+            json!({"selector":format!("service.py:{name}"),"detail":"full"}),
+        );
+        assert_eq!(node["node"]["details"]["entrypoint"], category, "{node}");
+        assert_eq!(node["node"]["line"], line, "{node}");
+        assert!(
+            entries.contains(name) && entries.contains(category),
+            "{overview}"
+        );
+    }
+    let mcp = roots_client.payload(
+        "code_map_overview",
+        json!({"aspects":["entrypoints"],"limit":100}),
+    );
     assert_eq!(mcp["entrypoints"], overview["entrypoints"]);
-    let cli = run_cli_json(&roots, &["query", "overview", "--aspects", "entrypoints", "--limit", "100"]);
+    let mut paged_items = Vec::new();
+    let mut offset = 0;
+    let generation = mcp["entrypoints"]["generation"].as_str().unwrap();
+    loop {
+        let page = roots_client.payload(
+            "code_map_overview",
+            json!({"aspects":["entrypoints"],"limit":1,"offset":offset,"generation":generation}),
+        );
+        paged_items.extend(page["entrypoints"]["items"].as_array().unwrap().iter().cloned());
+        match page["entrypoints"]["next_offset"].as_u64() {
+            Some(next) => offset = next,
+            None => break,
+        }
+    }
+    assert_eq!(&paged_items, items);
+    let cli = run_cli_json(
+        &roots,
+        &[
+            "query",
+            "overview",
+            "--aspects",
+            "entrypoints",
+            "--limit",
+            "100",
+        ],
+    );
     assertions::assert_command_succeeded(&cli);
     let cli: Value = serde_json::from_slice(&cli.stdout).unwrap();
     assert_eq!(cli["entrypoints"], overview["entrypoints"]);
-    let unwired = roots_client.payload("code_map_query", json!({"operation":"unwired","limit":100}));
+    let unwired =
+        roots_client.payload("code_map_query", json!({"operation":"unwired","limit":100}));
     let unwired_nodes = unwired["nodes"]["items"].to_string();
     assert!(unwired_nodes.contains("ordinary_unwired"), "{unwired}");
-    assert!(!unwired_nodes.contains("\"main\"") && !unwired_nodes.contains("test_root"), "{unwired}");
+    assert!(
+        !unwired_nodes.contains("\"main\"") && !unwired_nodes.contains("test_root"),
+        "{unwired}"
+    );
+    for name in [
+        "route_handler",
+        "command_handler",
+        "event_handler",
+        "tool_handler",
+    ] {
+        assert!(!unwired_nodes.contains(name), "{unwired}");
+    }
+    assert!(
+        unwired["summary"]["excluded_entrypoints_count"]
+            .as_u64()
+            .unwrap()
+            >= 5
+    );
+    let cli_unwired = run_cli_json(&roots, &["query", "run", "unwired", "--limit", "100"]);
+    assertions::assert_command_succeeded(&cli_unwired);
+    let cli_unwired: Value = serde_json::from_slice(&cli_unwired.stdout).unwrap();
+    assert_eq!(cli_unwired["nodes"], unwired["nodes"]);
+    assert_eq!(cli_unwired["summary"], unwired["summary"]);
+
+    // A changed registration can retag an unchanged handler in another file.
+    let routes = Workspace::new();
+    routes.write("requirements.txt", "django\n");
+    routes.write("views.py", "def first(request): pass\ndef second(request): pass\n");
+    routes.write("urls.py", "from django.urls import path\nfrom views import first, second\nurlpatterns = [path('item/', first)]\n");
+    routes.build();
+    for (registrations, expected_first, expected_second) in [
+        ("urlpatterns = [path('item/', second)]", None, Some("http_route")),
+        ("urlpatterns = []", None, None),
+        ("urlpatterns = [path('item/', first)]", Some("http_route"), None),
+    ] {
+        routes.write("urls.py", &format!("from django.urls import path\nfrom views import first, second\n{registrations}\n"));
+        let delta = routes.delta(&["urls.py"]);
+        let cold = routes.build_to(routes.path(".forge/cold.sqlite"));
+        assert_eq!(delta["output_root"], cold["output_root"]);
+        let conn = routes.open();
+        contextunity_forge_mcp::core::commitments::verify(&conn).unwrap();
+        for (name, expected) in [("first", expected_first), ("second", expected_second)] {
+            let actual: Option<String> = conn.query_row(
+                "SELECT json_extract(details,'$.entrypoint') FROM nodes WHERE name=?1 AND kind='function'",
+                [name], |row| row.get(0),
+            ).unwrap();
+            assert_eq!(actual.as_deref(), expected, "{name}: {registrations}");
+        }
+    }
 }
 
 #[test]

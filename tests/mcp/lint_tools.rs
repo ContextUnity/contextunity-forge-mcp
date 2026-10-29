@@ -1,13 +1,13 @@
 use crate::common::{
+    mcp_client::{run_cli, run_cli_json, StdioClient},
     Workspace,
-    mcp_client::{StdioClient, run_cli, run_cli_json},
 };
 use contextunity_forge_mcp::{
     core::response::{QueryOptions, ResponsePolicy},
     db::lint,
     engine::languages,
 };
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::{collections::BTreeSet, fs};
 
 fn populate(workspace: &Workspace) -> BTreeSet<String> {

@@ -729,7 +729,20 @@ pub enum Command {
 /// Enumerates the supported query command values.
 pub enum QueryCommand {
     /// Represents the overview case.
-    Overview,
+    Overview {
+        /// Comma-separated overview aspects.
+        #[arg(long, value_delimiter = ',')]
+        aspects: Option<Vec<String>>,
+        /// Maximum items per aspect.
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+        /// Number of items to skip.
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+        /// Generation from the previous page.
+        #[arg(long)]
+        generation: Option<String>,
+    },
     /// Represents the inspect case.
     Inspect {
         /// The selector value.
@@ -938,7 +951,7 @@ fn command_presentation(command: &Command) -> (OperationKind, &'static str, Opti
             None,
         ),
         Command::Query { command } => match command {
-            QueryCommand::Overview => (OperationKind::Navigation, "code_map_overview", None),
+            QueryCommand::Overview { .. } => (OperationKind::Navigation, "code_map_overview", None),
             QueryCommand::Inspect { .. } => {
                 (OperationKind::Navigation, "code_map_inspect", Some(false))
             }
@@ -971,7 +984,7 @@ fn command_discovery(command: &Command) -> Option<format::DiscoveryKind> {
     match command {
         Command::Ast { .. } => Some(format::DiscoveryKind::Ast),
         Command::Query { command } => match command {
-            QueryCommand::Overview => Some(format::DiscoveryKind::Overview),
+            QueryCommand::Overview { .. } => Some(format::DiscoveryKind::Overview),
             QueryCommand::Inspect { .. } => Some(format::DiscoveryKind::Inspect),
             QueryCommand::Run { operation, .. } if operation.trim() == "inspect" => {
                 Some(format::DiscoveryKind::Inspect)
@@ -1151,10 +1164,27 @@ impl Cli {
             Command::Query { command } => {
                 let conn = open_or_rebuild(&db, &root)?;
                 match command {
-                    QueryCommand::Overview => {
-                        let page = cli_page(100)?;
+                    QueryCommand::Overview {
+                        aspects,
+                        limit,
+                        offset,
+                        generation,
+                    } => {
+                        let page = QueryOptions::resolve(
+                            &ResponsePolicy::default(),
+                            Some(limit),
+                            offset,
+                            None,
+                            generation,
+                        )?;
                         let adapter = crate::engine::scanner::load_adapter(&root, None).ok();
-                        discovery::overview(&conn, &root, adapter.as_ref(), None, &page)?
+                        discovery::overview(
+                            &conn,
+                            &root,
+                            adapter.as_ref(),
+                            aspects.as_deref(),
+                            &page,
+                        )?
                     }
                     QueryCommand::Inspect {
                         selector,
