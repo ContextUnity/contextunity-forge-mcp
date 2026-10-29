@@ -1683,6 +1683,64 @@ pub fn query_with_options(
     query_with_path_options(conn, operation, selector, None, request)
 }
 
+fn untested_paged(
+    conn: &Connection,
+    selector: Option<&str>,
+    path: Option<&str>,
+    options: &QueryOptions,
+) -> Result<Value> {
+    if let (Some(selector), Some(path)) = (selector, path) {
+        anyhow::ensure!(selector == path, "untested selector conflicts with path");
+    }
+    let raw = selector.or(path).unwrap_or("").trim();
+    let raw = raw
+        .strip_prefix("file://")
+        .or_else(|| raw.strip_prefix("file:"))
+        .unwrap_or(raw);
+    let raw = raw.strip_prefix("./").unwrap_or(raw).trim_end_matches('/');
+    let scope = if raw == "." { "" } else { raw };
+    anyhow::ensure!(
+        !scope.starts_with('/')
+            && !scope
+                .split('/')
+                .any(|s| s == ".." || s == "." || (s.is_empty() && !scope.is_empty())),
+        "scope must be workspace-relative"
+    );
+    let (lower, upper) = reader::path_bounds(scope);
+    let nodes = paging::query(conn, &format!("SELECT {},json_extract(n.details,'$.signature') AS signature FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.kind IN('function','method') AND n.is_test=0 AND (?1='' OR p.path=?1 OR (p.path>=?2 AND p.path<?3)) AND NOT EXISTS (SELECT 1 FROM edges e JOIN nodes caller ON caller.node_hash=e.src_hash WHERE e.dst_hash=n.node_hash AND e.kind='calls' AND caller.is_test=1) ORDER BY p.path,n.line,n.id", paging::nodes_with_path("n", options.detail, "p.path")), &[&scope, &lower, &upper], options)?;
+    Ok(
+        json!({"nodes":nodes,"meaning":"no direct indexed test caller; not a runtime coverage proof"}),
+    )
+}
+
+fn implementations_paged(
+    conn: &Connection,
+    selector: &str,
+    path: Option<&str>,
+    options: &QueryOptions,
+) -> Result<Value> {
+    let selected = reader::select_detail_with_path(conn, selector, path, options.detail)?;
+    let id = selected["id"].as_str().context("selected node has no id")?;
+    let kind = selected["kind"]
+        .as_str()
+        .context("selected node has no kind")?;
+    anyhow::ensure!(
+        [
+            "class",
+            "struct",
+            "trait",
+            "interface",
+            "enum",
+            "record",
+            "type"
+        ]
+        .contains(&kind),
+        "implementations selector must identify a type"
+    );
+    let sql = format!("WITH RECURSIVE descendants(hash) AS (SELECT node_hash FROM nodes WHERE id=?1 UNION SELECT e.src_hash FROM descendants d JOIN edges e ON e.dst_hash=d.hash JOIN nodes child ON child.node_hash=e.src_hash WHERE e.kind IN('inherits','implements','extends') AND child.kind IN('class','struct','trait','interface','enum','record','type')) SELECT {} FROM descendants d JOIN nodes n ON n.node_hash=d.hash JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.id<>?1 ORDER BY p.path,n.line,n.id", paging::nodes_with_path("n", options.detail, "p.path"));
+    Ok(json!({"selector":id,"nodes":paging::query(conn, &sql, &[&id], options)?}))
+}
+
 pub(crate) fn query_with_path_options(
     conn: &Connection,
     operation: &str,
@@ -1733,6 +1791,8 @@ pub(crate) fn query_with_path_options(
             },
         ),
         "slice" => slice_paged(conn, selector.unwrap_or(""), path, depth, options),
+        "untested" => untested_paged(conn, selector, path, options),
+        "implementations" => implementations_paged(conn, selector.unwrap_or(""), path, options),
         "unwired" => {
             let candidates = "n.kind IN('function','method') AND NOT EXISTS(SELECT 1 FROM edges e WHERE e.dst_hash=n.node_hash AND e.kind='calls')";
             let excluded = paging::count(conn, &format!("SELECT count(*) FROM nodes n WHERE {candidates} AND json_extract(n.details,'$.entrypoint') IS NOT NULL"), &[])?;
@@ -1760,7 +1820,7 @@ pub(crate) fn query_with_path_options(
             },
         ),
         _ => {
-            bail!("unknown operation; supported: overview,inspect,explain,impact,slice,unwired,sql")
+            bail!("unknown operation; supported: overview,inspect,explain,impact,slice,unwired,sql,untested,implementations")
         }
     }
 }

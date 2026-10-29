@@ -101,6 +101,7 @@ fn rejected_selector_fields(
         "code_map_query" => &[
             "operation",
             "selector",
+            "target",
             "path",
             "direction",
             "include_coverage",
@@ -630,7 +631,7 @@ impl Server {
         )
     }
     #[tool(
-        description = "Bounded graph operation or one read-only SELECT/WITH. Prefer code_map_inspect, code_map_explain, and code_map_impact for those jobs. unwired lists functions and methods with no indexed static caller and is not a dead-code proof."
+        description = "Bounded graph operation or one read-only SELECT/WITH. untested lists production functions without direct indexed test callers; implementations lists indexed subclasses and implementors. unwired is not a dead-code proof."
     )]
     fn code_map_query(&self, Parameters(p): Parameters<Query>) -> CallToolResult {
         let format = p.page.output_format();
@@ -648,10 +649,20 @@ impl Server {
             |adapter, policy| {
                 self.read_with_adapter(adapter, |c| {
                     let page = p.page.resolve(policy)?;
+                    if p.target.is_some() && p.operation.trim() != "untested" {
+                        anyhow::bail!("target is supported only for untested");
+                    }
+                    if let Some(target) = p.target.as_deref() {
+                        anyhow::ensure!(
+                            p.selector.as_deref().is_none_or(|s| s == target)
+                                && p.path.as_deref().is_none_or(|s| s == target),
+                            "target conflicts with selector or path"
+                        );
+                    }
                     let mut result = traversal::query_with_path_options(
                         c,
                         &p.operation,
-                        p.selector.as_deref(),
+                        p.target.as_deref().or(p.selector.as_deref()),
                         p.path.as_deref(),
                         &traversal::GraphQueryOptions {
                             depth: p.depth,

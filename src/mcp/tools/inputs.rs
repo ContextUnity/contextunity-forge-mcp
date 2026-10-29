@@ -304,6 +304,8 @@ pub struct Query {
     pub operation: String,
     /// Exact symbol ID or name; path forms include path:name, path:known_kind:name, path:line, and path#Lline.
     pub selector: Option<String>,
+    /// File or directory scope for the untested operation; cannot conflict with selector or path.
+    pub target: Option<String>,
     /// Restrict selector resolution to a workspace-relative file or directory.
     pub path: Option<String>,
     /// Impact direction: 'inbound' (default) or 'outbound'.

@@ -73,9 +73,18 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
     );
     workspace.write(
         "service.py",
-        "def entry():\n    return target()\ndef target():\n    return 1\nclass Base:\n    pass\nclass Child(Base):\n    pass\n",
+        "def entry():\n    return target()\ndef target():\n    return 1\ndef unused(value: int) -> int:\n    return value\nclass Base:\n    pass\nclass Child(Base):\n    pass\nclass GrandChild(Child):\n    pass\n",
     );
-    workspace.write("other.py", "def target():\n    return 2\n");
+    workspace.write(
+        "other.py",
+        "def target():\n    return 2\nclass Base:\n    pass\n",
+    );
+    workspace.write("src/core/a.py", "def core_only():\n    pass\n");
+    workspace.write("src/core-extra/b.py", "def sibling_only():\n    pass\n");
+    workspace.write(
+        "src/traits.rs",
+        "pub trait Save {}\npub struct Record;\nimpl Save for Record {}\n",
+    );
     workspace.write(
         "README.md",
         "---\ntitle: Fixture Guide\ndoc_type: guide\n---\n# Fixture Guide\nquasarneedle appears here.\n## Entry overview\nPATH_FIRST_GUIDE_CONTENT\n[`entry`](service.py#L1)\n[`entry`](service.py#L1)\n## Entry usage\nENTRY_USAGE_CONTENT\n[`entry`](service.py#L1)\n",
@@ -106,6 +115,18 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
     let untested_names = untested["nodes"]["items"].to_string();
     assert!(untested_names.contains("target"), "{untested}");
     assert!(!untested_names.contains("entry"), "{untested}");
+    let unused = untested["nodes"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["name"] == "unused")
+        .unwrap();
+    assert!(
+        unused["signature"]
+            .as_str()
+            .is_some_and(|signature| signature.contains("int")),
+        "{unused}"
+    );
     let direct = traversal::query_with_options(
         &workspace.open(),
         "untested",
@@ -115,16 +136,120 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
             direction: None,
             coverage: Default::default(),
             page: &contextunity_forge_mcp::core::response::QueryOptions::resolve(
-                &ResponsePolicy::default(), Some(100), 0, None, None,
-            ).unwrap(),
+                &ResponsePolicy::default(),
+                Some(100),
+                0,
+                None,
+                None,
+            )
+            .unwrap(),
         },
-    ).unwrap();
-    assert!(direct["nodes"]["items"].to_string().contains("target"), "{direct}");
+    )
+    .unwrap();
+    assert!(
+        direct["nodes"]["items"].to_string().contains("target"),
+        "{direct}"
+    );
+    // Exercise the real SQL seam with the same test caller and two edge kinds.
+    // The write is rolled back before the server or CLI reuse this workspace.
+    let conn = rusqlite::Connection::open(workspace.db()).unwrap();
+    conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let inserted = conn.execute("INSERT INTO edges(src_hash,kind,dst_hash,path_id,line,evidence_id,confidence_id,occurrence_count) SELECT e.src_hash,'references',target.node_hash,e.path_id,e.line,e.evidence_id,e.confidence_id,e.occurrence_count FROM edges e JOIN nodes caller ON caller.node_hash=e.src_hash JOIN nodes target ON target.name='unused' WHERE caller.is_test=1 AND e.kind='calls' LIMIT 1", []).unwrap();
+    assert_eq!(inserted, 1);
+    let page = contextunity_forge_mcp::core::response::QueryOptions::resolve(
+        &ResponsePolicy::default(),
+        Some(100),
+        0,
+        None,
+        None,
+    )
+    .unwrap();
+    let query = || {
+        traversal::query_with_options(
+            &conn,
+            "untested",
+            Some("service.py"),
+            &traversal::GraphQueryOptions {
+                depth: 1,
+                direction: None,
+                coverage: Default::default(),
+                page: &page,
+            },
+        )
+        .unwrap()
+    };
+    assert!(query()["nodes"]["items"].to_string().contains("unused"));
+    conn.execute("UPDATE edges SET kind='possible_calls' WHERE kind='references' AND dst_hash=(SELECT node_hash FROM nodes WHERE name='unused')", []).unwrap();
+    assert!(query()["nodes"]["items"].to_string().contains("unused"));
+    conn.execute("UPDATE edges SET kind='calls' WHERE kind='possible_calls' AND dst_hash=(SELECT node_hash FROM nodes WHERE name='unused')", []).unwrap();
+    assert!(!query()["nodes"]["items"].to_string().contains("unused"));
+    let inserted_cycle = conn.execute("INSERT INTO edges(src_hash,kind,dst_hash,path_id,line,evidence_id,confidence_id,occurrence_count) SELECT e.dst_hash,'inherits',e.src_hash,e.path_id,e.line,e.evidence_id,e.confidence_id,e.occurrence_count FROM edges e JOIN nodes child ON child.node_hash=e.src_hash JOIN nodes parent ON parent.node_hash=e.dst_hash WHERE e.kind='inherits' AND child.name='Child' AND parent.name='Base' LIMIT 1", []).unwrap();
+    assert_eq!(inserted_cycle, 1);
+    let cyclic = traversal::query_with_options(
+        &conn,
+        "implementations",
+        Some("service.py:Base"),
+        &traversal::GraphQueryOptions {
+            depth: 1,
+            direction: None,
+            coverage: Default::default(),
+            page: &page,
+        },
+    )
+    .unwrap();
+    assert_eq!(cyclic["nodes"]["total"], 2, "{cyclic}");
+    conn.execute_batch("ROLLBACK").unwrap();
     let implementations = client.payload(
         "code_map_query",
         json!({"operation":"implementations","selector":"service.py:Base","limit":100}),
     );
-    assert!(implementations.to_string().contains("Child"), "{implementations}");
+    assert!(
+        implementations.to_string().contains("Child"),
+        "{implementations}"
+    );
+    assert!(
+        implementations.to_string().contains("GrandChild"),
+        "{implementations}"
+    );
+    let rust_implementations = client.payload(
+        "code_map_query",
+        json!({"operation":"implementations","selector":"src/traits.rs:Save","limit":100}),
+    );
+    assert!(
+        rust_implementations.to_string().contains("Record"),
+        "{rust_implementations}"
+    );
+    let scoped = client.payload(
+        "code_map_query",
+        json!({"operation":"untested","target":"src/core","limit":100}),
+    );
+    assert!(scoped.to_string().contains("core_only"), "{scoped}");
+    assert!(!scoped.to_string().contains("sibling_only"), "{scoped}");
+    let first = client.payload(
+        "code_map_query",
+        json!({"operation":"untested","target":"service.py","limit":1}),
+    );
+    assert_eq!(first["nodes"]["has_more"], true, "{first}");
+    let next = client.payload("code_map_query", json!({"operation":"untested","target":"service.py","limit":1,"offset":1,"generation":first["nodes"]["generation"]}));
+    assert_ne!(
+        first["nodes"]["items"][0]["id"],
+        next["nodes"]["items"][0]["id"]
+    );
+    let (_, conflict) = client.call(
+        "code_map_query",
+        json!({"operation":"untested","target":"service.py","selector":"other.py"}),
+    );
+    assert_eq!(conflict["result"]["isError"], true, "{conflict}");
+    let (_, stale) = client.call("code_map_query", json!({"operation":"untested","target":"service.py","limit":1,"offset":1,"generation":"0000000000000000"}));
+    assert_eq!(stale["result"]["isError"], true, "{stale}");
+    let (_, ambiguous_base) = client.call(
+        "code_map_query",
+        json!({"operation":"implementations","selector":"Base"}),
+    );
+    assert!(
+        ambiguous_base.to_string().contains("ambiguous"),
+        "{ambiguous_base}"
+    );
 
     let parity_cases = [
         (
@@ -141,6 +266,23 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
             "code_map_query",
             vec!["query", "run", "slice", "nested", "--limit", "100"],
             json!({"operation":"slice","selector":"nested","limit":100}),
+        ),
+        (
+            "code_map_query",
+            vec!["query", "run", "untested", "service.py", "--limit", "100"],
+            json!({"operation":"untested","target":"service.py","limit":100}),
+        ),
+        (
+            "code_map_query",
+            vec![
+                "query",
+                "run",
+                "implementations",
+                "service.py:Base",
+                "--limit",
+                "100",
+            ],
+            json!({"operation":"implementations","selector":"service.py:Base","limit":100}),
         ),
         ("task_list", vec!["task", "list"], json!({})),
         (
@@ -240,7 +382,7 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
     ];
     const FRESHNESS_MARKDOWN: &str = concat!(
         "- **freshness**\n",
-        "  - **files_checked**: `7`\n",
+        "  - **files_checked**: `10`\n",
         "  - **refresh**: `\"none\"`\n",
         "  - **status**: `\"matched\"`\n",
     );
@@ -317,7 +459,7 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
             .as_object_mut()
             .and_then(|result| result.remove("freshness"));
         let (mcp_domain_text, markdown_freshness) = strip_top_level_freshness(default_text);
-        let expected_freshness = json!({"status":"matched","files_checked":7,"refresh":"none"});
+        let expected_freshness = json!({"status":"matched","files_checked":10,"refresh":"none"});
         if let Some(actual) = &mcp_freshness {
             assert_eq!(actual, &expected_freshness, "{tool} emitted freshness");
         }
@@ -1591,7 +1733,7 @@ fn stdio_budget_and_query_errors_explain_how_to_retry() {
         (
             "code_map_query",
             json!({"operation":"cypher","selector":"MATCH (n) RETURN n"}),
-            "supported: overview,inspect,explain,impact,slice,unwired,sql",
+            "supported: overview,inspect,explain,impact,slice,unwired,sql,untested,implementations",
         ),
         (
             "code_map_inspect",

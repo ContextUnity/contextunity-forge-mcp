@@ -670,31 +670,84 @@ receipt:
 
 ```yaml
 task_ref: test-gap-and-hierarchy-traversal-operations
-target: "Add operation='untested' and operation='implementations' to code_map_query and traversal engine, surfacing test coverage gaps and class/trait hierarchies from existing SQLite edges"
+target: Add operation='untested' and operation='implementations' to code_map_query and traversal engine, surfacing test coverage gaps and class/trait hierarchies from existing SQLite edges
 proof_policy: seam-test-first
-contract_revision: 4
+contract_revision: 5
 depends_on:
-  - type-and-signature-aware-node-search-and-ergonomics
+- type-and-signature-aware-node-search-and-ergonomics
 concurrency:
   mode: speculative
   sync_on: snapshot
 scope:
-  - src/db/traversal.rs
-  - src/mcp/tools.rs
-  - src/cli/mod.rs
-  - docs/reference/tools.md
-  - skills/contextunity-forge/SKILL.md
-status: ready
+- src/db/traversal.rs
+- src/mcp/tools.rs
+- src/mcp/tools/inputs.rs
+- src/cli/mod.rs
+- docs/reference/tools.md
+- docs/reference/mcp-tools.md
+- skills/contextunity-forge/SKILL.md
+- tests/mcp/context.rs
+status: completed
 subtasks:
-  - subtask_ref: untested-symbols-traversal-operation
-    title: "Implement operation='untested' in src/db/traversal.rs finding production functions/methods with 0 inbound is_test=1 call edges in the selected path"
-    status: pending
-  - subtask_ref: implementations-hierarchy-traversal-operation
-    title: "Implement operation='implementations' in src/db/traversal.rs traversing extends and implements edges for a given class or trait selector"
-    status: pending
-  - subtask_ref: agent-guidance-for-test-gaps-and-hierarchies
-    title: "Document untested and implementations query operations in skills/contextunity-forge/SKILL.md and tool references"
-    status: pending
+- subtask_ref: untested-symbols-traversal-operation
+  title: Implement operation='untested' in src/db/traversal.rs finding production functions/methods with 0 inbound is_test=1 call edges in the selected path
+  status: completed
+  evidence: Snapshot 2bc8dd7; Clippy and MCP 90/90; production seam, independent review and seam review passed.
+- subtask_ref: implementations-hierarchy-traversal-operation
+  title: Implement operation='implementations' in src/db/traversal.rs traversing extends and implements edges for a given class or trait selector
+  status: completed
+  evidence: Snapshot 2bc8dd7; Clippy and MCP 90/90; production seam, independent review and seam review passed.
+- subtask_ref: agent-guidance-for-test-gaps-and-hierarchies
+  title: Document untested and implementations query operations in skills/contextunity-forge/SKILL.md and tool references
+  status: completed
+  evidence: Snapshot 2bc8dd7; Clippy and MCP 90/90; production seam, independent review and seam review passed.
+receipt:
+  contract_revision: 5
+  passed_at: 2026-10-29T22:35:05.925337491+00:00
+  evidence:
+    seam_test_proof:
+      exit_code: 0
+      seam_test_refs:
+      - tests/mcp/context.rs::stdio_compact_navigation_preserves_symbol_and_page_contracts
+      tests_passed: 90
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: Independent reviewer verified six scoped paths and protected files against snapshot.
+        claims:
+          applicable: true
+          evidence: Reviewed direct test-call AND, signatures, transitive cycle-safe type relations, CLI/MCP and production seam; builder reports MCP 90/90.
+        concurrency:
+          applicable: true
+          evidence: New operations are read-only, pagination uses existing QueryBudget and generation checks.
+        project_isolation:
+          applicable: true
+          evidence: Reviewed path boundaries, ambiguous selectors and workspace-scoped SQLite.
+        administration:
+          applicable: true
+          evidence: No schema changes; protected scope and candidate verified.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-SQL-ZERO-SOURCE-IO-DELTA: SQL DDL declarations (CREATE TABLE, CREATE VIEW, ALTER TABLE) and query table references (SELECT/INSERT/UPDATE/DELETE) are extracted into Facts during file parsing so delta rebuilds preserve INV-DELTA-NO-SOURCE-IO and bit-identical cold-vs-delta commitments (forge-owner-sha256-v2).'
+    - 'INV-ENTRYPOINT-UNWIRED-PRECISION: Semantic entrypoints (main functions, CLI subcommands, HTTP/WebSocket route handlers, MCP tool handlers, event/cron handlers, and test roots) are deterministically tagged during extraction/linking and excluded from default dead-code (unwired) false positives.'
+    - 'INV-BOUNDARY-SLICE-COMPACTNESS: Directory-level code_map_query(operation="slice") computes 1-hop inbound and outbound module boundary contracts (neighborMap equivalent) directly from SQLite edges in O(E_dir) without loading unrelated file bodies.'
+    - 'INV-DUAL-SURFACE-PARITY: Every new overview aspect (entrypoints, topology), slice boundary contract, and SQL graph relation is exposed with identical semantics on both MCP and CLI surfaces.'
+    architectural_notes:
+    - 'decisions: Rev5 synthesis: producer stored graph nodes/edges -> traversal::query_with_path_options -> CLI query run and MCP code_map_query -> paged JSON. Guide SQL `(e.kind=''calls'' OR caller.is_test=1)` contradicts target: exclude only an inbound `calls` from a test caller (`AND`); production callers and non-call/possible_calls test relations do not count. Direct indexed caller metric is not proof of runtime coverage. Hierarchy child->base stored relations use `inherits` in Python/TS/Java plus `implements`; do not blindly trust guide `extends` alone; avoid returning method-level implementation edges as concrete types; respect selector disambiguation, path bounds, deterministic ordering, pagination/generation and query budget. MCP Query struct src/mcp/tools/inputs.rs:302 lacks admitted example `target`; transport rejects it as rejected_arguments, so admit exact owner plus tests/mcp/context.rs and live docs/reference/mcp-tools.md (tools.md absent). No migration, Cargo.toml or build.rs required. Extend existing parity seam: real Python Base/Child + production and test callers, MCP stdio and CLI. Architect observed cargo test --test mcp context::stdio_compact_navigation_preserves_symbol_and_page_contracts compile then exit 101 rejected_arguments target; hierarchy assertion not yet reached. Follow-up test matrix must cover no-test, direct-test, production-call, test non-call, multi-hop hierarchy, duplicate/ambiguous selectors, exact path-vs-prefix collisions, pagination and CLI parity. No test/source writes outside admitted scope.'
+    - 'decisions: Coordinator resolved #1315: audit the full fixture and preserve both explicit freshness assertions while updating 7→10 to reflect three added source files. Audited all freshness references in the test; only JSON and Markdown contain a file count. Both now assert 10; retrying seam once.'
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Implementation Guide (Step-by-Step for Builders)

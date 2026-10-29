@@ -179,6 +179,8 @@ The advisory completion criteria are bounded contract resolution, ADR/milestone 
 production-seam proof, preservation of untouched behavior, and fail-closed escalation when attempts
 stall.
 
+For contract planning, use `code_map_query(operation="untested", target="src/billing")` to find functions without direct indexed test callers, and `code_map_query(operation="implementations", selector="LanguageLinker")` for indexed implementors and subclasses. An absent indexed test call is not proof of runtime coverage.
+
 ## Blackboard
 
 - Use milestone scope for cross-task state, task scope for task results, and subtask scope for a
