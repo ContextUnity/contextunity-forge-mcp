@@ -16,7 +16,12 @@ fn options(limit: usize) -> QueryOptions {
 fn directory_suffix_lists_real_nodes_and_exact_file_keeps_graph_traversal() {
     let ws = Workspace::new();
     let file = "extensions/commerce/src/contextunity/commerce/ingestion/worker.py";
-    ws.write(file, "from contextunity.commerce.connectors.horoshop.client import fetch\ndef publish():\n    return fetch()\n");
+    ws.write(file, "from contextunity.commerce.connectors.horoshop.client import fetch\ndef publish():\n    return fetch()\ndef secondary():\n    pass\n");
+    let mut callers = String::from("from contextunity.commerce.ingestion.worker import secondary\n");
+    for index in 0..6 {
+        callers.push_str(&format!("def caller_{index}():\n    return secondary()\n"));
+    }
+    ws.write("foreign/team\"quote/batch.py", &callers);
     ws.write(
         "extensions/commerce/src/contextunity/commerce/consumer.py",
         "from contextunity.commerce.ingestion.worker import publish\ndef consume():\n    return publish()\n",
@@ -74,20 +79,18 @@ fn directory_suffix_lists_real_nodes_and_exact_file_keeps_graph_traversal() {
         )
         .unwrap();
     assert_eq!(
-        projection_exists, 1,
-        "production index must contain endpoint adjacency"
+        projection_exists, 0,
+        "production index must not duplicate edge endpoint adjacency"
     );
-    let edge_count: i64 = conn
-        .query_row("SELECT count(*) FROM edges", [], |row| row.get(0))
+    let schema: String = conn
+        .query_row("SELECT value FROM metadata WHERE key='schema_version'", [], |row| row.get(0))
         .unwrap();
-    let endpoint_count: i64 = conn
-        .query_row("SELECT count(*) FROM edge_endpoint_paths", [], |row| {
-            row.get(0)
-        })
-        .unwrap();
-    assert_eq!(endpoint_count, 2 * edge_count);
-    for (direction, inside, outside) in [(0, "src_hash", "dst_hash"), (1, "dst_hash", "src_hash")] {
-        let sql = format!("EXPLAIN QUERY PLAN SELECT inside.id,outside.id FROM edge_endpoint_paths a CROSS JOIN edges e ON e.src_hash=a.src_hash AND e.kind=a.kind AND e.dst_hash=a.dst_hash CROSS JOIN nodes inside ON inside.node_hash=e.{inside} CROSS JOIN nodes outside ON outside.node_hash=e.{outside} CROSS JOIN path_dictionary op ON op.path_id=outside.path_id WHERE a.path>=?1 AND a.path<?2 AND a.direction={direction}");
+    assert_eq!(schema, "15");
+    for (inside, outside, index) in [
+        ("src_hash", "dst_hash", "PRIMARY KEY"),
+        ("dst_hash", "src_hash", "idx_edges_dst_kind"),
+    ] {
+        let sql = format!("EXPLAIN QUERY PLAN SELECT inside.id,outside.id FROM path_dictionary p CROSS JOIN nodes inside ON inside.path_id=p.path_id CROSS JOIN edges e ON e.{inside}=inside.node_hash CROSS JOIN nodes outside ON outside.node_hash=e.{outside} CROSS JOIN path_dictionary op ON op.path_id=outside.path_id WHERE p.path>=?1 AND p.path<?2");
         let mut statement = conn.prepare(&sql).unwrap();
         let plan: Vec<String> = statement
             .query_map(["extensions/commerce/", "extensions/commerce0"], |row| {
@@ -98,14 +101,17 @@ fn directory_suffix_lists_real_nodes_and_exact_file_keeps_graph_traversal() {
             .collect();
         assert!(
             plan.iter()
-                .any(|part| part.contains("SEARCH a USING PRIMARY KEY")),
+                .any(|part| part.contains("SEARCH p USING") && part.contains("path>?")),
             "{plan:?}"
         );
         assert!(
-            plan.iter().any(|part| part.contains("SEARCH e USING")
-                && part.contains("src_hash=?")
-                && part.contains("dst_hash=?")
-                && part.contains("kind=?")),
+            plan.iter()
+                .any(|part| part.contains("SEARCH inside USING") && part.contains("idx_nodes_path")),
+            "{plan:?}"
+        );
+        assert!(
+            plan.iter()
+                .any(|part| part.contains("SEARCH e USING") && part.contains(index)),
             "{plan:?}"
         );
     }
@@ -136,6 +142,17 @@ fn directory_suffix_lists_real_nodes_and_exact_file_keeps_graph_traversal() {
         );
     }
     let boundary = &result["boundary_contract"];
+    let quoted = boundary["inbound_modules"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|module| module["module"] == "foreign/team\"quote")
+        .expect("module paths preserve quotes");
+    assert!(quoted["edge_count"].as_u64().unwrap() >= 6, "{quoted}");
+    assert_eq!(quoted["symbol_pairs"].as_array().unwrap().len(), 5, "{quoted}");
+    assert!(boundary["exported_symbols"]["items"].as_array().unwrap().iter().any(
+        |node| node["name"] == "secondary" && node["external_caller_count"] == 6
+    ), "{boundary}");
     assert!(
         result["edges"]["items"]
             .as_array()
@@ -477,7 +494,7 @@ fn directory_suffix_lists_real_nodes_and_exact_file_keeps_graph_traversal() {
     contextunity_forge_mcp::core::commitments::verify(&ws.open()).unwrap();
     let prior_root = delta["output_root"].clone();
     let injected = rusqlite::Connection::open(ws.db()).unwrap();
-    injected.execute_batch("CREATE TRIGGER reject_endpoint_projection BEFORE INSERT ON edge_endpoint_paths BEGIN SELECT RAISE(ABORT,'injected adjacency failure'); END;").unwrap();
+    injected.execute_batch("CREATE TRIGGER reject_edge_insert BEFORE INSERT ON edges BEGIN SELECT RAISE(ABORT,'injected edge failure'); END;").unwrap();
     drop(injected);
     ws.write(consumer, "from contextunity.commerce.ingestion.renamed import publish\ndef consume(): return publish()\n");
     let failure = contextunity_forge_mcp::db::writer::delta(
@@ -487,7 +504,7 @@ fn directory_suffix_lists_real_nodes_and_exact_file_keeps_graph_traversal() {
     )
     .unwrap_err()
     .to_string();
-    assert!(failure.contains("injected adjacency failure"), "{failure}");
+    assert!(failure.contains("injected edge failure"), "{failure}");
     let after = ws.open();
     let root: String = after
         .query_row(
@@ -599,7 +616,7 @@ fn large_directory_is_paged_without_graph_expansion() {
     drop(conn);
     let writer = rusqlite::Connection::open(ws.db()).unwrap();
     writer
-        .execute_batch("DELETE FROM edge_endpoint_paths; DELETE FROM edges")
+        .execute_batch("DELETE FROM edges")
         .unwrap();
     let empty = traversal::query_with_options(
         &writer,
@@ -615,7 +632,7 @@ fn large_directory_is_paged_without_graph_expansion() {
     .unwrap();
     assert_eq!(empty["edges"]["total"], 0);
     assert_eq!(empty["boundary_contract"]["exported_symbols"]["total"], 0);
-    writer.execute_batch("INSERT INTO edges(src_hash,kind,dst_hash,path_id,line,evidence_id,confidence_id,occurrence_count) SELECT a.node_hash,'contains',b.node_hash,a.path_id,1,(SELECT evidence_id FROM coverage_evidence LIMIT 1),(SELECT evidence_id FROM coverage_evidence LIMIT 1),1 FROM nodes a CROSS JOIN nodes b WHERE a.kind='component' AND a.name='pkg' AND b.kind='function'; INSERT INTO edge_endpoint_paths SELECT p.path,0,e.src_hash,e.kind,e.dst_hash FROM edges e JOIN nodes n ON n.node_hash=e.src_hash JOIN path_dictionary p ON p.path_id=n.path_id UNION ALL SELECT p.path,1,e.src_hash,e.kind,e.dst_hash FROM edges e JOIN nodes n ON n.node_hash=e.dst_hash JOIN path_dictionary p ON p.path_id=n.path_id").unwrap();
+    writer.execute_batch("INSERT INTO edges(src_hash,kind,dst_hash,path_id,line,evidence_id,confidence_id,occurrence_count) SELECT a.node_hash,'contains',b.node_hash,a.path_id,1,(SELECT evidence_id FROM coverage_evidence LIMIT 1),(SELECT evidence_id FROM coverage_evidence LIMIT 1),1 FROM nodes a CROSS JOIN nodes b WHERE a.kind='component' AND a.name='pkg' AND b.kind='function'").unwrap();
     let links: i64 = writer
         .query_row(
             "SELECT count(*) FROM edges WHERE kind='contains'",
@@ -654,10 +671,9 @@ fn large_directory_is_paged_without_graph_expansion() {
     assert_eq!(component["selector"]["kind"], "component");
     assert_eq!(component["depth"], 1);
     writer
-        .execute_batch("DELETE FROM edge_endpoint_paths; DELETE FROM edges")
+        .execute_batch("DELETE FROM edges")
         .unwrap();
     writer.execute_batch("INSERT OR IGNORE INTO edges(src_hash,kind,dst_hash,path_id,line,evidence_id,confidence_id,occurrence_count) SELECT a.node_hash,'calls',b.node_hash,a.path_id,1,(SELECT evidence_id FROM coverage_evidence LIMIT 1),(SELECT evidence_id FROM coverage_evidence LIMIT 1),1 FROM nodes a CROSS JOIN nodes b WHERE a.kind='function' AND b.kind='function' LIMIT 10001").unwrap();
-    writer.execute_batch("INSERT INTO edge_endpoint_paths SELECT p.path,0,e.src_hash,e.kind,e.dst_hash FROM edges e JOIN nodes n ON n.node_hash=e.src_hash JOIN path_dictionary p ON p.path_id=n.path_id UNION ALL SELECT p.path,1,e.src_hash,e.kind,e.dst_hash FROM edges e JOIN nodes n ON n.node_hash=e.dst_hash JOIN path_dictionary p ON p.path_id=n.path_id").unwrap();
     let conn = writer;
     let dense = traversal::query_with_options(
         &conn,
