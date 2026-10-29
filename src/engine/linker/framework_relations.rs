@@ -298,6 +298,16 @@ pub(super) fn compose<'a, F: AsRef<Facts> + Sync>(
         semantic: prepared,
     } = input;
     let interner = prepared.interner;
+    let mut sql_tables = HashMap::<String, Vec<&Node>>::new();
+    for node in nodes
+        .iter()
+        .filter(|node| matches!(node.kind.as_str(), "table" | "view"))
+    {
+        sql_tables
+            .entry(node.name.to_ascii_lowercase())
+            .or_default()
+            .push(node);
+    }
     let route_index = routes::RouteIndex::build(nodes);
     let http_target_contexts = routes::HttpTargetContexts::build(
         all.iter()
@@ -357,6 +367,17 @@ pub(super) fn compose<'a, F: AsRef<Facts> + Sync>(
                 path_arc: Some(std::sync::Arc::clone(&path_arc)),
                 path_pool: HashMap::new(),
             };
+            for reference in facts.references.iter().filter(|reference| matches!(reference.kind.as_str(), "defines_table" | "queries_table" | "mutates_table" | "references_table")) {
+                if let Some(targets) = sql_tables.get(&reference.expression.to_ascii_lowercase()) {
+                    let physical: Vec<_> = targets.iter().filter(|node| !node.generated).collect();
+                    let target = if physical.len() == 1 { Some(physical[0]) }
+                        else if physical.is_empty() && targets.len() == 1 { targets.first() }
+                        else { None };
+                    if let Some(target) = target {
+                        graph.push_edge(path, &reference.source, &target.id, reference.kind.as_str(), reference.line, reference.expression.as_str(), "exact");
+                    }
+                }
+            }
             for owner in &facts.nodes {
                 if let Some(FlowState::Valid { facts: flow, .. }) = interner
                     .lookup_symbol(&owner.id)

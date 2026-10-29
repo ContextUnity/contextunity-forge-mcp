@@ -1,5 +1,5 @@
 use super::projections::{Api, AttachmentSource, EndpointAttachment, Slot};
-use anyhow::{Context, Result, ensure};
+use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -86,6 +86,16 @@ pub(crate) enum SemanticOperation {
         #[serde(deserialize_with = "symbol_attribute_target")]
         target: SemanticTarget,
         relation: SemanticRelation,
+    },
+    ClassAttributeToTable {
+        language: String,
+        attribute: String,
+        #[serde(default)]
+        container: Option<String>,
+    },
+    ClassDefaultTable {
+        language: String,
+        bases: Vec<String>,
     },
 }
 
@@ -239,7 +249,9 @@ impl SemanticRule {
             | SemanticOperation::CallToFile { language, .. }
             | SemanticOperation::CallToSymbol { language, .. }
             | SemanticOperation::ClassAttributeToFile { language, .. }
-            | SemanticOperation::ClassAttributeToSymbol { language, .. } => language,
+            | SemanticOperation::ClassAttributeToSymbol { language, .. }
+            | SemanticOperation::ClassAttributeToTable { language, .. }
+            | SemanticOperation::ClassDefaultTable { language, .. } => language,
         }
     }
 
@@ -383,6 +395,28 @@ impl SemanticRule {
                 );
                 validate_class_attribute(to_file, language, attribute, target, relation)?;
             }
+            SemanticOperation::ClassAttributeToTable {
+                language,
+                attribute,
+                container,
+            } => {
+                ensure!(
+                    language == "python" && !attribute.is_empty(),
+                    "invalid class attribute table rule"
+                );
+                ensure!(
+                    container.as_ref().is_none_or(|name| !name.is_empty()),
+                    "empty container"
+                );
+            }
+            SemanticOperation::ClassDefaultTable { language, bases } => {
+                ensure!(
+                    language == "python"
+                        && !bases.is_empty()
+                        && bases.iter().all(|base| !base.is_empty()),
+                    "invalid class default table rule"
+                );
+            }
         }
         Ok(())
     }
@@ -390,7 +424,7 @@ impl SemanticRule {
 
 #[cfg(test)]
 mod tests {
-    use crate::engine::languages::manifests::semantic::{SemanticRule, normal_relative_path};
+    use crate::engine::languages::manifests::semantic::{normal_relative_path, SemanticRule};
 
     #[test]
     fn typed_symbol_operation_is_decoded_and_validated() {
@@ -512,7 +546,7 @@ use crate::core::semantic::{
     NamedBindingFact, NamedBindingRole, NamedTargetKind, ObjectMember, SourcePosition,
     StaticString, SymbolAttachmentFact, SymbolOperand, TemplateContextFact, ValueFlowFacts,
 };
-use crate::engine::languages::{SyntaxContext, semantic::EffectiveSemanticRule};
+use crate::engine::languages::{semantic::EffectiveSemanticRule, SyntaxContext};
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_semantic_rule<'rules, 'tree>(
     effective: &'rules EffectiveSemanticRule,
@@ -936,6 +970,51 @@ pub(crate) fn execute_class_attribute_rule(
     facts: &mut crate::core::models::Facts,
 ) {
     use crate::core::semantic::SemanticFactRole;
+    if let SemanticOperation::ClassAttributeToTable {
+        language: selected,
+        attribute: expected,
+        container,
+    } = &effective.rule.operation
+    {
+        if selected != language || expected != attribute {
+            return;
+        }
+        let Some(value) = literal().filter(|value| !value.is_empty()) else {
+            return;
+        };
+        let target_owner = if let Some(container) = container {
+            if !facts
+                .nodes
+                .iter()
+                .any(|node| node.id == owner && node.kind == "class" && node.name == *container)
+            {
+                return;
+            }
+            let Some(parent) = facts
+                .edges
+                .iter()
+                .find(|edge| edge.kind == "contains" && edge.dst == owner)
+                .map(|edge| edge.src.clone())
+            else {
+                return;
+            };
+            parent
+        } else {
+            owner.to_owned()
+        };
+        facts.references.push(crate::core::models::Reference {
+            source: target_owner,
+            expression: value,
+            kind: "defines_table".into(),
+            line: position.line,
+            column: position.column,
+            alias: None,
+            module: None,
+            dynamic: false,
+            receiver_hint: None,
+        });
+        return;
+    }
     let (identity, role, target) = match &effective.rule.operation {
         SemanticOperation::ClassAttributeToFile {
             language: selected,
@@ -1262,6 +1341,7 @@ pub(crate) struct PreparedRules {
     pub(crate) named_route_members: hashbrown::HashMap<String, Vec<usize>>,
     pub(crate) decorated_registration_rules: Vec<usize>,
     pub(crate) class_attributes: hashbrown::HashMap<String, Vec<usize>>,
+    pub(crate) class_defaults: Vec<usize>,
     pub(crate) function_semantic: Vec<usize>,
     pub(crate) call_semantic: Vec<usize>,
     pub(crate) call_to_file: Vec<usize>,
@@ -1292,6 +1372,11 @@ pub(crate) fn prepare_projection_rules(
                 language,
                 attribute,
                 ..
+            }
+            | SemanticOperation::ClassAttributeToTable {
+                language,
+                attribute,
+                ..
             } => {
                 compiled
                     .entry(language.clone())
@@ -1307,6 +1392,13 @@ pub(crate) fn prepare_projection_rules(
                     .entry(language.clone())
                     .or_default()
                     .call_to_file
+                    .push(index);
+            }
+            SemanticOperation::ClassDefaultTable { language, .. } => {
+                compiled
+                    .entry(language.clone())
+                    .or_default()
+                    .class_defaults
                     .push(index);
             }
             SemanticOperation::SymbolAttachment {

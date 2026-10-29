@@ -274,6 +274,9 @@ impl DependencyRegistry {
             let Some(profile) = super::by_id(language) else {
                 continue;
             };
+            if !profile.has_grammar() {
+                continue;
+            }
             let grammar = profile.grammar(path);
             let (workspace, _) = super::workspace_path(path);
             let call = ["call", "call_expression"]

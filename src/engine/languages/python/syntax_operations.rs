@@ -877,6 +877,91 @@ pub(super) fn extract_class_attribute(
     }
 }
 
+pub(super) fn extract_default_table(
+    ctx: &super::super::SyntaxContext<'_, '_>,
+    facts: &mut Facts,
+    context: &super::super::LanguageContext,
+) {
+    let Some(rules) = context
+        .prepared_projections("python")
+        .filter(|prepared| !prepared.class_defaults.is_empty())
+    else {
+        return;
+    };
+    let Some(node) = facts
+        .nodes
+        .iter()
+        .find(|node| node.id == ctx.owner && node.kind == "class")
+    else {
+        return;
+    };
+    let Some(bases) = ctx.node.child_by_field_name("superclasses") else {
+        return;
+    };
+    let mut cursor = bases.walk();
+    let has_rule = bases
+        .named_children(&mut cursor)
+        .filter_map(|base| {
+            let name = text(base, ctx.source);
+            let (head, tail) = name
+                .split_once('.')
+                .map_or((name, ""), |(head, tail)| (head, tail));
+            let mut imports = facts.references.iter().filter(|reference| {
+                reference.kind == "imports" && reference.alias.as_deref() == Some(head)
+            });
+            let import = imports.next()?;
+            if imports.next().is_some() {
+                return None;
+            }
+            let module = import.module.as_deref()?;
+            let prefix = if import.expression == module {
+                if name.starts_with(module) {
+                    return Some(name.to_owned());
+                }
+                module.to_owned()
+            } else {
+                format!("{module}.{}", import.expression)
+            };
+            Some(if tail.is_empty() {
+                prefix
+            } else {
+                format!("{prefix}.{tail}")
+            })
+        })
+        .any(|name| rules.class_defaults.iter()
+            .filter_map(|index| context.semantic_rules.get(*index))
+            .any(|effective| matches!(&effective.rule.operation,
+                super::super::manifests::semantic::SemanticOperation::ClassDefaultTable { language, bases }
+                    if language == "python" && bases.iter().any(|base| base == &name))));
+    if !has_rule
+        || facts
+            .references
+            .iter()
+            .any(|reference| reference.source == ctx.owner && reference.kind == "defines_table")
+    {
+        return;
+    }
+    let Some(app) = std::path::Path::new(&node.path)
+        .parent()
+        .and_then(|path| path.file_name())
+        .and_then(|name| name.to_str())
+    else {
+        return;
+    };
+    let name = format!("{}_{}", app.to_lowercase(), node.name.to_lowercase());
+    facts.references.push(crate::core::models::Reference {
+        source: ctx.owner.into(),
+        expression: name,
+        kind: "defines_table".into(),
+        line: ctx.line(),
+        column: ctx.node.start_position().column,
+        alias: None,
+        module: None,
+        dynamic: false,
+        receiver_hint: None,
+    });
+}
+
 fn positional_argument<'tree>(node: Node<'tree>, index: usize) -> Option<Node<'tree>> {
     let arguments = node.child_by_field_name("arguments")?;
     let mut cursor = arguments.walk();

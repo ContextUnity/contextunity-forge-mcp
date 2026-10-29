@@ -818,6 +818,10 @@ pub trait LanguageProfile: Send + Sync {
     }
     /// Returns source file extensions accepted by this profile.
     fn extensions(&self) -> &'static [&'static str];
+    /// Whether this profile supports Tree-sitter parsing and AST search.
+    fn has_grammar(&self) -> bool {
+        true
+    }
     /// Selects the Tree-sitter grammar for a source path.
     fn grammar(&self, path: &str) -> tree_sitter::Language;
     /// Creates a Tree-sitter parser configured for the source path.
@@ -826,6 +830,11 @@ pub trait LanguageProfile: Send + Sync {
     ///
     /// Returns an error when Tree-sitter rejects the grammar.
     fn create_parser(&self, path: &str) -> Result<Parser> {
+        anyhow::ensure!(
+            self.has_grammar(),
+            "AST search is not supported for {}",
+            self.id()
+        );
         let mut parser = Parser::new();
         parser.set_language(&self.grammar(path))?;
         Ok(parser)
@@ -1128,6 +1137,7 @@ pub trait LanguageProfile: Send + Sync {
 }
 
 include!(concat!(env!("OUT_DIR"), "/language_profiles.rs"));
+pub mod sql;
 
 #[cfg(any(feature = "lang-python", feature = "lang-typescript"))]
 pub(crate) fn publish_scope_projections(
@@ -1204,6 +1214,7 @@ fn registry() -> impl Iterator<Item = &'static dyn LanguageProfile> + Clone {
     PROFILE_GROUPS
         .iter()
         .flat_map(|group| group.iter().copied())
+        .chain(std::iter::once(&sql::SQL as &'static dyn LanguageProfile))
 }
 /// Performs validate profiles.
 pub fn validate_profiles(
@@ -1242,7 +1253,8 @@ pub fn profiles() -> impl Iterator<Item = &'static dyn LanguageProfile> + Clone 
 }
 
 pub(crate) fn profile_available(id: &str) -> bool {
-    (matches!(id, "typescript" | "javascript" | "vue") && cfg!(feature = "lang-typescript"))
+    id == "sql"
+        || (matches!(id, "typescript" | "javascript" | "vue") && cfg!(feature = "lang-typescript"))
         || AVAILABLE_LANGUAGE_FEATURES
             .iter()
             .any(|feature| feature.strip_prefix("lang-") == Some(id))

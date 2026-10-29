@@ -479,6 +479,7 @@ impl LanguageProfile for Rust {
         }
     }
     fn extract_calls(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
+        super::sql::extract_literal(ctx, facts);
         if ctx.node.kind() == "call_expression" {
             if let Some(callee) = ctx
                 .node

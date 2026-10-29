@@ -20,6 +20,9 @@ pub(crate) fn prepare_deferred_event<'tree>(
     rule_ir: &manifests::RuleIRHandle,
 ) -> Option<DeferredEvent<'tree>> {
     let kind = ctx.node.kind();
+    if kind == "class_definition" {
+        syntax_operations::extract_default_table(ctx, facts, rules);
+    }
     if matches!(kind, "assignment" | "annotated_assignment") {
         syntax_operations::extract_class_attribute(
             ctx.node, ctx.source, ctx.owner, ctx.offset, facts, rules,
@@ -625,6 +628,7 @@ impl LanguageProfile for Python {
         }
     }
     fn extract_calls(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
+        super::sql::extract_literal(ctx, facts);
         if matches!(ctx.node.kind(), "call") {
             call(ctx, facts, false);
             template_loaders::extract(ctx, facts);
@@ -1153,6 +1157,9 @@ impl LanguageProfile for Python {
         route_context: &crate::engine::ast::routes::RouteContext,
         projections: &mut HashMap<String, crate::core::semantic::ValueFlowFacts>,
     ) {
+        if ctx.node.kind() == "class_definition" {
+            syntax_operations::extract_default_table(ctx, facts, rules);
+        }
         if matches!(ctx.node.kind(), "assignment" | "annotated_assignment") {
             syntax_operations::extract_class_attribute(
                 ctx.node, ctx.source, ctx.owner, ctx.offset, facts, rules,

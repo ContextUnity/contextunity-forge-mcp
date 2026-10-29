@@ -915,6 +915,7 @@ impl LanguageProfile for TypeScript {
         }
     }
     fn extract_calls(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
+        super::sql::extract_literal(ctx, facts);
         if ctx.node.kind() == "member_expression"
             && field(ctx.node, ctx.source, "object") == Some("process")
             && field(ctx.node, ctx.source, "property") == Some("env")
@@ -2013,7 +2014,10 @@ impl LanguageProfile for TypeScript {
                 )
             });
             if prototype_aliases.is_empty()
-                && !facts.nodes.iter().any(|node| node.details["prototype"] == true)
+                && !facts
+                    .nodes
+                    .iter()
+                    .any(|node| node.details["prototype"] == true)
             {
                 relations::implicit_fields(facts);
                 return;

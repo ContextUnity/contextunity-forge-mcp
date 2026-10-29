@@ -1,0 +1,5 @@
+[[semantic_rules]]
+id = "model-table"
+namespace = "sql.tables"
+scope = "project"
+operation = { kind = "class_attribute_to_table", language = "python", attribute = "__tablename__" }

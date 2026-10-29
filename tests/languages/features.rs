@@ -142,6 +142,7 @@ fn registry_and_extraction_match_the_compiled_feature_contract() {
         .iter()
         .filter(|fixture| fixture.enabled)
         .map(|fixture| fixture.id)
+        .chain(["sql"])
         .collect();
     assert_eq!(
         languages::profiles()
@@ -204,9 +205,7 @@ fn registry_and_extraction_match_the_compiled_feature_contract() {
         .unwrap_err()
         .to_string();
     assert!(unknown.contains("unknown AST language"), "{unknown}");
-    if expected.is_empty() {
-        assert!(unknown.contains("document-only build"), "{unknown}");
-    }
+    assert!(unknown.contains("sql"), "{unknown}");
 }
 
 #[test]

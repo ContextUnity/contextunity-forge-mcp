@@ -103,6 +103,9 @@ impl RuleIRHandle {
     pub(crate) fn prepare(context: &super::LanguageContext) -> Self {
         let mut prepared = HashMap::new();
         for profile in super::profiles() {
+            if !profile.has_grammar() {
+                continue;
+            }
             for extension in profile.extensions() {
                 let grammar = profile.grammar(&format!("_.{extension}"));
                 prepared

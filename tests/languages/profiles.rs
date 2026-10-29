@@ -2062,7 +2062,11 @@ fn automatic_registry_has_unique_languages_and_extensions() {
                     .id(),
                 profile.id()
             );
-            profile.create_parser(&path).unwrap();
+            if profile.has_grammar() {
+                profile.create_parser(&path).unwrap();
+            } else {
+                assert!(profile.create_parser(&path).is_err());
+            }
         }
     }
 }

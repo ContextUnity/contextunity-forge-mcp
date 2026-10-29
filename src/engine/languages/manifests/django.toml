@@ -208,6 +208,19 @@ activation = [{ kind = "package", name = "django" }]
 operation = { kind = "class_attribute_to_file", language = "python", attribute = "template_name", target = { kind = "project_path_suffix", prefix = "templates/", language = "html" }, relation = "renders_template" }
 
 [[semantic_rules]]
+id = "model-table"
+namespace = "sql.tables"
+scope = "project"
+operation = { kind = "class_attribute_to_table", language = "python", attribute = "db_table", container = "Meta" }
+
+[[semantic_rules]]
+id = "model-default-table"
+namespace = "sql.tables"
+scope = "project"
+activation = [{ kind = "package", name = "django" }]
+operation = { kind = "class_default_table", language = "python", bases = ["django.db.models.Model", "django.db.models.base.Model"] }
+
+[[semantic_rules]]
 id = "cbv-model"
 namespace = "django.models"
 scope = "project"
