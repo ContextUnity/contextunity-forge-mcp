@@ -1293,22 +1293,37 @@ fn slice_paged(
     depth: u32,
     options: &QueryOptions,
 ) -> Result<Value> {
-    match traverse_with_path_options(
-        conn,
-        selector,
-        path,
-        &TraversalOptions {
-            depth,
-            inbound: false,
-            mode: None,
-            edge_types: None,
-            page: options,
-        },
-    ) {
-        Ok(result)
-            if result["selector"]["kind"] == "component"
-                && result["selector"]["path"].as_str() == Some(selector.trim()) => {}
-        Ok(result) => return Ok(result),
+    if depth > 16 {
+        bail!("depth must be <=16");
+    }
+    paging::generation(conn, options)?;
+    let directory_selector = selector.trim();
+    let directory_selector = directory_selector
+        .strip_prefix("file://")
+        .or_else(|| directory_selector.strip_prefix("file:"))
+        .unwrap_or(directory_selector);
+    let directory_selector = directory_selector
+        .strip_prefix("./")
+        .unwrap_or(directory_selector)
+        .trim_end_matches('/');
+    match reader::select_detail_with_path(conn, selector, path, options.detail) {
+        Ok(node)
+            if node["kind"] == "component" && node["path"].as_str() == Some(directory_selector) => {
+        }
+        Ok(_) => {
+            return traverse_with_path_options(
+                conn,
+                selector,
+                path,
+                &TraversalOptions {
+                    depth,
+                    inbound: false,
+                    mode: None,
+                    edge_types: None,
+                    page: options,
+                },
+            );
+        }
         Err(error)
             if !matches!(
                 error.downcast_ref::<reader::SelectorError>(),
@@ -1352,25 +1367,132 @@ fn slice_paged(
     }))
 }
 
+struct BoundaryRow {
+    inside_id: String,
+    inside_name: String,
+    inside_signature: Option<String>,
+    outside_id: String,
+    outside_name: String,
+    outside_signature: Option<String>,
+    module: String,
+    kind: String,
+}
+
+fn boundary_key(parts: &[&str]) -> Vec<u8> {
+    let mut key = Vec::new();
+    for part in parts {
+        for byte in part.bytes() {
+            if byte == 0 {
+                key.extend([0, 1]);
+            } else {
+                key.push(byte);
+            }
+        }
+        key.extend([0, 0]);
+    }
+    key
+}
+
+// Stable bytewise radix ordering; work is proportional to the encoded key bytes.
+fn boundary_radix<T>(
+    records: Vec<(Vec<u8>, T)>,
+    budget: &reader::QueryBudget<'_>,
+) -> Result<Vec<T>> {
+    let mut output = Vec::with_capacity(records.len());
+    let mut stack = vec![(records, Some(0usize))];
+    while let Some((items, depth)) = stack.pop() {
+        budget.check()?;
+        if items.len() <= 1 || depth.is_none() {
+            output.extend(items.into_iter().map(|(_, value)| value));
+            continue;
+        }
+        let depth = depth.unwrap_or_default();
+        let mut buckets: Vec<Vec<(Vec<u8>, T)>> = (0..257).map(|_| Vec::new()).collect();
+        for item in items {
+            let bucket = item.0.get(depth).map_or(0, |byte| usize::from(*byte) + 1);
+            buckets[bucket].push(item);
+        }
+        for (index, bucket) in buckets.into_iter().enumerate().rev() {
+            if !bucket.is_empty() {
+                stack.push((bucket, (index != 0).then_some(depth + 1)));
+            }
+        }
+    }
+    Ok(output)
+}
+
+fn boundary_modules(
+    rows: Vec<BoundaryRow>,
+    inbound: bool,
+    options: &QueryOptions,
+    generation: &str,
+    budget: &reader::QueryBudget<'_>,
+) -> Result<Value> {
+    let records = rows
+        .into_iter()
+        .map(|row| {
+            (
+                boundary_key(&[&row.module, &row.outside_id, &row.inside_id, &row.kind]),
+                row,
+            )
+        })
+        .collect();
+    let sorted = boundary_radix(records, budget)?;
+    let mut page = Vec::new();
+    let mut total = 0usize;
+    let mut iter = sorted.into_iter().peekable();
+    while let Some(first) = iter.next() {
+        budget.check()?;
+        let module = first.module.clone();
+        let mut count = 0usize;
+        let mut examples = Vec::new();
+        let mut current = Some(first);
+        while let Some(row) = current {
+            budget.check()?;
+            count += 1;
+            if examples.len() < 5 {
+                examples.push(if inbound {
+                    json!({"source_id":row.outside_id,"target_id":row.inside_id,"kind":row.kind})
+                } else {
+                    json!({"target_id":row.outside_id,"name":row.outside_name,"signature":row.outside_signature,"source_id":row.inside_id,"kind":row.kind})
+                });
+            }
+            current = if iter.peek().is_some_and(|next| next.module == module) {
+                iter.next()
+            } else {
+                None
+            };
+        }
+        if total >= options.offset && page.len() < options.limit {
+            page.push(if inbound {
+                json!({"module":module,"edge_count":count,"symbol_pairs":examples})
+            } else {
+                json!({"module":module,"edge_count":count,"targets":examples})
+            });
+        }
+        total += 1;
+    }
+    Ok(paging::value(page, total, options, generation))
+}
+
 fn directory_boundary(
     conn: &Connection,
     lower: &str,
     upper: &str,
     options: &QueryOptions,
 ) -> Result<(Value, Value)> {
-    use std::collections::BTreeSet;
-    let mut exports: BTreeMap<String, (String, Option<String>, BTreeSet<String>)> = BTreeMap::new();
-    let mut inbound: BTreeMap<String, (usize, Vec<Value>)> = BTreeMap::new();
-    let mut outbound: BTreeMap<String, (usize, Vec<Value>)> = BTreeMap::new();
+    let mut inbound = Vec::new();
+    let mut outbound = Vec::new();
     let mut internal = Vec::new();
     let generation = paging::generation(conn, options)?;
     let budget = reader::QueryBudget::new(conn);
     for is_inbound in [true, false] {
-        // Begin at the path range and walk only edges incident to its nodes.
+        // The endpoint-path projection scans only edges incident to this directory.
         let edge_key = if is_inbound { "dst_hash" } else { "src_hash" };
         let other_key = if is_inbound { "src_hash" } else { "dst_hash" };
+        let direction = if is_inbound { 1 } else { 0 };
         let sql = format!(
-            "SELECT inside.id,inside.name,json_extract(inside.details,'$.signature'),outside.id,outside.name,json_extract(outside.details,'$.signature'),op.path,e.kind,e.line,e.occurrence_count,(SELECT path FROM path_dictionary WHERE path_id=e.path_id),(SELECT evidence FROM coverage_evidence WHERE evidence_id=e.confidence_id),(SELECT evidence FROM coverage_evidence WHERE evidence_id=e.evidence_id) FROM path_dictionary ip CROSS JOIN nodes inside ON inside.path_id=ip.path_id CROSS JOIN edges e ON e.{edge_key}=inside.node_hash CROSS JOIN nodes outside ON outside.node_hash=e.{other_key} CROSS JOIN path_dictionary op ON op.path_id=outside.path_id WHERE ip.path>=?1 AND ip.path<?2"
+            "SELECT inside.id,inside.name,json_extract(inside.details,'$.signature'),outside.id,outside.name,json_extract(outside.details,'$.signature'),op.path,e.kind,e.line,e.occurrence_count,(SELECT path FROM path_dictionary WHERE path_id=e.path_id),(SELECT evidence FROM coverage_evidence WHERE evidence_id=e.confidence_id),(SELECT evidence FROM coverage_evidence WHERE evidence_id=e.evidence_id) FROM edge_endpoint_paths a CROSS JOIN edges e ON e.src_hash=a.src_hash AND e.kind=a.kind AND e.dst_hash=a.dst_hash CROSS JOIN nodes inside ON inside.node_hash=e.{edge_key} CROSS JOIN nodes outside ON outside.node_hash=e.{other_key} CROSS JOIN path_dictionary op ON op.path_id=outside.path_id WHERE a.path>=?1 AND a.path<?2 AND a.direction={direction}"
         );
         let mut statement = conn.prepare(&sql)?;
         let mut rows = statement.query([lower, upper])?;
@@ -1390,7 +1512,7 @@ fn directory_boundary(
                     if options.detail == crate::core::response::Detail::Full {
                         edge["evidence"] = json!(row.get::<_, String>(12)?);
                     }
-                    internal.push(edge);
+                    internal.push((edge.to_string().into_bytes(), edge));
                 }
                 continue;
             }
@@ -1398,44 +1520,62 @@ fn directory_boundary(
                 .rsplit_once('/')
                 .map_or("", |(parent, _)| parent)
                 .to_owned();
+            let record = BoundaryRow {
+                inside_id,
+                inside_name,
+                inside_signature,
+                outside_id,
+                outside_name,
+                outside_signature,
+                module,
+                kind,
+            };
             if is_inbound {
-                let export = exports.entry(inside_id.clone()).or_insert((
-                    inside_name,
-                    inside_signature,
-                    BTreeSet::new(),
-                ));
-                export.2.insert(outside_id.clone());
-                let group = inbound.entry(module).or_default();
-                group.0 += 1;
-                group
-                    .1
-                    .push(json!({"source_id":outside_id,"target_id":inside_id,"kind":kind}));
-                group.1.sort_unstable_by_key(Value::to_string);
-                group.1.truncate(5);
+                inbound.push(record);
             } else {
-                let group = outbound.entry(module).or_default();
-                group.0 += 1;
-                group.1.push(json!({"target_id":outside_id,"name":outside_name,"signature":outside_signature,"source_id":inside_id,"kind":kind}));
-                group.1.sort_unstable_by_key(Value::to_string);
-                group.1.truncate(5);
+                outbound.push(record);
             }
         }
     }
-    let exported_total = exports.len();
-    let inbound_total = inbound.len();
-    let outbound_total = outbound.len();
-    let exported_symbols: Vec<_> = exports.into_iter().skip(options.offset).take(options.limit).map(|(id,(name,signature,callers))| json!({"id":id,"name":name,"signature":signature,"external_caller_count":callers.len()})).collect();
-    let inbound_modules: Vec<_> = inbound.into_iter().skip(options.offset).take(options.limit).map(|(module,(edge_count,symbol_pairs))| json!({"module":module,"edge_count":edge_count,"symbol_pairs":symbol_pairs})).collect();
-    let outbound_modules: Vec<_> = outbound.into_iter().skip(options.offset).take(options.limit).map(|(module,(edge_count,targets))| json!({"module":module,"edge_count":edge_count,"targets":targets})).collect();
-    internal.sort_unstable_by_key(Value::to_string);
+    let export_records = inbound
+        .iter()
+        .map(|row| (boundary_key(&[&row.inside_id, &row.outside_id]), row))
+        .collect();
+    let sorted_exports = boundary_radix(export_records, &budget)?;
+    let mut export_items = Vec::new();
+    let mut exported_total = 0usize;
+    let mut iter = sorted_exports.into_iter().peekable();
+    while let Some(first) = iter.next() {
+        budget.check()?;
+        let mut callers = 1usize;
+        let mut last_caller = first.outside_id.as_str();
+        while iter
+            .peek()
+            .is_some_and(|next| next.inside_id == first.inside_id)
+        {
+            budget.check()?;
+            let next = iter.next().expect("peeked boundary row");
+            if next.outside_id != last_caller {
+                callers += 1;
+                last_caller = &next.outside_id;
+            }
+        }
+        if exported_total >= options.offset && export_items.len() < options.limit {
+            export_items.push(json!({"id":first.inside_id,"name":first.inside_name,"signature":first.inside_signature,"external_caller_count":callers}));
+        }
+        exported_total += 1;
+    }
+    let exports = paging::value(export_items, exported_total, options, &generation);
+    let inbound = boundary_modules(inbound, true, options, &generation, &budget)?;
+    let outbound = boundary_modules(outbound, false, options, &generation, &budget)?;
     let internal_total = internal.len();
-    let internal = internal
+    let internal = boundary_radix(internal, &budget)?
         .into_iter()
         .skip(options.offset)
         .take(options.limit)
         .collect();
     Ok((
-        json!({"exported_symbols":paging::value(exported_symbols,exported_total,options,&generation),"inbound_modules":paging::value(inbound_modules,inbound_total,options,&generation),"outbound_modules":paging::value(outbound_modules,outbound_total,options,&generation)}),
+        json!({"exported_symbols":exports,"inbound_modules":inbound,"outbound_modules":outbound}),
         paging::value(internal, internal_total, options, &generation),
     ))
 }
@@ -1622,5 +1762,33 @@ pub(crate) fn query_with_path_options(
         _ => {
             bail!("unknown operation; supported: overview,inspect,explain,impact,slice,unwired,sql")
         }
+    }
+}
+
+#[cfg(test)]
+mod boundary_radix_tests {
+    use super::{boundary_key, boundary_radix};
+
+    #[test]
+    fn orders_composite_utf8_keys_with_prefixes_and_zero_bytes() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let budget = super::reader::QueryBudget::new(&conn);
+        let input = [
+            ("a", "z"),
+            ("a", ""),
+            ("", "x"),
+            ("a", "\0"),
+            ("α", "x"),
+            ("a", "z"),
+            ("a\0", "b"),
+        ];
+        let records = input
+            .into_iter()
+            .map(|parts| (boundary_key(&[parts.0, parts.1]), parts))
+            .collect();
+        let actual = boundary_radix(records, &budget).unwrap();
+        let mut expected = input.to_vec();
+        expected.sort();
+        assert_eq!(actual, expected);
     }
 }

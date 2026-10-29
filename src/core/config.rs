@@ -675,7 +675,7 @@ pub fn read_policy(root: &Path, conn: &Connection) -> Result<Adapter> {
 }
 
 /// Current engine schema version stored in database metadata.
-pub const ENGINE_SCHEMA_VERSION: &str = "15";
+pub const ENGINE_SCHEMA_VERSION: &str = "16";
 
 /// Current index semantics version stored in database metadata.
 pub const INDEX_SEMANTICS_VERSION: &str = concat!(

@@ -548,6 +548,12 @@ pub(crate) fn populate_owned(
                 Ok((domains?, stored?, persist_ms, projection_ms))
             })?;
         seal_projection_ms += graph_projection_ms;
+        tx.execute_batch(
+            "INSERT INTO edge_endpoint_paths(path,direction,src_hash,kind,dst_hash)
+             SELECT p.path,0,e.src_hash,e.kind,e.dst_hash FROM edges e JOIN nodes n ON n.node_hash=e.src_hash JOIN path_dictionary p ON p.path_id=n.path_id
+             UNION ALL
+             SELECT p.path,1,e.src_hash,e.kind,e.dst_hash FROM edges e JOIN nodes n ON n.node_hash=e.dst_hash JOIN path_dictionary p ON p.path_id=n.path_id"
+        )?;
         if streamed_payloads {
             for (domain, leaves) in logical_commitments {
                 domains.insert(domain, leaves);
@@ -600,6 +606,7 @@ pub(crate) fn populate_owned(
             Ok(started.elapsed().as_secs_f64() * 1000.)
         };
         let indexes_ms = index_candidate(conn)?;
+        commitments::verify_endpoint_projection(conn, false)?;
         let t_fts = Instant::now();
         let fts_digests = commitments::fts_commitment_digests(conn)?;
         let seal_fts_ms = t_fts.elapsed().as_secs_f64() * 1000.;

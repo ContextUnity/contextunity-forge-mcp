@@ -66,15 +66,49 @@ fn directory_suffix_lists_real_nodes_and_exact_file_keeps_graph_traversal() {
     );
     ws.build();
     let conn = ws.open();
-    let projection_exists: i64 = conn.query_row(
-        "SELECT count(*) FROM sqlite_schema WHERE type='table' AND name='edge_endpoint_paths'",
-        [],
-        |row| row.get(0),
-    ).unwrap();
-    assert_eq!(projection_exists, 1, "production index must contain endpoint adjacency");
-    let edge_count: i64 = conn.query_row("SELECT count(*) FROM edges", [], |row| row.get(0)).unwrap();
-    let endpoint_count: i64 = conn.query_row("SELECT count(*) FROM edge_endpoint_paths", [], |row| row.get(0)).unwrap();
+    let projection_exists: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM sqlite_schema WHERE type='table' AND name='edge_endpoint_paths'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        projection_exists, 1,
+        "production index must contain endpoint adjacency"
+    );
+    let edge_count: i64 = conn
+        .query_row("SELECT count(*) FROM edges", [], |row| row.get(0))
+        .unwrap();
+    let endpoint_count: i64 = conn
+        .query_row("SELECT count(*) FROM edge_endpoint_paths", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
     assert_eq!(endpoint_count, 2 * edge_count);
+    for (direction, inside, outside) in [(0, "src_hash", "dst_hash"), (1, "dst_hash", "src_hash")] {
+        let sql = format!("EXPLAIN QUERY PLAN SELECT inside.id,outside.id FROM edge_endpoint_paths a CROSS JOIN edges e ON e.src_hash=a.src_hash AND e.kind=a.kind AND e.dst_hash=a.dst_hash CROSS JOIN nodes inside ON inside.node_hash=e.{inside} CROSS JOIN nodes outside ON outside.node_hash=e.{outside} CROSS JOIN path_dictionary op ON op.path_id=outside.path_id WHERE a.path>=?1 AND a.path<?2 AND a.direction={direction}");
+        let mut statement = conn.prepare(&sql).unwrap();
+        let plan: Vec<String> = statement
+            .query_map(["extensions/commerce/", "extensions/commerce0"], |row| {
+                row.get(3)
+            })
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert!(
+            plan.iter()
+                .any(|part| part.contains("SEARCH a USING PRIMARY KEY")),
+            "{plan:?}"
+        );
+        assert!(
+            plan.iter().any(|part| part.contains("SEARCH e USING")
+                && part.contains("src_hash=?")
+                && part.contains("dst_hash=?")
+                && part.contains("kind=?")),
+            "{plan:?}"
+        );
+    }
     let result = traversal::query_with_options(
         &conn,
         "slice",
@@ -253,7 +287,9 @@ fn directory_suffix_lists_real_nodes_and_exact_file_keeps_graph_traversal() {
     assert!(
         modules.iter().any(|module| module["module"] == "domain"
             && module["role"] == "domain"
-            && module["internal_edges"].as_u64().unwrap() > 0),
+            && module["internal_edges"].as_u64().unwrap()
+                > module["inbound_external_edges"].as_u64().unwrap()
+                    + module["outbound_external_edges"].as_u64().unwrap()),
         "{topology}"
     );
     assert!(
@@ -426,6 +462,42 @@ fn directory_suffix_lists_real_nodes_and_exact_file_keeps_graph_traversal() {
     .unwrap();
     assert_eq!(exact["depth"], 1);
     assert!(exact.get("scope").is_none());
+    drop(conn);
+    let consumer = "extensions/commerce/src/contextunity/commerce/consumer.py";
+    ws.write(consumer, "from contextunity.commerce.ingestion.worker import publish\ndef consume():\n    publish()\n    return publish()\n");
+    let delta = ws.delta(&[consumer]);
+    let cold = ws.build_to(ws.path(".forge/cold-after-edit.sqlite"));
+    assert_eq!(delta["output_root"], cold["output_root"]);
+    contextunity_forge_mcp::core::commitments::verify(&ws.open()).unwrap();
+    let moved = "extensions/commerce/src/contextunity/commerce/ingestion/renamed.py";
+    std::fs::rename(ws.path(file), ws.path(moved)).unwrap();
+    let delta = ws.delta(&[file, moved]);
+    let cold = ws.build_to(ws.path(".forge/cold-after-move.sqlite"));
+    assert_eq!(delta["output_root"], cold["output_root"]);
+    contextunity_forge_mcp::core::commitments::verify(&ws.open()).unwrap();
+    let prior_root = delta["output_root"].clone();
+    let injected = rusqlite::Connection::open(ws.db()).unwrap();
+    injected.execute_batch("CREATE TRIGGER reject_endpoint_projection BEFORE INSERT ON edge_endpoint_paths BEGIN SELECT RAISE(ABORT,'injected adjacency failure'); END;").unwrap();
+    drop(injected);
+    ws.write(consumer, "from contextunity.commerce.ingestion.renamed import publish\ndef consume(): return publish()\n");
+    let failure = contextunity_forge_mcp::db::writer::delta(
+        ws.root(),
+        &ws.db(),
+        &[std::path::PathBuf::from(consumer)],
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(failure.contains("injected adjacency failure"), "{failure}");
+    let after = ws.open();
+    let root: String = after
+        .query_row(
+            "SELECT value FROM metadata WHERE key='output_root'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(prior_root, root);
+    contextunity_forge_mcp::core::commitments::verify(&after).unwrap();
 }
 
 #[test]
@@ -526,7 +598,9 @@ fn large_directory_is_paged_without_graph_expansion() {
     );
     drop(conn);
     let writer = rusqlite::Connection::open(ws.db()).unwrap();
-    writer.execute_batch("DELETE FROM edges").unwrap();
+    writer
+        .execute_batch("DELETE FROM edge_endpoint_paths; DELETE FROM edges")
+        .unwrap();
     let empty = traversal::query_with_options(
         &writer,
         "slice",
@@ -541,7 +615,49 @@ fn large_directory_is_paged_without_graph_expansion() {
     .unwrap();
     assert_eq!(empty["edges"]["total"], 0);
     assert_eq!(empty["boundary_contract"]["exported_symbols"]["total"], 0);
+    writer.execute_batch("INSERT INTO edges(src_hash,kind,dst_hash,path_id,line,evidence_id,confidence_id,occurrence_count) SELECT a.node_hash,'contains',b.node_hash,a.path_id,1,(SELECT evidence_id FROM coverage_evidence LIMIT 1),(SELECT evidence_id FROM coverage_evidence LIMIT 1),1 FROM nodes a CROSS JOIN nodes b WHERE a.kind='component' AND a.name='pkg' AND b.kind='function'; INSERT INTO edge_endpoint_paths SELECT p.path,0,e.src_hash,e.kind,e.dst_hash FROM edges e JOIN nodes n ON n.node_hash=e.src_hash JOIN path_dictionary p ON p.path_id=n.path_id UNION ALL SELECT p.path,1,e.src_hash,e.kind,e.dst_hash FROM edges e JOIN nodes n ON n.node_hash=e.dst_hash JOIN path_dictionary p ON p.path_id=n.path_id").unwrap();
+    let links: i64 = writer
+        .query_row(
+            "SELECT count(*) FROM edges WHERE kind='contains'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(links, 1100);
+    for selector in ["pkg", "./pkg", "file:pkg", "file://./pkg", "pkg/"] {
+        let root = traversal::query_with_options(
+            &writer,
+            "slice",
+            Some(selector),
+            &traversal::GraphQueryOptions {
+                depth: 2,
+                direction: None,
+                coverage: CoverageOptions::default(),
+                page: &options(1),
+            },
+        )
+        .unwrap();
+        assert_eq!(root["scope"], "directory_members");
+    }
+    let component = traversal::query_with_options(
+        &writer,
+        "slice",
+        Some("component:pkg"),
+        &traversal::GraphQueryOptions {
+            depth: 1,
+            direction: None,
+            coverage: CoverageOptions::default(),
+            page: &options(1),
+        },
+    )
+    .unwrap();
+    assert_eq!(component["selector"]["kind"], "component");
+    assert_eq!(component["depth"], 1);
+    writer
+        .execute_batch("DELETE FROM edge_endpoint_paths; DELETE FROM edges")
+        .unwrap();
     writer.execute_batch("INSERT OR IGNORE INTO edges(src_hash,kind,dst_hash,path_id,line,evidence_id,confidence_id,occurrence_count) SELECT a.node_hash,'calls',b.node_hash,a.path_id,1,(SELECT evidence_id FROM coverage_evidence LIMIT 1),(SELECT evidence_id FROM coverage_evidence LIMIT 1),1 FROM nodes a CROSS JOIN nodes b WHERE a.kind='function' AND b.kind='function' LIMIT 10001").unwrap();
+    writer.execute_batch("INSERT INTO edge_endpoint_paths SELECT p.path,0,e.src_hash,e.kind,e.dst_hash FROM edges e JOIN nodes n ON n.node_hash=e.src_hash JOIN path_dictionary p ON p.path_id=n.path_id UNION ALL SELECT p.path,1,e.src_hash,e.kind,e.dst_hash FROM edges e JOIN nodes n ON n.node_hash=e.dst_hash JOIN path_dictionary p ON p.path_id=n.path_id").unwrap();
     let conn = writer;
     let dense = traversal::query_with_options(
         &conn,

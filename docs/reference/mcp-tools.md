@@ -170,6 +170,9 @@ offset, limit and generation. Continue with the next offset and generation; the
 same offset applies to internal edges and every boundary collection. Each module
 includes at most five deterministic representative edges. File and explicit
 symbol slices retain graph traversal.
+The directory query uses a persisted endpoint-path projection; index admission
+checks that derived rows match the committed graph. A schema-incompatible index
+requires a rebuild.
 
 Request `{"aspects":["topology"]}` from `code_map_overview` for opt-in
 `topology.modules` and `topology.module_edges` pages. Module names use the

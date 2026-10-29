@@ -426,33 +426,96 @@ receipt:
 
 ```yaml
 task_ref: directory-boundary-slice-and-module-topology
-target: "Enhance code_map_query(operation='slice') for directories with 1-hop inbound/outbound boundary contracts (neighborMap) and add aspects=['topology'] to code_map_overview"
+target: Enhance code_map_query(operation='slice') for directories with 1-hop inbound/outbound boundary contracts (neighborMap) and add aspects=['topology'] to code_map_overview
 proof_policy: seam-test-first
-contract_revision: 4
+contract_revision: 7
 depends_on:
-  - deterministic-entrypoint-classification-and-unwired-filtering
+- deterministic-entrypoint-classification-and-unwired-filtering
 concurrency:
   mode: speculative
   sync_on: snapshot
 scope:
-  - src/db/traversal.rs
-  - src/db/reader.rs
-  - src/mcp/tools.rs
-  - src/cli/mod.rs
-  - docs/reference/tools.md
-  - docs/reference/cli.md
-  - tests/mcp/
-status: ready
+- src/core/schema.rs
+- src/core/config.rs
+- src/core/commitments.rs
+- src/db/writer.rs
+- src/db/delta.rs
+- src/db/traversal.rs
+- src/db/reader.rs
+- src/mcp/tools.rs
+- src/mcp/tools/inputs.rs
+- src/cli/mod.rs
+- src/core/format/discovery.rs
+- docs/reference/mcp-tools.md
+- docs/reference/cli.md
+- tests/mcp/
+- tests/commitment_integrity.rs
+- tests/incremental/directory_slice.rs
+status: completed
 subtasks:
-  - subtask_ref: add-one-hop-boundary-contract-to-directory-slice
-    title: "Extend slice_paged in src/db/traversal.rs so directory selectors include a boundary_contract section listing exported_symbols (called from outside), inbound_callers grouped by external directory, and outbound_dependencies grouped by external directory"
-    status: pending
-  - subtask_ref: add-module-topology-aspect-to-overview
-    title: "Extend overview_with_options in src/db/reader.rs with aspects=['topology'] computing directory-level architectural layers (entrypoint, orchestrator, domain, data, foundation) and top inter-directory dependency edges"
-    status: pending
-  - subtask_ref: document-slice-boundaries-and-topology-in-reference-docs
-    title: "Update docs/reference/tools.md and docs/reference/cli.md with examples of directory boundary slices and overview topology"
-    status: pending
+- subtask_ref: add-one-hop-boundary-contract-to-directory-slice
+  title: Extend slice_paged in src/db/traversal.rs so directory selectors include a boundary_contract section listing exported_symbols (called from outside), inbound_callers grouped by external directory, and outbound_dependencies grouped by external directory
+  status: completed
+  evidence: Snapshot e0b79be; production incremental 3/3, MCP 90/90, strict Clippy; independent review and seam review passed.
+- subtask_ref: add-module-topology-aspect-to-overview
+  title: Extend overview_with_options in src/db/reader.rs with aspects=['topology'] computing directory-level architectural layers (entrypoint, orchestrator, domain, data, foundation) and top inter-directory dependency edges
+  status: completed
+  evidence: Snapshot e0b79be; production incremental 3/3, MCP 90/90, strict Clippy; independent review and seam review passed.
+- subtask_ref: document-slice-boundaries-and-topology-in-reference-docs
+  title: Update docs/reference/mcp-tools.md and docs/reference/cli.md with examples of directory boundary slices and overview topology
+  status: completed
+  evidence: Snapshot e0b79be; production incremental 3/3, MCP 90/90, strict Clippy; independent review and seam review passed.
+receipt:
+  contract_revision: 7
+  passed_at: 2026-10-29T22:03:13.635398732+00:00
+  evidence:
+    seam_test_proof:
+      exit_code: 0
+      seam_test_refs:
+      - tests/incremental/directory_slice.rs
+      - tests/mcp/context.rs
+      tests_passed: 93
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: Independent reviewer verified all 14 changed files against rev7 scope, protected fields untouched.
+        claims:
+          applicable: true
+          evidence: Reviewed production SQLite boundary, topology, normalized selector and seam tests; builder reports incremental 3/3, integrity 16/16, Clippy and MCP 90/90.
+        concurrency:
+          applicable: true
+          evidence: Reviewed atomic delta projection updates, rollback, cold and verified-cache publication.
+        project_isolation:
+          applicable: true
+          evidence: Reviewed directory selectors, normalization, ambiguity and workspace-local production storage.
+        administration:
+          applicable: true
+          evidence: Reviewed schema upgrade rebuild, preserved v2 domains and candidate snapshot; no protected profile changes.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-SQL-ZERO-SOURCE-IO-DELTA: SQL DDL declarations (CREATE TABLE, CREATE VIEW, ALTER TABLE) and query table references (SELECT/INSERT/UPDATE/DELETE) are extracted into Facts during file parsing so delta rebuilds preserve INV-DELTA-NO-SOURCE-IO and bit-identical cold-vs-delta commitments (forge-owner-sha256-v2).'
+    - 'INV-ENTRYPOINT-UNWIRED-PRECISION: Semantic entrypoints (main functions, CLI subcommands, HTTP/WebSocket route handlers, MCP tool handlers, event/cron handlers, and test roots) are deterministically tagged during extraction/linking and excluded from default dead-code (unwired) false positives.'
+    - 'INV-BOUNDARY-SLICE-COMPACTNESS: Directory-level code_map_query(operation="slice") computes 1-hop inbound and outbound module boundary contracts (neighborMap equivalent) directly from SQLite edges in O(E_dir) without loading unrelated file bodies.'
+    - 'INV-DUAL-SURFACE-PARITY: Every new overview aspect (entrypoints, topology), slice boundary contract, and SQL graph relation is exposed with identical semantics on both MCP and CLI surfaces.'
+    architectural_notes:
+    - 'decisions: Architectural synthesis rev 5: slice_paged resolves files/symbols via traversal first, then directory_path and path_bounds; extend only the directory branch, joining indexed path_dictionary, nodes and edges from in-directory nodes with source/destination hash indexes. Do not read source bodies or use LIKE wildcard matching. Preserve directory resolution, existing nodes page/generation and file semantics; aggregate bounded deterministic inbound exports and module pairs/outbound targets. overview_with_options is the shared DB producer used by both CLI and MCP; add opt-in topology there, preserving generation/limits, aggregate indexed node/edge facts with deterministic module path mapping and classification precedence documented in reference. Existing tests/incremental/directory_slice.rs is the real scanner->SQLite->traversal seam and tests/mcp/context.rs covers CLI/MCP parity. Rev 5 replaces nonexistent reference owner docs/reference/tools.md with docs/reference/mcp-tools.md and admits existing seam; protected Cargo.toml, build.rs and profile files are not needed. Clean compilation and runtime assertion red: cargo test --test incremental directory_suffix_lists_real_nodes_and_exact_file_keeps_graph_traversal exited 101 on missing boundary_contract.exported_symbols.'
+    - 'decisions: Rev 6 synthesis: prior #1293 remains architecture and directory proof. Newly inspected src/core/format/discovery.rs render_overview is a closed list with no fallback, so topology-only overview disappears from default Markdown although JSON contains it. Scope admits this renderer and src/mcp/tools/inputs.rs (MCP argument description), with no Cargo/build/profile changes. Extend existing stdio/CLI production parity seam to require visible topology in default Markdown; runtime red will prove the omitted renderer section. Preserve bounded pages and their continuation metadata in rendered output.'
+    - 'decisions: Proposed rev7 architecture for user-directed strict incident locality: E_dir = indexed edges with at least one endpoint inside directory, including internal. Add edge_endpoint_paths(path,direction,src_hash,kind,dst_hash), path/direction PK plus edge-key index, exactly two rows per canonical edge. Schema version 16 rejects/rebuilds v15; v2 ALGORITHM and DOMAINS unchanged. Cold writer builds projection from canonical nodes/edges after persist_graph and validates bidirectional equality after secondary indexes before seal/verified receipt. Full commitments::verify checks every canonical endpoint projection and every projection row in reverse; missing/wrong/extra rows fail closed. Delta IMMEDIATE transaction materializes touched edge keys as changed_edge_keys UNION pre-delete incident edges of replaced_nodes, removes old projection and reinserts both endpoint rows after all graph aggregation, validates touched keys in both directions including wrong paths, and verifies before commit/cache publication. Prior reader admission verifies full projection on cache miss, receipt binds snapshot identity; schema upgrade rebuild invalidates old index/receipt. Transaction rollback preserves canonical edges, projection, commitments and previous receipt. No source IO; cold/delta same-schema output_root parity; v2 algorithm unchanged though schema metadata changes root. Indexed range reads visit projection records for directory endpoints, including twice for internal edges; SQLite B-tree seek cost and grouping/sort costs are explicit, no unsupported strict mathematical linear claim. Tests: cold/delta changed/deleted/moved endpoints, corruption delete/insert/wrong direction/path, old schema rebuild, rollback, cache invalidation, parity, isolated/high incident directory; no benchmark. Needed scope additions src/core/schema.rs, src/core/config.rs, src/core/commitments.rs, src/db/writer.rs, src/db/delta.rs, tests/commitment_integrity.rs. Existing src/db/reader.rs,traversal.rs and tests/incremental/directory_slice.rs already admitted.'
+    - 'decisions: Rev7 architecture follows #1301, with scope amended to canonical schema/config, commitments, cold writer, delta and integrity seam. No Cargo.toml, build.rs or profile changes. Production scanner→index→SQLite test tests/incremental/directory_slice.rs compiles and fails 101 because the required incident adjacency table is absent, and additionally asserts two records per actual graph edge. Derived-state verification preserves v2 algorithm and rejects missing, extra and wrong endpoint rows; cold publication and delta transaction verify before trusted receipt.'
+    - 'decisions: Independent reviewer reclassified the earlier unbounded intermediate materialization finding: milestone invariant requires O(E_dir) and no unrelated file-body reads, but neither the invariant nor ADR 0011 establishes an intermediate RAM cap or page-sized memory requirement. O(E_dir + key bytes) working memory remains a disclosed risk, not a standalone contract violation; do not introduce an unapproved new query failure limit. Complexity, pagination correctness, response limits, and integrity remain subject to independent review.'
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Implementation Guide (Step-by-Step for Builders)
@@ -482,7 +545,7 @@ subtasks:
 
 1. Calling `code_map_query(operation="slice", target="src/db")` returns `boundary_contract` containing `exported_symbols` (only `src/db` symbols actually used outside `src/db`), `inbound_modules` (e.g. `src/mcp`, `src/cli`), and `outbound_modules` (e.g. `src/core`).
 2. Calling `code_map_overview(aspects=["topology"])` returns deterministic module clusters with assigned architectural roles (`foundation`, `data_access`, `domain`, `orchestrator`, `adapter_or_entrypoint`) and inter-module dependency weights.
-3. CLI and MCP surfaces match on both operations, and `docs/reference/tools.md` + `docs/reference/cli.md` are updated.
+3. CLI and MCP surfaces match on both operations, and `docs/reference/mcp-tools.md` + `docs/reference/cli.md` are updated.
 4. `cargo test --test mcp` passes.
 
 ---

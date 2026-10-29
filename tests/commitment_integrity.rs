@@ -566,6 +566,52 @@ fn built_nodes_keep_owner_paths_and_repeatable_merkle_leaves() {
         digest
     };
     assert_eq!(leaf(&first), leaf(&second));
+    for mutation in [
+        "DELETE FROM edge_endpoint_paths WHERE (path,direction,src_hash,kind,dst_hash)=(SELECT path,direction,src_hash,kind,dst_hash FROM edge_endpoint_paths LIMIT 1)",
+        "INSERT INTO edge_endpoint_paths SELECT 'wrong/path',0,src_hash,kind,dst_hash FROM edges LIMIT 1",
+        "UPDATE edge_endpoint_paths SET path='wrong/path' WHERE (path,direction,src_hash,kind,dst_hash)=(SELECT path,direction,src_hash,kind,dst_hash FROM edge_endpoint_paths LIMIT 1)",
+        "UPDATE edge_endpoint_paths SET path='wrong/path',direction=1-direction WHERE (path,direction,src_hash,kind,dst_hash)=(SELECT path,direction,src_hash,kind,dst_hash FROM edge_endpoint_paths LIMIT 1)",
+    ] {
+        let database = workspace.path("corruption.sqlite");
+        writer::build(&source, &database, None).unwrap();
+        drop(contextunity_forge_mcp::db::reader::open(&database, &source).unwrap());
+        let conn = Connection::open(&database).unwrap();
+        assert_eq!(conn.execute(mutation, []).unwrap(), 1, "{mutation}");
+        assert!(commitments::verify(&conn).is_err(), "{mutation}");
+        drop(conn);
+        assert!(contextunity_forge_mcp::db::reader::open(&database, &source).is_err(), "{mutation}");
+    }
+    let conn = Connection::open(&first).unwrap();
+    conn.execute_batch("CREATE TEMP TABLE victim AS SELECT src_hash AS hash FROM edges LIMIT 1; DELETE FROM edge_endpoint_paths WHERE (direction=0 AND src_hash IN (SELECT hash FROM victim)) OR (direction=1 AND dst_hash IN (SELECT hash FROM victim)); DELETE FROM nodes WHERE node_hash IN (SELECT hash FROM victim)").unwrap();
+    let error = commitments::verify(&conn).unwrap_err().to_string();
+    assert!(
+        error.contains("endpoint adjacency projection mismatch"),
+        "{error}"
+    );
+    drop(conn);
+    let legacy = workspace.path("legacy.sqlite");
+    writer::build(&source, &legacy, None).unwrap();
+    let conn = Connection::open(&legacy).unwrap();
+    conn.execute_batch(
+        "DROP TABLE edge_endpoint_paths; UPDATE metadata SET value='15' WHERE key='schema_version'",
+    )
+    .unwrap();
+    drop(conn);
+    assert!(contextunity_forge_mcp::db::reader::open(&legacy, &source).is_err());
+    writer::delta(&source, &legacy, &[std::path::PathBuf::from("a.rs")]).unwrap();
+    let conn = contextunity_forge_mcp::db::reader::open(&legacy, &source).unwrap();
+    let schema: String = conn
+        .query_row(
+            "SELECT value FROM metadata WHERE key='schema_version'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        schema,
+        contextunity_forge_mcp::core::config::ENGINE_SCHEMA_VERSION
+    );
+    commitments::verify(&conn).unwrap();
 }
 
 #[test]
