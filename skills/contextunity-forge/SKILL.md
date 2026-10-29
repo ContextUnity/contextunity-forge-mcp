@@ -64,6 +64,9 @@ On budget errors, narrow the selector/path or reduce depth.
   something is absent.
 - Locate with `code_map_search` (compact for broad searches); use `code_map_inspect` for the exact
   declaration, signature, docs, and invariants.
+- Search indexed type and decorator text with `code_map_search(query="GateProfile")` or
+  `code_map_search(query="@pytest.fixture")`. Use `takes:GateProfile` or `returns:Result`
+  to restrict matches to a parameter or return type, respectively.
 - Use `code_map_explain` for ownership/callers/callees and depth-1 `code_map_impact` before edits or
   removals.
 - Use `code_map_tests` to trace exact calls from classified test cases. Helpers and fixtures may

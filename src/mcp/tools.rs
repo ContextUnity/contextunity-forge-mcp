@@ -477,7 +477,7 @@ impl Server {
         )
     }
     #[tool(
-        description = "Search names, qualified names, and tokens. A trailing * is a prefix. exact=true matches an indexed name or qualname without full text. Hits include indexed signatures and inspect_selector arguments for code_map_inspect; previews appear automatically for at most three total hits or on request, capped at three hits, 20 lines, and 12 KiB combined."
+        description = "Search names, qualified names, indexed parameter and return types, decorators, and tokens. Use takes:Type or returns:Type to filter by a parameter or return type. A trailing * is a name prefix. exact=true matches an indexed name or qualname without full text. Hits include indexed signatures and inspect_selector arguments for code_map_inspect; previews appear automatically for at most three total hits or on request, capped at three hits, 20 lines, and 12 KiB combined."
     )]
     fn code_map_search(&self, Parameters(p): Parameters<SearchSymbols>) -> CallToolResult {
         let format = p.page.output_format();

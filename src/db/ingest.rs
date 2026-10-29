@@ -248,9 +248,20 @@ fn persist_files_impl(
                             .filter(|node| node.id == n.id)
                             .or_else(|| detail_facts.nodes.iter().find(|node| node.id == n.id))
                             .context("staged node is missing matching navigation facts")?;
-                        let details = serde_json::to_vec(
-                            &navigation_node.navigation_details_with_documentation(&n.details),
+                        let mut details = serde_json::to_value(
+                            navigation_node.navigation_details_with_documentation(&n.details),
                         )?;
+                        if let Some(return_type) =
+                            declared_return_type(navigation_node, detail_facts)
+                        {
+                            if details.is_null() {
+                                details = Value::Object(Default::default());
+                            }
+                            if let Some(map) = details.as_object_mut() {
+                                map.insert("return_type".into(), Value::String(return_type));
+                            }
+                        }
+                        let details = serde_json::to_vec(&details)?;
                         Ok((node_index, details))
                     })
                     .collect::<Result<Vec<_>>>()
@@ -587,7 +598,7 @@ fn flush_node_batch<'a>(
     Ok(insert_ms)
 }
 
-pub(super) fn write_node_search_text(search: &mut String, node: &Node, facts: &Facts) {
+pub(super) fn write_node_search_text(search: &mut String, node: &Node, facts: &TypedFacts) {
     search.clear();
     let doc = node
         .details
@@ -602,6 +613,21 @@ pub(super) fn write_node_search_text(search: &mut String, node: &Node, facts: &F
             "{} {} {} {}",
             node.name, node.qualname, node.path, doc
         );
+    }
+    for (name, ty) in node.parameter_types() {
+        if let Some(ty) = ty {
+            let _ = write!(search, " {name}:{ty} {ty}");
+            write_type_tokens(search, "forgetakes", ty);
+        }
+    }
+    if let Some(ty) = declared_return_type(node, facts) {
+        let _ = write!(search, " returns:{ty} {ty}");
+        write_type_tokens(search, "forgereturns", &ty);
+    }
+    if let Some(decorators) = node.details.get("decorators").and_then(Value::as_array) {
+        for decorator in decorators.iter().filter_map(Value::as_str) {
+            let _ = write!(search, " {decorator}");
+        }
     }
     if node.kind == "module" {
         let mut expressions: Vec<_> = facts
@@ -619,6 +645,70 @@ pub(super) fn write_node_search_text(search: &mut String, node: &Node, facts: &F
             search.push(' ');
             search.push_str(expression);
         }
+    }
+}
+
+fn write_type_tokens(search: &mut String, prefix: &str, text: &str) {
+    for token in text
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|s| !s.is_empty())
+    {
+        let _ = write!(search, " {prefix}{token}");
+    }
+}
+
+fn declared_return_type(node: &Node, facts: &TypedFacts) -> Option<String> {
+    if let Some(signature) = node.details.get("signature").and_then(Value::as_str) {
+        let mut depth = 0usize;
+        for (offset, ch) in signature.char_indices() {
+            if ch == '(' {
+                depth += 1;
+            } else if ch == ')' && depth > 0 {
+                depth -= 1;
+                if depth == 0 {
+                    let tail = signature[offset + 1..].trim_start();
+                    if let Some(annotation) = tail.strip_prefix("->").or_else(|| {
+                        (node.language == "typescript" || node.language == "javascript")
+                            .then(|| tail.strip_prefix(':'))
+                            .flatten()
+                    }) {
+                        let annotation = annotation.trim().trim_end_matches(':').trim();
+                        if !annotation.is_empty() {
+                            return Some(annotation.to_owned());
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    let flow = facts.flows.get(node)?;
+    let ty = flow
+        .return_type
+        .as_ref()
+        .or(flow.async_return_type.as_ref())?;
+    let mut output = String::new();
+    write_return_type(&mut output, ty);
+    (!output.is_empty()).then_some(output)
+}
+
+fn write_return_type(output: &mut String, ty: &crate::core::semantic::TypeExpr) {
+    use crate::core::semantic::TypeExpr;
+    match ty {
+        TypeExpr::Named { name } | TypeExpr::Applied { base: name, .. } => {
+            output.push_str(name);
+        }
+        TypeExpr::Unknown => {}
+    }
+    if let TypeExpr::Applied { args, .. } = ty {
+        output.push('<');
+        for (index, arg) in args.iter().enumerate() {
+            if index > 0 {
+                output.push_str(", ");
+            }
+            write_return_type(output, arg);
+        }
+        output.push('>');
     }
 }
 

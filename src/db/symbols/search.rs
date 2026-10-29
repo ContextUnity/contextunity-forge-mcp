@@ -52,6 +52,38 @@ pub fn search_with_options(
     let (path_start, path_end) = reader::path_bounds(path);
     let columns = paging::nodes_with_path("n", options.detail, "pd.path");
     let graph_boost = "CASE WHEN EXISTS(SELECT 1 FROM edges e WHERE e.dst_hash=n.node_hash AND e.kind NOT IN('contains','documents','references_doc')) THEN 50 ELSE 0 END";
+    if let Some((field, value)) = pattern
+        .strip_prefix("returns:")
+        .map(|value| ("return", value))
+        .or_else(|| {
+            pattern
+                .strip_prefix("takes:")
+                .map(|value| ("parameter", value))
+        })
+    {
+        let value = value.trim();
+        if value.is_empty() || value.contains('*') || value.contains('\0') {
+            bail!("type filter must contain a type fragment without wildcards");
+        }
+        let escaped = value
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        let query = format!("%{escaped}%");
+        let predicate = if field == "return" {
+            "json_extract(n.details,'$.return_type') LIKE ?1 ESCAPE '\\'"
+        } else {
+            "EXISTS (SELECT 1 FROM json_each(n.details,'$.param_types') p WHERE p.type='text' AND p.value LIKE ?1 ESCAPE '\\')"
+        };
+        let sql = format!("SELECT {columns} FROM nodes n JOIN path_dictionary pd ON pd.path_id=n.path_id WHERE {predicate} AND n.kind IN ('function','method') AND (?2='' OR n.kind=?2 OR (?2='method' AND n.kind='function') OR (?2='function' AND n.kind='method')) AND (?3='' OR pd.path=?3 OR (pd.path>=?4 AND pd.path<?5)) AND (?6=1 OR n.language!='markdown') ORDER BY pd.path,n.line,n.id");
+        let nodes = paging::query(
+            conn,
+            &sql,
+            &[&query, &kind, &path, &path_start, &path_end, &include_docs],
+            options,
+        )?;
+        return Ok(json!({"pattern":pattern,"nodes":nodes}));
+    }
     let default_exact = if !exact && !pattern.contains('*') {
         let fts_query = pattern
             .split(|c: char| !c.is_alphanumeric())
@@ -95,7 +127,24 @@ pub fn search_with_options(
                 options,
             )?
         };
-        (candidates["total"].as_u64() != Some(0)).then_some(candidates)
+        let tokens = pattern
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>();
+        let has_type_match = if tokens.len() == 1 && candidates["total"].as_u64() != Some(0) {
+            let query = format!(
+                "\"forgetakes{}\" OR \"forgereturns{}\"",
+                tokens[0], tokens[0]
+            );
+            conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM node_search JOIN nodes n ON n.node_hash=node_search.rowid JOIN path_dictionary pd ON pd.path_id=n.path_id WHERE node_search MATCH ?1 AND (?2='' OR n.kind=?2 OR (?2='method' AND n.kind='function') OR (?2='function' AND n.kind='method')) AND (?3='' OR pd.path=?3 OR (pd.path>=?4 AND pd.path<?5)) AND (?6=1 OR n.language!='markdown'))",
+                rusqlite::params![query, kind, path, path_start, path_end, include_docs],
+                |row| row.get::<_, bool>(0),
+            )?
+        } else {
+            false
+        };
+        (candidates["total"].as_u64() != Some(0) && !has_type_match).then_some(candidates)
     } else {
         None
     };
@@ -208,7 +257,11 @@ pub fn search_with_options(
             .filter(|s| !s.is_empty())
             .map(|s| format!("\"{s}\""))
             .collect::<Vec<_>>()
-            .join(" OR ");
+            .join(if pattern.starts_with('@') {
+                " AND "
+            } else {
+                " OR "
+            });
         if query.is_empty() {
             bail!("pattern must contain a symbol fragment");
         }

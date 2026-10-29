@@ -22,8 +22,10 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
     );
     ws.write(
         "signature.py",
-        "@pytest.fixture\ndef typed_query(order: GateProfile) -> Result:\n    return order\n\ndef other(value: Unrelated) -> OtherResult:\n    return value\n",
+        "@pytest.fixture\ndef typed_query(order: GateProfile) -> Result:\n    return order\n\ndef returns_gate() -> GateProfile:\n    return None\n\ndef takes_result(value: Result) -> Other:\n    return value\n\n@pytest.other\ndef other_decorator():\n    return 1\n\n@other.fixture\ndef unrelated_fixture():\n    return 1\n",
     );
+    ws.write("types.py", "class GateProfile:\n    pass\n");
+    ws.write("types.rs", "#[derive(Debug)]\nstruct Example {}\n");
     let db_path = ws.root().join(".forge/code-map.sqlite");
     writer::build(ws.root(), &db_path, None).unwrap();
     let conn = reader::open(&db_path, ws.root()).unwrap();
@@ -58,7 +60,17 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
     assert_eq!(nodes[0]["name"], "process");
     assert_eq!(nodes[1]["name"], "process");
     assert_eq!(nodes[0]["match_reason"], "exact_name");
-    for pattern in ["GateProfile", "returns:Result", "takes:GateProfile", "@pytest.fixture"] {
+    for (pattern, expected) in [
+        ("GateProfile", &["returns_gate", "typed_query"][..]),
+        ("returns:Result", &["typed_query"][..]),
+        ("returns:esul", &["typed_query"][..]),
+        ("takes:GateProfile", &["typed_query"][..]),
+        ("takes:Profile", &["typed_query"][..]),
+        ("returns:GateProfile", &["returns_gate"][..]),
+        ("takes:Result", &["takes_result"][..]),
+        ("takes:order", &[][..]),
+        ("@pytest.fixture", &["typed_query"][..]),
+    ] {
         let result = symbols::search_with_options(
             &conn,
             pattern,
@@ -71,11 +83,93 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
             },
         )
         .unwrap();
-        let hits = result["nodes"]["items"].as_array().unwrap();
+        let mut names: Vec<_> = result["nodes"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|node| node["name"].as_str().unwrap())
+            .collect();
+        names.sort_unstable();
+        assert_eq!(names, expected, "signature search {pattern}: {result}");
+    }
+    for invalid in ["takes:", "returns:*", "takes:Gate*"] {
         assert!(
-            hits.iter().any(|node| node["name"] == "typed_query"),
-            "signature search {pattern} must find typed_query: {result}"
+            symbols::search_with_options(
+                &conn,
+                invalid,
+                &symbols::SearchOptions {
+                    kind: Some("function"),
+                    path: Some("signature.py"),
+                    include_docs: false,
+                    exact: false,
+                    page: &options,
+                },
+            )
+            .is_err(),
+            "invalid filter accepted: {invalid}"
         );
+    }
+    let all_types = symbols::search_with_options(
+        &conn,
+        "GateProfile",
+        &symbols::SearchOptions {
+            kind: None,
+            path: None,
+            include_docs: false,
+            exact: false,
+            page: &options,
+        },
+    )
+    .unwrap();
+    let all_names: Vec<_> = all_types["nodes"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(all_names.first(), Some(&"GateProfile"));
+    assert!(
+        all_names.contains(&"typed_query") && all_names.contains(&"returns_gate"),
+        "{all_types}"
+    );
+    let attributes = symbols::search_with_options(
+        &conn,
+        "derive",
+        &symbols::SearchOptions { kind: Some("struct"), path: Some("types.rs"), include_docs: false, exact: false, page: &options },
+    ).unwrap();
+    assert_eq!(attributes["nodes"]["items"][0]["name"], "Example");
+    {
+        let mut client = crate::common::mcp_client::StdioClient::new(&ws);
+        let mcp = client.payload(
+            "code_map_search",
+            serde_json::json!({
+                "pattern":"returns:Result", "kind":"function", "format":"json"
+            }),
+        );
+        let cli = crate::common::mcp_client::run_cli_json(
+            &ws,
+            &["query", "search", "returns:Result", "--kind", "function"],
+        );
+        assert!(
+            cli.status.success(),
+            "{}",
+            String::from_utf8_lossy(&cli.stderr)
+        );
+        let cli: serde_json::Value = serde_json::from_slice(&cli.stdout).unwrap();
+        let mcp_names: Vec<_> = mcp["nodes"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v["name"].as_str().unwrap())
+            .collect();
+        let cli_names: Vec<_> = cli["nodes"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(mcp_names, ["typed_query"]);
+        assert_eq!(mcp_names, cli_names);
     }
     let prefix = symbols::search_with_options(
         &conn,
@@ -97,6 +191,62 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
     );
     assert_eq!(nodes[1]["path"], "a.py");
     drop(conn);
+
+    ws.write(
+        "signature.py",
+        "def updated(value: NewProfile) -> NewResult:\n    return value\n",
+    );
+    ws.delta(&["signature.py"]);
+    let incremental = ws.open();
+    let changed = symbols::search_with_options(
+        &incremental,
+        "NewProfile",
+        &symbols::SearchOptions {
+            kind: Some("function"),
+            path: Some("signature.py"),
+            include_docs: false,
+            exact: false,
+            page: &options,
+        },
+    )
+    .unwrap();
+    assert_eq!(changed["nodes"]["items"][0]["name"], "updated");
+    let old = symbols::search_with_options(
+        &incremental,
+        "GateProfile",
+        &symbols::SearchOptions {
+            kind: Some("function"),
+            path: Some("signature.py"),
+            include_docs: false,
+            exact: false,
+            page: &options,
+        },
+    )
+    .unwrap();
+    assert_eq!(old["nodes"]["total"], 0);
+    let incremental_root: String = incremental
+        .query_row(
+            "SELECT value FROM metadata WHERE key='output_root'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    drop(incremental);
+    let cold_path = ws.root().join(".forge/signature-cold.sqlite");
+    ws.build_to(&cold_path);
+    let cold = reader::open(&cold_path, ws.root()).unwrap();
+    let cold_root: String = cold
+        .query_row(
+            "SELECT value FROM metadata WHERE key='output_root'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        incremental_root, cold_root,
+        "signature FTS must be cold/delta deterministic"
+    );
+    drop(cold);
 
     let catalog: String = (0..501)
         .map(|index| format!("def rankterm_{index:03}():\n    return 1\n"))

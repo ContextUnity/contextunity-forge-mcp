@@ -679,7 +679,7 @@ pub const ENGINE_SCHEMA_VERSION: &str = "16";
 
 /// Current index semantics version stored in database metadata.
 pub const INDEX_SEMANTICS_VERSION: &str = concat!(
-    "10:compact-storage-v8:",
+    "11:signature-search-v1:",
     env!("FORGE_LANGUAGE_PROFILE_DIGEST")
 );
 
