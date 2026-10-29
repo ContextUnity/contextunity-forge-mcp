@@ -46,6 +46,9 @@ fn directory_suffix_lists_real_nodes_and_exact_file_keeps_graph_traversal() {
     );
     assert_eq!(result["requested_depth"], 1);
     assert_eq!(result["graph_depth_applied"], 0);
+    for field in ["exported_symbols", "inbound_modules", "outbound_modules"] {
+        assert!(result["boundary_contract"][field].is_array(), "{field}: {result}");
+    }
     assert!(result["nodes"]["items"]
         .as_array()
         .unwrap()
