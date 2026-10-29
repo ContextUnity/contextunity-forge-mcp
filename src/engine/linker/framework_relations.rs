@@ -307,6 +307,12 @@ pub(super) fn compose<'a, F: AsRef<Facts> + Sync>(
             .entry(node.name.to_ascii_lowercase())
             .or_default()
             .push(node);
+        if !node.qualname.eq_ignore_ascii_case(&node.name) {
+            sql_tables
+                .entry(node.qualname.to_ascii_lowercase())
+                .or_default()
+                .push(node);
+        }
     }
     let route_index = routes::RouteIndex::build(nodes);
     let http_target_contexts = routes::HttpTargetContexts::build(
@@ -367,14 +373,58 @@ pub(super) fn compose<'a, F: AsRef<Facts> + Sync>(
                 path_arc: Some(std::sync::Arc::clone(&path_arc)),
                 path_pool: HashMap::new(),
             };
+            let has_type_queries = facts.references.iter().any(|reference| reference.kind == "sql_type_queries_table");
+            let macro_rules = has_type_queries.then(|| dependencies.language_context_for_path(path));
+            let mut local_types = HashMap::<&str, Option<&Node>>::new();
+            let mut parents = HashMap::<&str, &str>::new();
+            let mut shadows = std::collections::HashSet::<&str>::new();
+            let mut imports = std::collections::HashSet::<&str>::new();
+            if has_type_queries {
+                shadows.extend(facts.nodes.iter().map(|node| node.name.as_str()));
+                imports.extend(facts.references.iter().filter(|reference| reference.kind == "imports").filter_map(|reference| reference.alias.as_deref()));
+                for node in facts.nodes.iter().filter(|node| node.kind == "struct") {
+                    local_types.entry(node.name.as_str()).and_modify(|entry| *entry = None).or_insert(Some(node));
+                }
+                for edge in facts.edges.iter().filter(|edge| edge.kind == "contains") {
+                    parents.insert(edge.dst.as_str(), edge.src.as_str());
+                }
+            }
             for reference in facts.references.iter().filter(|reference| matches!(reference.kind.as_str(), "defines_table" | "queries_table" | "mutates_table" | "references_table")) {
                 if let Some(targets) = sql_tables.get(&reference.expression.to_ascii_lowercase()) {
-                    let physical: Vec<_> = targets.iter().filter(|node| !node.generated).collect();
-                    let target = if physical.len() == 1 { Some(physical[0]) }
-                        else if physical.is_empty() && targets.len() == 1 { targets.first() }
-                        else { None };
+                    let mut physical = targets.iter().filter(|node| !node.generated);
+                    let first = physical.next();
+                    let target = if first.is_some() && physical.next().is_none() {
+                        first
+                    } else if first.is_none() && targets.len() == 1 {
+                        targets.first()
+                    } else {
+                        None
+                    };
                     if let Some(target) = target {
                         graph.push_edge(path, &reference.source, &target.id, reference.kind.as_str(), reference.line, reference.expression.as_str(), "exact");
+                    }
+                }
+            }
+            for reference in facts.references.iter().filter(|reference| reference.kind == "sql_type_queries_table") {
+                let Some(type_name) = reference.alias.as_deref() else { continue };
+                let Some(model) = local_types.get(type_name).and_then(|node| *node) else { continue };
+                let Some(macro_path) = reference.module.as_deref() else { continue };
+                if !macro_rules.as_ref().and_then(|rules| rules.prepared_projections("rust")).is_some_and(|rules| rules.macro_tables.contains_key(macro_path)) { continue; }
+                let Some(macro_head) = macro_path.split("::").next() else { continue };
+                if parents.get(reference.source.as_str()) != parents.get(model.id.as_str())
+                    || !parents.contains_key(reference.source.as_str())
+                    || shadows.contains(macro_head)
+                    || imports.contains(macro_head)
+                    || imports.contains(type_name)
+                { continue; }
+                if let Some(targets) = sql_tables.get(&reference.expression.to_ascii_lowercase()) {
+                    let mut physical = targets.iter().filter(|node| !node.generated);
+                    let first = physical.next();
+                    let target = if first.is_some() && physical.next().is_none() { first }
+                        else if first.is_none() && targets.len() == 1 { targets.first() }
+                        else { None };
+                    if let Some(target) = target {
+                        graph.push_edge(path, &model.id, &target.id, "queries_table", reference.line, reference.expression.as_str(), "exact");
                     }
                 }
             }

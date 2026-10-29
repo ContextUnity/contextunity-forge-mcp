@@ -860,6 +860,9 @@ pub(super) fn extract_class_attribute(
         &context.semantic_rules,
         indices.iter().copied(),
     ) {
+        if matches!(&effective.rule.operation, super::super::manifests::semantic::SemanticOperation::ClassAttributeToTable { bases, .. } if !bases.is_empty()) {
+            continue;
+        }
         super::super::manifests::semantic::execute_class_attribute_rule(
             effective,
             "python",
@@ -881,13 +884,8 @@ pub(super) fn extract_default_table(
     ctx: &super::super::SyntaxContext<'_, '_>,
     facts: &mut Facts,
     context: &super::super::LanguageContext,
+    lexical: &crate::engine::ast::routes::RouteContext,
 ) {
-    let Some(rules) = context
-        .prepared_projections("python")
-        .filter(|prepared| !prepared.class_defaults.is_empty())
-    else {
-        return;
-    };
     let Some(node) = facts
         .nodes
         .iter()
@@ -899,15 +897,20 @@ pub(super) fn extract_default_table(
         return;
     };
     let mut cursor = bases.walk();
-    let has_rule = bases
+    let resolved: Vec<_> = bases
         .named_children(&mut cursor)
         .filter_map(|base| {
             let name = text(base, ctx.source);
             let (head, tail) = name
                 .split_once('.')
                 .map_or((name, ""), |(head, tail)| (head, tail));
+            let mut root = ctx.node;
+            while let Some(parent) = root.parent() { root = parent; }
+            if lexical.lexical_write_count(root.id(), head) != 1 {
+                return None;
+            }
             let mut imports = facts.references.iter().filter(|reference| {
-                reference.kind == "imports" && reference.alias.as_deref() == Some(head)
+                reference.kind == "imports" && reference.alias.as_deref() == Some(head) && reference.line < ctx.line()
             });
             let import = imports.next()?;
             if imports.next().is_some() {
@@ -928,38 +931,37 @@ pub(super) fn extract_default_table(
                 format!("{prefix}.{tail}")
             })
         })
-        .any(|name| rules.class_defaults.iter()
-            .filter_map(|index| context.semantic_rules.get(*index))
-            .any(|effective| matches!(&effective.rule.operation,
-                super::super::manifests::semantic::SemanticOperation::ClassDefaultTable { language, bases }
-                    if language == "python" && bases.iter().any(|base| base == &name))));
-    if !has_rule
-        || facts
-            .references
-            .iter()
-            .any(|reference| reference.source == ctx.owner && reference.kind == "defines_table")
-    {
-        return;
+        .collect();
+    use super::super::manifests::semantic::SemanticOperation;
+    for effective in context.semantic_rules.iter().filter(|rule| rule.active) {
+        let SemanticOperation::ClassAttributeToTable { language, attribute, container, bases } = &effective.rule.operation else { continue };
+        if language != "python" || bases.is_empty() || !bases.iter().any(|base| resolved.contains(base)) { continue; }
+        let Some(body) = ctx.node.child_by_field_name("body") else { continue };
+        let mut cursor = body.walk();
+        let mut found = None;
+        for child in body.named_children(&mut cursor) {
+            let target = if let Some(expected) = container {
+                if child.kind() != "class_definition" || field(child, ctx.source, "name") != Some(expected) { continue; }
+                child.child_by_field_name("body")
+            } else { Some(body) };
+            let Some(target) = target else { continue };
+            let mut assignments = target.walk();
+            for statement in target.named_children(&mut assignments) {
+                let assignment = statement.named_child(0).unwrap_or(statement);
+                if assignment.kind() == "assignment" && field(assignment, ctx.source, "left") == Some(attribute) {
+                    found = Some(assignment.child_by_field_name("right").and_then(|value| super::template_loaders::literal(value, ctx.source)).map(str::to_owned));
+                }
+            }
+            if container.is_none() { break; }
+        }
+        let name = match found {
+            Some(Some(name)) if !name.is_empty() => Some(name),
+            Some(_) => None,
+            None if context.semantic_rules.iter().any(|rule| rule.active && rule.pack == effective.pack && matches!(&rule.rule.operation, SemanticOperation::ClassDefaultTable { bases, .. } if bases.iter().any(|base| resolved.contains(base)))) => std::path::Path::new(&node.path).parent().and_then(|path| path.file_name()).and_then(|name| name.to_str()).map(|app| format!("{}_{}", app.to_lowercase(), node.name.to_lowercase())),
+            None => None,
+        };
+        if let Some(name) = name { facts.references.push(crate::core::models::Reference { source: ctx.owner.into(), expression: name, kind: "defines_table".into(), line: ctx.line(), column: ctx.node.start_position().column, alias: None, module: None, dynamic: false, receiver_hint: None }); }
     }
-    let Some(app) = std::path::Path::new(&node.path)
-        .parent()
-        .and_then(|path| path.file_name())
-        .and_then(|name| name.to_str())
-    else {
-        return;
-    };
-    let name = format!("{}_{}", app.to_lowercase(), node.name.to_lowercase());
-    facts.references.push(crate::core::models::Reference {
-        source: ctx.owner.into(),
-        expression: name,
-        kind: "defines_table".into(),
-        line: ctx.line(),
-        column: ctx.node.start_position().column,
-        alias: None,
-        module: None,
-        dynamic: false,
-        receiver_hint: None,
-    });
 }
 
 fn positional_argument<'tree>(node: Node<'tree>, index: usize) -> Option<Node<'tree>> {

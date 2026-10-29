@@ -1374,6 +1374,9 @@ pub fn parse_file(
     module: &str,
     facts: &mut Facts,
 ) -> Result<()> {
+    if !profile.has_grammar() {
+        return profile.extract_file(path, source, module, facts);
+    }
     let tree = parse_tree(profile, path, source)?;
     ast::extract_tree(profile, tree.root_node(), path, source, module, facts);
     Ok(())

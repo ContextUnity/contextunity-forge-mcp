@@ -105,9 +105,13 @@ fn keyword(token: Option<&Token<'_>>, value: &str) -> bool {
     token.is_some_and(|t| t.text.eq_ignore_ascii_case(value))
 }
 
-fn name_at<'a>(tokens: &[Token<'a>], mut i: usize) -> Option<(&'a str, usize)> {
-    let mut name = tokens.get(i)?.text.trim_matches(['"', '`', '[', ']']);
-    if !name
+fn name_at(tokens: &[Token<'_>], mut i: usize) -> Option<(String, usize)> {
+    let component = |text: &str| {
+        let unquoted = text.trim_matches(['"', '`', '[', ']']);
+        if unquoted.contains('.') { format!("\"{unquoted}\"") } else { unquoted.to_owned() }
+    };
+    let mut name = component(tokens.get(i)?.text);
+    if !name.trim_start_matches('"')
         .as_bytes()
         .first()
         .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_')
@@ -116,10 +120,21 @@ fn name_at<'a>(tokens: &[Token<'a>], mut i: usize) -> Option<(&'a str, usize)> {
     }
     i += 1;
     while tokens.get(i).is_some_and(|t| t.text == ".") {
-        name = tokens.get(i + 1)?.text.trim_matches(['"', '`', '[', ']']);
+        name.push('.');
+        name.push_str(&component(tokens.get(i + 1)?.text));
         i += 2;
     }
     Some((name, i))
+}
+
+fn short_name(name: &str) -> &str {
+    let mut quoted = false;
+    let mut start = 0;
+    for (i, ch) in name.char_indices() {
+        if ch == '"' { quoted = !quoted; }
+        if ch == '.' && !quoted { start = i + 1; }
+    }
+    name[start..].trim_matches('"')
 }
 
 fn table_uses(tokens: &[Token<'_>]) -> Vec<(String, &'static str, usize)> {
@@ -135,9 +150,8 @@ fn table_uses(tokens: &[Token<'_>]) -> Vec<(String, &'static str, usize)> {
                     },
                     i + 1,
                 )
-            } else if token.text.eq_ignore_ascii_case("INTO")
-                || token.text.eq_ignore_ascii_case("UPDATE")
-            {
+            } else if token.text.eq_ignore_ascii_case("INTO") || (token.text.eq_ignore_ascii_case("UPDATE")
+                && name_at(tokens, i + 1).is_some_and(|(_, after)| keyword(tokens.get(after), "SET"))) {
                 ("mutates_table", i + 1)
             } else if token.text.eq_ignore_ascii_case("REFERENCES") {
                 ("references_table", i + 1)
@@ -147,8 +161,37 @@ fn table_uses(tokens: &[Token<'_>]) -> Vec<(String, &'static str, usize)> {
         if keyword(tokens.get(next), "ONLY") {
             next += 1;
         }
-        if let Some((name, _)) = name_at(tokens, next) {
-            uses.push((name.to_owned(), kind, token.line));
+        if let Some((name, after)) = name_at(tokens, next) {
+            uses.push((name, kind, token.line));
+            if token.text.eq_ignore_ascii_case("FROM") && kind == "queries_table" {
+                let mut j = after;
+                while j < tokens.len() {
+                    if tokens[j].text == "," {
+                        if let Some((name, end)) = name_at(tokens, j + 1) {
+                            uses.push((name, kind, tokens[j].line));
+                            j = end;
+                            continue;
+                        }
+                        break;
+                    }
+                    if matches!(
+                        tokens[j].text.to_ascii_uppercase().as_str(),
+                        "WHERE"
+                            | "JOIN"
+                            | "ON"
+                            | "GROUP"
+                            | "ORDER"
+                            | "LIMIT"
+                            | "UNION"
+                            | "HAVING"
+                            | ";"
+                            | ")"
+                    ) {
+                        break;
+                    }
+                    j += 1;
+                }
+            }
         }
     }
     uses
@@ -163,20 +206,22 @@ pub fn extract_embedded_sql_tables(literal: &str) -> Vec<(String, &'static str)>
         .map(u8::to_ascii_uppercase);
     if !matches!(
         first,
-        Some(b'S' | b'W' | b'I' | b'U' | b'D' | b'C' | b'-' | b'/')
+        Some(b'S' | b'W' | b'I' | b'U' | b'D' | b'C' | b'B' | b'P' | b'-' | b'/')
     ) {
         return Vec::new();
     }
     let tokens = tokens(literal);
     if !tokens.first().is_some_and(|token| {
-        ["SELECT", "WITH", "INSERT", "UPDATE", "DELETE", "CREATE"]
-            .iter()
-            .any(|word| token.text.eq_ignore_ascii_case(word))
+        [
+            "SELECT", "WITH", "INSERT", "UPDATE", "DELETE", "CREATE", "BEGIN", "PRAGMA", "SET",
+        ]
+        .iter()
+        .any(|word| token.text.eq_ignore_ascii_case(word))
     }) {
         return Vec::new();
     }
-    let mut output: Vec<_> = table_uses(&tokens)
-        .into_iter()
+    let mut output: Vec<_> = tokens.split(|token| token.text == ";")
+        .flat_map(table_uses)
         .map(|(name, kind, _)| (name, kind))
         .collect();
     for i in 0..tokens.len() {
@@ -238,7 +283,7 @@ pub(super) fn extract_literal(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
                     facts.nodes.push(Node {
                         id: id.clone(),
                         kind: "table".into(),
-                        name: name.clone(),
+                        name: short_name(&name).to_owned(),
                         qualname: name.clone(),
                         path: path.clone(),
                         line: ctx.line(),
@@ -262,6 +307,58 @@ pub(super) fn extract_literal(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
             }
         }
         reference(facts, ctx.owner, name, kind, ctx.line());
+    }
+}
+
+/// Records a configured Rust macro's literal query and result-type candidate.
+pub(super) fn extract_macro_type(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
+    if ctx.node.kind() != "macro_invocation" {
+        return;
+    }
+    let Some(name) = ctx.node.child_by_field_name("macro") else {
+        return;
+    };
+    let macro_path = text(name, ctx.source);
+    let Some(tree) = ctx
+        .node
+        .named_children(&mut ctx.node.walk())
+        .find(|node| node.kind() == "token_tree")
+    else {
+        return;
+    };
+    let mut cursor = tree.walk();
+    let mut children = tree.named_children(&mut cursor);
+    let Some(ty) = children
+        .next()
+        .filter(|node| matches!(node.kind(), "identifier" | "type_identifier"))
+    else {
+        return;
+    };
+    let Some(literal) = children
+        .next()
+        .filter(|node| matches!(node.kind(), "string_literal" | "raw_string_literal"))
+    else {
+        return;
+    };
+    let raw = text(literal, ctx.source);
+    let Some(start) = raw.find('"') else { return };
+    let Some(end) = raw.rfind('"').filter(|end| *end > start) else {
+        return;
+    };
+    for (name, kind) in extract_embedded_sql_tables(&raw[start + 1..end]) {
+        if kind == "queries_table" {
+            facts.references.push(Reference {
+                source: ctx.owner.into(),
+                expression: name,
+                kind: "sql_type_queries_table".into(),
+                line: ctx.line(),
+                column: ctx.node.start_position().column,
+                alias: Some(text(ty, ctx.source).into()),
+                module: Some(macro_path.into()),
+                dynamic: false,
+                receiver_hint: None,
+            });
+        }
     }
 }
 
@@ -358,8 +455,8 @@ fn extract_schema(path: &str, source: &str, facts: &mut Facts) {
             facts.nodes.push(Node {
                 id: id.clone(),
                 kind: kind.into(),
-                name: name.into(),
-                qualname: name.into(),
+                name: short_name(&name).into(),
+                qualname: name.clone(),
                 path: path.into(),
                 line,
                 end_line: statement.last().map_or(line, |t| t.line),
@@ -414,7 +511,7 @@ fn extract_schema(path: &str, source: &str, facts: &mut Facts) {
                     reference(
                         facts,
                         &owner,
-                        name.into(),
+                        name.clone(),
                         "mutates_table",
                         statement[0].line,
                     );
@@ -431,7 +528,7 @@ fn extract_schema(path: &str, source: &str, facts: &mut Facts) {
                                 facts.nodes.push(Node {
                                     id: column_id.clone(),
                                     kind: "column".into(),
-                                    name: column.into(),
+                                    name: column.clone(),
                                     qualname: format!("{name}.{column}"),
                                     path: path.into(),
                                     line,

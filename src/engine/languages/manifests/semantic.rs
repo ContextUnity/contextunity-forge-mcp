@@ -92,10 +92,16 @@ pub(crate) enum SemanticOperation {
         attribute: String,
         #[serde(default)]
         container: Option<String>,
+        #[serde(default)]
+        bases: Vec<String>,
     },
     ClassDefaultTable {
         language: String,
         bases: Vec<String>,
+    },
+    MacroTypeToTable {
+        language: String,
+        macro_path: String,
     },
 }
 
@@ -251,7 +257,8 @@ impl SemanticRule {
             | SemanticOperation::ClassAttributeToFile { language, .. }
             | SemanticOperation::ClassAttributeToSymbol { language, .. }
             | SemanticOperation::ClassAttributeToTable { language, .. }
-            | SemanticOperation::ClassDefaultTable { language, .. } => language,
+            | SemanticOperation::ClassDefaultTable { language, .. }
+            | SemanticOperation::MacroTypeToTable { language, .. } => language,
         }
     }
 
@@ -399,6 +406,7 @@ impl SemanticRule {
                 language,
                 attribute,
                 container,
+                bases,
             } => {
                 ensure!(
                     language == "python" && !attribute.is_empty(),
@@ -408,6 +416,7 @@ impl SemanticRule {
                     container.as_ref().is_none_or(|name| !name.is_empty()),
                     "empty container"
                 );
+                ensure!(bases.iter().all(|base| !base.is_empty()), "empty model base");
             }
             SemanticOperation::ClassDefaultTable { language, bases } => {
                 ensure!(
@@ -415,6 +424,17 @@ impl SemanticRule {
                         && !bases.is_empty()
                         && bases.iter().all(|base| !base.is_empty()),
                     "invalid class default table rule"
+                );
+            }
+            SemanticOperation::MacroTypeToTable {
+                language,
+                macro_path,
+            } => {
+                ensure!(
+                    language == "rust"
+                        && !macro_path.is_empty()
+                        && !macro_path.chars().any(char::is_whitespace),
+                    "invalid macro type table rule"
                 );
             }
         }
@@ -974,6 +994,7 @@ pub(crate) fn execute_class_attribute_rule(
         language: selected,
         attribute: expected,
         container,
+        ..
     } = &effective.rule.operation
     {
         if selected != language || expected != attribute {
@@ -1342,6 +1363,7 @@ pub(crate) struct PreparedRules {
     pub(crate) decorated_registration_rules: Vec<usize>,
     pub(crate) class_attributes: hashbrown::HashMap<String, Vec<usize>>,
     pub(crate) class_defaults: Vec<usize>,
+    pub(crate) macro_tables: hashbrown::HashMap<String, Vec<usize>>,
     pub(crate) function_semantic: Vec<usize>,
     pub(crate) call_semantic: Vec<usize>,
     pub(crate) call_to_file: Vec<usize>,
@@ -1399,6 +1421,18 @@ pub(crate) fn prepare_projection_rules(
                     .entry(language.clone())
                     .or_default()
                     .class_defaults
+                    .push(index);
+            }
+            SemanticOperation::MacroTypeToTable {
+                language,
+                macro_path,
+            } => {
+                compiled
+                    .entry(language.clone())
+                    .or_default()
+                    .macro_tables
+                    .entry(macro_path.clone())
+                    .or_default()
                     .push(index);
             }
             SemanticOperation::SymbolAttachment {

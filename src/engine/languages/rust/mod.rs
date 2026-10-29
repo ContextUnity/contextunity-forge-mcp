@@ -506,6 +506,7 @@ impl LanguageProfile for Rust {
                 }
             }
         } else if ctx.node.kind() == "macro_invocation" {
+            super::sql::extract_macro_type(ctx, facts);
             call(ctx, facts, false);
         } else if ctx.node.kind() == "struct_expression" {
             if let Some(name) = ctx.node.child_by_field_name("name") {

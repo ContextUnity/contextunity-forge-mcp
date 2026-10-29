@@ -2,4 +2,5 @@
 id = "model-table"
 namespace = "sql.tables"
 scope = "project"
-operation = { kind = "class_attribute_to_table", language = "python", attribute = "__tablename__" }
+activation = [{ kind = "package", name = "sqlalchemy" }]
+operation = { kind = "class_attribute_to_table", language = "python", attribute = "__tablename__", bases = ["sqlalchemy.orm.DeclarativeBase"] }

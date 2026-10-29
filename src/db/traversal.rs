@@ -15,7 +15,7 @@ use std::{
 };
 // Stored decorates edges point from decorator to target; dependency walks reverse them.
 pub(super) const FORWARD_DEPENDENCIES: &str =
-    "'calls','possible_calls','inherits','implements','overrides','extends','includes','mutates','handles','references','calls_endpoint'";
+    "'calls','possible_calls','inherits','implements','overrides','extends','includes','mutates','handles','references','calls_endpoint','defines_table','queries_table','mutates_table','references_table'";
 pub(super) const REVERSE_DEPENDENCIES: &str = "'decorates'";
 const STRUCTURAL_DEPENDENCIES: &str = ",'imports','contains','documents'";
 const MAX_DEEP_TRAVERSAL_FRONTIER: usize = 1000;

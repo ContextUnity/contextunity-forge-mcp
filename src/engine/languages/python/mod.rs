@@ -20,9 +20,6 @@ pub(crate) fn prepare_deferred_event<'tree>(
     rule_ir: &manifests::RuleIRHandle,
 ) -> Option<DeferredEvent<'tree>> {
     let kind = ctx.node.kind();
-    if kind == "class_definition" {
-        syntax_operations::extract_default_table(ctx, facts, rules);
-    }
     if matches!(kind, "assignment" | "annotated_assignment") {
         syntax_operations::extract_class_attribute(
             ctx.node, ctx.source, ctx.owner, ctx.offset, facts, rules,
@@ -61,7 +58,7 @@ pub(crate) fn prepare_deferred_event<'tree>(
     Python.extract_routes(ctx, facts, symbols);
     let projection = projections::candidate(ctx, rules);
     let registration_guards = registration_guards.into_inner();
-    (declaration || !registration_guards.is_empty() || projection).then(|| DeferredEvent {
+    (kind == "class_definition" || declaration || !registration_guards.is_empty() || projection).then(|| DeferredEvent {
         node: ctx.node,
         owner: ctx.owner.to_owned(),
         frontiers,
@@ -83,6 +80,9 @@ pub(crate) fn finish_deferred_event(
     lexical: &routes::RouteContext,
     projections: &mut HashMap<String, crate::core::semantic::ValueFlowFacts>,
 ) {
+    if ctx.node.kind() == "class_definition" {
+        syntax_operations::extract_default_table(ctx, facts, rules, lexical);
+    }
     if event.declaration {
         routes::declaration_with_context(ctx, facts, rule_ir, lexical);
     }
@@ -1158,7 +1158,7 @@ impl LanguageProfile for Python {
         projections: &mut HashMap<String, crate::core::semantic::ValueFlowFacts>,
     ) {
         if ctx.node.kind() == "class_definition" {
-            syntax_operations::extract_default_table(ctx, facts, rules);
+            syntax_operations::extract_default_table(ctx, facts, rules, route_context);
         }
         if matches!(ctx.node.kind(), "assignment" | "annotated_assignment") {
             syntax_operations::extract_class_attribute(

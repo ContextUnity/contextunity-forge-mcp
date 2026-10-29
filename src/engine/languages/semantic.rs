@@ -78,6 +78,9 @@ pub(crate) fn file_providers(facts: &mut Facts, context: &super::LanguageContext
             | SemanticOperation::ClassAttributeToFile { target, .. } => target,
             SemanticOperation::CallToSymbol { .. }
             | SemanticOperation::ClassAttributeToSymbol { .. }
+            | SemanticOperation::ClassAttributeToTable { .. }
+            | SemanticOperation::ClassDefaultTable { .. }
+            | SemanticOperation::MacroTypeToTable { .. }
             | SemanticOperation::SymbolAttachment { .. }
             | SemanticOperation::EndpointProjection { .. } => continue,
         };

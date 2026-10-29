@@ -211,7 +211,8 @@ operation = { kind = "class_attribute_to_file", language = "python", attribute =
 id = "model-table"
 namespace = "sql.tables"
 scope = "project"
-operation = { kind = "class_attribute_to_table", language = "python", attribute = "db_table", container = "Meta" }
+activation = [{ kind = "package", name = "django" }]
+operation = { kind = "class_attribute_to_table", language = "python", attribute = "db_table", container = "Meta", bases = ["django.db.models.Model", "django.db.models.base.Model"] }
 
 [[semantic_rules]]
 id = "model-default-table"
