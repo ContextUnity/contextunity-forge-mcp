@@ -8,6 +8,7 @@ use contextunity_forge_mcp::{
         format::OutputFormat,
         response::{ResponsePolicy, MAX_OUTPUT_BYTES},
     },
+    db::reader,
     engine::scanner,
     mcp::response,
 };
@@ -711,6 +712,35 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
     )
     .unwrap();
     assert_eq!(rejected_search["error"]["code"], "rejected_arguments");
+
+    let roots = Workspace::new();
+    roots.write("src/main.rs", "fn main() {}\nfn ordinary_unwired() {}\n#[test]\nfn test_root() {}\n");
+    roots.build();
+    let conn = roots.open();
+    let page = contextunity_forge_mcp::core::response::QueryOptions::resolve(
+        &ResponsePolicy::default(), Some(100), 0, None, None,
+    ).unwrap();
+    let aspects = vec!["entrypoints".to_string()];
+    let overview = reader::overview_with_options(
+        &conn,
+        &reader::OverviewOptions { aspects: Some(&aspects), page: &page },
+    );
+    assert!(overview.is_ok(), "entrypoints aspect must be supported: {overview:?}");
+    let overview = overview.unwrap();
+    let entries = overview["entrypoints"].to_string();
+    assert!(entries.contains("main") && entries.contains("src/main.rs"), "{overview}");
+    assert!(!entries.contains("ordinary_unwired"), "{overview}");
+    let mut roots_client = Client::new(&roots);
+    let mcp = roots_client.payload("code_map_overview", json!({"aspects":["entrypoints"],"limit":100}));
+    assert_eq!(mcp["entrypoints"], overview["entrypoints"]);
+    let cli = run_cli_json(&roots, &["query", "overview", "--aspects", "entrypoints", "--limit", "100"]);
+    assertions::assert_command_succeeded(&cli);
+    let cli: Value = serde_json::from_slice(&cli.stdout).unwrap();
+    assert_eq!(cli["entrypoints"], overview["entrypoints"]);
+    let unwired = roots_client.payload("code_map_query", json!({"operation":"unwired","limit":100}));
+    let unwired_nodes = unwired["nodes"]["items"].to_string();
+    assert!(unwired_nodes.contains("ordinary_unwired"), "{unwired}");
+    assert!(!unwired_nodes.contains("\"main\"") && !unwired_nodes.contains("test_root"), "{unwired}");
 }
 
 #[test]

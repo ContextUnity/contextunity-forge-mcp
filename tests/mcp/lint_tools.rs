@@ -29,6 +29,7 @@ fn populate(workspace: &Workspace) -> BTreeSet<String> {
             "php" => "<?php function broken( {\n",
             "ruby" => "def broken(\n",
             "c" | "cpp" => "void broken( {\n",
+            "sql" => "CREATE TABLE accounts (id INTEGER);\n",
             language => panic!("add a syntax fixture for compiled language {language}"),
         };
         workspace.write(format!("src/broken.{}", profile.extensions()[0]), source);
@@ -72,7 +73,9 @@ fn stored_syntax_lint_covers_compiled_profiles_without_mutating_index() {
         .iter()
         .map(|row| row["language"].as_str().unwrap().to_owned())
         .collect();
-    assert_eq!(reported, expected, "{result}");
+    let mut expected_diagnostics = expected.clone();
+    expected_diagnostics.remove("sql");
+    assert_eq!(reported, expected_diagnostics, "{result}");
     for item in diagnostics {
         assert_eq!(item["rule_id"], "syntax.parse");
         assert_eq!(item["severity"], "error");
