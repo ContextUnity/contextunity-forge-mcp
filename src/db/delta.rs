@@ -157,6 +157,8 @@ pub(crate) fn persist_delta(
     }
     changed_edge_batch.flush()?;
     drop(changed_edge_batch);
+    super::entrypoints::prepare_candidates(&tx)?;
+    super::entrypoints::add_delta_candidates(&tx, replace_files)?;
     let mut commitment_owners = affected.clone();
     commitment_owners.extend(
         tx.prepare_cached("SELECT DISTINCT p.path FROM edges e JOIN path_dictionary p ON p.path_id=e.path_id WHERE (e.src_hash,e.dst_hash,e.kind)IN(SELECT src_hash,dst_hash,kind FROM changed_edge_keys)")?
@@ -260,6 +262,8 @@ pub(crate) fn persist_delta(
         FROM ranked WHERE representative=1",
         [],
     )?;
+    super::entrypoints::add_delta_candidates(&tx, replace_files)?;
+    commitment_owners.extend(super::entrypoints::project(&tx, false)?);
     commitment_owners.extend(
         tx.prepare_cached("SELECT DISTINCT p.path FROM edges e JOIN path_dictionary p ON p.path_id=e.path_id WHERE (e.src_hash,e.dst_hash,e.kind)IN(SELECT src_hash,dst_hash,kind FROM changed_edge_keys)")?
             .query_map([], |r| r.get::<_, String>(0))?

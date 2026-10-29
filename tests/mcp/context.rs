@@ -713,16 +713,103 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
     .unwrap();
     assert_eq!(rejected_search["error"]["code"], "rejected_arguments");
 
+    // A changed registration can retag an unchanged handler in another file.
+    let routes = Workspace::new();
+    routes.write("requirements.txt", "django\n");
+    routes.write(
+        "views.py",
+        "def first(request: Request, value: str):\n    result = value\n    return result\ndef second(request: Request):\n    return request\n",
+    );
+    routes.write("urls.py", "from django.urls import path\nfrom views import first, second\nurlpatterns = [path('item/', first)]\n");
+    routes.build();
+    for (registrations, expected_first, expected_second) in [
+        (
+            "urlpatterns = [path('item/', first), path('other/', first)]",
+            Some("http_route"),
+            None,
+        ),
+        (
+            "urlpatterns = [path('other/', first)]",
+            Some("http_route"),
+            None,
+        ),
+        (
+            "urlpatterns = [path('item/', second)]",
+            None,
+            Some("http_route"),
+        ),
+        ("urlpatterns = []", None, None),
+        (
+            "urlpatterns = [path('item/', first)]",
+            Some("http_route"),
+            None,
+        ),
+    ] {
+        routes.write(
+            "urls.py",
+            &format!(
+                "from django.urls import path\nfrom views import first, second\n{registrations}\n"
+            ),
+        );
+        let delta = routes.delta(&["urls.py"]);
+        assert_eq!(delta["reparsed_files"], 1, "{delta}");
+        assert_eq!(delta["rewritten_files"], 1, "{delta}");
+        let cold = routes.build_to(routes.path(".forge/cold.sqlite"));
+        assert_eq!(delta["output_root"], cold["output_root"]);
+        let conn = routes.open();
+        contextunity_forge_mcp::core::commitments::verify(&conn).unwrap();
+        for (name, expected) in [("first", expected_first), ("second", expected_second)] {
+            let actual: Option<String> = conn.query_row(
+                "SELECT json_extract(details,'$.entrypoint') FROM nodes WHERE name=?1 AND kind='function'",
+                [name], |row| row.get(0),
+            ).unwrap();
+            assert_eq!(actual.as_deref(), expected, "{name}: {registrations}");
+        }
+    }
+
+    let scripts = Workspace::new();
+    scripts.write("app.py", "def first(): pass\ndef second(): pass\n");
+    scripts.write("pyproject.toml", "[project]\nname='sample'\nversion='1'\n");
+    scripts.build();
+    for (target, first, second) in [
+        (Some("app:first"), Some("main"), None),
+        (Some("app:second"), None, Some("main")),
+        (None, None, None),
+    ] {
+        let entry = target.map_or_else(String::new, |target| format!("\n[project.scripts]\nsample='{target}'\n"));
+        scripts.write("pyproject.toml", &format!("[project]\nname='sample'\nversion='1'\n{entry}"));
+        let delta = scripts.delta(&["pyproject.toml"]);
+        let cold = scripts.build_to(scripts.path(".forge/cold.sqlite"));
+        assert_eq!(delta["output_root"], cold["output_root"], "{delta}");
+        let conn = scripts.open();
+        contextunity_forge_mcp::core::commitments::verify(&conn).unwrap();
+        for (name, expected) in [("first", first), ("second", second)] {
+            let actual: Option<String> = conn.query_row("SELECT json_extract(details,'$.entrypoint') FROM nodes WHERE name=?1 AND kind='function'", [name], |row| row.get(0)).unwrap();
+            assert_eq!(actual.as_deref(), expected, "{target:?} / {name}");
+        }
+    }
+
     let roots = Workspace::new();
     roots.write(
         "src/main.rs",
         "fn main() { helper(); }\nfn helper() {}\nfn ordinary_unwired() {}\n#[test]\nfn test_root() {}\n",
     );
-    roots.write("requirements.txt", "fastapi\nclick\ncelery\nmcp\n");
+    roots.write("requirements.txt", "fastapi\nclick\ncelery\nmcp\ntyper\ndjango\n");
+    roots.write("pyproject.toml", "[project]\nname = 'entry-fixture'\nversion = '0.1.0'\n[project.scripts]\nfixture = 'package:script_main'\n");
+    roots.write("package.py", "def script_main(): pass\ndef guarded_main(): pass\nif __name__ == '__main__':\n    guarded_main()\n");
+    roots.write("command.py", "from django.core.management.base import BaseCommand\nclass Command(BaseCommand):\n    def handle(self, *args, **options): pass\n");
+    roots.write("package.json", "{\"name\":\"fixture\",\"main\":\"src/start.ts\",\"bin\":{\"fixture\":\"src/cli.ts\"}}\n");
+    roots.write("src/start.ts", "export function main() {}\nmain();\n");
+    roots.write("src/cli.ts", "export function main() {}\nmain();\n");
     roots.write(
         "service.py",
         "from fastapi import FastAPI\nimport click\nfrom celery import shared_task\nfrom mcp.server.fastmcp import FastMCP\napp = FastAPI()\nmcp = FastMCP('test')\n@app.get('/items')\ndef route_handler(): pass\n@click.command()\ndef command_handler(): pass\n@shared_task\ndef event_handler(): pass\n@mcp.tool()\ndef tool_handler(): pass\n",
     );
+    roots.write(
+        "typer_app.py",
+        "from typer import Typer\napp = Typer()\n@app.command()\ndef typer_command(): pass\n",
+    );
+    roots.write("shadows.py", "import click\nfrom celery import shared_task as task\nclick = object()\ntask = lambda f: f\n@click.command()\ndef shadowed_click(): pass\n@task\ndef shadowed_task(): pass\ndef shared_task(f): return f\n@shared_task\ndef local_task(): pass\n");
     roots.build();
     let conn = roots.open();
     let page = contextunity_forge_mcp::core::response::QueryOptions::resolve(
@@ -760,16 +847,31 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
     assert_eq!(main_entry["start_line"], 1);
     assert_eq!(main_entry["outgoing_calls"], 1);
     for pair in items.windows(2) {
-        let left = (&pair[0]["category"], &pair[0]["outgoing_calls"], &pair[0]["id"]);
-        let right = (&pair[1]["category"], &pair[1]["outgoing_calls"], &pair[1]["id"]);
+        let left = (
+            &pair[0]["category"],
+            &pair[0]["outgoing_calls"],
+            &pair[0]["id"],
+        );
+        let right = (
+            &pair[1]["category"],
+            &pair[1]["outgoing_calls"],
+            &pair[1]["id"],
+        );
         let left_category = left.0.as_str().unwrap();
         let right_category = right.0.as_str().unwrap();
-        assert!(left_category < right_category || (left_category == right_category
-            && (left.1.as_u64().unwrap() > right.1.as_u64().unwrap()
-                || (left.1 == right.1 && left.2.as_str().unwrap() <= right.2.as_str().unwrap()))));
+        assert!(
+            left_category < right_category
+                || (left_category == right_category
+                    && (left.1.as_u64().unwrap() > right.1.as_u64().unwrap()
+                        || (left.1 == right.1
+                            && left.2.as_str().unwrap() <= right.2.as_str().unwrap())))
+        );
     }
     let mut roots_client = Client::new(&roots);
-    let main = roots_client.payload("code_map_inspect", json!({"selector":"src/main.rs:main","detail":"full"}));
+    let main = roots_client.payload(
+        "code_map_inspect",
+        json!({"selector":"src/main.rs:main","detail":"full"}),
+    );
     assert_eq!(main["node"]["details"]["entrypoint"], "main");
     assert_eq!(main["node"]["line"], 1);
     let test = roots_client.payload(
@@ -785,13 +887,41 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
     ] {
         let node = roots_client.payload(
             "code_map_inspect",
-            json!({"selector":format!("service.py:{name}"),"detail":"full"}),
+            json!({"selector":format!("service.py:function:{name}"),"detail":"full"}),
         );
         assert_eq!(node["node"]["details"]["entrypoint"], category, "{node}");
         assert_eq!(node["node"]["line"], line, "{node}");
         assert!(
             entries.contains(name) && entries.contains(category),
             "{overview}"
+        );
+    }
+    let typer = roots_client.payload(
+        "code_map_inspect",
+        json!({"selector":"typer_app.py:function:typer_command","detail":"full"}),
+    );
+    assert_eq!(typer["node"]["details"]["entrypoint"], "cli_command");
+    for name in ["script_main", "guarded_main"] {
+        let node = roots_client.payload(
+            "code_map_inspect",
+            json!({"selector":format!("package.py:function:{name}"),"detail":"full"}),
+        );
+        assert_eq!(node["node"]["details"]["entrypoint"], "main", "{node}");
+    }
+    let command = roots_client.payload("code_map_inspect", json!({"selector":"command.py:method:handle","detail":"full"}));
+    assert_eq!(command["node"]["details"]["entrypoint"], "cli_command", "{command}");
+    for path in ["src/start.ts", "src/cli.ts"] {
+        let node = roots_client.payload("code_map_inspect", json!({"selector":format!("{path}:function:main"),"detail":"full"}));
+        assert_eq!(node["node"]["details"]["entrypoint"], "main", "{node}");
+    }
+    for name in ["shadowed_click", "shadowed_task", "local_task"] {
+        let node = roots_client.payload(
+            "code_map_inspect",
+            json!({"selector":format!("shadows.py:{name}"),"detail":"full"}),
+        );
+        assert!(
+            node["node"]["details"].get("entrypoint").is_none(),
+            "{node}"
         );
     }
     let mcp = roots_client.payload(
@@ -807,7 +937,13 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
             "code_map_overview",
             json!({"aspects":["entrypoints"],"limit":1,"offset":offset,"generation":generation}),
         );
-        paged_items.extend(page["entrypoints"]["items"].as_array().unwrap().iter().cloned());
+        paged_items.extend(
+            page["entrypoints"]["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .cloned(),
+        );
         match page["entrypoints"]["next_offset"].as_u64() {
             Some(next) => offset = next,
             None => break,
@@ -856,31 +992,20 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
     assert_eq!(cli_unwired["nodes"], unwired["nodes"]);
     assert_eq!(cli_unwired["summary"], unwired["summary"]);
 
-    // A changed registration can retag an unchanged handler in another file.
-    let routes = Workspace::new();
-    routes.write("requirements.txt", "django\n");
-    routes.write("views.py", "def first(request): pass\ndef second(request): pass\n");
-    routes.write("urls.py", "from django.urls import path\nfrom views import first, second\nurlpatterns = [path('item/', first)]\n");
-    routes.build();
-    for (registrations, expected_first, expected_second) in [
-        ("urlpatterns = [path('item/', second)]", None, Some("http_route")),
-        ("urlpatterns = []", None, None),
-        ("urlpatterns = [path('item/', first)]", Some("http_route"), None),
-    ] {
-        routes.write("urls.py", &format!("from django.urls import path\nfrom views import first, second\n{registrations}\n"));
-        let delta = routes.delta(&["urls.py"]);
-        let cold = routes.build_to(routes.path(".forge/cold.sqlite"));
-        assert_eq!(delta["output_root"], cold["output_root"]);
-        let conn = routes.open();
-        contextunity_forge_mcp::core::commitments::verify(&conn).unwrap();
-        for (name, expected) in [("first", expected_first), ("second", expected_second)] {
-            let actual: Option<String> = conn.query_row(
-                "SELECT json_extract(details,'$.entrypoint') FROM nodes WHERE name=?1 AND kind='function'",
-                [name], |row| row.get(0),
-            ).unwrap();
-            assert_eq!(actual.as_deref(), expected, "{name}: {registrations}");
-        }
-    }
+    let unactivated = Workspace::new();
+    unactivated.write(
+        "jobs.py",
+        "from celery import shared_task\n@shared_task\ndef job(): pass\n",
+    );
+    unactivated.build();
+    let mut unactivated_client = Client::new(&unactivated);
+    let job = unactivated_client.payload(
+        "code_map_inspect",
+        json!({"selector":"jobs.py:job","detail":"full"}),
+    );
+    assert!(job["node"]["details"].get("entrypoint").is_none(), "{job}");
+
+
 }
 
 #[test]

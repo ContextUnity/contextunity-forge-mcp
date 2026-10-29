@@ -1020,6 +1020,13 @@ impl SinglePassExtractor<'_> {
             if let Some(test_role) = test_role {
                 details.insert("test_role".into(), json!(test_role));
             }
+            if let Some(entrypoint) = if test_role == Some("test_case") {
+                Some("test")
+            } else {
+                metadata.entrypoint_base
+            } {
+                details.insert("entrypoint_base".into(), json!(entrypoint));
+            }
             if let Some(is_public) = metadata.is_public {
                 details.insert("is_public".into(), json!(is_public));
             }

@@ -238,7 +238,7 @@ lexical and literal proofs.
 | `render_context` | Provider package/module/export; target/context argument positions and exact argument count | Literal context keys propagate to actual template modules after external-import verification. |
 | `named_route_call` | Imported module/export, argument and display expression prefix | Emit a typed static route key with actual pack/rule origin. |
 | `receiver_registration` | Provider module/constructors, member, path/handler indices and name keyword | Prove a lexical receiver registration; route rules opt in with `registration_guard`. |
-| `decorated_registration` | Provider modules/constructor/member, name keyword and provider identity | Register a statically verified decorated callable. |
+| `decorated_registration` | Provider modules/constructor/member, name keyword and provider identity; optional `imported_decorator` and `category` | Register a statically verified decorated callable. `imported_decorator = true` verifies the module and exported decorator directly; the default `false` verifies a constructed receiver. `category` is `tool` by default and also accepts `cli_command` or `event_handler`. |
 | `template_loader` | Provider package/module/environment/loader and loader keyword | Record a static relative loader root with import proof. |
 | `template_library` | Directory, provider module/constructor, registration member-to-tag/filter map and name keyword | Resolve registered template symbols within a dependency scope. |
 | `object_factory` | Callee identities/suffixes and optional globals that must remain unshadowed | Associate object members with their exact factory object. |

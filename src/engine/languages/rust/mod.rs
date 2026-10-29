@@ -55,6 +55,27 @@ fn has_cfg_test(node: Syntax<'_>, source: &str) -> bool {
     false
 }
 
+fn has_main_attribute(node: Syntax<'_>, source: &str) -> bool {
+    let mut previous = node.prev_named_sibling();
+    while let Some(attribute) = previous.filter(|node| node.kind() == "attribute_item") {
+        let raw: String = text(attribute, source)
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        if ["#[tokio::main", "#[async_std::main"]
+            .iter()
+            .any(|prefix| {
+                raw.strip_prefix(prefix)
+                    .is_some_and(|suffix| suffix.starts_with(']') || suffix.starts_with('('))
+            })
+        {
+            return true;
+        }
+        previous = attribute.prev_named_sibling();
+    }
+    false
+}
+
 fn unrestricted_public(node: Syntax<'_>, source: &str) -> bool {
     text(node, source)
         .trim_start()
@@ -1025,7 +1046,7 @@ impl LanguageProfile for Rust {
         &self,
         node: Syntax<'_>,
         source: &str,
-        _name: &str,
+        name: &str,
         _file: &FileContext,
     ) -> SymbolMetadata {
         let mut param_types = BTreeMap::new();
@@ -1064,6 +1085,11 @@ impl LanguageProfile for Rust {
                 param_types,
                 is_async: value_flow::is_async(node, source),
                 is_public: Some(unrestricted_public(node, source)),
+                entrypoint_base: (node.kind() == "function_item"
+                    && ((name == "main"
+                        && node.parent().is_some_and(|parent| parent.kind() == "source_file"))
+                        || has_main_attribute(node, source)))
+                .then_some("main"),
                 ..Default::default()
             };
         };

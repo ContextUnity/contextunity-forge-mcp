@@ -84,6 +84,10 @@ pub(crate) enum SyntaxOperation {
         member: String,
         name_keyword: String,
         provider: String,
+        #[serde(default)]
+        imported_decorator: bool,
+        #[serde(default)]
+        category: RegistrationCategory,
     },
     TemplateLoader {
         package: String,
@@ -189,6 +193,16 @@ pub(crate) enum SyntaxOperation {
         event_scope: String,
         object_scope: String,
     },
+}
+
+/// Semantic category of a configured decorated registration.
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RegistrationCategory {
+    #[default]
+    Tool,
+    CliCommand,
+    EventHandler,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -621,6 +635,7 @@ impl SyntaxRule {
                 member,
                 name_keyword,
                 provider,
+                ..
             } => {
                 ensure!(
                     self.language == "python" && !modules.is_empty(),

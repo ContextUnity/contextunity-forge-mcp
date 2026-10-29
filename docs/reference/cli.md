@@ -34,6 +34,7 @@ contextunity-forge-mcp delta . src/module.py src/other.py
 
 ```sh
 contextunity-forge-mcp query overview
+contextunity-forge-mcp query overview --aspects entrypoints
 contextunity-forge-mcp query search 'parse*' --kind function --limit 30
 contextunity-forge-mcp query inspect 'src/module.py:parse' --show-source
 contextunity-forge-mcp query explain 'src/module.py:parse'

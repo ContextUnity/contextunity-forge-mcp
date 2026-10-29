@@ -28,6 +28,7 @@ pub(super) fn decorator_candidates(ctx: &SyntaxContext<'_, '_>, facts: &mut Fact
         let super::super::manifests::syntax::SyntaxOperation::DecoratedRegistration {
             member,
             name_keyword,
+            imported_decorator,
             ..
         } = &rule.operation
         else {
@@ -48,8 +49,12 @@ pub(super) fn decorator_candidates(ctx: &SyntaxContext<'_, '_>, facts: &mut Fact
             let Some(callee) = callee else {
                 continue;
             };
-            let Some(receiver) = text(callee, ctx.source).strip_suffix(&format!(".{member}"))
-            else {
+            let callee_text = text(callee, ctx.source);
+            let receiver = if *imported_decorator {
+                callee_text.split('.').next().unwrap_or("")
+            } else if let Some(receiver) = callee_text.strip_suffix(&format!(".{member}")) {
+                receiver
+            } else {
                 continue;
             };
             if receiver.is_empty()
@@ -88,7 +93,7 @@ pub(super) fn decorator_candidates(ctx: &SyntaxContext<'_, '_>, facts: &mut Fact
                     }
                 }
             }
-            candidates.push(json!({"pack":rule.pack,"rule":rule.id,"receiver":receiver,"line":decorator.start_position().row + ctx.offset + 1,"name":name,"name_status":name_status}));
+            candidates.push(json!({"pack":rule.pack,"rule":rule.id,"receiver":receiver,"callee":callee_text,"line":decorator.start_position().row + ctx.offset + 1,"name":name,"name_status":name_status}));
         }
     });
     if !candidates.is_empty() {
@@ -284,6 +289,8 @@ fn registrations_with_rules(
                 modules,
                 constructor,
                 provider,
+                imported_decorator,
+                category,
                 ..
             } = &rule.operation
             else {
@@ -295,9 +302,21 @@ fn registrations_with_rules(
                 continue;
             };
             let line = line as usize;
-            if !confirmed_instance(facts, &module, receiver, line, modules, constructor) {
+            let confirmed = if *imported_decorator {
+                candidate["callee"].as_str().is_some_and(|callee| {
+                    imported_constructor(facts, &module.id, callee, line, modules, constructor)
+                })
+            } else {
+                confirmed_instance(facts, &module, receiver, line, modules, constructor)
+            };
+            if !confirmed {
                 continue;
             }
+            let registration_kind = match category {
+                super::super::manifests::syntax::RegistrationCategory::Tool => "tool_registration",
+                super::super::manifests::syntax::RegistrationCategory::CliCommand => "cli_command_registration",
+                super::super::manifests::syntax::RegistrationCategory::EventHandler => "event_handler_registration",
+            };
             let name_status = candidate["name_status"].as_str().unwrap_or("dynamic");
             let advertised_name = if name_status == "explicit" {
                 candidate["name"].as_str()
@@ -309,14 +328,19 @@ fn registrations_with_rules(
             let name = advertised_name
                 .map(str::to_owned)
                 .unwrap_or_else(|| format!("tool@{line}"));
+            let id_prefix = if registration_kind == "tool_registration" {
+                "tool-registration"
+            } else {
+                registration_kind
+            };
             let id = format!(
-                "tool-registration:{}:{line}:{}",
+                "{id_prefix}:{}:{line}:{}",
                 function.path, function.name
             );
             facts.pending_flow_nodes.push(facts.nodes.len());
             facts.nodes.push(Node {
     native_semantic: None,
-                id: id.clone(), kind: "tool_registration".into(), name: name.clone(),
+                id: id.clone(), kind: registration_kind.into(), name: name.clone(),
                 qualname: format!("{}.tool.{name}", module.qualname), path: function.path.clone(),
                 line, end_line: line, is_test: function.is_test, language: "python".into(), generated: false,
                 details: json!({"framework":provider,"pack":rule.pack,"rule":rule.id,"receiver":receiver,"advertised_name":advertised_name,"name_status":name_status,"handler":function.id,"value_flow":crate::core::semantic::ValueFlowFacts { framework: Some(Box::new(crate::core::semantic::FrameworkScopeFacts { facts: vec![crate::core::semantic::FrameworkFact::RuleOrigin(crate::core::semantic::ExtractionRuleOrigin { pack: rule.pack.clone(), rule: rule.id.clone() })], ..Default::default() })), ..Default::default() }}),

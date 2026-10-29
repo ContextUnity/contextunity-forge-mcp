@@ -34,6 +34,7 @@ pub mod cache;
 pub(crate) mod delta_persist;
 #[path = "dictionary.rs"]
 mod dictionary;
+mod entrypoints;
 #[path = "ingest.rs"]
 mod ingest;
 mod seal;
@@ -560,6 +561,19 @@ pub(crate) fn populate_owned(
             );
         }
         let mut logical_commitments = domains;
+
+        entrypoints::prepare_candidates(&tx)?;
+        entrypoints::add_cold_candidates(&tx)?;
+        let entrypoint_owners = entrypoints::project(&tx, true)?;
+        if !entrypoint_owners.is_empty() {
+            logical_commitments
+                .get_mut("nodes")
+                .context("missing node commitments")?
+                .extend(commitments::node_leaves_for_owners(
+                    &tx,
+                    &entrypoint_owners,
+                )?);
+        }
 
         let rows_ms = writing.elapsed().as_secs_f64() * 1000.;
         tx.commit()?;

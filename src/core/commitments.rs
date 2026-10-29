@@ -186,6 +186,14 @@ fn leaves(
     domain_leaves::leaves_generic(conn, table, owners)
 }
 
+/// Computes node commitment leaves for owners whose persisted navigation details changed.
+pub(crate) fn node_leaves_for_owners(
+    conn: &Connection,
+    owners: &BTreeSet<String>,
+) -> Result<BTreeMap<String, String>> {
+    domain_leaves::leaves_nodes(conn, Some(owners))
+}
+
 fn ensure_fts_vocab(conn: &Connection, index: &str) -> Result<&'static str> {
     let (table, create_sql) = match index {
         "node_search" => (

@@ -452,6 +452,65 @@ fn is_python_stub_body(node: Syntax<'_>, source: &str) -> bool {
 pub struct Python;
 /// Shared python language profile.
 pub static PYTHON: Python = Python;
+
+fn main_guard_calls(root: Syntax<'_>, source: &str) -> std::collections::HashSet<String> {
+    let mut result = std::collections::HashSet::new();
+    let mut cursor = root.walk();
+    for statement in root.named_children(&mut cursor).filter(|n| n.kind() == "if_statement") {
+        let Some(condition) = statement.child_by_field_name("condition") else { continue };
+        let mut parts = condition.walk();
+        let operands: Vec<_> = condition.named_children(&mut parts).collect();
+        if condition.kind() != "comparison_operator" || operands.len() != 2 {
+            continue;
+        }
+        let lhs = text(operands[0], source).trim();
+        let rhs = text(operands[1], source).trim();
+        let is_main = |value: &str| value == "'__main__'" || value == "\"__main__\"";
+        if !((lhs == "__name__" && is_main(rhs)) || (rhs == "__name__" && is_main(lhs)))
+            || !text(condition, source).contains("==")
+        {
+            continue;
+        }
+        let Some(body) = statement.child_by_field_name("consequence") else { continue };
+        let mut body_cursor = body.walk();
+        for expression in body.named_children(&mut body_cursor) {
+            if expression.kind() != "expression_statement" { continue; }
+            let Some(call) = expression.named_child(0).filter(|n| n.kind() == "call") else { continue };
+            if let Some(function) = call.child_by_field_name("function").filter(|n| n.kind() == "identifier") {
+                let name = text(function, source);
+                let mut declarations = 0;
+                let mut unambiguous = true;
+                let mut siblings = body.walk();
+                if body.named_children(&mut siblings).any(|other| {
+                    other.id() != expression.id() && text(other, source).contains(name)
+                }) {
+                    continue;
+                }
+                let mut module_cursor = root.walk();
+                for item in root.named_children(&mut module_cursor) {
+                    let definition = if item.kind() == "decorated_definition" {
+                        item.child_by_field_name("definition")
+                    } else {
+                        Some(item)
+                    };
+                    if let Some(definition) = definition.filter(|n| n.kind() == "function_definition") {
+                        if field(definition, source, "name") == Some(name) {
+                            declarations += 1;
+                            unambiguous &= item.start_byte() < statement.start_byte();
+                        }
+                    } else if item.id() != statement.id() && text(item, source).contains(name) {
+                        // Other module-level occurrences can rebind the name; fail closed.
+                        unambiguous = false;
+                    }
+                }
+                if declarations == 1 && unambiguous {
+                    result.insert(name.to_owned());
+                }
+            }
+        }
+    }
+    result
+}
 impl LanguageProfile for Python {
     fn scope_analysis<'source, 'tree>(
         &self,
@@ -558,6 +617,7 @@ impl LanguageProfile for Python {
         module_exports::prepare(root, source, &mut type_checking_aliases);
         FileContext {
             type_checking_aliases,
+            python_main_calls: main_guard_calls(root, source),
             ..FileContext::default()
         }
     }
@@ -977,6 +1037,10 @@ impl LanguageProfile for Python {
             is_stub,
             is_conditional: conditional_class_member(node),
             is_public: Some(module_scope(node) && !_name.starts_with('_')),
+            entrypoint_base: (node.kind() == "function_definition"
+                && module_scope(node)
+                && file.python_main_calls.contains(_name))
+            .then_some("main"),
             ..Default::default()
         }
     }

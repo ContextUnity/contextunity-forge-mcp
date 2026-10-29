@@ -1,0 +1,5 @@
+[[syntax_rules]]
+id = "shared-task"
+language = "python"
+activation = [{ kind = "package", name = "celery" }]
+operation = { kind = "decorated_registration", modules = ["celery"], constructor = "shared_task", member = "shared_task", name_keyword = "name", provider = "celery", imported_decorator = true, category = "event_handler" }
