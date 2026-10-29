@@ -165,14 +165,17 @@ Request `{"operation":"slice","selector":"src/db"}` from `code_map_query`
 to include `boundary_contract` for an indexed directory. The contract lists
 externally used internal symbols and groups incoming and outgoing edges by the
 external file's parent directory. Counts include all indexed edge kinds; exported
-caller counts are distinct source symbols. Arrays are limited by the request
-limit, with total counts alongside them; each module includes at most five
-representative edges. File and explicit symbol slices retain graph traversal.
+caller counts are distinct source symbols. Each collection is a page with total,
+offset, limit and generation. Continue with the next offset and generation; the
+same offset applies to internal edges and every boundary collection. Each module
+includes at most five deterministic representative edges. File and explicit
+symbol slices retain graph traversal.
 
 Request `{"aspects":["topology"]}` from `code_map_overview` for opt-in
 `topology.modules` and `topology.module_edges` pages. Module names use the
 first two directory components, except `src/engine` uses three where available;
-root files belong to the empty module. Counts use indexed nodes and edges.
+root files belong to the empty module and directory component nodes use their
+own path. Counts use indexed nodes and edges.
 Cohesion is internal edges divided by internal plus inbound and outbound edges,
 or zero for a module without edges. Roles are assigned in this order: an adapter
 entrypoint or no inbound with outbound is `adapter_or_entrypoint`; no outbound

@@ -236,6 +236,9 @@ fn render_overview(output: &mut String, value: &Value) {
     if let Some(cycles) = value.get("cycles") {
         render_json_section(output, "Dependency cycles", cycles);
     }
+    if let Some(topology) = value.get("topology") {
+        render_json_section(output, "Module topology", topology);
+    }
     if let Some(metadata) = value.get("metadata") {
         render_metadata(output, metadata);
     }

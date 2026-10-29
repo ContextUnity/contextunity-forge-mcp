@@ -93,7 +93,10 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
         "from service import entry\ndef test_entry():\n    entry()\n",
     );
     fs::create_dir_all(workspace.path("nested")).unwrap();
-    workspace.write("nested/helper.py", "def unique_nested():\n    return 3\n");
+    workspace.write(
+        "nested/helper.py",
+        "from service import entry\ndef unique_nested():\n    return entry()\n",
+    );
     let mut client = Client::new(&workspace);
 
     let parity_cases = [
@@ -341,10 +344,28 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
                 mcp_json["topology"]["module_edges"]["items"].is_array(),
                 "{mcp_json}"
             );
+            assert!(
+                mcp_json["topology"]["module_edges"]["total"]
+                    .as_u64()
+                    .unwrap()
+                    > 0,
+                "{mcp_json}"
+            );
         }
         if arguments["operation"] == "slice" {
             assert!(
-                mcp_json["boundary_contract"]["exported_symbols"].is_array(),
+                mcp_json["boundary_contract"]["exported_symbols"]["items"].is_array(),
+                "{mcp_json}"
+            );
+            assert!(
+                mcp_json["boundary_contract"]["outbound_modules"]["total"]
+                    .as_u64()
+                    .unwrap()
+                    > 0,
+                "{mcp_json}"
+            );
+            assert!(
+                mcp_json["edges"]["total"].as_u64().unwrap() > 0,
                 "{mcp_json}"
             );
         }

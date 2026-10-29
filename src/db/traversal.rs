@@ -1338,7 +1338,7 @@ fn slice_paged(
         &[&lower, &upper],
         options,
     )?;
-    let boundary = directory_boundary(conn, &lower, &upper, options.limit)?;
+    let (boundary, edges) = directory_boundary(conn, &lower, &upper, options)?;
     Ok(json!({
         "selector": {"kind":"directory","path":path},
         "scope":"directory_members",
@@ -1346,23 +1346,31 @@ fn slice_paged(
         "requested_depth":depth,
         "graph_depth_applied":0,
         "nodes":nodes,
+        "edges":edges,
         "boundary_contract":boundary,
         "hint":"Directory mode lists indexed nodes with graph depth 0. Select a returned exact node id or file path to traverse graph relationships at the requested depth."
     }))
 }
 
-fn directory_boundary(conn: &Connection, lower: &str, upper: &str, limit: usize) -> Result<Value> {
+fn directory_boundary(
+    conn: &Connection,
+    lower: &str,
+    upper: &str,
+    options: &QueryOptions,
+) -> Result<(Value, Value)> {
     use std::collections::BTreeSet;
     let mut exports: BTreeMap<String, (String, Option<String>, BTreeSet<String>)> = BTreeMap::new();
     let mut inbound: BTreeMap<String, (usize, Vec<Value>)> = BTreeMap::new();
     let mut outbound: BTreeMap<String, (usize, Vec<Value>)> = BTreeMap::new();
+    let mut internal = Vec::new();
+    let generation = paging::generation(conn, options)?;
     let budget = reader::QueryBudget::new(conn);
     for is_inbound in [true, false] {
         // Begin at the path range and walk only edges incident to its nodes.
         let edge_key = if is_inbound { "dst_hash" } else { "src_hash" };
         let other_key = if is_inbound { "src_hash" } else { "dst_hash" };
         let sql = format!(
-            "SELECT inside.id,inside.name,json_extract(inside.details,'$.signature'),outside.id,outside.name,json_extract(outside.details,'$.signature'),op.path,e.kind FROM path_dictionary ip CROSS JOIN nodes inside ON inside.path_id=ip.path_id CROSS JOIN edges e ON e.{edge_key}=inside.node_hash CROSS JOIN nodes outside ON outside.node_hash=e.{other_key} CROSS JOIN path_dictionary op ON op.path_id=outside.path_id WHERE ip.path>=?1 AND ip.path<?2 AND NOT (op.path>=?1 AND op.path<?2) ORDER BY op.path,outside.id,inside.id,e.kind"
+            "SELECT inside.id,inside.name,json_extract(inside.details,'$.signature'),outside.id,outside.name,json_extract(outside.details,'$.signature'),op.path,e.kind,e.line,e.occurrence_count,(SELECT path FROM path_dictionary WHERE path_id=e.path_id),(SELECT evidence FROM coverage_evidence WHERE evidence_id=e.confidence_id),(SELECT evidence FROM coverage_evidence WHERE evidence_id=e.evidence_id) FROM path_dictionary ip CROSS JOIN nodes inside ON inside.path_id=ip.path_id CROSS JOIN edges e ON e.{edge_key}=inside.node_hash CROSS JOIN nodes outside ON outside.node_hash=e.{other_key} CROSS JOIN path_dictionary op ON op.path_id=outside.path_id WHERE ip.path>=?1 AND ip.path<?2"
         );
         let mut statement = conn.prepare(&sql)?;
         let mut rows = statement.query([lower, upper])?;
@@ -1376,6 +1384,16 @@ fn directory_boundary(conn: &Connection, lower: &str, upper: &str, limit: usize)
             let outside_signature: Option<String> = row.get(5)?;
             let outside_path: String = row.get(6)?;
             let kind: String = row.get(7)?;
+            if outside_path.as_str() >= lower && outside_path.as_str() < upper {
+                if !is_inbound {
+                    let mut edge = json!({"src_public_id":inside_id,"dst_public_id":outside_id,"kind":kind,"line":row.get::<_, i64>(8)?,"occurrence_count":row.get::<_, i64>(9)?,"path":row.get::<_, String>(10)?,"confidence":row.get::<_, String>(11)?});
+                    if options.detail == crate::core::response::Detail::Full {
+                        edge["evidence"] = json!(row.get::<_, String>(12)?);
+                    }
+                    internal.push(edge);
+                }
+                continue;
+            }
             let module = outside_path
                 .rsplit_once('/')
                 .map_or("", |(parent, _)| parent)
@@ -1389,29 +1407,37 @@ fn directory_boundary(conn: &Connection, lower: &str, upper: &str, limit: usize)
                 export.2.insert(outside_id.clone());
                 let group = inbound.entry(module).or_default();
                 group.0 += 1;
-                if group.1.len() < limit.min(5) {
-                    group
-                        .1
-                        .push(json!({"source_id":outside_id,"target_id":inside_id,"kind":kind}));
-                }
+                group
+                    .1
+                    .push(json!({"source_id":outside_id,"target_id":inside_id,"kind":kind}));
+                group.1.sort_unstable_by_key(Value::to_string);
+                group.1.truncate(5);
             } else {
                 let group = outbound.entry(module).or_default();
                 group.0 += 1;
-                if group.1.len() < limit.min(5) {
-                    group.1.push(json!({"target_id":outside_id,"name":outside_name,"signature":outside_signature,"source_id":inside_id,"kind":kind}));
-                }
+                group.1.push(json!({"target_id":outside_id,"name":outside_name,"signature":outside_signature,"source_id":inside_id,"kind":kind}));
+                group.1.sort_unstable_by_key(Value::to_string);
+                group.1.truncate(5);
             }
         }
     }
     let exported_total = exports.len();
     let inbound_total = inbound.len();
     let outbound_total = outbound.len();
-    let exported_symbols: Vec<_> = exports.into_iter().take(limit).map(|(id,(name,signature,callers))| json!({"id":id,"name":name,"signature":signature,"external_caller_count":callers.len()})).collect();
-    let inbound_modules: Vec<_> = inbound.into_iter().take(limit).map(|(module,(edge_count,symbol_pairs))| json!({"module":module,"edge_count":edge_count,"symbol_pairs":symbol_pairs})).collect();
-    let outbound_modules: Vec<_> = outbound.into_iter().take(limit).map(|(module,(edge_count,targets))| json!({"module":module,"edge_count":edge_count,"targets":targets})).collect();
-    Ok(
-        json!({"exported_symbols":exported_symbols,"inbound_modules":inbound_modules,"outbound_modules":outbound_modules,"exported_total":exported_total,"inbound_module_total":inbound_total,"outbound_module_total":outbound_total}),
-    )
+    let exported_symbols: Vec<_> = exports.into_iter().skip(options.offset).take(options.limit).map(|(id,(name,signature,callers))| json!({"id":id,"name":name,"signature":signature,"external_caller_count":callers.len()})).collect();
+    let inbound_modules: Vec<_> = inbound.into_iter().skip(options.offset).take(options.limit).map(|(module,(edge_count,symbol_pairs))| json!({"module":module,"edge_count":edge_count,"symbol_pairs":symbol_pairs})).collect();
+    let outbound_modules: Vec<_> = outbound.into_iter().skip(options.offset).take(options.limit).map(|(module,(edge_count,targets))| json!({"module":module,"edge_count":edge_count,"targets":targets})).collect();
+    internal.sort_unstable_by_key(Value::to_string);
+    let internal_total = internal.len();
+    let internal = internal
+        .into_iter()
+        .skip(options.offset)
+        .take(options.limit)
+        .collect();
+    Ok((
+        json!({"exported_symbols":paging::value(exported_symbols,exported_total,options,&generation),"inbound_modules":paging::value(inbound_modules,inbound_total,options,&generation),"outbound_modules":paging::value(outbound_modules,outbound_total,options,&generation)}),
+        paging::value(internal, internal_total, options, &generation),
+    ))
 }
 
 /// Performs removal paged.
