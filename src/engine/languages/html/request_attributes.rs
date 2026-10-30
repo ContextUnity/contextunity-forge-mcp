@@ -195,12 +195,56 @@ pub(super) fn request_url_status(value: &str) -> &'static str {
         "remote"
     } else if value.contains(':')
         || value.contains('\\')
-        || value
-            .chars()
-            .any(|c| c.is_whitespace() || "{}<>$".contains(c))
+        || value.contains('<')
+        || value.contains('>')
+        || value.contains('$')
     {
         "dynamic_or_nonlocal"
-    } else {
+    } else if !value.contains('{') && !value.contains('}') {
+        let path_only = value.split(['?', '#']).next().unwrap_or(value);
+        if path_only.chars().any(char::is_whitespace) {
+            "dynamic_or_nonlocal"
+        } else {
+            "local_unverified"
+        }
+    } else if is_valid_parameterized_url(value) {
         "local_unverified"
+    } else {
+        "dynamic_or_nonlocal"
     }
+}
+
+fn is_valid_parameterized_url(value: &str) -> bool {
+    let path_only = value.split(['?', '#']).next().unwrap_or(value);
+    let trimmed = path_only.trim_matches('/');
+    if trimmed.is_empty() {
+        return false;
+    }
+    let mut has_literal_segment = false;
+    for segment in trimmed.split('/') {
+        if segment.is_empty() {
+            continue;
+        }
+        if segment.starts_with("{{") && segment.ends_with("}}") {
+            let inner = &segment[2..segment.len() - 2];
+            let inner_trimmed = inner.trim();
+            if inner_trimmed.is_empty() {
+                return false;
+            }
+            if !inner_trimmed.split('.').all(|part| {
+                let part = part.trim();
+                !part.is_empty() && part.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            }) {
+                return false;
+            }
+        } else if segment
+            .chars()
+            .any(|c| c.is_whitespace() || "{}<>$:\"'\\".contains(c))
+        {
+            return false;
+        } else {
+            has_literal_segment = true;
+        }
+    }
+    has_literal_segment
 }

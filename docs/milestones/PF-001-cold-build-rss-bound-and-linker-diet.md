@@ -151,30 +151,92 @@ receipt:
 ```yaml
 task_ref: restore-default-html-endpoint-resolution
 depends_on:
-  - restore-framework-indexing-performance
-target: "Restore correct default-pack resolution of the 14 real Commerce HTMX endpoint references that changed from resolved to unresolved"
+- restore-framework-indexing-performance
+target: Restore correct default-pack resolution of the 14 real Commerce HTMX endpoint references that changed from resolved to unresolved
 proof_policy: direct-proof
-contract_revision: 1
+contract_revision: 3
 scope:
-  - src/engine/ast/routes.rs
-  - src/engine/languages/html.rs
-  - src/engine/languages/html/
-  - src/engine/languages/manifests/
-  - src/engine/languages/semantic.rs
-  - src/engine/linker/framework_relations.rs
-  - src/engine/linker/html_templates.rs
-  - src/engine/linker/resolution.rs
-  - tests/languages/html/framework_relations.rs
-  - docs/reference/framework-manifests.md
-  - docs/architecture/indexing.md
-status: ready
+- src/engine/languages/html/
+- src/engine/languages/manifests/
+- src/engine/languages/semantic.rs
+- src/engine/linker/framework_relations.rs
+- src/engine/linker/html/
+- tests/languages/html/
+- docs/reference/framework-manifests.md
+- docs/architecture/indexing.md
+status: completed
 subtasks:
-  - subtask_ref: trace-default-pack-route-loss
-    title: "Trace the real lost references from HTML extraction through default manifests and verified route providers to coverage and calls_endpoint edges"
-    status: ready
-  - subtask_ref: restore-generic-parameterized-url-linking
-    title: "Repair universal rule handling or bundled declarations so verified parameterized HTMX requests resolve without project-local workaround manifests"
-    status: ready
+- subtask_ref: trace-default-pack-route-loss
+  title: Trace the real lost references from HTML extraction through default manifests and verified route providers to coverage and calls_endpoint edges
+  status: completed
+  evidence: Traced lost references from HTML extraction through default manifests and verified route providers to coverage and calls_endpoint edges. Identified URL status classifier dynamic_or_nonlocal vs local_unverified divergence.
+- subtask_ref: restore-generic-parameterized-url-linking
+  title: Repair universal rule handling or bundled declarations so verified parameterized HTMX requests resolve without project-local workaround manifests
+  status: completed
+  evidence: Restored generic parameterized URL linking in request_attributes.rs and relations.rs with canonical fixed-boundary verification. All 14 Commerce endpoints verified and passing.
+receipt:
+  contract_revision: 3
+  passed_at: 2026-10-30T21:40:37.632234261+00:00
+  evidence:
+    seam_test_proof:
+      exit_code: 0
+      seam_test_refs:
+      - tests/languages/html/htmx_relations.rs::parameterized_htmx_requests_resolve_to_backend_route_endpoints
+      tests_failed: 0
+      tests_passed: 1
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: 'PASS. Reviewed exact base 2a39bdb3bb3fec3e5e5cf517bef34ffe27b8929d to candidate d93377a99bd3b0b3ed0ec9cfb439326fea2fd3fa. Exactly three admitted files change: src/engine/languages/html/request_attributes.rs (48 insertions / 4 deletions), src/engine/linker/html/relations.rs (62 / 1), tests/languages/html/htmx_relations.rs (214 / 13), total 324 insertions / 18 deletions. No scope extension or protected-file edit in the task diff. git diff --check passed; full admitted-scope git diff --exit-code d93377a passed initially and immediately before submission. Live HEAD 2a2660a7 and inherited staged contract artifacts remain separate from sparse task snapshots. Inspected unrelated existing .gitignore and Cargo version/author metadata edits; these are outside task-owned diff and do not add dependencies or change build profiles. Reviewer changed no repository source/test/doc files; probe fixtures/DBs remain under /tmp.'
+        claims:
+          applicable: true
+          evidence: PASS; both historical findings HTML-REVIEW-1 and HTML-REVIEW-2 are confirmed-fixed with current attributable evidence. request_url_status admits only anchored whole-segment well-formed template parameters; unsupported expressions remain unresolved. Traced extract_request_attributes -> request_url_status -> emit_request_routes -> match_request_route -> canonical RouteIndex -> has_client_route_mismatch -> emit_route_match -> persisted edge/coverage rows. All four prior negative controls now persist unresolved coverage and no calls_endpoint edges in independent production CLI reproductions. Both positive controls persist resolved coverage and exact expected routes. Current seam proves all 14 Commerce fixture occurrence-to-handler/route mappings, resolved coverage, template delta, HTMX override disable/restore and complete reopened cold/delta graph/coverage/commitment verification. Original all-method, verified-provider, duplicate-route ambiguity, renamed-rule and separate-workspace assertions pass. Independent required command cargo clippy --all-targets --all-features -- -D warnings && cargo test --test languages exited 0; strict Clippy clean; 251 passed / 0 failed / 0 ignored / 0 filtered. Verification archive 1a2317aedc2bb372; production first-probe build archive b7c66762efb6102b. Additional function/filter/arithmetic/whole-URL/all-parameter/mixed-segment/${id} requests remain unresolved; remote URLs remain external. No admitted scope or contract findings remain.
+        concurrency:
+          applicable: true
+          evidence: PASS for the changed surface. Classifier and new HTML guard operate on local borrowed strings, temporary segment vectors and immutable Node/RouteIndex reads. No shared mutable state/cache, mutex, nested parallelism, I/O, claim/revision transaction, receipt, rollback or publication path changes. Existing immutable prepared rule/index ownership and parallel extraction lifetimes remain intact. Complete languages target passed including existing cold/delta, persistence and cache seams.
+        project_isolation:
+          applicable: true
+          evidence: PASS. All Forge tools explicitly routed to assigned PF-001 worktree; current namespace, contract 3 and review claim 40 rechecked. Provider identity, activation and owning-root policy are unchanged; rule origin remains required before route admission. Existing workspace-local override removal/restoration, renamed pack rules and isolated workspace default semantics pass. Additional CLI reproducers use separate /tmp workspaces without framework override manifests. No filesystem root, path traversal, symlink, task namespace or linked-profile selection code changes.
+        administration:
+          applicable: false
+          evidence: 'No administration implementation changes: schema/migrations, .forge profile, credentials, hooks, public CLI/MCP, receipt and privileged delivery behavior remain unchanged. Worker codex-sol-reviewer is independent of accepted pf001-builder (build claim 37). Active claim 40 / contract 3 / candidate d93377a and source binding were rechecked immediately before submission. No source edits, benchmarks, commits or delivery performed during this review. Source/test boundaries remain respected; successor task retains Cargo workspace extraction.'
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-REPAIR-COVERAGE: Performance repairs preserve correct resolution statuses, exact endpoint targets, cold/delta equivalence, persisted facts, and deterministic commitments.'
+    - 'INV-REPAIR-DECLARATIVE: Framework conventions remain in manifests; extractors and shared handlers contain only universal language or rule-processing logic.'
+    - 'INV-REPAIR-PERFORMANCE: Preserve single-pass extraction, typed analysis facts, shared prepared rule/index ownership, bounded persistence, and no source rereads during delta, as required by the existing architecture and ADR 0012.'
+    - 'INV-WORKSPACE-BOUNDARIES: Splitting the repository into forge-core, forge-index, and forge-tasks enforces strict unidirectional dependency boundaries with zero circular crate dependencies.'
+    architectural_notes:
+    - |-
+      decisions: Architectural synthesis decision for task restore-default-html-endpoint-resolution (contract_revision: 2):
+      1. Root Cause:
+         `src/engine/languages/html/request_attributes.rs` (`request_url_status`) classifies any URL containing '{' or '}' or whitespace as 'dynamic_or_nonlocal', preventing parameterized HTMX URLs from reaching linker route matching in `src/engine/linker/html/relations.rs`.
+         The 14 real Commerce HTMX endpoint references:
+         - 4 channel actions in `channels/settings.html`: `/channels/{{ profile.provider }}/{{ profile.profile_name }}/<action>/`
+         - 6 image requests in `products/editor/_images.html`: `/products/api/{{ product.pk }}/editor-images/`
+         - 3 review actions in `taxonomy_review/_drawer.html`: `/taxonomy/reviews/{{ review.pk }}/resolve/`
+         - 1 pane request in `technologies/_set_detail.html`: `/technologies/{{ tech.id }}/pane/`
+         all contain valid template parameter segments `{{ ... }}`.
+      2. Architecture & Minimal Intervention:
+         In `src/engine/linker/routes.rs`, `normalize_client_url` and `is_client_param` already recognize `{{ ... }}` and normalize segments to `{param}`.
+         The repair will refine `request_url_status` in `src/engine/languages/html/request_attributes.rs` so that client URLs whose dynamic segments are well-formed client parameters (such as `{{ ... }}` without unclosed braces or invalid protocols) are classified as `local_unverified`, allowing `emit_request_routes` to call `routes.match_route` and emit exact `calls_endpoint` edges to matching backend handlers.
+         Unsupported/arbitrary dynamic expressions remain `dynamic_or_nonlocal` and resolve to `unresolved` without fallback guessing.
+      3. Seam Test:
+         Added `parameterized_htmx_requests_resolve_to_backend_route_endpoints` to `tests/languages/html/htmx_relations.rs`. It compiles cleanly and yields runtime assertion failure (exit code 101, left: 0, right: 4 calls_endpoint).
+      4. Scope:
+         Admitted task scope includes `src/engine/languages/html/`, `src/engine/linker/html/`, `src/engine/ast/routes.rs`, `src/engine/linker/framework_relations.rs`, `tests/languages/html/`, `docs/reference/framework-manifests.md`, `docs/architecture/indexing.md`. Protected files (Cargo.toml, build.rs) remain untouched.
+    review_summary:
+      decision: pass
+      contours:
+        administration: not_applicable
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Acceptance

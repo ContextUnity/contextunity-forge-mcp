@@ -67,6 +67,66 @@ pub(in crate::engine::linker) fn emit_render_targets(
     }
 }
 
+fn is_route_param(segment: &str) -> bool {
+    (segment.starts_with('<') && segment.ends_with('>'))
+        || segment.starts_with(':')
+        || (segment.starts_with('{') && segment.ends_with('}'))
+}
+
+fn has_client_route_mismatch(client_url: &str, route_node: &Node) -> bool {
+    let client_path = client_url
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(client_url)
+        .trim_matches('/');
+    let route_path = route_node.details["route_path"]
+        .as_str()
+        .unwrap_or("")
+        .trim_start_matches('^')
+        .trim_end_matches('$')
+        .trim_matches('/');
+    let client_segs: Vec<&str> = client_path.split('/').filter(|s| !s.is_empty()).collect();
+    let route_segs: Vec<&str> = route_path.split('/').filter(|s| !s.is_empty()).collect();
+    if client_segs.len() != route_segs.len() {
+        return true;
+    }
+    for (cs, rs) in client_segs.iter().zip(&route_segs) {
+        if !is_route_param(rs) && !cs.eq_ignore_ascii_case(rs) {
+            return true;
+        }
+    }
+    false
+}
+
+fn match_request_route<'a>(
+    routes: &super::super::routes::RouteIndex<'a>,
+    method: &str,
+    url: &str,
+) -> Result<Option<&'a Node>, ()> {
+    match routes.match_route(method, url) {
+        Ok(Some(route)) => {
+            if has_client_route_mismatch(url, route) {
+                Ok(None)
+            } else {
+                Ok(Some(route))
+            }
+        }
+        Ok(None) => Ok(None),
+        Err(()) => {
+            let candidates = routes.matching_routes(method, url);
+            let valid: Vec<&Node> = candidates
+                .into_iter()
+                .filter(|route| !has_client_route_mismatch(url, route))
+                .collect();
+            match valid.as_slice() {
+                [route] => Ok(Some(*route)),
+                [] => Ok(None),
+                _ => Err(()),
+            }
+        }
+    }
+}
+
 pub(in crate::engine::linker) fn emit_request_routes(
     path: &str,
     facts: &Facts,
@@ -107,6 +167,7 @@ pub(in crate::engine::linker) fn emit_request_routes(
                 "current page form/action",
             ),
             "local_unverified" => {
+                let matched = match_request_route(routes, method, url);
                 super::super::framework_relations::emit_route_match(
                     graph,
                     path,
@@ -114,7 +175,7 @@ pub(in crate::engine::linker) fn emit_request_routes(
                     node.line,
                     super::super::framework_relations::ENDPOINT_ROUTE_PRIMITIVE,
                     &node.name,
-                    routes.match_route(method, url),
+                    matched,
                     None,
                     &node.name,
                 );
