@@ -152,8 +152,9 @@ pub(super) fn observe_command(
         .commands
         .get(selection)
         .with_context(|| {
+            let available: Vec<_> = profile.commands.keys().map(String::as_str).collect();
             format!(
-                "HANDOFF_COMMAND_UNREGISTERED: '{selection}' is not a registered project command"
+                "HANDOFF_COMMAND_UNREGISTERED: '{selection}' is not a registered project command in profile (available: {available:?})"
             )
         })?
         .command();

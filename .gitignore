@@ -15,6 +15,6 @@ __pycache__/
 .forge/*.sqlite*
 .forge/*.lock
 .forge/*.log
+.forge/*.json
 .forge/*.jsonl
 .forge/tasks/
-.forge/checkpoints.json

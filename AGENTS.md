@@ -67,8 +67,53 @@ Worktrees live at `.worktrees/<milestone-prefix>-<slug>` for milestones and `.wo
   - Snapshot immutability: Never modify files during `deliver` stage or after `review`. Any edit triggers `TASK_CANDIDATE_MISMATCH`. If delivery fails, restore the worktree to the candidate snapshot before submitting rejection (`task submit --stage deliver --action reject`).
 - History integration: Preserve accepted task proofs while integrating branches. Rebase, cherry-pick, merge, amend, and squash may change navigation SHAs without reopening completed tasks. Before handoff, obtain independent integration review and repository verification bound to the final content and explicit target base; follow the task and CLI references for the evidence file.
 - Branch integration: Merge each delivered task branch into the milestone branch, delete the temporary task branch, and remove its worktree (`git worktree remove .worktrees/<milestone-prefix>-<task-slug>`).
-- Handoff commit: When every milestone task is completed with accepted proofs or identically cancelled in the manifest and task store without a completion receipt, run `contextunity-forge-mcp milestone handoff` in the milestone worktree. Preserve cancelled history without completion credit. Commit the archived milestone document, along with any out-of-scope adjustments, deferred fixes, and recorded findings, documenting them in the handoff commit message.
-- Milestone landing: In the primary worktree (`main`), fast-forward the milestone branch (`git merge --ff-only <milestone-branch>`), remove the milestone worktree (`git worktree remove .worktrees/<milestone-prefix>-<slug>`), and delete the milestone branch (`git branch -d <milestone-branch>`).
+
+### Linear Milestone Handoff Procedure
+
+When every milestone task is completed with accepted proofs or identically cancelled:
+
+1. **Absorb Polish & Emit Binding**:
+   Run `contextunity-forge-mcp milestone handoff-context --target-base main <MILESTONE_ID>`.
+   - Automatically absorbs uncommitted milestone adjustments (`.forge/**`, `AGENTS.md`, `Cargo.toml`, `docs/**`, `skills/**`, `.gitignore`, engine fixes).
+   - Emits the content binding (`authority_digest`, `implementation_digest`, `target_base_digest`, `commit`, `builders`).
+
+2. **Run Verification Commands**:
+   Run milestone verification commands (`cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets`).
+   Note the exact integer count of passed tests (e.g. 860) and 0 failed.
+
+3. **Construct Integration Evidence File**:
+   Write `.forge/integration-evidence.json` (ignored by Git) with:
+   - `binding`: Exact binding object from `handoff-context` output.
+   - `target_base`: Explicit target base (e.g. `"main"`).
+   - `review`:
+     - `worker_id`: Reviewer identity distinct from all `builders` in the binding (e.g. `"integration-reviewer"`).
+     - `decision`: `"pass"`
+     - `summary`: Passing integration review summary.
+     - `scope_findings`: `[]`
+     - `contract_findings`: `[]`
+   - `verification`:
+     - `command`: Full verification command string executed.
+     - `exit_code`: `0`
+     - `tests_passed`: Count of passed tests.
+     - `tests_failed`: `0`
+     - `project_command`: Registered command ID from profile `commands:` (e.g. `"check_full_repo"`), NOT a raw shell string.
+     - `lint_command`: Omit or specify a registered command ID from profile `commands:`.
+
+4. **Execute Handoff**:
+   Run:
+   `contextunity-forge-mcp milestone handoff --evidence-file .forge/integration-evidence.json <MILESTONE_ID>`
+   - Validates binding and evidence, moves milestone manifest to `docs/milestones/archive/`, prunes completed SQLite tasks, and outputs completion JSON.
+
+5. **Commit Handoff Artifacts**:
+   Stage the archived milestone and any admitted adjustments:
+   `git add docs/milestones/`
+   `git commit -m "docs(milestone): complete <MILESTONE_ID> handoff and archive authority"`
+
+6. **Milestone Landing**:
+   In the primary worktree (`main`), fast-forward the milestone branch, remove the milestone worktree, and delete the milestone branch:
+   `git merge --ff-only <milestone-branch>`
+   `git worktree remove .worktrees/<milestone-prefix>-<slug>`
+   `git branch -d <milestone-branch>`
 
 ### Operations requiring explicit user approval
 

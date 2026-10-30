@@ -761,6 +761,7 @@ fn is_admitted_milestone_adjustment(path: &str, milestone_path: &str) -> bool {
         || path.starts_with("skills/")
         || path.starts_with("src/engine/tasks/")
         || path.starts_with("src/engine/milestones/")
+        || path.starts_with("src/core/tasks/")
         || path.starts_with("tests/acdd/")
         || path == "AGENTS.md"
         || path == "docs/AGENTS.md"
@@ -768,6 +769,7 @@ fn is_admitted_milestone_adjustment(path: &str, milestone_path: &str) -> bool {
         || path == "Cargo.toml"
         || path == "Cargo.lock"
         || path == "README.md"
+        || path == ".gitignore"
 }
 
 fn is_admitted_handoff_path(path: &str, milestone_path: &str, relevant: &[Task]) -> bool {
