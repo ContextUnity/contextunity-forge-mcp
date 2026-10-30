@@ -426,9 +426,9 @@ receipt:
 
 ```yaml
 task_ref: directory-boundary-slice-and-module-topology
-target: Enhance code_map_query(operation='slice') for directories with 1-hop inbound/outbound boundary contracts (neighborMap) and add aspects=['topology'] to code_map_overview
-proof_policy: seam-test-first
-contract_revision: 7
+target: Enhance directory slice boundary contracts and overview topology; repair cold entrypoint projection, Python extraction scans, SQL literal prefilter, navigation serialization and FTS duplication, and topology aggregation while preserving observable behavior and cold/delta commitments
+proof_policy: direct-proof
+contract_revision: 10
 depends_on:
 - deterministic-entrypoint-classification-and-unwired-filtering
 concurrency:
@@ -451,7 +451,17 @@ scope:
 - tests/mcp/
 - tests/commitment_integrity.rs
 - tests/incremental/directory_slice.rs
-status: completed
+- src/db/ingest.rs
+- src/db/writer/entrypoints.rs
+- src/core/models.rs
+- src/engine/ast/routes.rs
+- src/engine/languages/python/mod.rs
+- src/engine/languages/python/syntax_operations.rs
+- src/engine/languages/python/template_loaders.rs
+- src/engine/languages/sql/mod.rs
+- tests/languages/extractors.rs
+- tests/mcp/query_ranking.rs
+- src/engine/ast/visitor.rs
 subtasks:
 - subtask_ref: add-one-hop-boundary-contract-to-directory-slice
   title: Extend slice_paged in src/db/traversal.rs so directory selectors include a boundary_contract section listing exported_symbols (called from outside), inbound_callers grouped by external directory, and outbound_dependencies grouped by external directory
@@ -465,16 +475,21 @@ subtasks:
   title: Update docs/reference/mcp-tools.md and docs/reference/cli.md with examples of directory boundary slices and overview topology
   status: completed
   evidence: Snapshot e0b79be; production incremental 3/3, MCP 90/90, strict Clippy; independent review and seam review passed.
+extended_scope:
+- src/db/ingest.rs
+- src/db/writer/entrypoints.rs
+- src/engine/ast/visitor.rs
+status: completed
 receipt:
-  contract_revision: 7
-  passed_at: 2026-10-29T22:03:13.635398732+00:00
+  contract_revision: 10
+  passed_at: 2026-10-30T14:50:32.098354345+00:00
   evidence:
     seam_test_proof:
       exit_code: 0
       seam_test_refs:
       - tests/incremental/directory_slice.rs
       - tests/mcp/context.rs
-      tests_passed: 93
+      tests_passed: 121
       tests_failed: 0
   review:
     review_proof:
@@ -482,19 +497,25 @@ receipt:
       contours:
         paths:
           applicable: true
-          evidence: Independent reviewer verified all 14 changed files against rev7 scope, protected fields untouched.
+          evidence: All 20 modified candidate files are within revision 10 scope. Scoped parentless snapshot omissions follow ADR 0015. Separate unscoped worktree edits are excluded from this approval.
         claims:
           applicable: true
-          evidence: Reviewed production SQLite boundary, topology, normalized selector and seam tests; builder reports incremental 3/3, integrity 16/16, Clippy and MCP 90/90.
+          evidence: 'Production boundary, topology, SQL extraction, entrypoint and cold/delta seams passed: independent affected-target verification recorded 387 passed, 0 failed; strict Clippy exited 0. Historical full-suite evidence records 860 passed, 0 failed, 1 ignored. Five-pair cold control medians were 10.472s candidate versus 10.843s baseline (-3.422%), with coverage preserved and matching candidate binary hash; OS page caches were not flushed.'
         concurrency:
           applicable: true
-          evidence: Reviewed atomic delta projection updates, rollback, cold and verified-cache publication.
+          evidence: Rayon preparation reads immutable facts and ranks and returns owned bytes; SQLite mutations remain serial. Delta generation checks, projection, sealing and verification remain within an IMMEDIATE transaction. FTS streaming and sorted fallback share one read snapshot.
         project_isolation:
           applicable: true
-          evidence: Reviewed directory selectors, normalization, ambiguity and workspace-local production storage.
+          evidence: Reviewed workspace-local database access, normalized directory selectors, ambiguity rejection and indexed path ranges. No cross-workspace leak or new unrelated source-body read was found in the changed paths.
         administration:
           applicable: true
-          evidence: Reviewed schema upgrade rebuild, preserved v2 domains and candidate snapshot; no protected profile changes.
+          evidence: 'Coordinator decision #1343, explicitly confirmed by the user, resolves finding #1342 and establishes incident-subgraph locality O(P_dir + V_dir + E_incident) as authoritative. Coordinator owns final documentation reconciliation at milestone handoff. Schema 15 with semantics 13 rejects stale indexes. Fresh comparison confirms all 38 candidate files remain byte-identical to the worktree.'
+      extended_scope_review:
+        approved_paths:
+        - src/db/ingest.rs
+        - src/db/writer/entrypoints.rs
+        - src/engine/ast/visitor.rs
+        reason_verified: true
   decision: pass
   rollup:
     verified_invariants:
@@ -503,11 +524,17 @@ receipt:
     - 'INV-BOUNDARY-SLICE-COMPACTNESS: Directory-level code_map_query(operation="slice") computes 1-hop inbound and outbound module boundary contracts (neighborMap equivalent) directly from SQLite edges in O(E_dir) without loading unrelated file bodies.'
     - 'INV-DUAL-SURFACE-PARITY: Every new overview aspect (entrypoints, topology), slice boundary contract, and SQL graph relation is exposed with identical semantics on both MCP and CLI surfaces.'
     architectural_notes:
-    - 'decisions: Architectural synthesis rev 5: slice_paged resolves files/symbols via traversal first, then directory_path and path_bounds; extend only the directory branch, joining indexed path_dictionary, nodes and edges from in-directory nodes with source/destination hash indexes. Do not read source bodies or use LIKE wildcard matching. Preserve directory resolution, existing nodes page/generation and file semantics; aggregate bounded deterministic inbound exports and module pairs/outbound targets. overview_with_options is the shared DB producer used by both CLI and MCP; add opt-in topology there, preserving generation/limits, aggregate indexed node/edge facts with deterministic module path mapping and classification precedence documented in reference. Existing tests/incremental/directory_slice.rs is the real scanner->SQLite->traversal seam and tests/mcp/context.rs covers CLI/MCP parity. Rev 5 replaces nonexistent reference owner docs/reference/tools.md with docs/reference/mcp-tools.md and admits existing seam; protected Cargo.toml, build.rs and profile files are not needed. Clean compilation and runtime assertion red: cargo test --test incremental directory_suffix_lists_real_nodes_and_exact_file_keeps_graph_traversal exited 101 on missing boundary_contract.exported_symbols.'
-    - 'decisions: Rev 6 synthesis: prior #1293 remains architecture and directory proof. Newly inspected src/core/format/discovery.rs render_overview is a closed list with no fallback, so topology-only overview disappears from default Markdown although JSON contains it. Scope admits this renderer and src/mcp/tools/inputs.rs (MCP argument description), with no Cargo/build/profile changes. Extend existing stdio/CLI production parity seam to require visible topology in default Markdown; runtime red will prove the omitted renderer section. Preserve bounded pages and their continuation metadata in rendered output.'
-    - 'decisions: Proposed rev7 architecture for user-directed strict incident locality: E_dir = indexed edges with at least one endpoint inside directory, including internal. Add edge_endpoint_paths(path,direction,src_hash,kind,dst_hash), path/direction PK plus edge-key index, exactly two rows per canonical edge. Schema version 16 rejects/rebuilds v15; v2 ALGORITHM and DOMAINS unchanged. Cold writer builds projection from canonical nodes/edges after persist_graph and validates bidirectional equality after secondary indexes before seal/verified receipt. Full commitments::verify checks every canonical endpoint projection and every projection row in reverse; missing/wrong/extra rows fail closed. Delta IMMEDIATE transaction materializes touched edge keys as changed_edge_keys UNION pre-delete incident edges of replaced_nodes, removes old projection and reinserts both endpoint rows after all graph aggregation, validates touched keys in both directions including wrong paths, and verifies before commit/cache publication. Prior reader admission verifies full projection on cache miss, receipt binds snapshot identity; schema upgrade rebuild invalidates old index/receipt. Transaction rollback preserves canonical edges, projection, commitments and previous receipt. No source IO; cold/delta same-schema output_root parity; v2 algorithm unchanged though schema metadata changes root. Indexed range reads visit projection records for directory endpoints, including twice for internal edges; SQLite B-tree seek cost and grouping/sort costs are explicit, no unsupported strict mathematical linear claim. Tests: cold/delta changed/deleted/moved endpoints, corruption delete/insert/wrong direction/path, old schema rebuild, rollback, cache invalidation, parity, isolated/high incident directory; no benchmark. Needed scope additions src/core/schema.rs, src/core/config.rs, src/core/commitments.rs, src/db/writer.rs, src/db/delta.rs, tests/commitment_integrity.rs. Existing src/db/reader.rs,traversal.rs and tests/incremental/directory_slice.rs already admitted.'
-    - 'decisions: Rev7 architecture follows #1301, with scope amended to canonical schema/config, commitments, cold writer, delta and integrity seam. No Cargo.toml, build.rs or profile changes. Production scanner→index→SQLite test tests/incremental/directory_slice.rs compiles and fails 101 because the required incident adjacency table is absent, and additionally asserts two records per actual graph edge. Derived-state verification preserves v2 algorithm and rejects missing, extra and wrong endpoint rows; cold publication and delta transaction verify before trusted receipt.'
-    - 'decisions: Independent reviewer reclassified the earlier unbounded intermediate materialization finding: milestone invariant requires O(E_dir) and no unrelated file-body reads, but neither the invariant nor ADR 0011 establishes an intermediate RAM cap or page-sized memory requirement. O(E_dir + key bytes) working memory remains a disclosed risk, not a standalone contract violation; do not introduce an unapproved new query failure limit. Complexity, pagination correctness, response limits, and integrity remain subject to independent review.'
+    - 'decisions: User-directed performance repair: remove derived edge_endpoint_paths and idx_endpoint_edge_key, use existing indexed path_dictionary range -> nodes idx_nodes_path -> incoming idx_edges_dst_kind/outgoing edges primary key, without loading source bodies or holding Rust vectors of all edges. User explicitly accepted actual O(P_dir+V_dir+E_incident), rather than literal O(E_dir), after being informed isolated nodes cannot be skipped without an edge-path projection. Existing protected milestone invariant still states O(E_dir), so its authority must be reconciled by coordinator through supported Forge workflow; do not claim literal bound. SQLite grouping/sorting may use temp B-tree; pages preserve exact totals, distinct callers, five deterministic examples, generation, QueryBudget and CLI/MCP parity. Remove v16 projection storage/verification, schema 15 with semantics bump and stale v15/v16 rebuild; preserve canonical commitment and delta rollback. Production seam tests/incremental/directory_slice.rs, tests/commitment_integrity.rs; red production seam exits101 for projection still present. No Cargo.toml/build.rs edits; affected owners already in rev7 scope.'
+    - 'decisions: Rev8 synthesis architecture: user-authorized performance gate cold median <= baseline and preserved coverage; report /tmp/ls002-cold-report.json reports 19.974 vs 18.556, false, not yet explained completely. Add preseed only on freshly serialized simple object with absent entrypoint and supported intrinsic category, preserve precise SQL json_set bytes/key order. For cold project retain all graph targets, plus intrinsic cases with unknown rank or missing/different entrypoint so existing/conflicting/malformed cases retain current fallback; preserve exact confidence and min rank. Keep delta handling current and verify graph override/removal, cold/delta commitments and bytes including signatures/return types, streamed/nonstreamed and extraction cache paths. Risks: JSON byte differences break roots; candidate work is only one suspected portion of regression and no performance pass is guaranteed; production paths include ingest.rs and writer/entrypoints.rs now admitted by extend_scope. Boundary user authorization O(P+V+E_incident) conflicts with still-protected milestone invariant text O(E); coordinator owns authority reconciliation. Gate proof challenge: prior behavior already produces correct JSON and public seam exposes no update count; a red proof must not fake the failure or use nonhermetic wall-clock threshold. Actual benchmark fails but standalone seam-test-first observable remains under investigation.'
+    - 'decisions: 2026-10-30 user explicitly authorized direct-proof for performance-only cold entrypoint optimization: a green production behavior-preservation seam plus the real failing cold benchmark #1331 constitute honest evidence, overriding the local profile instruction that requires red_exit_code 101. Forge task rev9 proof_policy direct-proof; no fabricated red. Candidate must retain byte-identical details, priority, cache behavior and cold/delta parity; user requires a new 5-pair benchmark with candidate_median_not_slower=true.'
+    - 'decisions: User explicitly authorizes direct-proof for this performance-only optimization: green production behavior-preservation seam plus the actual failed cold benchmark #1331 supersede the local profile instruction requiring red 101. Do not fabricate exit code or benchmark success. Rev9 proof_policy direct-proof; submit actual exit 0 evidence if runtime accepts; report exact rejection otherwise. Previous real deletion red proof at rev7 remains in gate history and Git. The final performance gate remains candidate_median_not_slower=true and coverage preserved.'
+    - 'decisions: REV10 USER-DIRECTED FIVE-FINDING CONTRACT (source verified; independent audits recorded by coordinator). 1) ENTRYPOINT: cold CompactGraph already available before node ingestion. Compute exact-registration rank once, apply final category during borrowed node serialization before node insert/commitment; eliminate post-insert N+1 and second owner commitment computation. Remove entrypoint_base from persisted nodes.details, but do not lose intrinsic main/test on delta reclassification: establish from persisted local typed facts or another admitted deterministic existing authority; verify actual availability before implementation, including staged/legacy/cache paths. Rank test > main > http_route > mcp_tool > cli_command > event_handler; only exact registration edges. Add/remove last link, unchanged target owners, fallback, cold/delta roots and exact details bytes must agree. Removal of base is user-requested observable details change; byte identity means cold vs delta of new contract, not old bytes with base. 2) PYTHON: eliminate per-class and whole-root duplicate binding scans via existing main-walk BindingWriteCollector, including active ClassMethodRegistration when RouteContext otherwise inactive; preserve lexical scopes, rebinding counts, aliases and shadowing. Avoid source.contains(''class'') summary false positives with conservative main-walk detection; guard ORM deferred events without superclasses while retaining declaration/registration/projection reasons. Cover imported aliases, local inheritance, rebinding, ORM default/no-base, dirty delta. 3) SQL: conservative allocation-free bounded-keyword prefilter before tokenizer; avoid prose substrings but never miss recognized SQL after BEGIN/SET, CTE WITH, comments, quoted strings, multistatements, identifiers and literals containing semicolons. Validate Python/Rust/TS embedded producer and SQL extraction; no false negatives. 4) INGEST: borrow return projection in NavigationDetails and serialize once, preserve pre-existing key precedence, non-object behavior and output bytes/cold-delta commitments; remove repeated ordinary type tokens; role-prefixed FTS tokens support same-name collision probe in search.rs, so preserve or replace equivalently, including Unicode, nesting, pagination/ranking. Distinguish task demand removing redundant token copies from removing necessary role discriminators. Rebuild/cache invalidate deterministically if postings or fact semantics change; preserve old-index rejection. 5) TOPOLOGY: replace per-edge JSON quoted dirname with bounded per-distinct-path parent derivation; group topology in SQLite and page aggregate results, not Rust BTreeMap of all groups; preserve role precedence, exact counts, union of incoming/outgoing neighbors, tie-breaking dominant kind, totals/order/generation, Unicode/path delimiters, budgets and CLI/MCP parity. SQLite temporary grouping may still use memory/disk; page-sized Rust materialization alone does not prove total memory bound. Interdependencies: shared ingestion and serialized details feed search, commitments, topology and delta, so integrate in one stable candidate; do not rewrite Cargo.toml/build.rs, protected authority, other task receipts, or discard WIP. Rev10 adds exact live owners and tests. Baseline green seam cargo test --test mcp context::stdio_compact_navigation_preserves_symbol_and_page_contracts: exit 0, actual failing real cold benchmark #1331. User direct-proof override #1334 authorizes performance-only entrypoint, not a claim that remaining functional behavior is proven; add production coverage and real observed failure wherever behavior differs, otherwise green preservation plus structural proof of each repair; no invented red. Candidate must rerun user-approved 5-pair benchmark and prove median not slower, then affected targets, strict Clippy and independent review.'
+    - 'decisions: RESOLUTION #1337: user/coordinator authorized temporary consistent HEAD source/tests baseline, while preserving WIP and leaving index, Cargo, AGENTS and docs alone. Saved 10 changed files byte/mode manifest /tmp/ls002-baseline-backup-z6r3i3bv/manifest.json; indexed actual HEAD baseline, ran cargo test --test mcp context::stdio_compact_navigation_preserves_symbol_and_page_contracts exit 0; submitted rev10 synthesis and contract using honest direct-proof exit 0 per #1334 (benchmark #1331 still red). Both gates accepted, then restored all 10 WIP files and verified SHA-256/mode equality; refreshed current graph exit 0. Gate snapshot represents temporary baseline, not WIP/candidate. User-authorized direct proof is limited to cold entrypoint performance; other four findings require full independent evidence specified in #1336, build/review and final benchmark remain outstanding. No fake nodes, index mutation or discarded edits.'
+    - |-
+      decisions: COORDINATOR AUTHORITY RESOLUTION for finding #1342:
+      1. INV-BOUNDARY-SLICE-COMPACTNESS: The term O(E_dir) in milestone invariant specifies that directory boundary slices operate exclusively on the local incident subgraph (incident edges, directory paths, and directory nodes) directly from indexed SQLite tables in O(P_dir + V_dir + E_incident) without loading full source bodies or scanning unrelated repository files. This satisfies the compact 1-hop boundary contract invariant.
+      2. Authority reconciliation for milestone frontmatter line 31 will be archived and finalized in the milestone handoff document upon milestone completion as required by milestone lifecycle rules.
+      3. Reviewer finding #1342 regarding administration/complexity authority gap is resolved under coordinator authority.
     review_summary:
       decision: pass
       contours:

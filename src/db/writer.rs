@@ -18,7 +18,6 @@ use rusqlite::{
 use serde_json::{json, Value};
 use std::{
     collections::BTreeMap,
-    fmt::Write as _,
     fs::File,
     io::{Read, Seek, SeekFrom},
     path::Path,
@@ -112,21 +111,28 @@ fn prepare_catalog_rows(
         .nodes
         .iter()
         .map(|node| {
-            let details = node.details.as_object().map_or(Value::Null, |details| {
-                let details = details
-                    .iter()
-                    .filter(|(key, value)| {
+            let details = match &node.details {
+                Value::Object(details) if !details.is_empty() => {
+                    let has_retained = details.iter().any(|(key, value)| {
                         (key.as_str() == "default_export" && *value == true)
                             || matches!(key.as_str(), "doc" | "docstring")
-                    })
-                    .map(|(key, value)| (key.clone(), value.clone()))
-                    .collect::<serde_json::Map<_, _>>();
-                if details.is_empty() {
-                    Value::Null
-                } else {
-                    Value::Object(details)
+                    });
+                    if has_retained {
+                        let details = details
+                            .iter()
+                            .filter(|(key, value)| {
+                                (key.as_str() == "default_export" && *value == true)
+                                    || matches!(key.as_str(), "doc" | "docstring")
+                            })
+                            .map(|(key, value)| (key.clone(), value.clone()))
+                            .collect::<serde_json::Map<_, _>>();
+                        Value::Object(details)
+                    } else {
+                        Value::Null
+                    }
                 }
-            });
+                _ => Value::Null,
+            };
             Node {
                 native_semantic: None,
                 id: node.id.clone(),
@@ -363,6 +369,7 @@ pub(crate) fn populate_owned(
                 Ok((path.to_owned(), catalog_payload(path, &encoded_facts)?))
             })
             .collect::<Result<BTreeMap<_, _>>>()?;
+        let graph_ranks = entrypoints::cold_ranks(graph, &facts);
         let file_timings = if streamed_payloads {
             persist_catalog_files(
                 &tx,
@@ -451,10 +458,12 @@ pub(crate) fn populate_owned(
                     }
                     Ok(loaded)
                 },
+                &graph_ranks,
             )?
         } else {
-            persist_files(&tx, &mut path_cache, entries, &facts, true)?
+            persist_files_with_ranks(&tx, &mut path_cache, entries, &facts, Some(&graph_ranks))?
         };
+        drop(graph_ranks);
         logical_commitments.insert("nodes", file_timings.node_leaves);
         drop(composed_sources);
         let node_id = file_timings.node_id;
@@ -548,12 +557,6 @@ pub(crate) fn populate_owned(
                 Ok((domains?, stored?, persist_ms, projection_ms))
             })?;
         seal_projection_ms += graph_projection_ms;
-        tx.execute_batch(
-            "INSERT INTO edge_endpoint_paths(path,direction,src_hash,kind,dst_hash)
-             SELECT p.path,0,e.src_hash,e.kind,e.dst_hash FROM edges e JOIN nodes n ON n.node_hash=e.src_hash JOIN path_dictionary p ON p.path_id=n.path_id
-             UNION ALL
-             SELECT p.path,1,e.src_hash,e.kind,e.dst_hash FROM edges e JOIN nodes n ON n.node_hash=e.dst_hash JOIN path_dictionary p ON p.path_id=n.path_id"
-        )?;
         if streamed_payloads {
             for (domain, leaves) in logical_commitments {
                 domains.insert(domain, leaves);
@@ -567,19 +570,6 @@ pub(crate) fn populate_owned(
             );
         }
         let mut logical_commitments = domains;
-
-        entrypoints::prepare_candidates(&tx)?;
-        entrypoints::add_cold_candidates(&tx)?;
-        let entrypoint_owners = entrypoints::project(&tx, true)?;
-        if !entrypoint_owners.is_empty() {
-            logical_commitments
-                .get_mut("nodes")
-                .context("missing node commitments")?
-                .extend(commitments::node_leaves_for_owners(
-                    &tx,
-                    &entrypoint_owners,
-                )?);
-        }
 
         let rows_ms = writing.elapsed().as_secs_f64() * 1000.;
         tx.commit()?;
@@ -606,7 +596,6 @@ pub(crate) fn populate_owned(
             Ok(started.elapsed().as_secs_f64() * 1000.)
         };
         let indexes_ms = index_candidate(conn)?;
-        commitments::verify_endpoint_projection(conn, false)?;
         let t_fts = Instant::now();
         let fts_digests = commitments::fts_commitment_digests(conn)?;
         let seal_fts_ms = t_fts.elapsed().as_secs_f64() * 1000.;

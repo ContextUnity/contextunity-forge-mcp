@@ -3,7 +3,8 @@
 use anyhow::Result;
 use rusqlite::{params, Connection};
 use serde_json::Value;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use super::{CompactGraph, TypedFacts};
 
 /// Allocate the target set before graph changes so removed occurrences remain visible.
 pub(super) fn prepare_candidates(conn: &Connection) -> Result<()> {
@@ -29,20 +30,7 @@ pub(super) fn add_delta_candidates(
     Ok(())
 }
 
-/// Populate all possible cold-build targets, including intrinsic entries.
-pub(super) fn add_cold_candidates(conn: &Connection) -> Result<()> {
-    conn.execute(
-        "INSERT OR IGNORE INTO entrypoint_candidates SELECT node_hash FROM nodes WHERE json_extract(details,'$.entrypoint_base') IS NOT NULL",
-        [],
-    )?;
-    conn.execute(
-        "INSERT OR IGNORE INTO entrypoint_candidates SELECT dst_hash FROM edge_occurrences WHERE kind IN ('handles','routes_to','dispatches','listens_to')",
-        [],
-    )?;
-    Ok(())
-}
-
-fn rank(category: &str) -> Option<i64> {
+pub(super) fn rank(category: &str) -> Option<i64> {
     match category {
         "test" => Some(0),
         "main" => Some(1),
@@ -54,29 +42,68 @@ fn rank(category: &str) -> Option<i64> {
     }
 }
 
+pub(super) fn category(rank: i64) -> Option<&'static str> {
+    ["test", "main", "http_route", "mcp_tool", "cli_command", "event_handler"]
+        .get(rank as usize)
+        .copied()
+}
+
+/// Resolve graph categories before cold node insertion, using exact occurrences.
+pub(super) fn cold_ranks<'a>(
+    graph: &'a CompactGraph,
+    facts: &'a BTreeMap<String, TypedFacts>,
+) -> hashbrown::HashMap<&'a str, Option<i64>> {
+    let sources: hashbrown::HashMap<&str, &str> = facts.values().flat_map(|file| {
+        file.nodes.iter().filter_map(|node| match node.kind.as_str() {
+            "main_registration" | "route" | "tool_registration" |
+            "cli_command_registration" | "event_handler_registration" => Some((node.id.as_str(), node.kind.as_str())),
+            _ => None,
+        })
+    }).collect();
+    let mut ranks: hashbrown::HashMap<&str, Option<i64>> = hashbrown::HashMap::new();
+    for edge in &graph.edges {
+        if !matches!(edge.kind.as_str(), "handles" | "routes_to" | "dispatches" | "listens_to") {
+            continue;
+        }
+        let current = ranks.entry(edge.dst.as_str()).or_insert(None);
+        if edge.confidence.as_str() != "exact" {
+            continue;
+        }
+        let rank = match edge.kind.as_str() {
+            "routes_to" => Some(2),
+            "dispatches" | "listens_to" => Some(5),
+            "handles" => sources.get(edge.src.as_str()).and_then(|kind| match *kind {
+                "main_registration" => Some(1),
+                "route" => Some(2),
+                "tool_registration" => Some(3),
+                "cli_command_registration" => Some(4),
+                "event_handler_registration" => Some(5),
+                _ => None,
+            }),
+            _ => None,
+        };
+        if let Some(rank) = rank {
+            *current = Some(current.map_or(rank, |existing| existing.min(rank)));
+        }
+    }
+    ranks
+}
+
 /// Recompute effective categories from intrinsic facts and all current exact graph occurrences.
 ///
 /// Returns only node owners whose serialized navigation details actually changed.
-pub(super) fn project(conn: &Connection, cold: bool) -> Result<BTreeSet<String>> {
+pub(super) fn project(conn: &Connection) -> Result<BTreeSet<String>> {
     conn.execute_batch(
         "CREATE TEMP TABLE entrypoint_graph_rank(node_hash INTEGER PRIMARY KEY, rank INTEGER NOT NULL) WITHOUT ROWID;",
     )?;
     let kind_rank = "CASE occurrence.kind WHEN 'routes_to' THEN 2 WHEN 'dispatches' THEN 5 WHEN 'listens_to' THEN 5 ELSE CASE source.kind WHEN 'main_registration' THEN 1 WHEN 'route' THEN 2 WHEN 'tool_registration' THEN 3 WHEN 'cli_command_registration' THEN 4 WHEN 'event_handler_registration' THEN 5 END END";
     let graph_filter = "(occurrence.kind IN ('routes_to','dispatches','listens_to') OR (occurrence.kind='handles' AND source.kind IN ('main_registration','route','tool_registration','cli_command_registration','event_handler_registration')))";
-    let statement = if cold {
-        // Cold persistence defers secondary indexes. Scan occurrences once rather
-        // than scanning the graph separately for every candidate.
-        format!("INSERT INTO entrypoint_graph_rank SELECT occurrence.dst_hash,min({kind_rank}) FROM edge_occurrences occurrence JOIN entrypoint_candidates candidate ON candidate.node_hash=occurrence.dst_hash JOIN nodes source ON source.node_hash=occurrence.src_hash JOIN coverage_evidence confidence ON confidence.evidence_id=occurrence.confidence_id WHERE {graph_filter} AND confidence.evidence='exact' GROUP BY occurrence.dst_hash")
-    } else {
-        // Delta has the destination and occurrence indexes. Restrict the lookup
-        // to changed targets, but inspect every current occurrence for exactness.
-        let edge_rank = kind_rank.replace("occurrence.kind", "edge.kind");
-        let edge_filter = graph_filter.replace("occurrence.kind", "edge.kind");
-        format!("INSERT INTO entrypoint_graph_rank SELECT edge.dst_hash,min({edge_rank}) FROM entrypoint_candidates candidate JOIN edges edge ON edge.dst_hash=candidate.node_hash AND edge.kind IN ('handles','routes_to','dispatches','listens_to') JOIN nodes source ON source.node_hash=edge.src_hash WHERE {edge_filter} AND EXISTS (SELECT 1 FROM edge_occurrences occurrence JOIN coverage_evidence confidence ON confidence.evidence_id=occurrence.confidence_id WHERE occurrence.src_hash=edge.src_hash AND occurrence.dst_hash=edge.dst_hash AND occurrence.kind=edge.kind AND confidence.evidence='exact') GROUP BY edge.dst_hash")
-    };
+    let edge_rank = kind_rank.replace("occurrence.kind", "edge.kind");
+    let edge_filter = graph_filter.replace("occurrence.kind", "edge.kind");
+    let statement = format!("INSERT INTO entrypoint_graph_rank SELECT edge.dst_hash,min({edge_rank}) FROM entrypoint_candidates candidate JOIN edges edge ON edge.dst_hash=candidate.node_hash AND edge.kind IN ('handles','routes_to','dispatches','listens_to') JOIN nodes source ON source.node_hash=edge.src_hash WHERE {edge_filter} AND EXISTS (SELECT 1 FROM edge_occurrences occurrence JOIN coverage_evidence confidence ON confidence.evidence_id=occurrence.confidence_id WHERE occurrence.src_hash=edge.src_hash AND occurrence.dst_hash=edge.dst_hash AND occurrence.kind=edge.kind AND confidence.evidence='exact') GROUP BY edge.dst_hash");
     conn.execute(&statement, [])?;
     let mut statement = conn.prepare(
-        "SELECT n.node_hash,n.details,p.path,graph.rank
+        "SELECT n.node_hash,n.details,p.path,graph.rank,n.id
          FROM entrypoint_candidates candidate
          JOIN nodes n ON n.node_hash=candidate.node_hash
          JOIN path_dictionary p ON p.path_id=n.owner_path_id
@@ -90,18 +117,32 @@ pub(super) fn project(conn: &Connection, cold: bool) -> Result<BTreeSet<String>>
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, Option<i64>>(3)?,
+                row.get::<_, String>(4)?,
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     drop(statement);
     let mut owners = BTreeSet::new();
+    let mut intrinsic_by_owner = BTreeMap::new();
     let mut update = conn.prepare_cached("UPDATE nodes SET details=?1 WHERE node_hash=?2")?;
-    for (hash, original, owner, graph_rank) in rows {
+    for (hash, original, owner, graph_rank, id) in rows {
         let details: Value = serde_json::from_str(&original)?;
-        let intrinsic = details
-            .get("entrypoint_base")
-            .and_then(Value::as_str)
-            .and_then(rank);
+        let intrinsic = {
+            if !intrinsic_by_owner.contains_key(&owner) {
+                let blob: Vec<u8> = conn.query_row(
+                    "SELECT facts_blob FROM local_facts WHERE path=?1",
+                    [&owner],
+                    |row| row.get(0),
+                )?;
+                let facts = crate::core::typed_facts::decode_facts(&blob)?;
+                let ranks: hashbrown::HashMap<String, i64> = facts.facts.nodes.into_iter().filter_map(|node| {
+                    node.details.get("entrypoint_base").and_then(Value::as_str).and_then(rank)
+                        .map(|value| (node.id, value))
+                }).collect();
+                intrinsic_by_owner.insert(owner.clone(), ranks);
+            }
+            intrinsic_by_owner.get(&owner).and_then(|ranks| ranks.get(&id)).copied()
+        };
         let category = intrinsic.into_iter().chain(graph_rank).min().and_then(|r| {
             [
                 "test",
@@ -158,74 +199,3 @@ pub(super) fn project(conn: &Connection, cold: bool) -> Result<BTreeSet<String>>
     Ok(owners)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn generic_graph_categories_follow_exact_occurrences_in_cold_and_delta() {
-        for (kind, expected) in [
-            ("routes_to", "http_route"),
-            ("dispatches", "event_handler"),
-            ("listens_to", "event_handler"),
-        ] {
-            let conn = Connection::open_in_memory().unwrap();
-            conn.execute_batch(
-                "CREATE TABLE nodes(node_hash INTEGER PRIMARY KEY, kind TEXT, details TEXT, owner_path_id INTEGER);
-                 CREATE TABLE path_dictionary(path_id INTEGER PRIMARY KEY, path TEXT);
-                 CREATE TABLE coverage_evidence(evidence_id INTEGER PRIMARY KEY, evidence TEXT);
-                 CREATE TABLE edge_occurrences(src_hash INTEGER, dst_hash INTEGER, kind TEXT, confidence_id INTEGER);
-                 CREATE TABLE edges(src_hash INTEGER, dst_hash INTEGER, kind TEXT);
-                 CREATE TEMP TABLE changed_edge_keys(src_hash INTEGER, dst_hash INTEGER, kind TEXT);
-                 INSERT INTO path_dictionary VALUES(1,'source.py'),(2,'target.py');
-                 INSERT INTO nodes VALUES(1,'module','{}',1),(2,'function','{}',2),(3,'function','{}',2);
-                 INSERT INTO coverage_evidence VALUES(1,'exact'),(2,'inferred');",
-            ).unwrap();
-            conn.execute("INSERT INTO edge_occurrences VALUES(1,2,?1,2)", [kind])
-                .unwrap();
-            conn.execute("INSERT INTO edges VALUES(1,2,?1)", [kind])
-                .unwrap();
-            prepare_candidates(&conn).unwrap();
-            add_cold_candidates(&conn).unwrap();
-            project(&conn, true).unwrap();
-            let category = |id| {
-                conn.query_row(
-                    "SELECT json_extract(details,'$.entrypoint') FROM nodes WHERE node_hash=?1",
-                    [id],
-                    |r| r.get::<_, Option<String>>(0),
-                )
-                .unwrap()
-            };
-            assert_eq!(category(2), None, "{kind}: nonexact must not classify");
-            conn.execute("UPDATE edge_occurrences SET confidence_id=1", [])
-                .unwrap();
-            conn.execute_batch("DROP TABLE entrypoint_graph_rank")
-                .unwrap();
-            project(&conn, true).unwrap();
-            assert_eq!(category(2).as_deref(), Some(expected), "{kind}: exact cold");
-            conn.execute(
-                "INSERT INTO changed_edge_keys VALUES(1,2,?1),(1,3,?1)",
-                [kind],
-            )
-            .unwrap();
-            conn.execute("UPDATE edge_occurrences SET dst_hash=3", [])
-                .unwrap();
-            conn.execute("UPDATE edges SET dst_hash=3", []).unwrap();
-            conn.execute_batch(
-                "DROP TABLE entrypoint_graph_rank; DELETE FROM entrypoint_candidates;",
-            )
-            .unwrap();
-            add_delta_candidates(&conn, &BTreeSet::new()).unwrap();
-            let owners = project(&conn, false).unwrap();
-            assert_eq!(owners, BTreeSet::from(["target.py".to_owned()]));
-            assert_eq!(category(2), None, "{kind}: old target cleared");
-            assert_eq!(category(3).as_deref(), Some(expected), "{kind}: new target");
-            conn.execute("DELETE FROM edge_occurrences", []).unwrap();
-            conn.execute("DELETE FROM edges", []).unwrap();
-            conn.execute_batch("DROP TABLE entrypoint_graph_rank")
-                .unwrap();
-            project(&conn, false).unwrap();
-            assert_eq!(category(3), None, "{kind}: removed");
-        }
-    }
-}

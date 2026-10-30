@@ -43,7 +43,7 @@ struct Token<'a> {
 
 fn tokens(source: &str) -> Vec<Token<'_>> {
     let bytes = source.as_bytes();
-    let mut output = Vec::new();
+    let mut output = Vec::with_capacity((bytes.len() / 8).min(1024));
     let (mut i, mut line) = (0, 1);
     while i < bytes.len() {
         if bytes[i].is_ascii_whitespace() {
@@ -278,10 +278,15 @@ fn cte_events(
 
 fn table_uses(tokens: &[Token<'_>]) -> Vec<(String, &'static str, usize)> {
     let mut uses = Vec::new();
-    let Some(events) = cte_events(tokens) else {
-        return uses;
+    let has_with = tokens.iter().any(|t| keyword(Some(t), "WITH"));
+    let (events, mut ctes) = if has_with {
+        let Some(events) = cte_events(tokens) else {
+            return uses;
+        };
+        (Some(events), std::collections::HashMap::<String, usize>::new())
+    } else {
+        (None, std::collections::HashMap::new())
     };
-    let mut ctes = std::collections::HashMap::<String, usize>::new();
     let mut operation = 0;
     if keyword(tokens.first(), "WITH") {
         let mut nesting = 0usize;
@@ -328,13 +333,15 @@ fn table_uses(tokens: &[Token<'_>]) -> Vec<(String, &'static str, usize)> {
         }
     }
     for (i, token) in tokens.iter().enumerate() {
-        if let Some(changes) = events.get(&i) {
-            for (key, add) in changes {
-                let count = ctes.entry(key.clone()).or_default();
-                if *add {
-                    *count += 1;
-                } else {
-                    *count = count.saturating_sub(1);
+        if let Some(events) = &events {
+            if let Some(changes) = events.get(&i) {
+                for (key, add) in changes {
+                    let count = ctes.entry(key.clone()).or_default();
+                    if *add {
+                        *count += 1;
+                    } else {
+                        *count = count.saturating_sub(1);
+                    }
                 }
             }
         }
@@ -344,10 +351,11 @@ fn table_uses(tokens: &[Token<'_>]) -> Vec<(String, &'static str, usize)> {
             continue;
         }
         if token.text == ")" {
-            if depth > 0 {
-                depth -= 1;
-                relations.pop();
+            if depth == 0 {
+                return Vec::new();
             }
+            depth -= 1;
+            relations.pop();
             continue;
         }
         let from = keyword(Some(token), "FROM");
@@ -392,33 +400,24 @@ fn table_uses(tokens: &[Token<'_>]) -> Vec<(String, &'static str, usize)> {
                 next += 1;
             }
             if let Some((name, _)) = name_at(tokens, next) {
-                let (key, _, qualified) = identifier_keys(&name);
-                if qualified || ctes.get(&key).copied().unwrap_or_default() == 0 {
+                if ctes.is_empty() || {
+                    let (key, _, qualified) = identifier_keys(&name);
+                    qualified || ctes.get(&key).copied().unwrap_or_default() == 0
+                } {
                     uses.push((name, kind, token.line));
                 }
             }
         }
+    }
+    if depth > 0 {
+        return Vec::new();
     }
     uses
 }
 
 /// Extract table names and relation kinds from an SQL statement.
 pub fn extract_embedded_sql_tables(literal: &str) -> Vec<(String, &'static str)> {
-    const EFFECTS: &[&[u8]] = &[
-        b"FROM",
-        b"JOIN",
-        b"INTO",
-        b"UPDATE",
-        b"REFERENCES",
-        b"CREATE",
-        b"ALTER",
-    ];
-    if !EFFECTS.iter().any(|effect| {
-        literal
-            .as_bytes()
-            .windows(effect.len())
-            .any(|window| window.eq_ignore_ascii_case(effect))
-    }) {
+    if literal.len() < 12 || !has_sql_statement(literal) {
         return Vec::new();
     }
     let tokens = tokens(literal);
@@ -460,6 +459,101 @@ pub fn extract_embedded_sql_tables(literal: &str) -> Vec<(String, &'static str)>
     output
 }
 
+// Match the statement boundaries used by `tokens`, without allocating tokens for
+// ordinary prose. Comments and quoted values can contain semicolons.
+fn has_sql_statement(source: &str) -> bool {
+    let bytes = source.as_bytes();
+    let mut i = 0;
+    let mut first = true;
+    while i < bytes.len() {
+        let was_first = first;
+        if bytes[i].is_ascii_whitespace() {
+            i += 1;
+        } else if bytes[i..].starts_with(b"--") {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+        } else if bytes[i..].starts_with(b"/*") {
+            i += 2;
+            while i < bytes.len() && !bytes[i..].starts_with(b"*/") {
+                i += 1;
+            }
+            i = (i + 2).min(bytes.len());
+        } else if bytes[i] == b';' {
+            first = true;
+            i += 1;
+        } else if matches!(bytes[i], b'\'' | b'"' | b'`' | b'[') {
+            let close = if bytes[i] == b'[' { b']' } else { bytes[i] };
+            i += 1;
+            while i < bytes.len() {
+                if bytes[i] == close {
+                    i += 1;
+                    if i < bytes.len() && bytes[i] == close {
+                        i += 1;
+                    } else {
+                        break;
+                    }
+                } else {
+                    i += 1;
+                }
+            }
+            first = false;
+        } else if bytes[i] == b'$' {
+            let start = i;
+            i += 1;
+            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                i += 1;
+            }
+            if i < bytes.len() && bytes[i] == b'$' {
+                i += 1;
+                let delimiter = &bytes[start..i];
+                while i < bytes.len() && !bytes[i..].starts_with(delimiter) {
+                    i += 1;
+                }
+                i = (i + delimiter.len()).min(bytes.len());
+            } else {
+                while i < bytes.len()
+                    && (bytes[i].is_ascii_alphanumeric() || matches!(bytes[i], b'_' | b'$'))
+                {
+                    i += 1;
+                }
+            }
+            first = false;
+        } else if bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' {
+            let start = i;
+            i += 1;
+            while i < bytes.len()
+                && (bytes[i].is_ascii_alphanumeric() || matches!(bytes[i], b'_' | b'$'))
+            {
+                i += 1;
+            }
+            if first
+                && [
+                    b"SELECT".as_slice(),
+                    b"WITH",
+                    b"INSERT",
+                    b"UPDATE",
+                    b"DELETE",
+                    b"CREATE",
+                    b"ALTER",
+                ]
+                .iter()
+                .any(|word| bytes[start..i].eq_ignore_ascii_case(word))
+            {
+                return true;
+            }
+            first = false;
+        } else {
+            first = false;
+            i += 1;
+        }
+        if was_first && !first && !bytes[i..].contains(&b';') {
+            return false;
+        }
+    }
+    false
+}
+
 pub(super) fn extract_literal(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
     if !matches!(
         ctx.node.kind(),
@@ -468,6 +562,9 @@ pub(super) fn extract_literal(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         return;
     }
     let raw = text(ctx.node, ctx.source);
+    if raw.len() < 14 {
+        return;
+    }
     let Some(start) = raw.find(['\'', '"', '`']) else {
         return;
     };
@@ -590,6 +687,8 @@ fn reference(facts: &mut Facts, owner: &str, name: String, kind: &str, line: usi
 }
 
 fn extract_schema(path: &str, source: &str, facts: &mut Facts) {
+    let is_test = crate::core::models::is_test(path);
+    let module_owner = format!("module:{path}");
     let tokens = tokens(source);
     for statement in tokens.split(|t| t.text == ";").filter(|s| !s.is_empty()) {
         let mut pos = 0;
@@ -673,14 +772,14 @@ fn extract_schema(path: &str, source: &str, facts: &mut Facts) {
                 path: path.into(),
                 line,
                 end_line: statement.last().map_or(line, |t| t.line),
-                is_test: crate::core::models::is_test(path),
+                is_test,
                 language: "sql".into(),
                 generated: false,
                 details: serde_json::json!({"columns": columns, "primary_key": primary}),
                 native_semantic: None,
             });
             facts.edges.push(Edge {
-                src: format!("module:{path}"),
+                src: module_owner.clone(),
                 dst: id.clone(),
                 kind: "contains".into(),
                 path: path.into(),
@@ -698,7 +797,7 @@ fn extract_schema(path: &str, source: &str, facts: &mut Facts) {
                     path: path.into(),
                     line: column_line,
                     end_line: column_line,
-                    is_test: crate::core::models::is_test(path),
+                    is_test,
                     language: "sql".into(),
                     generated: false,
                     details: serde_json::Value::Null,
@@ -718,12 +817,11 @@ fn extract_schema(path: &str, source: &str, facts: &mut Facts) {
                 reference(facts, &id, name, relation, line);
             }
         } else {
-            let owner = format!("module:{path}");
             if keyword(statement.first(), "ALTER") && keyword(statement.get(1), "TABLE") {
                 if let Some((name, after)) = name_at(statement, 2) {
                     reference(
                         facts,
-                        &owner,
+                        &module_owner,
                         name.clone(),
                         "mutates_table",
                         statement[0].line,
@@ -746,14 +844,14 @@ fn extract_schema(path: &str, source: &str, facts: &mut Facts) {
                                     path: path.into(),
                                     line,
                                     end_line: line,
-                                    is_test: crate::core::models::is_test(path),
+                                    is_test,
                                     language: "sql".into(),
                                     generated: false,
                                     details: serde_json::Value::Null,
                                     native_semantic: None,
                                 });
                                 facts.edges.push(Edge {
-                                    src: owner.clone(),
+                                    src: module_owner.clone(),
                                     dst: column_id,
                                     kind: "contains".into(),
                                     path: path.into(),
@@ -767,7 +865,7 @@ fn extract_schema(path: &str, source: &str, facts: &mut Facts) {
                 }
             }
             for (name, relation, line) in table_uses(statement) {
-                reference(facts, &owner, name, relation, line);
+                reference(facts, &module_owner, name, relation, line);
             }
         }
     }

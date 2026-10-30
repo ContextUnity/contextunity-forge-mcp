@@ -49,7 +49,17 @@ pub(super) fn persist_files(
     facts: &BTreeMap<String, TypedFacts>,
     bulk_search: bool,
 ) -> Result<FilePersistenceTimings> {
-    persist_files_impl(tx, path_cache, entries, facts, bulk_search, None)
+    persist_files_impl(tx, path_cache, entries, facts, bulk_search, None, None)
+}
+
+pub(super) fn persist_files_with_ranks(
+    tx: &Connection,
+    path_cache: &mut PathDictionaryCache,
+    entries: &[FileEntry],
+    facts: &BTreeMap<String, TypedFacts>,
+    graph_ranks: Option<&hashbrown::HashMap<&str, Option<i64>>>,
+) -> Result<FilePersistenceTimings> {
+    persist_files_impl(tx, path_cache, entries, facts, true, None, graph_ranks)
 }
 
 pub(super) struct LoadedCatalogFile {
@@ -71,8 +81,9 @@ pub(super) fn persist_catalog_files(
     entries: &[FileEntry],
     facts: &BTreeMap<String, TypedFacts>,
     loader: ChunkLoader<'_>,
+    graph_ranks: &hashbrown::HashMap<&str, Option<i64>>,
 ) -> Result<FilePersistenceTimings> {
-    persist_files_impl(tx, path_cache, entries, facts, true, Some(loader))
+    persist_files_impl(tx, path_cache, entries, facts, true, Some(loader), Some(graph_ranks))
 }
 
 fn persist_files_impl(
@@ -82,6 +93,7 @@ fn persist_files_impl(
     facts: &BTreeMap<String, TypedFacts>,
     bulk_search: bool,
     mut loader: Option<ChunkLoader<'_>>,
+    graph_ranks: Option<&hashbrown::HashMap<&str, Option<i64>>>,
 ) -> Result<FilePersistenceTimings> {
     let mut node_id: i64 = tx.query_row("SELECT coalesce(max(node_id),0)FROM nodes", [], |r| {
         r.get(0)
@@ -232,15 +244,15 @@ fn persist_files_impl(
                     .get(&file.path)
                     .context("missing navigation facts for node details")?;
                 let mut node_order = (0..f.nodes.len()).collect::<Vec<_>>();
-                node_order.par_sort_unstable_by(|left, right| {
-                    f.nodes[*left]
+                node_order.sort_unstable_by(|&left, &right| {
+                    f.nodes[left]
                         .id
-                        .cmp(&f.nodes[*right].id)
-                        .then_with(|| left.cmp(right))
+                        .cmp(&f.nodes[right].id)
+                        .then_with(|| left.cmp(&right))
                 });
                 node_order
-                    .par_iter()
-                    .map(|&node_index| -> Result<(usize, Vec<u8>)> {
+                    .into_iter()
+                    .map(|node_index| -> Result<(usize, Vec<u8>)> {
                         let n = &f.nodes[node_index];
                         let navigation_node = detail_facts
                             .nodes
@@ -248,22 +260,25 @@ fn persist_files_impl(
                             .filter(|node| node.id == n.id)
                             .or_else(|| detail_facts.nodes.iter().find(|node| node.id == n.id))
                             .context("staged node is missing matching navigation facts")?;
-                        let navigation =
-                            navigation_node.navigation_details_with_documentation(&n.details);
-                        let details = if let Some(return_type) =
+                        let return_type = if matches!(navigation_node.kind.as_str(), "function" | "method" | "constructor") {
                             declared_return_type(navigation_node, detail_facts)
-                        {
-                            let mut details = serde_json::to_value(navigation)?;
-                            if details.is_null() {
-                                details = Value::Object(Default::default());
-                            }
-                            if let Some(map) = details.as_object_mut() {
-                                map.insert("return_type".into(), Value::String(return_type));
-                            }
-                            serde_json::to_vec(&details)?
                         } else {
-                            serde_json::to_vec(&navigation)?
+                            None
                         };
+                        let entrypoint_base = navigation_node.details.get("entrypoint_base");
+                        let intrinsic = entrypoint_base
+                            .and_then(Value::as_str)
+                            .and_then(super::entrypoints::rank);
+                        let graph = graph_ranks.and_then(|ranks| ranks.get(n.id.as_str())).copied().flatten();
+                        let category = intrinsic.into_iter().chain(graph).min().and_then(super::entrypoints::category);
+                        let intrinsic_candidate = entrypoint_base
+                            .is_some_and(|value| !value.is_null() && !value.as_str().is_some_and(str::is_empty) && !value.as_array().is_some_and(Vec::is_empty));
+                        let clear_entrypoint = graph_ranks.is_some() && category.is_none()
+                            && (intrinsic_candidate || graph_ranks.is_some_and(|ranks| ranks.contains_key(n.id.as_str())));
+                        let navigation = navigation_node
+                            .navigation_details_with_documentation(&n.details)
+                            .persisted(return_type.as_deref(), category, clear_entrypoint);
+                        let details = serde_json::to_vec(&navigation)?;
                         Ok((node_index, details))
                     })
                     .collect::<Result<Vec<_>>>()
@@ -607,28 +622,36 @@ pub(super) fn write_node_search_text(search: &mut String, node: &Node, facts: &T
         .get("doc")
         .and_then(Value::as_str)
         .unwrap_or("");
-    if doc.is_empty() {
-        let _ = write!(search, "{} {} {}", node.name, node.qualname, node.path);
-    } else {
-        let _ = write!(
-            search,
-            "{} {} {} {}",
-            node.name, node.qualname, node.path, doc
-        );
+    search.reserve(node.name.len() + node.qualname.len() + node.path.len() + doc.len() + 16);
+    search.push_str(&node.name);
+    search.push(' ');
+    search.push_str(&node.qualname);
+    search.push(' ');
+    search.push_str(&node.path);
+    if !doc.is_empty() {
+        search.push(' ');
+        search.push_str(doc);
     }
-    for (name, ty) in node.parameter_types() {
-        if let Some(ty) = ty {
-            let _ = write!(search, " {name}:{ty} {ty}");
-            write_type_tokens(search, "forgetakes", ty);
+    if matches!(node.kind.as_str(), "function" | "method" | "constructor") {
+        for (name, ty) in node.parameter_types() {
+            if let Some(ty) = ty {
+                search.push(' ');
+                search.push_str(name);
+                search.push(':');
+                search.push_str(ty);
+                write_type_tokens(search, "forgetakes", ty);
+            }
         }
-    }
-    if let Some(ty) = declared_return_type(node, facts) {
-        let _ = write!(search, " returns:{ty} {ty}");
-        write_type_tokens(search, "forgereturns", &ty);
+        if let Some(ty) = declared_return_type(node, facts) {
+            search.push_str(" returns:");
+            search.push_str(&ty);
+            write_type_tokens(search, "forgereturns", &ty);
+        }
     }
     if let Some(decorators) = node.details.get("decorators").and_then(Value::as_array) {
         for decorator in decorators.iter().filter_map(Value::as_str) {
-            let _ = write!(search, " {decorator}");
+            search.push(' ');
+            search.push_str(decorator);
         }
     }
     if node.kind == "module" {
@@ -655,11 +678,13 @@ fn write_type_tokens(search: &mut String, prefix: &str, text: &str) {
         .split(|c: char| !c.is_alphanumeric())
         .filter(|s| !s.is_empty())
     {
-        let _ = write!(search, " {prefix}{token}");
+        search.push(' ');
+        search.push_str(prefix);
+        search.push_str(token);
     }
 }
 
-fn declared_return_type(node: &Node, facts: &TypedFacts) -> Option<String> {
+fn declared_return_type<'a>(node: &'a Node, facts: &TypedFacts) -> Option<Cow<'a, str>> {
     if let Some(signature) = node.details.get("signature").and_then(Value::as_str) {
         let mut depth = 0usize;
         for (offset, ch) in signature.char_indices() {
@@ -681,7 +706,7 @@ fn declared_return_type(node: &Node, facts: &TypedFacts) -> Option<String> {
                             .trim_end_matches(':')
                             .trim();
                         if !annotation.is_empty() {
-                            return Some(annotation.to_owned());
+                            return Some(Cow::Borrowed(annotation));
                         }
                     }
                     break;
@@ -696,7 +721,7 @@ fn declared_return_type(node: &Node, facts: &TypedFacts) -> Option<String> {
         .or(flow.async_return_type.as_ref())?;
     let mut output = String::new();
     write_return_type(&mut output, ty);
-    (!output.is_empty()).then_some(output)
+    (!output.is_empty()).then_some(Cow::Owned(output))
 }
 
 fn write_return_type(output: &mut String, ty: &crate::core::semantic::TypeExpr) {

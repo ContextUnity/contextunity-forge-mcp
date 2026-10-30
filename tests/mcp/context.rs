@@ -976,6 +976,7 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
         let cold = routes.build_to(routes.path(".forge/cold.sqlite"));
         assert_eq!(delta["output_root"], cold["output_root"]);
         let conn = routes.open();
+        let cold_conn = rusqlite::Connection::open(routes.path(".forge/cold.sqlite")).unwrap();
         contextunity_forge_mcp::core::commitments::verify(&conn).unwrap();
         for (name, expected) in [("first", expected_first), ("second", expected_second)] {
             let actual: Option<String> = conn.query_row(
@@ -983,7 +984,41 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
                 [name], |row| row.get(0),
             ).unwrap();
             assert_eq!(actual.as_deref(), expected, "{name}: {registrations}");
+            let details = |db: &rusqlite::Connection| -> String {
+                db.query_row(
+                    "SELECT details FROM nodes WHERE name=?1 AND kind='function'",
+                    [name],
+                    |row| row.get(0),
+                )
+                .unwrap()
+            };
+            assert_eq!(details(&conn), details(&cold_conn), "{name}: {registrations}");
         }
+    }
+
+    // An intrinsic test remains a test when a route targets it and when that
+    // registration is removed, even though the target file is unchanged.
+    let intrinsic = Workspace::new();
+    intrinsic.write("requirements.txt", "django\n");
+    intrinsic.write("test_views.py", "def test_handler(request: str) -> str:\n    return request\n");
+    intrinsic.write("urls.py", "from django.urls import path\nfrom test_views import test_handler\nurlpatterns = []\n");
+    intrinsic.build();
+    for registration in ["path('item/', test_handler)", ""] {
+        intrinsic.write("urls.py", &format!("from django.urls import path\nfrom test_views import test_handler\nurlpatterns = [{registration}]\n"));
+        let delta = intrinsic.delta(&["urls.py"]);
+        let cold = intrinsic.build_to(intrinsic.path(".forge/cold.sqlite"));
+        assert_eq!(delta["output_root"], cold["output_root"]);
+        let conn = intrinsic.open();
+        let cold_conn = rusqlite::Connection::open(intrinsic.path(".forge/cold.sqlite")).unwrap();
+        let details = |db: &rusqlite::Connection| -> String {
+            db.query_row("SELECT details FROM nodes WHERE name='test_handler' AND kind='function'", [], |row| row.get(0)).unwrap()
+        };
+        let serialized = details(&conn);
+        assert_eq!(serialized, details(&cold_conn));
+        let value: Value = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(value["entrypoint"], "test");
+        assert!(value.get("entrypoint_base").is_none());
+        assert_eq!(value["return_type"], "str");
     }
 
     let scripts = Workspace::new();
@@ -1013,6 +1048,24 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
         }
     }
 
+    let command_scope = Workspace::new();
+    command_scope.write("requirements.txt", "django\n");
+    let valid_command = "from unrelated import BaseCommand as Unrelated\nfrom django.core.management.base import BaseCommand as Parent, BaseCommand as OtherParent\nclass Command(Parent):\n    def handle(self): pass\n";
+    let wildcard_command = "from django.core.management.base import BaseCommand as Parent\nfrom unknown import *\nclass Command(Parent):\n    def handle(self): pass\n";
+    command_scope.write("command.py", valid_command);
+    command_scope.write("wildcard_command.py", wildcard_command);
+    command_scope.build();
+    for (source, expected) in [(valid_command, 1), (wildcard_command, 0), (valid_command, 1)] {
+        command_scope.write("command.py", source);
+        command_scope.delta(&["command.py"]);
+        let db = command_scope.open();
+        let count = |path: &str| -> i64 {
+            db.query_row("SELECT count(*) FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path=?1 AND n.kind='cli_command_registration'", [path], |row| row.get(0)).unwrap()
+        };
+        assert_eq!(count("command.py"), expected);
+        assert_eq!(count("wildcard_command.py"), 0);
+    }
+
     let roots = Workspace::new();
     roots.write(
         "src/main.rs",
@@ -1033,7 +1086,7 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
     roots.write("src/clap_local.rs", "mod clap {}\nuse clap::{Parser, Subcommand};\n#[derive(Parser)]\nstruct Cli { #[command(subcommand)] command: Commands }\n#[derive(Subcommand)]\nenum Commands { Run }\nfn local_job() {}\nfn dispatch() { let cli = Cli::parse(); match cli.command { Commands::Run => local_job() } }\n");
     roots.write("src/clap_override.rs", "use clap::{Parser, Subcommand};\n#[derive(Parser)]\nstruct Cli { #[command(subcommand)] command: Commands }\n#[derive(Subcommand)]\nenum Commands { Run }\nimpl Cli { fn parse() -> Self { todo!() } }\nfn override_job() {}\nfn dispatch() { let cli = Cli::parse(); match cli.command { Commands::Run => override_job() } }\n");
     roots.write("pyproject.toml", "[project]\nname = 'entry-fixture'\nversion = '0.1.0'\n[project.scripts]\nfixture = 'package:script_main'\n");
-    roots.write("package.py", "def script_main(): pass\ndef guarded_main(): pass\ndef not_guarded(): pass\nif __name__ == '__main__':\n    guarded_main()\nif __name__ != '__main__':\n    not_guarded()\n");
+    roots.write("package.py", "from fastapi import FastAPI\napp = FastAPI()\n@app.get('/other')\ndef other_route(): pass\ndef script_main(): pass\ndef guarded_main(): pass\ndef not_guarded(): pass\nif __name__ == '__main__':\n    guarded_main()\nif __name__ != '__main__':\n    not_guarded()\n");
     roots.write("command.py", "from django.core.management.base import BaseCommand\nclass Command(BaseCommand):\n    def handle(self, *args, **options): pass\n");
     roots.write("alias_command.py", "from django.core.management.base import BaseCommand as Parent\nclass Alias(Parent):\n    def handle(self): pass\n");
     roots.write("shadow_command.py", "from django.core.management.base import BaseCommand\nBaseCommand = object\nclass Shadow(BaseCommand):\n    def handle(self): pass\n");
@@ -1450,6 +1503,7 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
         json!({"selector":"jobs.py:job","detail":"full"}),
     );
     assert!(job["node"]["details"].get("entrypoint").is_none(), "{job}");
+
 }
 
 #[test]

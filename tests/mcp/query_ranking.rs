@@ -135,6 +135,25 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
         all_names.contains(&"typed_query") && all_names.contains(&"returns_gate"),
         "{all_types}"
     );
+    let mut paged_names = Vec::new();
+    let mut generation = None;
+    for offset in 0..all_names.len() {
+        let page = QueryOptions::resolve(
+            &ResponsePolicy::default(), Some(1), offset, Some(Detail::Full), generation.clone(),
+        ).unwrap();
+        let result = symbols::search_with_options(
+            &conn,
+            "GateProfile",
+            &symbols::SearchOptions {
+                kind: None, path: None, include_docs: false, exact: false, page: &page,
+            },
+        ).unwrap();
+        if generation.is_none() {
+            generation = result["nodes"]["generation"].as_str().map(str::to_owned);
+        }
+        paged_names.push(result["nodes"]["items"][0]["name"].as_str().unwrap().to_owned());
+    }
+    assert_eq!(paged_names, all_names, "pagination must retain ranked order");
     let underscored = symbols::search_with_options(
         &conn,
         "Gate_Profile",

@@ -99,6 +99,9 @@ impl Config {
         ("SELECT * FROM orders o, inventory i JOIN customers c ON c.id=i.id", "customers", "queries_table"),
         ("WITH temporary AS (SELECT * FROM orders) SELECT * FROM temporary JOIN inventory ON 1=1", "orders", "queries_table"),
         ("COMMIT; SELECT * FROM orders WHERE note = $$semi;colon$$", "orders", "queries_table"),
+        ("SET x='semi;SELECT fake'; /* ; UPDATE ignored */ SELECT * FROM orders", "orders", "queries_table"),
+        ("BEGIN; -- ; UPDATE ignored\nWITH rows AS (SELECT * FROM orders) SELECT * FROM rows", "orders", "queries_table"),
+        ("SET x=$tag$; UPDATE ignored$tag$; SELECT * FROM orders", "orders", "queries_table"),
         ("DELETE FROM orders", "orders", "mutates_table"),
         (
             "CREATE TABLE IF NOT EXISTS orders (id INT)",
@@ -120,6 +123,34 @@ impl Config {
     ] {
         let actual = contextunity_forge_mcp::engine::languages::sql::extract_embedded_sql_tables(sql);
         assert_eq!(actual.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(), expected, "{sql}");
+    }
+
+    // Exercise the real literal producers, including prose that previously
+    // matched SQL keywords inside unrelated words.
+    let mut embedded = vec![(
+        "embedded.rs",
+        "rust",
+        r##"fn query() { let _ = r#"SET x=$tag$; UPDATE ignored$tag$; /* ; */ WITH rows AS (SELECT * FROM orders) SELECT * FROM rows"#; }
+fn prose() { let _ = "information was updated and transformed"; }"##,
+    )];
+    #[cfg(feature = "lang-python")]
+    embedded.push((
+        "embedded.py",
+        "python",
+        "def query():\n    return \"SET x=$tag$; UPDATE ignored$tag$; /* ; */ WITH rows AS (SELECT * FROM orders) SELECT * FROM rows\"\ndef prose():\n    '''information was updated and transformed'''\n",
+    ));
+    #[cfg(feature = "lang-typescript")]
+    embedded.push((
+        "embedded.ts",
+        "typescript",
+        "function query() { return `SET x=$tag$; UPDATE ignored$tag$; /* ; */ WITH rows AS (SELECT * FROM orders) SELECT * FROM rows`; }\nfunction prose() { return 'information was updated and transformed'; }\n",
+    ));
+    for (path, language, source) in embedded {
+        let facts = ast::extract(path, language, source).unwrap();
+        let queries: Vec<_> = facts.references.iter().filter(|r| r.kind == "queries_table").collect();
+        assert_eq!(queries.len(), 1, "{path}: {queries:?}");
+        assert_eq!(queries[0].expression, "orders", "{path}");
+        assert!(!facts.references.iter().any(|r| r.kind == "mutates_table"), "{path}");
     }
 
     let workspace = super::support::Workspace::new();
@@ -178,7 +209,7 @@ impl Config {
     #[cfg(feature = "lang-python")]
     workspace.write(
         "shop/default.py",
-        "from fixture import CustomBase\nclass Default(CustomBase):\n    pass\n",
+        "# class Commented(CustomBase): pass\n\"\"\"class Quoted(CustomBase): pass\"\"\"\nfrom fixture import CustomBase\nclass Empty:\n    pass\nclass Default(CustomBase):\n    pass\n",
     );
     #[cfg(feature = "lang-python")]
     workspace.write(
@@ -358,6 +389,8 @@ impl Config {
             other_default, 1,
             "independent default-only manifest should link"
         );
+        let empty_defaults: i64 = db.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash WHERE s.name='Empty' AND e.kind='defines_table'", [], |row| row.get(0)).unwrap();
+        assert_eq!(empty_defaults, 0, "class without bases must not define a table");
         let false_defaults: i64 = db.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name='Fake' AND d.name='shop_fake' AND e.kind='defines_table'", [], |row| row.get(0)).unwrap();
         assert_eq!(false_defaults, 0, "local models must not imply Django ORM");
         let override_edges: i64 = db.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name='Override' AND d.name='shop_override' AND e.kind='defines_table'", [], |r| r.get(0)).unwrap();

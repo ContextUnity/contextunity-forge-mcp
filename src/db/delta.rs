@@ -157,16 +157,8 @@ pub(crate) fn persist_delta(
     }
     changed_edge_batch.flush()?;
     drop(changed_edge_batch);
-    tx.execute_batch(
-        "CREATE TEMP TABLE replaced_nodes(id TEXT PRIMARY KEY,node_hash INTEGER NOT NULL);
-         CREATE TEMP TABLE changed_endpoint_keys(src_hash INTEGER,kind TEXT,dst_hash INTEGER,PRIMARY KEY(src_hash,kind,dst_hash)) WITHOUT ROWID;"
-    )?;
+    tx.execute_batch("CREATE TEMP TABLE replaced_nodes(id TEXT PRIMARY KEY,node_hash INTEGER NOT NULL);")?;
     tx.execute("INSERT OR IGNORE INTO replaced_nodes SELECT n.id,n.node_hash FROM nodes n JOIN path_dictionary owner ON owner.path_id=n.owner_path_id WHERE owner.path IN(SELECT value FROM json_each(?1))", [serde_json::to_string(&replace_files)?])?;
-    tx.execute_batch(
-        "INSERT OR IGNORE INTO changed_endpoint_keys SELECT src_hash,kind,dst_hash FROM changed_edge_keys;
-         INSERT OR IGNORE INTO changed_endpoint_keys SELECT e.src_hash,e.kind,e.dst_hash FROM replaced_nodes r JOIN edges e ON e.src_hash=r.node_hash;
-         INSERT OR IGNORE INTO changed_endpoint_keys SELECT e.src_hash,e.kind,e.dst_hash FROM replaced_nodes r JOIN edges e ON e.dst_hash=r.node_hash;"
-    )?;
     super::entrypoints::prepare_candidates(&tx)?;
     super::entrypoints::add_delta_candidates(&tx, replace_files)?;
     let mut commitment_owners = affected.clone();
@@ -268,16 +260,22 @@ pub(crate) fn persist_delta(
         FROM ranked WHERE representative=1",
         [],
     )?;
-    tx.execute_batch(
-        "DELETE FROM edge_endpoint_paths WHERE (src_hash,kind,dst_hash) IN (SELECT src_hash,kind,dst_hash FROM changed_endpoint_keys);
-         INSERT INTO edge_endpoint_paths(path,direction,src_hash,kind,dst_hash)
-         SELECT p.path,0,e.src_hash,e.kind,e.dst_hash FROM changed_endpoint_keys k JOIN edges e ON e.src_hash=k.src_hash AND e.kind=k.kind AND e.dst_hash=k.dst_hash JOIN nodes n ON n.node_hash=e.src_hash JOIN path_dictionary p ON p.path_id=n.path_id
-         UNION ALL
-         SELECT p.path,1,e.src_hash,e.kind,e.dst_hash FROM changed_endpoint_keys k JOIN edges e ON e.src_hash=k.src_hash AND e.kind=k.kind AND e.dst_hash=k.dst_hash JOIN nodes n ON n.node_hash=e.dst_hash JOIN path_dictionary p ON p.path_id=n.path_id;"
+    let dangling_changed: bool = tx.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM changed_edge_keys k
+             JOIN edges e ON e.src_hash=k.src_hash AND e.kind=k.kind AND e.dst_hash=k.dst_hash
+             LEFT JOIN nodes s ON s.node_hash=e.src_hash
+             LEFT JOIN nodes t ON t.node_hash=e.dst_hash
+             WHERE s.node_hash IS NULL OR t.node_hash IS NULL
+         )",
+        [],
+        |row| row.get(0),
     )?;
-    commitments::verify_endpoint_projection(&tx, true)?;
+    if dangling_changed {
+        bail!("delta leaves an edge with a missing endpoint; rebuild index");
+    }
     super::entrypoints::add_delta_candidates(&tx, replace_files)?;
-    commitment_owners.extend(super::entrypoints::project(&tx, false)?);
+    commitment_owners.extend(super::entrypoints::project(&tx)?);
     commitment_owners.extend(
         tx.prepare_cached("SELECT DISTINCT p.path FROM edges e JOIN path_dictionary p ON p.path_id=e.path_id WHERE (e.src_hash,e.dst_hash,e.kind)IN(SELECT src_hash,dst_hash,kind FROM changed_edge_keys)")?
             .query_map([], |r| r.get::<_, String>(0))?

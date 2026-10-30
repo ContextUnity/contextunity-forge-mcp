@@ -602,6 +602,28 @@ impl SinglePassExtractor<'_> {
         let mut summary_builder = deferred_python.then(|| {
             routes::RouteContextBuilder::for_main_walk(node, self.source, self.language_context)
         });
+        #[cfg(feature = "lang-python")]
+        let mut class_bindings = {
+            let has_class = self.profile.id() == "python" && self.source.contains("class");
+            let registration =
+                has_class && languages::python::has_class_registration_import();
+            let orm = has_class && self.language_context.semantic_rules.iter().any(|rule| rule.active && matches!(&rule.rule.operation, languages::manifests::SemanticOperation::ClassDefaultTable { language, .. } if language == "python"));
+            if has_class
+                && node.kind() == "module"
+                && !node.has_error()
+                && !deferred_python
+                && (registration || orm)
+            {
+                self.route_context.set_defer_python_orm();
+                Some(routes::PythonClassBindings::new(
+                    node,
+                    self.source,
+                    registration,
+                ))
+            } else {
+                None
+            }
+        };
         let prepared_root_bindings = self
             .file
             .root_bindings
@@ -648,8 +670,8 @@ impl SinglePassExtractor<'_> {
             deferred: Vec::new(),
         };
         #[cfg(feature = "lang-python")]
-        let mut main_guards = (context.language == "python")
-            .then(languages::python::MainGuardTracker::default);
+        let mut main_guards =
+            (context.language == "python").then(languages::python::MainGuardTracker::default);
         walk_in_order(node, false, &mut |node, entering| {
             #[cfg(feature = "lang-python")]
             if entering {
@@ -665,6 +687,10 @@ impl SinglePassExtractor<'_> {
                     }
                 }
             }
+            #[cfg(feature = "lang-python")]
+            if let Some(builder) = &mut class_bindings {
+                builder.observe(node, entering);
+            }
             Self::visit_event(
                 &context,
                 &mut state,
@@ -676,10 +702,6 @@ impl SinglePassExtractor<'_> {
             );
         });
         #[cfg(feature = "lang-python")]
-        if let (Some(tracker), Some(bindings)) = (main_guards, state.root_summary.as_ref()) {
-            tracker.finish(context.module, bindings, facts);
-        }
-        #[cfg(feature = "lang-python")]
         if let Some(builder) = summary_builder {
             let lexical = builder.finish();
             finish_python_actions(
@@ -689,6 +711,23 @@ impl SinglePassExtractor<'_> {
                 scope_traversal.deferred,
                 &lexical,
             );
+            languages::python::finish_class_method_registrations(facts, &lexical);
+        } else if let Some(builder) = class_bindings {
+            let lexical = builder.finish();
+            finish_python_actions(
+                &context,
+                &mut state,
+                facts,
+                scope_traversal.deferred,
+                &lexical,
+            );
+            languages::python::finish_class_method_registrations(facts, &lexical);
+        } else if context.language == "python" {
+            languages::python::finish_class_method_registrations(facts, context.route_context);
+        }
+        #[cfg(feature = "lang-python")]
+        if let (Some(tracker), Some(bindings)) = (main_guards, state.root_summary.as_ref()) {
+            tracker.finish(context.module, bindings, facts);
         }
         #[cfg(feature = "lang-typescript")]
         if matches!(context.language, "typescript" | "javascript") {
@@ -750,6 +789,22 @@ impl SinglePassExtractor<'_> {
                         traversal.deferred.push(PythonAction::Candidate(event));
                     }
                 } else {
+                    #[cfg(feature = "lang-python")]
+                    if context.language == "python"
+                        && context.route_context.defer_python_orm()
+                        && node.kind() == "class_definition"
+                        && node.child_by_field_name("superclasses").is_some()
+                    {
+                        traversal.deferred.push(PythonAction::Orm {
+                            node,
+                            owner: node_owner.to_owned(),
+                            frontiers: (
+                                facts.nodes.len(),
+                                facts.edges.len(),
+                                facts.references.len(),
+                            ),
+                        });
+                    }
                     context.profile.extract_routes_with_typed_projections(
                         &ctx,
                         facts,
@@ -1036,7 +1091,9 @@ impl SinglePassExtractor<'_> {
             if let Some(entrypoint) = if test_role == Some("test_case") {
                 Some("test")
             } else {
-                context.profile.entrypoint_role(node, source, &name, context.file)
+                context
+                    .profile
+                    .entrypoint_role(node, source, &name, context.file)
             } {
                 details.insert("entrypoint_base".into(), json!(entrypoint));
             }
@@ -1212,6 +1269,11 @@ fn route_candidate(enabled: bool, language: &str, node: Syntax<'_>) -> bool {
 #[cfg(feature = "lang-python")]
 enum PythonAction<'tree> {
     Candidate(languages::python::DeferredEvent<'tree>),
+    Orm {
+        node: Syntax<'tree>,
+        owner: String,
+        frontiers: (usize, usize, usize),
+    },
     Publication(ScopePublication<'tree>),
 }
 
@@ -1230,6 +1292,30 @@ fn finish_python_actions(
     for action in actions {
         match action {
             PythonAction::Publication(publication) => publication.publish(context, state, facts),
+            PythonAction::Orm {
+                node,
+                owner,
+                frontiers,
+            } => {
+                let before = (facts.nodes.len(), facts.edges.len(), facts.references.len());
+                let ctx = SyntaxContext {
+                    node,
+                    source: context.source,
+                    owner: &owner,
+                    offset: context.offset,
+                    shadowed_require_scopes: &context.file.shadowed_require_scopes,
+                    type_checking_aliases: Some(&context.file.type_checking_aliases),
+                };
+                languages::python::finish_default_table(
+                    &ctx,
+                    facts,
+                    context.language_context,
+                    lexical,
+                );
+                node_batches.push((frontiers.0, facts.nodes.len() - before.0));
+                edge_batches.push((frontiers.1, facts.edges.len() - before.1));
+                reference_batches.push((frontiers.2, facts.references.len() - before.2));
+            }
             PythonAction::Candidate(event) => {
                 let before = (facts.nodes.len(), facts.edges.len(), facts.references.len());
                 let ctx = SyntaxContext {

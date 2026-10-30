@@ -62,15 +62,6 @@ CREATE TABLE IF NOT EXISTS edges (
     PRIMARY KEY (src_hash, kind, dst_hash)
 ) WITHOUT ROWID;
 
-CREATE TABLE IF NOT EXISTS edge_endpoint_paths (
-    path TEXT NOT NULL,
-    direction INTEGER NOT NULL CHECK(direction IN (0,1)),
-    src_hash INTEGER NOT NULL,
-    kind TEXT NOT NULL,
-    dst_hash INTEGER NOT NULL,
-    PRIMARY KEY(path,direction,src_hash,kind,dst_hash)
-) WITHOUT ROWID;
-
 CREATE TABLE IF NOT EXISTS local_facts (
     path TEXT PRIMARY KEY,
     source_digest TEXT NOT NULL,
@@ -198,7 +189,6 @@ CREATE INDEX IF NOT EXISTS idx_nodes_path ON nodes(path_id);
 CREATE INDEX IF NOT EXISTS idx_nodes_owner ON nodes(owner_path_id);
 CREATE INDEX IF NOT EXISTS idx_edges_dst_kind ON edges(dst_hash, kind);
 CREATE INDEX IF NOT EXISTS idx_edges_path ON edges(path_id);
-CREATE INDEX IF NOT EXISTS idx_endpoint_edge_key ON edge_endpoint_paths(src_hash,kind,dst_hash);
 CREATE INDEX IF NOT EXISTS idx_doc_sections_path ON doc_sections(path);
 CREATE INDEX IF NOT EXISTS idx_doc_sections_type ON doc_sections(doc_type);
 CREATE INDEX IF NOT EXISTS idx_occurrences_pair ON edge_occurrences(src_hash, dst_hash);

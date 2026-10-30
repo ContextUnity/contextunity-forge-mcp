@@ -60,7 +60,10 @@ pub(crate) fn prepare_deferred_event<'tree>(
     Python.extract_routes(ctx, facts, symbols);
     let projection = projections::candidate(ctx, rules);
     let registration_guards = registration_guards.into_inner();
-    (kind == "class_definition" || declaration || !registration_guards.is_empty() || projection)
+    ((kind == "class_definition" && ctx.node.child_by_field_name("superclasses").is_some())
+        || declaration
+        || !registration_guards.is_empty()
+        || projection)
         .then(|| DeferredEvent {
             node: ctx.node,
             owner: ctx.owner.to_owned(),
@@ -463,11 +466,18 @@ pub(crate) struct MainGuardTracker {
 
 impl MainGuardTracker {
     pub(crate) fn observe(&mut self, node: Syntax<'_>, source: &str) {
-        if node.kind() == "assignment" && module_scope(node)
-            && node.child_by_field_name("right").is_some_and(|right| right.kind() == "lambda")
+        if node.kind() == "assignment"
+            && module_scope(node)
+            && node
+                .child_by_field_name("right")
+                .is_some_and(|right| right.kind() == "lambda")
         {
-            if let Some(left) = node.child_by_field_name("left").filter(|left| left.kind() == "identifier") {
-                self.callable_assignments.insert(text(left, source).to_owned());
+            if let Some(left) = node
+                .child_by_field_name("left")
+                .filter(|left| left.kind() == "identifier")
+            {
+                self.callable_assignments
+                    .insert(text(left, source).to_owned());
             }
         }
         if node.kind() == "function_definition" && module_scope(node) {
@@ -475,50 +485,102 @@ impl MainGuardTracker {
                 let direct = node.parent().is_some_and(|parent| {
                     parent.kind() == "module"
                         || (parent.kind() == "decorated_definition"
-                            && parent.parent().is_some_and(|outer| outer.kind() == "module"))
+                            && parent
+                                .parent()
+                                .is_some_and(|outer| outer.kind() == "module"))
                 });
-                let entry = self.declarations.entry(name.to_owned()).or_insert((0, node.start_byte(), direct));
+                let entry = self.declarations.entry(name.to_owned()).or_insert((
+                    0,
+                    node.start_byte(),
+                    direct,
+                ));
                 entry.0 += 1;
             }
             return;
         }
-        if node.kind() != "expression_statement" { return; }
-        let Some(body) = node.parent().filter(|n| n.kind() == "block") else { return };
-        let Some(guard) = body.parent().filter(|n| n.kind() == "if_statement") else { return };
+        if node.kind() != "expression_statement" {
+            return;
+        }
+        let Some(body) = node.parent().filter(|n| n.kind() == "block") else {
+            return;
+        };
+        let Some(guard) = body.parent().filter(|n| n.kind() == "if_statement") else {
+            return;
+        };
         if !guard.parent().is_some_and(|n| n.kind() == "module")
-            || guard.child_by_field_name("consequence") != Some(body) { return; }
-        let Some(condition) = guard.child_by_field_name("condition") else { return };
+            || guard.child_by_field_name("consequence") != Some(body)
+        {
+            return;
+        }
+        let Some(condition) = guard.child_by_field_name("condition") else {
+            return;
+        };
         let mut cursor = condition.walk();
         let mut operands = condition.named_children(&mut cursor);
-        let (Some(left), Some(right), None) = (operands.next(), operands.next(), operands.next()) else { return };
+        let (Some(left), Some(right), None) = (operands.next(), operands.next(), operands.next())
+        else {
+            return;
+        };
         let lhs = text(left, source).trim();
         let rhs = text(right, source).trim();
         let is_main = |s: &str| s == "'__main__'" || s == "\"__main__\"";
         if condition.kind() != "comparison_operator"
             || !((lhs == "__name__" && is_main(rhs)) || (rhs == "__name__" && is_main(lhs)))
-            || !text(condition, source).contains("==") { return; }
-        let Some(call) = node.named_child(0).filter(|n| n.kind() == "call") else { return };
-        let Some(function) = call.child_by_field_name("function").filter(|n| n.kind() == "identifier") else { return };
-        let entry = self.calls.entry(text(function, source).to_owned()).or_insert((0, guard.start_byte()));
+            || !text(condition, source).contains("==")
+        {
+            return;
+        }
+        let Some(call) = node.named_child(0).filter(|n| n.kind() == "call") else {
+            return;
+        };
+        let Some(function) = call
+            .child_by_field_name("function")
+            .filter(|n| n.kind() == "identifier")
+        else {
+            return;
+        };
+        let entry = self
+            .calls
+            .entry(text(function, source).to_owned())
+            .or_insert((0, guard.start_byte()));
         entry.0 += 1;
     }
 
     pub(crate) fn finish(self, module: &str, bindings: &ast::ScopeBindings, facts: &mut Facts) {
         let rebound: HashSet<&str> = bindings.rebindings.iter().map(String::as_str).collect();
-        let imported: HashSet<&str> = facts.references.iter()
+        let imported: HashSet<&str> = facts
+            .references
+            .iter()
             .filter(|r| r.kind == "imports" && r.source.starts_with("module:"))
-            .filter_map(|r| r.alias.as_deref()).collect();
+            .filter_map(|r| r.alias.as_deref())
+            .collect();
         for node in &mut facts.nodes {
             if node.kind != "function"
-                || node.qualname.strip_prefix(module).and_then(|s| s.strip_prefix('.')) != Some(node.name.as_str()) { continue; }
-            let Some(definitions) = self.declarations.get(&node.name) else { continue };
+                || node
+                    .qualname
+                    .strip_prefix(module)
+                    .and_then(|s| s.strip_prefix('.'))
+                    != Some(node.name.as_str())
+            {
+                continue;
+            }
+            let Some(definitions) = self.declarations.get(&node.name) else {
+                continue;
+            };
             if definitions.0 == 1 && definitions.2 {
                 node.details["entrypoint_direct_module"] = serde_json::json!(true);
             }
-            if node.details.get("entrypoint_base").is_some() || !definitions.2
-                || rebound.contains(node.name.as_str()) || imported.contains(node.name.as_str())
-                || self.callable_assignments.contains(node.name.as_str()) { continue; }
-            let Some(calls) = self.calls.get(&node.name) else { continue };
+            if node.details.get("entrypoint_base").is_some()
+                || !definitions.2
+                || rebound.contains(node.name.as_str())
+                || imported.contains(node.name.as_str())
+                || self.callable_assignments.contains(node.name.as_str())
+            {
+                continue;
+            }
+            let Some(calls) = self.calls.get(&node.name) else {
+                continue;
+            };
             if calls.0 == 1 && definitions.0 == 1 && definitions.1 < calls.1 {
                 node.details["entrypoint_base"] = serde_json::json!("main");
             }
@@ -1233,7 +1295,7 @@ impl LanguageProfile for Python {
         route_context: &crate::engine::ast::routes::RouteContext,
         projections: &mut HashMap<String, crate::core::semantic::ValueFlowFacts>,
     ) {
-        if ctx.node.kind() == "class_definition" {
+        if ctx.node.kind() == "class_definition" && !route_context.defer_python_orm() {
             syntax_operations::extract_default_table(ctx, facts, rules, route_context);
         }
         if matches!(ctx.node.kind(), "assignment" | "annotated_assignment") {
@@ -1280,7 +1342,6 @@ impl LanguageProfile for Python {
         projections::clear();
         relations::implicit_fields(facts);
         decorated_registration::registrations(facts);
-        syntax_operations::extract_class_method_registrations(facts);
         syntax_operations::clear_file_context();
     }
     fn ast_search_capabilities(&self) -> AstSearchCapabilities {
@@ -1301,6 +1362,26 @@ impl LanguageProfile for Python {
             ..AstSearchCapabilities::default()
         }
     }
+}
+
+pub(crate) fn finish_class_method_registrations(
+    facts: &mut Facts,
+    lexical: &crate::engine::ast::routes::RouteContext,
+) {
+    syntax_operations::extract_class_method_registrations(facts, lexical);
+}
+
+pub(crate) fn has_class_registration_import() -> bool {
+    syntax_operations::has_class_registration_import()
+}
+
+pub(crate) fn finish_default_table(
+    ctx: &SyntaxContext<'_, '_>,
+    facts: &mut Facts,
+    rules: &LanguageContext,
+    lexical: &routes::RouteContext,
+) {
+    syntax_operations::extract_default_table(ctx, facts, rules, lexical);
 }
 
 fn call_to_file(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts, rules: &LanguageContext) {

@@ -187,6 +187,10 @@ impl Node {
         NavigationDetails {
             node: self,
             documentation: None,
+            return_type: None,
+            entrypoint: None,
+            persisted: false,
+            clear_entrypoint: false,
         }
     }
 
@@ -197,6 +201,10 @@ impl Node {
         NavigationDetails {
             node: self,
             documentation: Some(documentation),
+            return_type: None,
+            entrypoint: None,
+            persisted: false,
+            clear_entrypoint: false,
         }
     }
 
@@ -280,6 +288,20 @@ impl Node {
 pub(crate) struct NavigationDetails<'a> {
     node: &'a Node,
     documentation: Option<&'a Value>,
+    return_type: Option<&'a str>,
+    entrypoint: Option<&'a str>,
+    persisted: bool,
+    clear_entrypoint: bool,
+}
+
+impl<'a> NavigationDetails<'a> {
+    pub(crate) fn persisted(mut self, return_type: Option<&'a str>, entrypoint: Option<&'a str>, clear_entrypoint: bool) -> Self {
+        self.return_type = return_type;
+        self.entrypoint = entrypoint;
+        self.persisted = true;
+        self.clear_entrypoint = clear_entrypoint;
+        self
+    }
 }
 
 impl Serialize for NavigationDetails<'_> {
@@ -289,11 +311,30 @@ impl Serialize for NavigationDetails<'_> {
         let documentation = self.documentation.and_then(Value::as_object);
         let semantic = self.node.native_semantic.as_deref();
         if details.is_none() && documentation.is_none() && semantic.is_none() {
-            return self.node.details.serialize(serializer);
+            if let Some(entrypoint) = self.entrypoint {
+                if !self.node.details.is_null() || self.return_type.is_none() {
+                    let original = serde_json::to_string(&self.node.details)
+                        .map_err(serde::ser::Error::custom)?;
+                    let mut map = serializer.serialize_map(Some(2))?;
+                    map.serialize_entry("entrypoint_original_json", &original)?;
+                    map.serialize_entry("entrypoint", entrypoint)?;
+                    return map.end();
+                }
+            } else if self.return_type.is_none() || !self.node.details.is_null() {
+                return self.node.details.serialize(serializer);
+            }
         }
         let mut map = serializer.serialize_map(None)?;
+        let mut return_written = false;
+        let mut entrypoint_written = false;
         if let Some(details) = details {
             for (key, value) in details {
+                if self.persisted && key == "entrypoint_base" {
+                    continue;
+                }
+                if self.clear_entrypoint && key == "entrypoint" {
+                    continue;
+                }
                 if self.documentation.is_some() && matches!(key.as_str(), "doc" | "docstring") {
                     continue;
                 }
@@ -301,6 +342,20 @@ impl Serialize for NavigationDetails<'_> {
                     && !include_navigation_detail(key, value)
                 {
                     continue;
+                }
+                if key == "return_type" {
+                    if let Some(return_type) = self.return_type {
+                        map.serialize_entry(key, return_type)?;
+                        return_written = true;
+                        continue;
+                    }
+                }
+                if key == "entrypoint" {
+                    if let Some(entrypoint) = self.entrypoint {
+                        map.serialize_entry(key, entrypoint)?;
+                        entrypoint_written = true;
+                        continue;
+                    }
                 }
                 map.serialize_entry(key, value)?;
             }
@@ -329,6 +384,12 @@ impl Serialize for NavigationDetails<'_> {
                     map.serialize_entry(key, value)?;
                 }
             }
+        }
+        if let Some(return_type) = self.return_type.filter(|_| !return_written) {
+            map.serialize_entry("return_type", return_type)?;
+        }
+        if let Some(entrypoint) = self.entrypoint.filter(|_| !entrypoint_written) {
+            map.serialize_entry("entrypoint", entrypoint)?;
         }
         map.end()
     }

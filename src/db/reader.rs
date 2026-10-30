@@ -854,126 +854,93 @@ pub fn overview_with_options(conn: &Connection, request: &OverviewOptions<'_>) -
     Ok(serde_json::Value::Object(result))
 }
 
-#[derive(Default)]
-struct ModuleTopology {
-    symbols: usize,
-    tables: usize,
-    entrypoints: usize,
-    adapters: usize,
-    internal: usize,
-    inbound: usize,
-    outbound: usize,
-    table_queries: usize,
-    neighbors: BTreeSet<String>,
-}
+// Compute a module once for each path and aggregate graph statistics in SQLite.
+const TOPOLOGY_CTES: &str = r#"
+WITH RECURSIVE
+parts(path_id,component,rest,module,depth) AS (
+ SELECT DISTINCT n.path_id,n.kind='component',p.path,'',0
+ FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id
+ UNION ALL
+ SELECT path_id,component,
+   CASE WHEN instr(rest,'/')=0 THEN '' ELSE substr(rest,instr(rest,'/')+1) END,
+   CASE WHEN substr(rest,1,CASE WHEN instr(rest,'/')=0 THEN length(rest) ELSE instr(rest,'/')-1 END)=''
+              OR (component=0 AND instr(rest,'/')=0) THEN module
+        ELSE module || CASE WHEN module='' THEN '' ELSE '/' END ||
+             substr(rest,1,CASE WHEN instr(rest,'/')=0 THEN length(rest) ELSE instr(rest,'/')-1 END) END,
+   depth + CASE WHEN substr(rest,1,CASE WHEN instr(rest,'/')=0 THEN length(rest) ELSE instr(rest,'/')-1 END)<>''
+                   AND (component=1 OR instr(rest,'/')>0) THEN 1 ELSE 0 END
+ FROM parts WHERE rest<>'' AND (depth<2 OR (module='src/engine' AND depth<3))
+),
+path_modules AS MATERIALIZED (
+ SELECT path_id,component,module FROM parts
+ WHERE rest='' OR (depth>=2 AND (module<>'src/engine' OR depth>=3))
+),
+mapped AS MATERIALIZED (
+ SELECT n.node_hash,n.kind,json_extract(n.details,'$.entrypoint') AS entrypoint,pm.module
+ FROM nodes n JOIN path_modules pm ON pm.path_id=n.path_id AND pm.component=(n.kind='component')
+),
+edge_kinds AS MATERIALIZED (
+ SELECT s.module AS source,t.module AS target,e.kind,count(*) AS count
+ FROM edges e JOIN mapped s ON s.node_hash=e.src_hash JOIN mapped t ON t.node_hash=e.dst_hash
+ GROUP BY s.module,t.module,e.kind
+),
+node_stats AS (
+ SELECT module,count(*) AS symbols,sum(kind='table') AS tables,count(entrypoint) AS entrypoints,
+ sum(CASE WHEN entrypoint IN ('mcp_tool','cli_command','http_route') THEN 1 ELSE 0 END) AS adapters
+ FROM mapped GROUP BY module
+),
+source_stats AS (
+ SELECT source AS module,sum(CASE WHEN source=target THEN count ELSE 0 END) AS internal,
+ sum(CASE WHEN source<>target THEN count ELSE 0 END) AS outbound,
+ sum(CASE WHEN kind IN ('queries_table','mutates_table') THEN count ELSE 0 END) AS table_queries
+ FROM edge_kinds GROUP BY source
+),
+target_stats AS (SELECT target AS module,sum(count) AS inbound FROM edge_kinds WHERE source<>target GROUP BY target),
+neighbor_pairs AS (
+ SELECT source AS module,target AS neighbor FROM edge_kinds WHERE source<>target
+ UNION SELECT target,source FROM edge_kinds WHERE source<>target
+),
+neighbors AS (SELECT module,count(*) AS total FROM neighbor_pairs GROUP BY module),
+stats AS (
+ SELECT n.*,coalesce(s.internal,0) AS internal,coalesce(s.outbound,0) AS outbound,
+ coalesce(s.table_queries,0) AS table_queries,coalesce(t.inbound,0) AS inbound,
+ coalesce(neighbors.total,0) AS neighbor_count
+ FROM node_stats n LEFT JOIN source_stats s ON s.module=n.module
+ LEFT JOIN target_stats t ON t.module=n.module LEFT JOIN neighbors ON neighbors.module=n.module
+)
+"#;
 
-fn topology_module(path: &str, kind: &str) -> String {
-    let parent = if kind == "component" {
-        path
-    } else {
-        path.rsplit_once('/').map_or("", |(parent, _)| parent)
-    };
-    let parts: Vec<_> = parent.split('/').filter(|part| !part.is_empty()).collect();
-    let depth = if parts.first() == Some(&"src") && parts.get(1) == Some(&"engine") {
-        3
-    } else {
-        2
-    };
-    parts.into_iter().take(depth).collect::<Vec<_>>().join("/")
-}
-
-fn module_topology(conn: &Connection, options: &QueryOptions, generation: &str) -> Result<Value> {
-    let mut modules: BTreeMap<String, ModuleTopology> = BTreeMap::new();
-    let mut edges: BTreeMap<(String, String), BTreeMap<String, usize>> = BTreeMap::new();
-    let budget = QueryBudget::new(conn);
-    {
-        let mut statement = conn.prepare("SELECT p.path,n.kind,json_extract(n.details,'$.entrypoint') FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id")?;
-        let mut rows = statement.query([])?;
-        while let Some(row) = rows.next()? {
-            budget.check()?;
-            let path: String = row.get(0)?;
-            let kind: String = row.get(1)?;
-            let entrypoint: Option<String> = row.get(2)?;
-            let module = modules.entry(topology_module(&path, &kind)).or_default();
-            module.symbols += 1;
-            module.tables += usize::from(kind == "table");
-            module.entrypoints += usize::from(entrypoint.is_some());
-            module.adapters += usize::from(matches!(
-                entrypoint.as_deref(),
-                Some("mcp_tool" | "cli_command" | "http_route")
-            ));
-        }
-    }
-    {
-        let mut statement = conn.prepare("SELECT sp.path,tp.path,e.kind,s.kind,t.kind FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes t ON t.node_hash=e.dst_hash JOIN path_dictionary sp ON sp.path_id=s.path_id JOIN path_dictionary tp ON tp.path_id=t.path_id")?;
-        let mut rows = statement.query([])?;
-        while let Some(row) = rows.next()? {
-            budget.check()?;
-            let source = topology_module(&row.get::<_, String>(0)?, &row.get::<_, String>(3)?);
-            let target = topology_module(&row.get::<_, String>(1)?, &row.get::<_, String>(4)?);
-            let kind: String = row.get(2)?;
-            let is_table_query = matches!(kind.as_str(), "queries_table" | "mutates_table");
-            if source == target {
-                let module = modules.entry(source).or_default();
-                module.internal += 1;
-                module.table_queries += usize::from(is_table_query);
-            } else {
-                let from = modules.entry(source.clone()).or_default();
-                from.outbound += 1;
-                from.table_queries += usize::from(is_table_query);
-                from.neighbors.insert(target.clone());
-                let to = modules.entry(target.clone()).or_default();
-                to.inbound += 1;
-                to.neighbors.insert(source.clone());
-                *edges
-                    .entry((source, target))
-                    .or_default()
-                    .entry(kind)
-                    .or_default() += 1;
-            }
-        }
-    }
-    let module_rows: Vec<Value> = modules.into_iter().map(|(module, stats)| {
-        let external = stats.inbound + stats.outbound;
-        let role = if stats.adapters > 0 || (stats.inbound == 0 && stats.outbound > 0) {
-            "adapter_or_entrypoint"
-        } else if stats.outbound == 0 && stats.inbound > 0 {
-            "foundation"
-        } else if stats.tables > 0 && stats.tables * 10 >= stats.symbols || stats.table_queries >= 3 {
-            "data_access"
-        } else if stats.inbound >= 3 && stats.outbound >= 3 && stats.neighbors.len() >= 3 {
-            "orchestrator"
-        } else {
-            "domain"
-        };
-        let total = stats.internal + external;
-        json!({"module":module,"role":role,"symbol_count":stats.symbols,"table_count":stats.tables,"internal_edges":stats.internal,"inbound_external_edges":stats.inbound,"outbound_external_edges":stats.outbound,"entrypoint_count":stats.entrypoints,"table_query_count":stats.table_queries,"cohesion_ratio":if total == 0 { 0.0 } else { stats.internal as f64 / total as f64 }})
-    }).collect();
-    let mut edge_rows: Vec<Value> = edges.into_iter().map(|((source,target),kinds)| {
-        let count: usize = kinds.values().sum();
-        let dominant = kinds.into_iter().max_by(|a,b| a.1.cmp(&b.1).then_with(|| b.0.cmp(&a.0))).map(|(kind,_)| kind).unwrap_or_default();
-        json!({"source_module":source,"target_module":target,"edge_count":count,"dominant_kind":dominant})
-    }).collect();
-    edge_rows.sort_by(|a, b| {
-        b["edge_count"]
-            .as_u64()
-            .cmp(&a["edge_count"].as_u64())
-            .then_with(|| {
-                a["source_module"]
-                    .as_str()
-                    .cmp(&b["source_module"].as_str())
-            })
-            .then_with(|| {
-                a["target_module"]
-                    .as_str()
-                    .cmp(&b["target_module"].as_str())
-            })
-    });
-    let module_total = module_rows.len();
-    let edge_total = edge_rows.len();
-    Ok(
-        json!({"modules":paging::value(module_rows.into_iter().skip(options.offset).take(options.limit).collect(),module_total,options,generation),"module_edges":paging::value(edge_rows.into_iter().skip(options.offset).take(options.limit).collect(),edge_total,options,generation)}),
-    )
+fn module_topology(conn: &Connection, options: &QueryOptions, _generation: &str) -> Result<Value> {
+    let modules_sql = format!(
+        "{TOPOLOGY_CTES}
+      SELECT module,
+        CASE WHEN adapters>0 OR (inbound=0 AND outbound>0) THEN 'adapter_or_entrypoint'
+             WHEN outbound=0 AND inbound>0 THEN 'foundation'
+             WHEN (tables>0 AND tables*10>=symbols) OR table_queries>=3 THEN 'data_access'
+             WHEN inbound>=3 AND outbound>=3 AND neighbor_count>=3 THEN 'orchestrator'
+             ELSE 'domain' END AS role,
+        symbols AS symbol_count,tables AS table_count,internal AS internal_edges,
+        inbound AS inbound_external_edges,outbound AS outbound_external_edges,
+        entrypoints AS entrypoint_count,table_queries AS table_query_count,
+        CASE WHEN internal+inbound+outbound=0 THEN 0.0
+             ELSE CAST(internal AS REAL)/(internal+inbound+outbound) END AS cohesion_ratio
+      FROM stats ORDER BY module"
+    );
+    let edges_sql = format!(
+        "{TOPOLOGY_CTES},
+      ranked AS (
+        SELECT source,target,kind,count,sum(count) OVER (PARTITION BY source,target) AS total,
+        row_number() OVER (PARTITION BY source,target ORDER BY count DESC,kind) AS rank
+        FROM edge_kinds WHERE source<>target
+      )
+      SELECT source AS source_module,target AS target_module,total AS edge_count,
+             kind AS dominant_kind FROM ranked WHERE rank=1
+      ORDER BY edge_count DESC,source_module,target_module"
+    );
+    Ok(json!({
+        "modules":paging::query(conn, &modules_sql, &[], options)?,
+        "module_edges":paging::query(conn, &edges_sql, &[], options)?
+    }))
 }
 
 /// Pages one indexed entry point per Markdown document for workspace discovery.

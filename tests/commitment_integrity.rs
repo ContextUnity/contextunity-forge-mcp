@@ -102,6 +102,7 @@ fn read_only_query_only_verification_uses_temporary_logical_fts_views() {
     let workspace = Workspace::new();
     let path = workspace.path("fts-commitments.sqlite");
     let conn = Connection::open(&path).unwrap();
+    conn.pragma_update(None, "journal_mode", "WAL").unwrap();
     conn.execute_batch(SCHEMA_DDL).unwrap();
     search_nodes(&conn, 1);
     conn.execute(
@@ -132,11 +133,24 @@ fn read_only_query_only_verification_uses_temporary_logical_fts_views() {
         .query_row("PRAGMA query_only", [], |row| row.get(0))
         .unwrap();
     assert_eq!(query_only, 1, "verification restores query_only mode");
+    reader.execute_batch("BEGIN").unwrap();
+    reader.query_row("SELECT value FROM metadata WHERE key='output_root'", [], |row| row.get::<_, String>(0)).unwrap();
+    let writer = Connection::open(&path).unwrap();
+    writer.execute_batch("BEGIN IMMEDIATE; DELETE FROM node_search WHERE rowid=1; INSERT INTO node_search(rowid,search_text) VALUES(1,'changed posting'); COMMIT;").unwrap();
+    commitments::verify(&reader).unwrap();
+    reader.execute_batch("ROLLBACK").unwrap();
+    assert!(commitments::verify(&reader).is_err(), "a new snapshot sees the unsealed mutation");
 }
 
 fn logical_fts_root_for_insert_order(reverse: bool) -> String {
     let conn = connection();
     search_nodes(&conn, 64);
+    let path_id = owner_id(&conn, "src/fts.rs");
+    conn.execute(
+        "INSERT INTO nodes(id,kind,name,qualname,path_id,line,end_line,is_test,language,generated,details,node_hash,owner_path_id) VALUES('fts:negative','function','negative','negative',?1,1,1,0,'rust',0,'{}',-1,?1)",
+        [path_id],
+    ).unwrap();
+    conn.execute("INSERT INTO node_search(rowid,search_text) VALUES(-1,'α unicode unicode')", []).unwrap();
     for rowid in 1..=16 {
         conn.execute(
             "INSERT INTO doc_sections(doc_id,path,section_title,doc_type,content,invariants,referenced_symbols,mtime,size) \
@@ -183,8 +197,34 @@ fn logical_fts_root_for_insert_order(reverse: bool) -> String {
         .unwrap();
     }
 
+    conn.execute_batch("CREATE VIRTUAL TABLE temp.node_search_commit_vocab USING fts5vocab(main,node_search,'instance');").unwrap();
+    let physical_postings = |conn: &Connection| {
+        let mut stmt = conn.prepare("SELECT term,doc,col,offset FROM node_search_commit_vocab").unwrap();
+        let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?, row.get::<_, i64>(3)?))).unwrap();
+        rows.collect::<rusqlite::Result<Vec<_>>>().unwrap()
+    };
+    let ordered = physical_postings(&conn);
+    assert!(ordered.len() > 1 && ordered.windows(2).all(|pair| pair[0] <= pair[1]), "the streaming branch must be exercised");
     let root = commitments::seal(&conn).unwrap();
     commitments::verify(&conn).unwrap();
+    // Force the production verifier's sorted fallback with the same actual
+    // SQLite postings in reverse order; both routes must hash identical bytes.
+    conn.execute_batch(
+        "CREATE VIRTUAL TABLE temp.raw_node_vocab USING fts5vocab(main,node_search,'instance');
+         DROP TABLE temp.node_search_commit_vocab;
+         CREATE TEMP TABLE node_search_commit_vocab AS
+           SELECT term,col,offset,doc FROM raw_node_vocab
+           ORDER BY term DESC,doc DESC,col DESC,offset DESC;",
+    ).unwrap();
+    let reversed = physical_postings(&conn);
+    assert!(reversed.windows(2).any(|pair| pair[0] > pair[1]), "the sorted fallback must be exercised");
+    commitments::verify(&conn).unwrap();
+    assert_eq!(commitments::seal(&conn).unwrap(), root);
+    conn.execute(
+        "UPDATE node_search_commit_vocab SET doc=9000001 WHERE rowid=(SELECT min(rowid) FROM node_search_commit_vocab)",
+        [],
+    ).unwrap();
+    assert!(commitments::verify(&conn).is_err(), "missing posting owner must fail closed");
     root
 }
 
@@ -593,7 +633,7 @@ fn built_nodes_keep_owner_paths_and_repeatable_merkle_leaves() {
         conn.execute_batch(mutation).unwrap();
         drop(conn);
         assert!(contextunity_forge_mcp::db::reader::open(&legacy, &source).is_err(), "{mutation}");
-        writer::delta(&source, &legacy, &[std::path::PathBuf::from("a.rs")]).unwrap();
+        writer::build(&source, &legacy, None).unwrap();
         let conn = contextunity_forge_mcp::db::reader::open(&legacy, &source).unwrap();
         let schema: String = conn
             .query_row(

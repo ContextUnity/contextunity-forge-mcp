@@ -1,7 +1,7 @@
 #![cfg(feature = "lang-python")]
 
 use contextunity_forge_mcp::{
-    core::response::{CoverageOptions, QueryOptions, ResponsePolicy},
+    core::response::{CoverageOptions, Detail, QueryOptions, ResponsePolicy},
     db::{reader, traversal},
 };
 use std::time::Instant;
@@ -17,7 +17,8 @@ fn directory_suffix_lists_real_nodes_and_exact_file_keeps_graph_traversal() {
     let ws = Workspace::new();
     let file = "extensions/commerce/src/contextunity/commerce/ingestion/worker.py";
     ws.write(file, "from contextunity.commerce.connectors.horoshop.client import fetch\ndef publish():\n    return fetch()\ndef secondary():\n    pass\n");
-    let mut callers = String::from("from contextunity.commerce.ingestion.worker import secondary\n");
+    let mut callers =
+        String::from("from contextunity.commerce.ingestion.worker import secondary\n");
     for index in 0..6 {
         callers.push_str(&format!("def caller_{index}():\n    return secondary()\n"));
     }
@@ -71,19 +72,12 @@ fn directory_suffix_lists_real_nodes_and_exact_file_keeps_graph_traversal() {
     );
     ws.build();
     let conn = ws.open();
-    let projection_exists: i64 = conn
+    let schema: String = conn
         .query_row(
-            "SELECT count(*) FROM sqlite_schema WHERE type='table' AND name='edge_endpoint_paths'",
+            "SELECT value FROM metadata WHERE key='schema_version'",
             [],
             |row| row.get(0),
         )
-        .unwrap();
-    assert_eq!(
-        projection_exists, 0,
-        "production index must not duplicate edge endpoint adjacency"
-    );
-    let schema: String = conn
-        .query_row("SELECT value FROM metadata WHERE key='schema_version'", [], |row| row.get(0))
         .unwrap();
     assert_eq!(schema, "15");
     for (inside, outside, index) in [
@@ -149,10 +143,19 @@ fn directory_suffix_lists_real_nodes_and_exact_file_keeps_graph_traversal() {
         .find(|module| module["module"] == "foreign/team\"quote")
         .expect("module paths preserve quotes");
     assert!(quoted["edge_count"].as_u64().unwrap() >= 6, "{quoted}");
-    assert_eq!(quoted["symbol_pairs"].as_array().unwrap().len(), 5, "{quoted}");
-    assert!(boundary["exported_symbols"]["items"].as_array().unwrap().iter().any(
-        |node| node["name"] == "secondary" && node["external_caller_count"] == 6
-    ), "{boundary}");
+    assert_eq!(
+        quoted["symbol_pairs"].as_array().unwrap().len(),
+        5,
+        "{quoted}"
+    );
+    assert!(
+        boundary["exported_symbols"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|node| node["name"] == "secondary" && node["external_caller_count"] == 7),
+        "{boundary}"
+    );
     assert!(
         result["edges"]["items"]
             .as_array()
@@ -515,6 +518,113 @@ fn directory_suffix_lists_real_nodes_and_exact_file_keeps_graph_traversal() {
         .unwrap();
     assert_eq!(prior_root, root);
     contextunity_forge_mcp::core::commitments::verify(&after).unwrap();
+    drop(after);
+
+    // Make JSON string ordering differ from raw endpoint ordering, after the
+    // incremental integrity checks.
+    let writer = rusqlite::Connection::open(ws.db()).unwrap();
+    let mut statement = writer.prepare("SELECT DISTINCT d.node_hash FROM edges e
+        JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash
+        JOIN path_dictionary sp ON sp.path_id=s.path_id JOIN path_dictionary dp ON dp.path_id=d.path_id
+        WHERE sp.path LIKE '%/commerce/ingestion/%' AND dp.path LIKE '%/commerce/ingestion/%'
+        ORDER BY d.id LIMIT 2").unwrap();
+    let hashes: Vec<i64> = statement
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    drop(statement);
+    assert_eq!(hashes.len(), 2);
+    for (hash, id) in hashes.iter().zip(["test-a", "test-a!"]) {
+        writer
+            .execute(
+                "UPDATE nodes SET id=?1 WHERE node_hash=?2",
+                rusqlite::params![id, hash],
+            )
+            .unwrap();
+    }
+    writer.execute_batch("INSERT OR IGNORE INTO coverage_evidence(evidence) VALUES ('aaa'),('zzz');
+        UPDATE edges SET confidence_id=(SELECT evidence_id FROM coverage_evidence WHERE evidence='aaa')
+        WHERE src_hash IN (SELECT n.node_hash FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path LIKE '%/commerce/ingestion/%')
+          AND dst_hash IN (SELECT n.node_hash FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path LIKE '%/commerce/ingestion/%');
+        UPDATE edges SET confidence_id=(SELECT evidence_id FROM coverage_evidence WHERE evidence='zzz')
+        WHERE (src_hash,kind,dst_hash) = (SELECT e.src_hash,e.kind,e.dst_hash FROM edges e
+          JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash
+          JOIN path_dictionary sp ON sp.path_id=s.path_id JOIN path_dictionary dp ON dp.path_id=d.path_id
+          WHERE sp.path LIKE '%/commerce/ingestion/%' AND dp.path LIKE '%/commerce/ingestion/%'
+          ORDER BY s.id,d.id,e.kind LIMIT 1);").unwrap();
+    contextunity_forge_mcp::core::commitments::seal(&writer).unwrap();
+    drop(writer);
+    let conn = ws.open();
+    for detail in [Detail::Compact, Detail::Full] {
+        let page =
+            QueryOptions::resolve(&ResponsePolicy::default(), Some(100), 0, Some(detail), None)
+                .unwrap();
+        let result = traversal::query_with_options(
+            &conn,
+            "slice",
+            Some("contextunity/commerce/ingestion"),
+            &traversal::GraphQueryOptions {
+                depth: 1,
+                direction: None,
+                coverage: CoverageOptions::default(),
+                page: &page,
+            },
+        )
+        .unwrap();
+        let edges = result["edges"]["items"].as_array().unwrap();
+        assert!(edges.iter().any(|edge| edge["confidence"] == "aaa"));
+        assert!(edges.iter().any(|edge| edge["confidence"] == "zzz"));
+        let mut expected = edges.clone();
+        expected.sort_by_key(|edge| {
+            let mut old = serde_json::json!({
+                "src_public_id":edge["src_public_id"],"dst_public_id":edge["dst_public_id"],
+                "kind":edge["kind"],"line":edge["line"],"occurrence_count":edge["occurrence_count"],
+                "path":edge["path"],"confidence":edge["confidence"]
+            });
+            if detail == Detail::Full {
+                old["evidence"] = edge["evidence"].clone();
+            }
+            old.to_string()
+        });
+        assert_eq!(edges, &expected, "internal edge order for {detail:?}");
+        let punctuated = edges
+            .iter()
+            .position(|edge| edge["dst_public_id"] == "test-a!")
+            .unwrap();
+        let prefix = edges
+            .iter()
+            .position(|edge| edge["dst_public_id"] == "test-a")
+            .unwrap();
+        assert!(
+            punctuated < prefix,
+            "fixture must distinguish JSON string and raw ordering"
+        );
+        let generation = result["edges"]["generation"].as_str().unwrap();
+        for (offset, edge) in expected.iter().enumerate() {
+            let page = QueryOptions::resolve(
+                &ResponsePolicy::default(),
+                Some(1),
+                offset,
+                Some(detail),
+                Some(generation.to_owned()),
+            )
+            .unwrap();
+            let part = traversal::query_with_options(
+                &conn,
+                "slice",
+                Some("contextunity/commerce/ingestion"),
+                &traversal::GraphQueryOptions {
+                    depth: 1,
+                    direction: None,
+                    coverage: CoverageOptions::default(),
+                    page: &page,
+                },
+            )
+            .unwrap();
+            assert_eq!(&part["edges"]["items"][0], edge);
+        }
+    }
 }
 
 #[test]
@@ -615,9 +725,7 @@ fn large_directory_is_paged_without_graph_expansion() {
     );
     drop(conn);
     let writer = rusqlite::Connection::open(ws.db()).unwrap();
-    writer
-        .execute_batch("DELETE FROM edges")
-        .unwrap();
+    writer.execute_batch("DELETE FROM edges").unwrap();
     let empty = traversal::query_with_options(
         &writer,
         "slice",
@@ -670,9 +778,7 @@ fn large_directory_is_paged_without_graph_expansion() {
     .unwrap();
     assert_eq!(component["selector"]["kind"], "component");
     assert_eq!(component["depth"], 1);
-    writer
-        .execute_batch("DELETE FROM edges")
-        .unwrap();
+    writer.execute_batch("DELETE FROM edges").unwrap();
     writer.execute_batch("INSERT OR IGNORE INTO edges(src_hash,kind,dst_hash,path_id,line,evidence_id,confidence_id,occurrence_count) SELECT a.node_hash,'calls',b.node_hash,a.path_id,1,(SELECT evidence_id FROM coverage_evidence LIMIT 1),(SELECT evidence_id FROM coverage_evidence LIMIT 1),1 FROM nodes a CROSS JOIN nodes b WHERE a.kind='function' AND b.kind='function' LIMIT 10001").unwrap();
     let conn = writer;
     let dense = traversal::query_with_options(

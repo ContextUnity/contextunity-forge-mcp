@@ -186,14 +186,6 @@ fn leaves(
     domain_leaves::leaves_generic(conn, table, owners)
 }
 
-/// Computes node commitment leaves for owners whose persisted navigation details changed.
-pub(crate) fn node_leaves_for_owners(
-    conn: &Connection,
-    owners: &BTreeSet<String>,
-) -> Result<BTreeMap<String, String>> {
-    domain_leaves::leaves_nodes(conn, Some(owners))
-}
-
 fn ensure_fts_vocab(conn: &Connection, index: &str) -> Result<&'static str> {
     let (table, create_sql) = match index {
         "node_search" => (
@@ -419,7 +411,93 @@ fn validate_fts_docsize(
     Ok(())
 }
 
+// The node vocabulary normally arrives in canonical order. Check that order
+// explicitly: SQLite does not promise it for a SELECT without ORDER BY.
+fn stream_node_fts_digest(conn: &Connection) -> Result<Option<String>> {
+    let table = "node_search_postings";
+    let vocab = ensure_fts_vocab(conn, "node_search")?;
+    let spec = fts_commitment_spec("node_search")?;
+    let (mut documents, _) = load_fts_documents(conn, &spec)?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT v.term,v.col,v.offset,v.doc FROM temp.{vocab} AS v"
+    ))?;
+    let mut rows = stmt.query([])?;
+    let mut hasher = Sha256::new();
+    hasher.update(table);
+    let mut encoded = Vec::with_capacity(256 * 1024);
+    let mut previous_term = Vec::new();
+    let mut previous: Option<(i64, i64)> = None;
+    let mut distinct_terms = 0usize;
+    while let Some(row) = rows.next()? {
+        let term = match row.get_ref(0)? {
+            ValueRef::Text(term) => term,
+            _ => anyhow::bail!("invalid FTS5 vocabulary term in {table}"),
+        };
+        let column = match row.get_ref(1)? {
+            ValueRef::Text(column) => column,
+            _ => anyhow::bail!("invalid FTS5 document-size column in {table}"),
+        };
+        anyhow::ensure!(
+            column == spec.columns[0].as_bytes(),
+            "unknown FTS5 document-size column: node_search:{}",
+            String::from_utf8_lossy(column)
+        );
+        let offset: i64 = row.get(2)?;
+        let doc: i64 = row.get(3)?;
+        let document = documents.get_mut(&doc)
+            .with_context(|| format!("FTS5 postings refer to missing owner rows: {table}"))?;
+        let identity = document.identity_sort_key
+            .with_context(|| format!("FTS5 postings refer to missing owner rows: {table}"))?;
+        let order = term.cmp(previous_term.as_slice());
+        if previous.is_some_and(|last| order.is_lt() || (order.is_eq() && (identity, offset) < last)) {
+            return Ok(None);
+        }
+        if previous.is_none() || !order.is_eq() {
+            // Match the sorted implementation's u32 term-id limit.
+            u32::try_from(distinct_terms)?;
+            distinct_terms = distinct_terms.checked_add(1).context("FTS5 term count overflow")?;
+            previous_term.clear();
+            previous_term.extend_from_slice(term);
+        }
+        previous = Some((identity, offset));
+        document.token_counts[0] = document.token_counts[0]
+            .checked_add(1)
+            .context("FTS5 token count exceeds document-size range")?;
+        append_fts_posting(&mut encoded, term, FtsRowIdentityRef::NodeHash(identity), column, offset);
+        if encoded.len() >= 256 * 1024 {
+            hasher.update(&encoded);
+            encoded.clear();
+        }
+    }
+    hasher.update(&encoded);
+    validate_fts_docsize(&spec, &documents)?;
+    Ok(Some(hex::encode(hasher.finalize())))
+}
+
 fn fts_digest(conn: &Connection, table: &str, order_by: &str) -> Result<String> {
+    if table != "node_search_postings" {
+        return fts_digest_sorted(conn, table, order_by);
+    }
+    // query_only must be restored before opening a read transaction. Existing
+    // callers with a transaction retain their snapshot; autocommit callers get
+    // a snapshot shared by the streaming attempt and any sorted fallback.
+    ensure_fts_vocab(conn, "node_search")?;
+    let snapshot = if conn.is_autocommit() {
+        Some(conn.unchecked_transaction()?)
+    } else {
+        None
+    };
+    let digest = match stream_node_fts_digest(conn)? {
+        Some(digest) => digest,
+        None => fts_digest_sorted(conn, table, order_by)?,
+    };
+    if let Some(snapshot) = snapshot {
+        snapshot.commit()?;
+    }
+    Ok(digest)
+}
+
+fn fts_digest_sorted(conn: &Connection, table: &str, order_by: &str) -> Result<String> {
     let mut h = Sha256::new();
     h.update(table);
     if let Some(index) = table.strip_suffix("_postings") {
@@ -776,31 +854,6 @@ pub fn verify(conn: &Connection) -> Result<()> {
     verify_owners(conn, None)
 }
 
-/// Check the derived endpoint adjacency against canonical committed graph rows.
-/// When scoped, the caller supplies a temporary changed_endpoint_keys table.
-pub(crate) fn verify_endpoint_projection(conn: &Connection, changed_only: bool) -> Result<()> {
-    let expected_source = if changed_only {
-        "changed_endpoint_keys k CROSS JOIN edges e ON e.src_hash=k.src_hash AND e.kind=k.kind AND e.dst_hash=k.dst_hash"
-    } else {
-        "edges e"
-    };
-    let extra_source = if changed_only {
-        "changed_endpoint_keys k CROSS JOIN edge_endpoint_paths p ON p.src_hash=k.src_hash AND p.kind=k.kind AND p.dst_hash=k.dst_hash"
-    } else {
-        "edge_endpoint_paths p"
-    };
-    let missing: bool = conn.query_row(&format!(
-        "SELECT EXISTS(SELECT 1 FROM {expected_source} LEFT JOIN nodes s ON s.node_hash=e.src_hash LEFT JOIN nodes t ON t.node_hash=e.dst_hash LEFT JOIN path_dictionary sp ON sp.path_id=s.path_id LEFT JOIN path_dictionary tp ON tp.path_id=t.path_id WHERE s.node_hash IS NULL OR t.node_hash IS NULL OR sp.path IS NULL OR tp.path IS NULL OR NOT EXISTS(SELECT 1 FROM edge_endpoint_paths p WHERE p.path=sp.path AND p.direction=0 AND p.src_hash=e.src_hash AND p.kind=e.kind AND p.dst_hash=e.dst_hash) OR NOT EXISTS(SELECT 1 FROM edge_endpoint_paths p WHERE p.path=tp.path AND p.direction=1 AND p.src_hash=e.src_hash AND p.kind=e.kind AND p.dst_hash=e.dst_hash))"
-    ), [], |row| row.get(0))?;
-    let extra: bool = conn.query_row(&format!(
-        "SELECT EXISTS(SELECT 1 FROM {extra_source} LEFT JOIN edges e ON e.src_hash=p.src_hash AND e.kind=p.kind AND e.dst_hash=p.dst_hash LEFT JOIN nodes n ON n.node_hash=CASE p.direction WHEN 0 THEN p.src_hash WHEN 1 THEN p.dst_hash END LEFT JOIN path_dictionary np ON np.path_id=n.path_id WHERE e.src_hash IS NULL OR np.path IS NULL OR np.path<>p.path OR p.direction NOT IN (0,1))"
-    ), [], |row| row.get(0))?;
-    if missing || extra {
-        bail!("endpoint adjacency projection mismatch; rebuild index");
-    }
-    Ok(())
-}
-
 /// Verifies selected owner leaves and all affected domain and output roots.
 ///
 /// `None` verifies the complete index.
@@ -816,14 +869,6 @@ pub fn verify_owners(conn: &Connection, owners: Option<&BTreeSet<String>>) -> Re
     )?;
     if algorithm != ALGORITHM {
         bail!("incompatible commitment algorithm; rebuild index");
-    }
-    let current_schema: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM metadata WHERE key='schema_version' AND value=?1)",
-        [crate::core::config::ENGINE_SCHEMA_VERSION],
-        |row| row.get(0),
-    )?;
-    if owners.is_none() && current_schema {
-        verify_endpoint_projection(conn, false)?;
     }
     for table in DOMAINS {
         let actual = leaves(conn, table, owners)?;
@@ -870,34 +915,3 @@ pub fn verify_owners(conn: &Connection, owners: Option<&BTreeSet<String>>) -> Re
     Ok(())
 }
 
-#[cfg(test)]
-mod endpoint_projection_tests {
-    use super::verify_endpoint_projection;
-    use rusqlite::Connection;
-
-    #[test]
-    fn missing_endpoint_is_rejected_in_full_and_changed_key_verification() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE edges(src_hash INTEGER,kind TEXT,dst_hash INTEGER);
-             CREATE TABLE nodes(node_hash INTEGER,path_id INTEGER);
-             CREATE TABLE path_dictionary(path_id INTEGER,path TEXT);
-             CREATE TABLE edge_endpoint_paths(path TEXT,direction INTEGER,src_hash INTEGER,kind TEXT,dst_hash INTEGER);
-             CREATE TEMP TABLE changed_endpoint_keys(src_hash INTEGER,kind TEXT,dst_hash INTEGER);
-             INSERT INTO edges VALUES(1,'calls',2);
-             INSERT INTO nodes VALUES(2,1);
-             INSERT INTO path_dictionary VALUES(1,'target.py');
-             INSERT INTO edge_endpoint_paths VALUES('target.py',1,1,'calls',2);
-             INSERT INTO changed_endpoint_keys VALUES(1,'calls',2);"
-        ).unwrap();
-        for scoped in [false, true] {
-            let error = verify_endpoint_projection(&conn, scoped)
-                .unwrap_err()
-                .to_string();
-            assert!(
-                error.contains("endpoint adjacency projection mismatch"),
-                "{error}"
-            );
-        }
-    }
-}

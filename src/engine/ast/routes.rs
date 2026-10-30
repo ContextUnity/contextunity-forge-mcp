@@ -121,6 +121,8 @@ pub struct RouteContext {
     providers: Vec<(RoutePrefixRule, PrefixBindings)>,
     lexical: LexicalBindings,
     prepared_bindings: HashMap<usize, super::ScopeBindings>,
+    #[cfg(feature = "lang-python")]
+    defer_python_orm: bool,
 }
 
 #[derive(Debug, Default)]
@@ -131,6 +133,8 @@ struct LexicalBindings {
     scopes: HashMap<usize, HashSet<String>>,
     #[cfg(feature = "lang-python")]
     python_writes: HashMap<usize, languages::python::BindingWrites>,
+    #[cfg(feature = "lang-python")]
+    python_class_lines: HashMap<usize, usize>,
 }
 
 impl LexicalBindings {
@@ -251,9 +255,6 @@ fn python_summary_candidates(source: &str, rules: &languages::LanguageContext) -
                     bases,
                     ..
                 } if language == "python" && !bases.is_empty() => source.contains(attribute),
-                SemanticOperation::ClassDefaultTable { language, .. } if language == "python" => {
-                    source.contains("class")
-                }
                 _ => false,
             })
         || rules
@@ -273,6 +274,31 @@ fn python_summary_candidates(source: &str, rules: &languages::LanguageContext) -
 }
 
 impl RouteContext {
+    #[cfg(feature = "lang-python")]
+    pub(crate) fn defer_python_orm(&self) -> bool {
+        self.defer_python_orm
+    }
+
+    #[cfg(feature = "lang-python")]
+    pub(super) fn set_defer_python_orm(&mut self) {
+        self.defer_python_orm = true;
+    }
+    #[cfg(feature = "lang-python")]
+    pub(crate) fn python_module_write_count(&self, name: &str) -> usize {
+        self.lexical
+            .python_writes
+            .get(&self.lexical.root)
+            .map_or(0, |w| w.count(name))
+    }
+
+    #[cfg(feature = "lang-python")]
+    pub(crate) fn python_class_write_count(&self, line: usize, name: &str) -> usize {
+        self.lexical
+            .python_class_lines
+            .get(&line)
+            .and_then(|id| self.lexical.python_writes.get(id))
+            .map_or(0, |w| w.count(name))
+    }
     pub(crate) fn prepare(
         root: Syntax<'_>,
         source: &str,
@@ -1318,6 +1344,86 @@ pub(crate) struct RouteContextBuilder<'source, 'tree> {
     )>,
 }
 
+/// Collect only the writes needed by Python class consumers during the main walk.
+#[cfg(feature = "lang-python")]
+pub(super) struct PythonClassBindings<'source, 'tree> {
+    root: Syntax<'tree>,
+    source: &'source str,
+    module: languages::python::BindingWriteCollector<'source, 'tree>,
+    class: Option<(
+        Syntax<'tree>,
+        languages::python::BindingWriteCollector<'source, 'tree>,
+    )>,
+    classes: HashMap<usize, (usize, languages::python::BindingWrites)>,
+    collect_classes: bool,
+}
+
+#[cfg(feature = "lang-python")]
+impl<'source, 'tree> PythonClassBindings<'source, 'tree> {
+    pub(super) fn new(root: Syntax<'tree>, source: &'source str, collect_classes: bool) -> Self {
+        Self {
+            root,
+            source,
+            module: languages::python::BindingWriteCollector::new(root, source),
+            class: None,
+            classes: HashMap::new(),
+            collect_classes,
+        }
+    }
+
+    pub(super) fn observe(&mut self, node: Syntax<'tree>, entering: bool) {
+        if entering {
+            self.module.enter(node, node.kind());
+            if let Some((_, collector)) = &mut self.class {
+                collector.enter(node, node.kind());
+            } else if self.collect_classes
+                && node.kind() == "class_definition"
+                && node.parent().is_some_and(|parent| {
+                    parent == self.root
+                        || (parent.kind() == "decorated_definition"
+                            && parent.parent() == Some(self.root))
+                })
+            {
+                let mut collector =
+                    languages::python::BindingWriteCollector::new(node, self.source);
+                collector.enter(node, node.kind());
+                self.class = Some((node, collector));
+            }
+        } else {
+            self.module.exit();
+            if self.class.as_ref().is_some_and(|(class, _)| *class == node) {
+                let (class, collector) = self.class.take().expect("class collector exists");
+                self.classes.insert(
+                    class.start_position().row + 1,
+                    (class.id(), collector.finish()),
+                );
+            } else if let Some((_, collector)) = &mut self.class {
+                collector.exit();
+            }
+        }
+    }
+
+    pub(super) fn finish(self) -> RouteContext {
+        let mut lexical = LexicalBindings {
+            root: self.root.id(),
+            python_module: true,
+            ..LexicalBindings::default()
+        };
+        lexical
+            .python_writes
+            .insert(self.root.id(), self.module.finish());
+        for (line, (id, writes)) in self.classes {
+            lexical.python_class_lines.insert(line, id);
+            lexical.python_writes.insert(id, writes);
+        }
+        RouteContext {
+            root: self.root.id(),
+            lexical,
+            ..RouteContext::default()
+        }
+    }
+}
+
 impl<'source, 'tree> RouteContextBuilder<'source, 'tree> {
     fn inactive(context: RouteContext, root: Syntax<'tree>, source: &'source str) -> Self {
         Self {
@@ -1444,6 +1550,7 @@ impl<'source, 'tree> RouteContextBuilder<'source, 'tree> {
                     && matches!(
                         rule.operation,
                         languages::manifests::syntax::SyntaxOperation::NamedBinding { .. }
+                            | languages::manifests::syntax::SyntaxOperation::ClassMethodRegistration { .. }
                     )
             });
         if rules.route_decorators.is_empty() && rules.route_calls.is_empty() && !semantic_bindings {
@@ -1517,6 +1624,12 @@ impl<'source, 'tree> RouteContextBuilder<'source, 'tree> {
                         .python_collectors
                         .pop()
                         .expect("Python scope entry precedes exit");
+                    if scope_node.kind() == "class_definition" {
+                        self.context
+                            .lexical
+                            .python_class_lines
+                            .insert(scope_node.start_position().row + 1, scope_node.id());
+                    }
                     self.context
                         .lexical
                         .python_writes
