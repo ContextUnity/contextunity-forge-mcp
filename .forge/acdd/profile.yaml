@@ -25,7 +25,7 @@ roles:
     reuse_on_reject: true
     models:
       - 'sol-6.1:high'
-    guidance: "As contract author, define the production-seam contract and runtime-red proof (exit code 101). For existing capabilities, extend existing domain seam tests additively and subsume weaker duplicates; author new tests only for greenfield boundaries with compiling production stubs. Post a build-targeted draft for the builder."
+    guidance: "As contract author, conduct architectural exploration before defining contracts. Enforce the principle of minimal intervention without duplicate mechanisms. Strengthen existing domain seam tests additively with parameterized cases rather than duplicating standalone tests (compiling red test with exit code 101). Never modify protected files (Cargo.toml, build.rs, .forge/**). Post a build-targeted draft for the builder."
 
   builder:
     mode: subagent
@@ -39,7 +39,7 @@ roles:
     reuse_on_reject: true
     models:
       - 'sol-6.1:xhigh'
-    guidance: "Use a reviewer worker independent from the builder. Submit review proof across contours, then claim and submit deliver in the same reviewer session."
+    guidance: "Use a reviewer worker independent from the builder. Conduct a broad architectural audit and check against performance.md. Treat review contours as analytical guidance rather than rigid checkboxes. Reject superficial workarounds ('anti-easy-way-out') and duplicate mechanisms. Formulate findings constructively without blocking beneficial optimizations. Submit review proof across contours, then claim and submit deliver in the same reviewer session."
 
   architect:
     mode: subagent
@@ -57,6 +57,33 @@ guidance:
       - "SEAM CONTRACT & BASELINE: Author an additive domain seam test in tests/languages/extractors.rs that compiles cleanly and proves the red baseline (exit code 101)."
       - "RECORD ARCHITECTURAL DECISION: Before submitting this gate, post an explicit synthesis decision to task_blackboard (topic: decisions) detailing the chosen implementation path."
       - "ANTI-AUTOPILOT INVARIANT: Do NOT blindly submit a failing test without completing the architectural audit and posting the decision to the blackboard."
+
+  task.contract:
+    description: "PRODUCTION-SEAM CONTRACT AUTHORING & RUNTIME-RED PROOF"
+    criteria:
+      - "ARCHITECTURAL EXPLORATION: Explore existing contracts and domain seam tests using code_map_* and ctx_read before defining tests."
+      - "MINIMAL INTERVENTION: Avoid duplicate mechanisms, redundant wrapper tables, or shadow registries when existing seams can be cleanly extended."
+      - "ADDITIVE SEAM TESTS: Strengthen existing domain seam tests in tests/ additively with parameterized test cases rather than creating duplicate standalone test functions."
+      - "COMPILING RUNTIME-RED: Ensure contract tests compile cleanly and produce runtime assertion failures (exit code 101) for the contract gate proof."
+      - "SCOPE INTEGRITY: Never touch protected files (Cargo.toml, build.rs, .forge/**) or expand scope outside admitted task perimeter."
+
+  task.review:
+    description: "INDEPENDENT REVIEW CORE INVARIANTS & ENGINEERING PRINCIPLES"
+    criteria:
+      - "BROAD ARCHITECTURAL EXPLORATION: Never evaluate diffs in isolation. Thoroughly inspect subsystem integration and extension points using Forge MCP (code_map_inspect, code_map_impact, ast_grep_search, code_map_overview) and ctx_read."
+      - "MANDATORY PERFORMANCE ALIGNMENT: Read docs/architecture/performance.md before reviewing. Verify zero performance regressions: single-pass reads, zero duplicate fact caches, avoiding nested Rayon overhead, lean details, and minimal heap allocations."
+      - "CONSTRUCTIVE FINDINGS: Formulate findings constructively with actionable criteria. Do not weaponize minor terminology mismatches, theoretical nuances, or pedantic wording to block genuine, useful optimizations."
+      - "MINIMAL INTERVENTION & BAN ON DUPLICATE MECHANISMS: Enforce minimal intervention. Strictly reject solutions that introduce parallel abstractions, redundant wrapper tables, or duplicate registries when existing production seams can be cleanly extended."
+      - "ANTI-EASY-WAY-OUT: Actively detect and reject superficial hacks, mockings, weakened assertions, or patches designed merely to appease the review gate. Require durable, authentic root-cause fixes."
+      - "CONTOURS AS GUIDING RECOMMENDATIONS: Treat the 5 review contours (paths, claims, concurrency, project_isolation, administration) as an analytical evaluation framework, not rigid bureaucratic checkboxes. Apply engineering judgment to expand scrutiny where real risks lie or relax depth where a contour is non-applicable."
+
+  milestone.review:
+    description: "MILESTONE INTEGRATION REVIEW & BOUNDED VERIFICATION"
+    criteria:
+      - "SYSTEM-LEVEL COHESION: Review overall milestone diff against target base for holistic architecture alignment, zero dangling abstractions, and clean module boundaries."
+      - "PERFORMANCE INVARIANTS: Verify full alignment with docs/architecture/performance.md with authentic benchmark proof and no memory or latency regressions."
+      - "CONSTRUCTIVE & DURABLE: Enforce authentic root-cause fixes; reject superficial workarounds or duplicate mechanisms without blocking beneficial improvements."
+      - "ANALYTICAL CONTOURS: Evaluate review contours with engineering judgment as guiding recommendations rather than rigid bureaucratic checkboxes."
 
 commands:
   rust-check-and-test:

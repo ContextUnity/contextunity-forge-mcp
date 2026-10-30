@@ -31,22 +31,12 @@ When authoring contracts for existing capabilities, strengthen existing seam tes
 ## Architectural Contract Synthesis Gate (contract_synthesis)
 
 The initial gate of the milestone workflow is `contract_synthesis` (role: `architect`).
-**DO NOT AUTOPILOT OR BYPASS THIS GATE BY MERELY PRODUCING A RED TEST:**
-
-1. **Broad Architectural Exploration**: Thoroughly inspect how the feature fits into the existing codebase using Forge tools (`code_map_inspect`, `code_map_impact`, `ast_grep_search`, `ctx_read`). For example, for language indexing, inspect `src/engine/languages/mod.rs` and understand how languages, facts, and registries interact.
-2. **Principle of Minimal Intervention & No Duplicate Mechanisms**:
-   - Design solutions that integrate cleanly into existing production seams and registries.
-   - Strictly avoid introducing parallel abstractions, redundant wrapper tables, or shadow registries when an existing registry or pipeline can be extended additively.
-3. **Strict Scope & Configuration Guardrail**:
-   - Check that the proposed implementation fits entirely within the task's `scope:` without needing changes to protected project configuration (`Cargo.toml`, `build.rs`, `.forge/**`).
-   - If an approach suggests modifying `Cargo.toml` or creating new Cargo features, that approach is **REJECTED**: use lightweight internal engine lexers/parsers in `src/engine/languages/` and register them via internal registries instead.
-4. **Blackboard Decision Record**:
-   - Before submitting `contract_synthesis`, post an explicit decision to `task_blackboard` (topic: `decisions`) detailing:
-     - The confirmed architectural design and module entrypoints.
-     - Confirmation that no out-of-scope or protected configuration files are required.
-     - The chosen seam test location and expectations.
-5. **Compile Red Seam Test Baseline**:
-   - Author or strengthen an additive domain seam test in `tests/` that compiles cleanly and triggers a runtime assertion failure (exit code 101).
+Follow `guidance.milestone.synthesis` in `.forge/acdd/profile.yaml` for:
+1. Broad architectural exploration via Forge MCP (`code_map_*`, `ast_grep_search`, `ctx_read`).
+2. Minimal intervention principle (no duplicate registries or parallel tables).
+3. Scope integrity (protected files `Cargo.toml`, `build.rs` are strictly off-limits).
+4. Recording the architectural decision on `task_blackboard` before submission.
+5. Authoring a compiling runtime-red seam test (exit code 101).
 <!-- acdd-forge:contract-synthesis:end -->
 
 ## Documentation scan before handoff
@@ -106,19 +96,12 @@ For a new session without an existing `<SESSION_ID>`, run `codex exec -c model="
 
 ### Review execution and findings feedback loop
 
-1. **Reviewer Core Invariants & Engineering Principles**:
-   - **Broad Architectural Exploration**: Never evaluate diffs in isolation. Thoroughly inspect how changes integrate into the surrounding subsystem using Forge tools (`code_map_inspect`, `code_map_impact`, `ast_grep_search`, `code_map_overview`, `ctx_read`).
-   - **Mandatory Alignment with `performance.md`**: Reviewers must read [docs/architecture/performance.md](docs/architecture/performance.md) before reviewing. Verify zero performance regressions: single-pass reads, zero duplicate fact caches, avoiding nested Rayon overhead, lean `details`, and minimal heap allocations.
-   - **Constructive Findings (Do Not Block Useful Improvements)**: Findings must be formulated constructively with actionable criteria. Do not weaponize minor terminology mismatches, theoretical complexity nuances, or pedantic wording to block genuine, useful optimizations. Invariant wording adjustments belong on the coordinator blackboard, not as delivery blockers.
-   - **Minimal Intervention & Ban on Duplicate Mechanisms**: Enforce the principle of minimal intervention. Strictly reject solutions that introduce parallel abstractions, redundant wrapper tables, or duplicate registries when existing production seams can be cleanly extended.
-   - **Ban on Superficial Workarounds ("Anti-Easy-Way-Out")**: Actively detect and reject superficial hacks, mockings, weakened assertions, or patches designed merely to appease the review gate. Require durable, authentic root-cause fixes.
-   - **Contours as Guiding Recommendations**: The formal 5 review contours (`paths`, `claims`, `concurrency`, `project_isolation`, `administration`) are an analytical evaluation framework, not rigid bureaucratic checkboxes. Reviewers must apply engineering judgment — expanding scrutiny where real risks lie or relaxing depth where a contour is non-applicable or purely theoretical.
-
-2. **Review Stage (`model_reasoning_effort="xhigh"`)**:
+1. **Review Stage (`model_reasoning_effort="xhigh"`)**:
    - Run the independent reviewer agent with maximum reasoning effort:
      `codex exec -c model="gpt-6.1-sol" -c model_reasoning_effort="xhigh" "<REVIEW_PROMPT>"`
    - Use an independent `worker_id` (e.g. `codex-sol-reviewer`) distinct from the builder worker.
-3. **Builder feedback loop (`codex exec resume <BUILDER_SESSION_ID>`)**:
+   - Reviewer operational guidance, performance invariants, and evaluation criteria are defined in the active profile (`.forge/acdd/profile.yaml`).
+2. **Builder feedback loop (`codex exec resume <BUILDER_SESSION_ID>`)**:
    - Always route review findings, rejection details, and remediation tasks back into the **same builder session**:
      `codex exec resume -c model="gpt-6.1-sol" -c model_reasoning_effort="medium" <BUILDER_SESSION_ID> "<REVIEW_FINDINGS>"`
    - This preserves the builder's complete context, file history, and reasoning continuity without cold restarts.
