@@ -2,7 +2,7 @@
 id: m-framework-indexing-regression-repair
 title: Cold-build performance, RSS bound, HTML endpoint resolution repair, and Cargo workspace split
 doc_type: contract
-status: planned
+status: active
 depends_on:
 - m-declarative-framework-manifests-and-ecosystem-packs
 owners:
@@ -30,6 +30,7 @@ tasks:
 - restore-framework-indexing-performance
 - restore-default-html-endpoint-resolution
 - split-cargo-workspace-into-independent-crates
+started_at: 2026-10-30T17:26:21+00:00
 ---
 
 # Cold-build performance, RSS bound, HTML endpoint resolution repair, and Cargo workspace split
@@ -58,32 +59,80 @@ are implemented directly in milestone 022.
 
 ```yaml
 task_ref: restore-framework-indexing-performance
-target: "Remove the cold-indexing performance regression introduced by framework extraction and linking changes while preserving their correct resolution results"
+target: Remove the cold-indexing performance regression introduced by framework extraction and linking changes while preserving their correct resolution results
 proof_policy: direct-proof
 contract_revision: 1
 scope:
-  - src/core/typed_facts.rs
-  - src/core/semantic.rs
-  - src/db/writer.rs
-  - src/db/writer/
-  - src/engine/ast/
-  - src/engine/languages/
-  - src/engine/linker.rs
-  - src/engine/linker/
-  - src/engine/pipeline.rs
-  - tests/languages/
-  - tests/incremental/
-  - tests/commitment_integrity/
-  - docs/architecture/performance.md
-  - docs/architecture/indexing.md
-status: ready
+- src/core/typed_facts.rs
+- src/core/semantic.rs
+- src/db/writer.rs
+- src/db/writer/
+- src/engine/ast/
+- src/engine/languages/
+- src/engine/linker.rs
+- src/engine/linker/
+- src/engine/pipeline.rs
+- tests/languages/
+- tests/incremental/
+- tests/commitment_integrity/
+- docs/architecture/performance.md
+- docs/architecture/indexing.md
+status: completed
 subtasks:
-  - subtask_ref: remove-introduced-redundant-work
-    title: "Find and remove redundant traversal, rule processing, index construction, and fact conversion introduced by the framework changes; keep required analysis intact"
-    status: ready
-  - subtask_ref: preserve-resolution-and-persistence
-    title: "Verify unchanged correct targets, cold/delta behavior, cache hydration, and commitments through existing shared seams"
-    status: ready
+- subtask_ref: remove-introduced-redundant-work
+  title: Find and remove redundant traversal, rule processing, index construction, and fact conversion introduced by the framework changes; keep required analysis intact
+  status: completed
+  evidence: 'Implemented the accepted contract''s identified redundant path: Context::named_member reuses the effective Arc<LanguageContext> already prepared for the file, keyed by interned PathId, instead of rebuilding the workspace/package-scope context key per member reference. The existing allocation-bound seam test passed for 1 vs 32 references (1 passed, 0 failed) and asserts exact targets/coverage. The admitted contract selected this path; no broader traversal/index/fact-conversion or whole-corpus performance claim is made. No benchmark was run.'
+- subtask_ref: preserve-resolution-and-persistence
+  title: Verify unchanged correct targets, cold/delta behavior, cache hydration, and commitments through existing shared seams
+  status: completed
+  evidence: 'Ran focused member-resolution seam (1 passed, 0 failed), then strict Clippy and the complete affected --lib, commitment_integrity, incremental, and languages targets (399 passed, 0 failed: 102 + 16 + 31 + 250). These existing suites provide the selected proof for resolution, incremental/cold-delta, commitment, and persistence behavior. The runs do not measure relative cold-build latency/RSS; that remains unverified because benchmarks were not authorized.'
+receipt:
+  contract_revision: 1
+  passed_at: 2026-10-30T19:59:38.961439188+00:00
+  evidence:
+    seam_test_proof:
+      exit_code: 0
+      seam_test_refs:
+      - tests/languages/extractors.rs
+      tests_failed: 0
+      tests_passed: 250
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: Reviewed immutable scoped candidate 8eac0f3f63b502933d08b7579a4eaaad37c5f020 against ac75900e73f7bc84b28b8151497abd4896aaaa06 and f4bb809b. Relative to synthesis, exactly src/engine/languages/dependency_registry.rs, docs/architecture/indexing.md and docs/architecture/performance.md change. Relative to f4bb809b the only additional scoped change is tests/languages/extractors.rs, already authored and committed at synthesis; it is unchanged against ac75900e. A final git diff --exit-code against the candidate over the entire admitted scope passed; git diff --check passed. No staged or untracked source changes. Inherited Cargo.toml/Cargo.lock version/author metadata and coordinator .gitignore/milestone lifecycle/dependency edits are outside this scoped snapshot, corroborated by prior review/build evidence; no protected-path changes by this task.
+        claims:
+          applicable: true
+          evidence: 'PASS. language_context_for_path now hashes borrowed registry digest and logical directory before language_context_key. A verified hit returns an Arc clone without profiles/BTreeSet preparation, manifest-scope traversal or owned scope strings. Misses retain canonical registry-owned context lookup and the existing legacy preparation; the 512-entry directory memo holds Arc handles, not duplicate rule/fact payloads. Exact digest/directory comparisons make hash collisions safe misses. Context::named_member reaches this production lookup, so repeated member references use the memo; no rules, files, references, validation, source reads, schema or public API are removed. Architecture docs describe this ownership. The unchanged real seam varies references [1,32], asserts unique extraction, exact call targets/resolved coverage and scope_copies[1] <= scope_copies[0]; synthesis/contract recorded runtime-red exit 101 with counts [8,39]. Independent focused command cargo test --test languages languages::extractors::python_member_access_callee_does_not_emit_duplicate_reference -- --exact --nocapture passed (exit 0; 1 passed, 0 failed). Independent complete command cargo clippy --all-targets --all-features -- -D warnings && cargo test --lib --test commitment_integrity --test incremental --test languages passed, exit 0: 102+16+31+250=399 passed, 0 failed, no filtered tests, strict Clippy clean (lean-ctx archive d324e75be29d0e8e). PF001-R1 is closed per the explicit current user decision: accepted proof is direct production-seam proof without external benchmarks. The later comparison in blackboard #1353 used obsolete a876ba6a, lacking src/engine/languages/sql/mod.rs and LS-002 archive present in f4bb809b, so it cannot attribute a framework-only regression across equivalent capabilities. Historical #1352/#1353 are superseded for acceptance, with no whole-corpus latency/RSS claim or benchmark rerun.'
+        concurrency:
+          applicable: true
+          evidence: The new mutable memo is thread_local RefCell state, with each borrow released before fallback preparation; parallel workers do not share mutable cache state or acquire a new cross-thread lock. Cached contexts remain immutable Arc<LanguageContext>, preserving prepared rule-table ownership/lifetimes. The cache clears at 512 entries; eviction/collision only repeats the existing safe lookup. Registry collection finalizes its digest before context preparation/validation and publication. No task transactions, revision fencing, receipts, publication, lock ordering or rollback paths change. Complete affected suites, including existing parallel extraction/cache/publication and cold/delta behavior, passed.
+        project_isolation:
+          applicable: true
+          evidence: Directory identity retains canonical workspace-qualified prefixes such as [workspace]/..., and full registry digest plus directory are checked on every hit. The existing nearest_manifest_scope_for_path starts from the same directory, so files sharing the memo key have the same workspace/package scope vector. Digest computation includes bundled-manifest digest plus sorted logical manifest paths and content digests before preparation; changed rules/dependencies invalidate reuse. The memo reuses the canonical context instead of adding independent activation or rule semantics. Existing workspace/nested-package activation, local overrides, delta/hydration and deterministic commitments remain enforced and passed in the complete affected suites. No filesystem root, symlink, traversal, profile selection or cross-project task-store behavior changes.
+        administration:
+          applicable: false
+          evidence: The scoped implementation changes no migrations, profile pins, .forge configuration, credentials, CLI/MCP surface, Git hooks, task engine, receipt handling or privileged delivery behavior. Protected Cargo/build/profile files are absent from the task-owned diff; inherited worktree metadata is explicitly distinguished in paths. Review worker codex-sol-reviewer is independent of accepted builder pf001-builder. Claim 23 / contract 1 and immutable candidate/baseline were rechecked immediately before submission. No source edits, commits, benchmarks or delivery actions were performed during review.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-REPAIR-COVERAGE: Performance repairs preserve correct resolution statuses, exact endpoint targets, cold/delta equivalence, persisted facts, and deterministic commitments.'
+    - 'INV-REPAIR-DECLARATIVE: Framework conventions remain in manifests; extractors and shared handlers contain only universal language or rule-processing logic.'
+    - 'INV-REPAIR-PERFORMANCE: Preserve single-pass extraction, typed analysis facts, shared prepared rule/index ownership, bounded persistence, and no source rereads during delta, as required by the existing architecture and ADR 0012.'
+    - 'INV-WORKSPACE-BOUNDARIES: Splitting the repository into forge-core, forge-index, and forge-tasks enforces strict unidirectional dependency boundaries with zero circular crate dependencies.'
+    architectural_notes:
+    - 'decisions: Contract synthesis, contract_revision=1. Audited LanguageProfile registry/mod.rs, ast::extract_typed_with_registry -> parse_file_typed -> SinglePassExtractor/RouteContextBuilder, DependencyRegistry context preparation, SymbolCatalog/FlowStore, linker semantic context, framework composition, and bounded pipeline/writer boundaries; ADR 0012/0013 and performance invariants retain authority. Existing Arc contexts and RuleIR are canonical; no new registry, grammar, Cargo/build feature, storage schema, source reread, or fact omission is admitted. Concrete redundant-work path: Context::named_member calls DependencyRegistry::language_context_for_path per member expression; language_context_key rebuilds the profiles BTreeSet and owned workspace/family/scope vector on every lookup. Chosen internal repair: bind/reuse effective LanguageContext at existing file/PathId semantic-context ownership (or use equivalent borrowed lookup within the existing registry), preserving activation, manifest/workspace isolation, ambiguity and exact target proofs. Do not duplicate rule registries or cache full facts. Additive existing seam: tests/languages/extractors.rs::python_member_access_callee_does_not_emit_duplicate_reference, parameterized 1/32 member calls under one collected Python project scope; selected-size scope-string allocation counts during warmed linking must not grow with reference cardinality, and every calls edge retains its exact method target. Private one-thread Rayon pool isolates allocator observation; parsing, registry collection, warmup and assertions are excluded. No wall-time benchmark is run or inferred. Builder must additionally preserve existing cold/delta, hydration and commitments suites, and run complete affected targets plus strict Clippy per TESTS.md. All proposed code/test/docs owners are admitted; Cargo.toml/build.rs/.forge remain protected. HTML repair and workspace splitting remain successor tasks. Candidate seam runtime-red is being compiled; timing/comparison acceptance remains unverified until user authorizes existing benchmark tooling.'
+    review_summary:
+      decision: pass
+      contours:
+        administration: not_applicable
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Acceptance
@@ -101,6 +150,8 @@ subtasks:
 
 ```yaml
 task_ref: restore-default-html-endpoint-resolution
+depends_on:
+  - restore-framework-indexing-performance
 target: "Restore correct default-pack resolution of the 14 real Commerce HTMX endpoint references that changed from resolved to unresolved"
 proof_policy: direct-proof
 contract_revision: 1
@@ -147,6 +198,8 @@ subtasks:
 
 ```yaml
 task_ref: split-cargo-workspace-into-independent-crates
+depends_on:
+  - restore-default-html-endpoint-resolution
 target: "PF-001-T05: Split the monolithic crate into three independent Cargo workspace crates: forge-core, forge-index, and forge-tasks to decouple domains, enforce unidirectional dependency boundaries, and accelerate incremental compilation"
 proof_policy: direct-proof
 contract_revision: 1

@@ -27,10 +27,18 @@ pub(crate) struct ManifestEntrypoint {
     pub python: bool,
 }
 
+struct DirectoryContextEntry {
+    registry_digest: String,
+    dir: String,
+    context: Arc<super::LanguageContext>,
+}
+
 thread_local! {
     // Compatibility-only reuse for direct bundled/manual registry callers.
     // Collected inventories use the immutable registry-owned contexts below.
     static LEGACY_LANGUAGE_CONTEXT_CACHE: RefCell<HashMap<(String, LanguageContextKey), Arc<super::LanguageContext>>> =
+        RefCell::new(HashMap::new());
+    static DIRECTORY_LANGUAGE_CONTEXT_CACHE: RefCell<HashMap<u64, DirectoryContextEntry>> =
         RefCell::new(HashMap::new());
 }
 
@@ -70,29 +78,60 @@ impl DependencyRegistry {
 
     /// Reuses merged extraction rules for files with the same workspace and package scope.
     pub(crate) fn language_context_for_path(&self, path: &str) -> Arc<super::LanguageContext> {
-        let key = self.language_context_key(path);
-        if let Some(context) = self.language_contexts.get(&key) {
-            return Arc::clone(context);
-        }
-        // Direct/manual registries and unregistered workspace paths retain their
-        // bounded compatibility preparation; collected inventories are ready.
-        let key = (self.digest.clone(), key);
-        if let Some(context) =
-            LEGACY_LANGUAGE_CONTEXT_CACHE.with(|cache| cache.borrow().get(&key).cloned())
-        {
+        let dir = path.rsplit_once('/').map_or("", |(d, _)| d);
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        std::hash::Hash::hash(&(self.digest.as_str(), dir), &mut hasher);
+        let hash = std::hash::Hasher::finish(&hasher);
+        if let Some(context) = DIRECTORY_LANGUAGE_CONTEXT_CACHE.with(|cache| {
+            cache.borrow().get(&hash).and_then(|entry| {
+                (entry.registry_digest == self.digest && entry.dir == dir)
+                    .then(|| Arc::clone(&entry.context))
+            })
+        }) {
             return context;
         }
-        let mut context = self.build_language_context(path);
-        if !self.rule_ir.contains_key(super::workspace_path(path).0) {
-            context.rule_ir = RuleIRHandle::prepare(&context);
-        }
-        let context = Arc::new(context);
-        LEGACY_LANGUAGE_CONTEXT_CACHE.with(|cache| {
+
+        let key = self.language_context_key(path);
+        let context = if let Some(context) = self.language_contexts.get(&key) {
+            Arc::clone(context)
+        } else {
+            // Direct/manual registries and unregistered workspace paths retain their
+            // bounded compatibility preparation; collected inventories are ready.
+            let key = (self.digest.clone(), key);
+            if let Some(context) =
+                LEGACY_LANGUAGE_CONTEXT_CACHE.with(|cache| cache.borrow().get(&key).cloned())
+            {
+                context
+            } else {
+                let mut context = self.build_language_context(path);
+                if !self.rule_ir.contains_key(super::workspace_path(path).0) {
+                    context.rule_ir = RuleIRHandle::prepare(&context);
+                }
+                let context = Arc::new(context);
+                LEGACY_LANGUAGE_CONTEXT_CACHE.with(|cache| {
+                    let mut cache = cache.borrow_mut();
+                    if cache.len() >= 128 {
+                        cache.clear();
+                    }
+                    cache.insert(key, Arc::clone(&context));
+                });
+                context
+            }
+        };
+
+        DIRECTORY_LANGUAGE_CONTEXT_CACHE.with(|cache| {
             let mut cache = cache.borrow_mut();
-            if cache.len() >= 128 {
+            if cache.len() >= 512 {
                 cache.clear();
             }
-            cache.insert(key, Arc::clone(&context));
+            cache.insert(
+                hash,
+                DirectoryContextEntry {
+                    registry_digest: self.digest.clone(),
+                    dir: dir.to_owned(),
+                    context: Arc::clone(&context),
+                },
+            );
         });
         context
     }
