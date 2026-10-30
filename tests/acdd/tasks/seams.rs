@@ -433,7 +433,17 @@ fn tiered_task_context_enforces_indexed_seams_and_signature_boundaries() {
         );
         root.write(
             ".forge/acdd/profile.yaml",
-            include_str!("../../../.forge/acdd/profile.yaml"),
+            r#"commands:
+  rust-check-and-test:
+    command: "cargo clippy --all-targets --all-features -- -D warnings && cargo test"
+    scope_args_by_pattern:
+      "src/main.rs": "--bin contextunity-forge-mcp"
+      "src/**/*.rs": "--lib"
+      "tests/*.rs": "--test {file_stem}"
+      "tests/acdd/**/*.rs": "--test acdd"
+  test:
+    command: "cargo test"
+"#,
         );
         root.write("docs/adr/001-routing.md", "---\ntitle: Routing invariants\ndoc_type: adr\nstatus: accepted\n---\n# Routing invariants\n- INV-ROUTING: [`src.routing.route_task`](../../src/routing.rs#L1) remains observable through the public seam.\n- Decision: Admit every caller before changing the public signature.\n");
         let caller_scope = if admit_caller {

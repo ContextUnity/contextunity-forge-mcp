@@ -110,7 +110,7 @@ pub(super) fn gate_sequence(profile: &GateProfile) -> Result<Vec<GateCursor>> {
 }
 
 /// Build the flat profile view expected by receipt validation and lookup APIs.
-pub(super) fn flattened_profile(profile: &GateProfile) -> Result<GateProfile> {
+pub(crate) fn flattened_profile(profile: &GateProfile) -> Result<GateProfile> {
     let cursors = collect_cursors(profile)?;
     let mut flattened = profile.clone();
     flattened.gates = cursors

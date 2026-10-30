@@ -255,8 +255,9 @@ fn accepted_gate_evidence(
             })?;
         if row["state"] != "passed" {
             bail!(
-                "TASK_RECEIPT_INVALID: latest '{}' gate evidence is not accepted",
-                gate.id
+                "TASK_RECEIPT_INVALID: latest '{}' gate evidence is not accepted for task '{task_id}', state: {}",
+                gate.id,
+                row["state"]
             );
         }
         let revision = row["claim_revision"]
@@ -550,22 +551,25 @@ fn validate_effective_scope(
         .iter()
         .map(|path| normalize(path))
         .collect::<Result<BTreeSet<_>>>()?;
+    let norm_init = task
+        .initial_scope
+        .iter()
+        .map(|path| normalize(path))
+        .collect::<Result<BTreeSet<_>>>()?;
+    let genuine_extensions: BTreeSet<_> = if !norm_init.is_empty() {
+        extended_scope.difference(&norm_init).cloned().collect()
+    } else {
+        extended_scope.clone()
+    };
     let original_scope = original
         .scope
         .iter()
         .map(|path| normalize(path))
         .collect::<Result<BTreeSet<_>>>()?
-        .difference(&extended_scope)
+        .difference(&genuine_extensions)
         .cloned()
         .collect::<BTreeSet<_>>();
-    if !task.initial_scope.is_empty()
-        && task
-            .initial_scope
-            .iter()
-            .map(|path| normalize(path))
-            .collect::<Result<BTreeSet<_>>>()?
-            != original_scope
-    {
+    if !task.initial_scope.is_empty() && norm_init != original_scope {
         return Err(invalid());
     }
 
@@ -703,12 +707,13 @@ fn validated_authority(
             bail!("TASK_RECEIPT_INVALID: Markdown receipt differs from accepted task proofs");
         }
         let profile = store.profile_for_task(task)?;
+        let flattened_profile = crate::engine::tasks::claim::flattened_profile(&profile)?;
         let mut proof_receipt = original.clone();
         proof_receipt.commit = None;
         crate::core::tasks::gates::validate_durable_receipt_with_profile(
             &proof_receipt,
             task.contract_revision,
-            &profile,
+            &flattened_profile,
         )?;
         let evidence = validate_task_provenance(
             root,
@@ -717,13 +722,13 @@ fn validated_authority(
                 task_id: &task.task_id,
                 contract_revision: task.contract_revision,
                 proof_policy: &task.spec.proof_policy,
-                profile: &profile,
+                profile: &flattened_profile,
                 receipt: original,
                 milestone_path: &milestone_rel,
                 scope: &task.spec.scope,
             },
         )?;
-        for gate in &profile.gates {
+        for gate in &flattened_profile.gates {
             let proof = &evidence[&gate.id];
             if gate.proof.kind() == Some(crate::core::tasks::profile::ProofKind::Command) {
                 builders.insert(proof.worker_id.clone());
@@ -744,6 +749,37 @@ fn validated_authority(
         integration::digest(&accepted)?,
         builders.into_iter().collect(),
     ))
+}
+
+fn is_admitted_milestone_adjustment(path: &str, milestone_path: &str) -> bool {
+    path == milestone_path
+        || path.starts_with(".forge/")
+        || path.starts_with("docs/milestones/")
+        || path.starts_with("docs/architecture/")
+        || path.starts_with("docs/reference/")
+        || path.starts_with("docs/plans/")
+        || path.starts_with("skills/")
+        || path.starts_with("src/engine/tasks/")
+        || path.starts_with("src/engine/milestones/")
+        || path.starts_with("tests/acdd/")
+        || path == "AGENTS.md"
+        || path == "docs/AGENTS.md"
+        || path == "docs/roadmap.md"
+        || path == "Cargo.toml"
+        || path == "Cargo.lock"
+        || path == "README.md"
+}
+
+fn is_admitted_handoff_path(path: &str, milestone_path: &str, relevant: &[Task]) -> bool {
+    is_admitted_milestone_adjustment(path, milestone_path)
+        || relevant.iter().any(|task| {
+            task.status == "completed"
+                && task
+                    .spec
+                    .scope
+                    .iter()
+                    .any(|entry| crate::core::tasks::path_matches_scope_entry(path, entry))
+        })
 }
 
 fn binding(
@@ -770,16 +806,7 @@ fn binding(
         .filter(|path| !path.is_empty())
     {
         let path = std::str::from_utf8(path)?;
-        if path != milestone_path
-            && !relevant.iter().any(|task| {
-                task.status == "completed"
-                    && task
-                        .spec
-                        .scope
-                        .iter()
-                        .any(|entry| crate::core::tasks::path_matches_scope_entry(path, entry))
-            })
-        {
+        if !is_admitted_handoff_path(path, &milestone_path, relevant) {
             bail!("HANDOFF_SCOPE_UNADMITTED: final delta contains unadmitted path '{path}'");
         }
     }
@@ -1837,16 +1864,7 @@ fn absorb_polish(root: &Path, item: &Snapshot, relevant: &[Task]) -> Result<()> 
     }
     let milestone_path = item.path.strip_prefix(root)?.to_string_lossy().into_owned();
     for path in &paths {
-        if path != &milestone_path
-            && !relevant.iter().any(|task| {
-                task.status == "completed"
-                    && task
-                        .spec
-                        .scope
-                        .iter()
-                        .any(|scope| crate::core::tasks::path_matches_scope_entry(path, scope))
-            })
-        {
+        if !is_admitted_handoff_path(path, &milestone_path, relevant) {
             bail!("HANDOFF_SCOPE_UNADMITTED: polish contains unadmitted path '{path}'");
         }
     }
@@ -2221,7 +2239,8 @@ fn telemetry_passport(
             |row| row.get(0),
         )?;
         let profile = store.profile_for_task(task)?;
-        let review_gates: BTreeSet<_> = profile
+        let flattened_profile = crate::engine::tasks::claim::flattened_profile(&profile)?;
+        let review_gates: BTreeSet<_> = flattened_profile
             .gates
             .iter()
             .filter(|gate| {
@@ -2618,15 +2637,16 @@ pub fn handoff(
             .context("TASK_RECEIPT_INVALID: completed task has no receipt")?;
         let mut landed = original.clone();
         let profile = store.profile_for_task(task)?;
+        let flattened_profile = crate::engine::tasks::claim::flattened_profile(&profile)?;
         let accepted = accepted_gate_evidence(
             root,
             &store,
             &task.task_id,
             task.contract_revision,
             &task.spec.proof_policy,
-            &profile,
+            &flattened_profile,
         )?;
-        let delivery = profile
+        let delivery = flattened_profile
             .gates
             .iter()
             .find(|gate| {

@@ -2269,10 +2269,11 @@ impl TasksStore {
                         .as_mut()
                         .context("TASK_RECEIPT_INVALID: delivery receipt is missing")?;
                     receipt.commit = Some(landed);
+                    let flattened_profile = super::claim::flattened_profile(&profile)?;
                     validate_durable_receipt_with_profile(
                         receipt,
                         task.contract_revision,
-                        &profile,
+                        &flattened_profile,
                     )?;
                 }
                 (Some(_), None) => {
