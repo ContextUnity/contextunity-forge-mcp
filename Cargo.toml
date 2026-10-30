@@ -1,8 +1,8 @@
 [package]
 name = "contextunity-forge-mcp"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2021"
-authors = ["ContextUnity Team"]
+authors = ["Oleksii Pylypchuk <oleksii.pylypchuk@tuta.com>"]
 description = "Pure Rust ContextUnity Forge MCP Server, Code Map and Documentation Engine"
 license = "MIT"
 readme = "README.md"

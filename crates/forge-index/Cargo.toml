@@ -1,0 +1,11 @@
+[package]
+name = "forge-index"
+version = "0.4.0"
+edition = "2021"
+description = "Pure Rust ContextUnity Forge AST extraction, linking, and index persistence"
+license = "MIT"
+
+[dependencies]
+forge-core = { path = "../forge-core" }
+tree-sitter = "0.22"
+rusqlite = { version = "0.31", features = ["bundled", "modern_sqlite", "hooks", "limits", "backup"] }
