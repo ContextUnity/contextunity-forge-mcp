@@ -12,6 +12,16 @@ pub static HTML: Html = Html;
 /// Language profiles provided by this module.
 pub static PROFILES: &[&dyn LanguageProfile] = &[&HTML];
 
+/// Extracts an HTML file using the shared HTML profile.
+pub fn extract_html_file(
+    path: &str,
+    source: &str,
+    module: &str,
+    facts: &mut Facts,
+) -> Result<()> {
+    HTML.extract_file(path, source, module, facts)
+}
+
 impl LanguageProfile for Html {
     fn id(&self) -> &'static str {
         "html"

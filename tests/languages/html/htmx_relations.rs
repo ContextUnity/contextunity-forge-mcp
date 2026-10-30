@@ -1,4 +1,5 @@
 use super::*;
+use contextunity_forge_mcp::engine::languages::html::extract_html_file;
 
 #[test]
 fn htmx_and_alpine_relations_follow_exact_targets_and_effective_rules() {
@@ -252,4 +253,87 @@ fn htmx_and_alpine_relations_follow_exact_targets_and_effective_rules() {
     );
     assert_eq!(conn.query_row("SELECT count(*) FROM edge_occurrences e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name='run' AND d.name='checkout' AND e.kind='calls'", [], |r|r.get::<_, usize>(0)).unwrap(), 1);
     complete_parity(&isolated);
+}
+
+#[test]
+fn parameterized_htmx_requests_resolve_to_backend_route_endpoints() {
+    let mut probe_facts = contextunity_forge_mcp::core::models::Facts::default();
+    let _ = extract_html_file("channels/settings.html", "<div></div>", "channels.settings", &mut probe_facts);
+
+    let workspace = Workspace::new();
+    let backend = r#"from django.urls import path
+
+def channel_credentials(request): return 1
+def channel_diagnostic(request): return 1
+def channel_admin_probe(request): return 1
+def channel_delete(request): return 1
+def product_editor_images(request): return 1
+def taxonomy_review_resolve(request): return 1
+def technology_pane(request): return 1
+
+urlpatterns = [
+    path('channels/<str:provider>/<str:profile_name>/credentials/', channel_credentials),
+    path('channels/<str:provider>/<str:profile_name>/diagnostic/', channel_diagnostic),
+    path('channels/<str:provider>/<str:profile_name>/admin-probe/', channel_admin_probe),
+    path('channels/<str:provider>/<str:profile_name>/delete/', channel_delete),
+    path('products/api/<int:pk>/editor-images/', product_editor_images),
+    path('taxonomy/reviews/<int:pk>/resolve/', taxonomy_review_resolve),
+    path('technologies/<int:id>/pane/', technology_pane),
+]
+"#;
+
+    // 4 channel actions in channels/settings.html
+    let channels_settings = r#"<div>
+        <button hx-get="/channels/{{ profile.provider }}/{{ profile.profile_name }}/credentials/"></button>
+        <button hx-get="/channels/{{ profile.provider }}/{{ profile.profile_name }}/diagnostic/"></button>
+        <button hx-post="/channels/{{ profile.provider }}/{{ profile.profile_name }}/admin-probe/"></button>
+        <button hx-post="/channels/{{ profile.provider }}/{{ profile.profile_name }}/delete/"></button>
+    </div>"#;
+
+    // 6 image requests in products/editor/_images.html
+    let products_images = r#"<div>
+        <form hx-post="/products/api/{{ product.pk }}/editor-images/"></form>
+        <button hx-post="/products/api/{{ product.pk }}/editor-images/"></button>
+        <div hx-get="/products/api/{{ product.pk }}/editor-images/"></div>
+        <form hx-get="/products/api/{{ product.pk }}/editor-images/"></form>
+        <form hx-get="/products/api/{{ product.pk }}/editor-images/"></form>
+        <button hx-post="/products/api/{{ product.pk }}/editor-images/"></button>
+    </div>"#;
+
+    // 3 review actions in taxonomy_review/_drawer.html
+    let taxonomy_drawer = r#"<div>
+        <form hx-post="/taxonomy/reviews/{{ review.pk }}/resolve/"></form>
+        <form hx-post="/taxonomy/reviews/{{ review.pk }}/resolve/"></form>
+        <form hx-post="/taxonomy/reviews/{{ review.pk }}/resolve/"></form>
+    </div>"#;
+
+    // 1 pane request in technologies/_set_detail.html
+    let technologies_pane = r#"<div>
+        <button hx-get="/technologies/{{ tech.id }}/pane/"></button>
+    </div>"#;
+
+    let fixture = [
+        ("urls.py", backend),
+        ("channels/settings.html", channels_settings),
+        ("products/editor/_images.html", products_images),
+        ("taxonomy_review/_drawer.html", taxonomy_drawer),
+        ("technologies/_set_detail.html", technologies_pane),
+    ];
+    for (path, source) in fixture {
+        workspace.write(path, source);
+    }
+
+    writer::build(&workspace.0, &workspace.db(), None).unwrap();
+    let conn = workspace.open();
+    assert_valid(&conn);
+
+    let edges_channels = edge_occurrence_rows(&conn, "channels/settings.html", "calls_endpoint");
+    let edges_products = edge_occurrence_rows(&conn, "products/editor/_images.html", "calls_endpoint");
+    let edges_taxonomy = edge_occurrence_rows(&conn, "taxonomy_review/_drawer.html", "calls_endpoint");
+    let edges_technologies = edge_occurrence_rows(&conn, "technologies/_set_detail.html", "calls_endpoint");
+
+    assert_eq!(edges_channels.len(), 4, "expected 4 calls_endpoint in channels/settings.html");
+    assert_eq!(edges_products.len(), 6, "expected 6 calls_endpoint in products/editor/_images.html");
+    assert_eq!(edges_taxonomy.len(), 3, "expected 3 calls_endpoint in taxonomy_review/_drawer.html");
+    assert_eq!(edges_technologies.len(), 1, "expected 1 calls_endpoint in technologies/_set_detail.html");
 }
