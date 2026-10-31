@@ -538,3 +538,10 @@ urlpatterns = [
     workspace.delta(override_path);
     check_state(&workspace, 2, true);
 }
+
+#[test]
+fn pipeline_optimization_contract_verifies_zero_alloc_and_bounded_rss() {
+    let mut facts = Facts::default();
+    extract_html_file("test.html", "<div hx-get='/api/test'></div>", "test", &mut facts).unwrap();
+    panic!("CONTRACT_RED: pipeline optimizations not yet implemented");
+}
