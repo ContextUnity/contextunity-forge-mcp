@@ -45,7 +45,14 @@ pub(super) fn encode_prepared_catalog_storage_payload(
     prepared: &PreparedCatalogStorage,
 ) -> anyhow::Result<Vec<u8>> {
     use crate::core::typed_facts::binary::BinaryEncode;
+    encode_prepared_catalog_storage_with_borrowed_nodes(|raw| {
+        prepared.encode(raw);
+    })
+}
 
+pub(super) fn encode_prepared_catalog_storage_with_borrowed_nodes<F: FnOnce(&mut Vec<u8>)>(
+    encode_body: F,
+) -> anyhow::Result<Vec<u8>> {
     thread_local! {
         static COMPRESSOR: RefCell<(Option<zstd::bulk::Compressor<'static>>, Vec<u8>)> = const {
             RefCell::new((None, Vec::new()))
@@ -58,7 +65,7 @@ pub(super) fn encode_prepared_catalog_storage_payload(
             *compressor = Some(zstd::bulk::Compressor::new(-3)?);
         }
         raw.clear();
-        prepared.encode(raw);
+        encode_body(raw);
         compressor
             .as_mut()
             .expect("compressor initialized")

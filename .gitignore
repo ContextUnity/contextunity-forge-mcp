@@ -7,6 +7,7 @@ target/
 .worktrees/
 __pycache__/
 *.pyc
+.forge/*.json
 !/.forge/
 !/.forge/acdd/
 !/.forge/acdd/**
@@ -15,6 +16,6 @@ __pycache__/
 .forge/*.sqlite*
 .forge/*.lock
 .forge/*.log
-.forge/*.json
 .forge/*.jsonl
 .forge/tasks/
+.forge/checkpoints.json
