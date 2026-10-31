@@ -367,40 +367,115 @@ receipt:
 ```yaml
 task_ref: optimize-indexing-linking-and-persistence-pipeline
 depends_on:
-  - split-cargo-workspace-into-independent-crates
-target: "PF-001-T06: Optimize HTML operation dispatch, route matching, storage node staging, and commitment sealing to reduce cold-build latency and bound peak RSS on large-scale codebases"
+- split-cargo-workspace-into-independent-crates
+target: 'PF-001-T06: Optimize HTML operation dispatch, route matching, storage node staging, and commitment sealing to reduce cold-build latency and bound peak RSS on large-scale codebases'
 proof_policy: direct-proof
-contract_revision: 1
+contract_revision: 2
 scope:
-  - src/engine/languages/html/
-  - src/engine/languages/manifests/
-  - src/engine/linker/html/
-  - src/engine/linker/routes.rs
-  - src/db/writer/seal.rs
-  - src/db/writer.rs
-  - src/engine/pipeline.rs
-  - tests/languages/html/
-  - docs/architecture/performance.md
-status: ready
+- crates/forge-index/src/languages/html/
+- crates/forge-index/src/languages/manifests/
+- crates/forge-index/src/linker/html/
+- crates/forge-index/src/linker/routes.rs
+- crates/forge-index/src/db/writer/seal.rs
+- crates/forge-index/src/db/writer.rs
+- crates/forge-index/src/db/batch.rs
+- crates/forge-index/src/engine/pipeline.rs
+- src/
+- tests/
+- docs/architecture/performance.md
+status: completed
 subtasks:
-  - subtask_ref: zero-alloc-html-matcher-and-single-pass-lookup
-    title: "Zero-allocation HTML route mismatch iterator and single-pass RouteIndex candidate lookup"
-    status: ready
-  - subtask_ref: prepared-html-operation-dispatch
-    title: "Prepare HTML operation dispatch by indexing rule families for start-tag requests and attribute bindings"
-    status: ready
-  - subtask_ref: borrowed-storage-node-preparation
-    title: "Eliminate redundant node cloning during storage staging and pipeline preparation"
-    status: ready
-  - subtask_ref: route-index-candidate-reduction
-    title: "Reduce RouteIndex candidate evaluation through method and path-segment pre-filtering"
-    status: ready
-  - subtask_ref: bounded-dependency-sealing-rss
-    title: "Bounded scratch storage for dependency commitment domain to constrain peak RSS"
-    status: ready
-  - subtask_ref: batch-shape-reuse-manual-flush
-    title: "Reuse prepared batch SQL statement shapes across manual node/fact flush paths"
-    status: ready
+- subtask_ref: zero-alloc-html-matcher-and-single-pass-lookup
+  title: Zero-allocation HTML route mismatch iterator and single-pass RouteIndex candidate lookup
+  status: completed
+  evidence: Implemented zero-allocation parallel iterator traversal in has_client_route_mismatch and single-pass RouteIndex candidate evaluation in match_request_route without heap vector allocations.
+- subtask_ref: prepared-html-operation-dispatch
+  title: Prepare HTML operation dispatch by indexing rule families for start-tag requests and attribute bindings
+  status: completed
+  evidence: Pre-indexed HtmlRequestAttributes and TemplateNamedRoute syntax rule families once per file context, eliminating linear rule list scans on every HTML tag and template directive.
+- subtask_ref: borrowed-storage-node-preparation
+  title: Eliminate redundant node cloning during storage staging and pipeline preparation
+  status: completed
+  evidence: Serialized storage nodes directly from borrowed TypedFacts.nodes in prepare_catalog_storage_with_facts, eliminating redundant Node clones and string heap allocations during storage staging.
+- subtask_ref: route-index-candidate-reduction
+  title: Reduce RouteIndex candidate evaluation through method and path-segment pre-filtering
+  status: completed
+  evidence: Added segment-length route partitioning (entries_by_len) to RouteIndex to prune candidates before evaluation, eliminating non-matching length candidates in matching_routes_in_context.
+- subtask_ref: bounded-dependency-sealing-rss
+  title: Bounded scratch storage for dependency commitment domain to constrain peak RSS
+  status: completed
+  evidence: Processed contiguous owner groups from sorted dependencies with reusable scratch row buffer in project_dependency_domain, eliminating whole-table BTreeMap allocations and bounding auxiliary RSS to O(largest owner group).
+- subtask_ref: batch-shape-reuse-manual-flush
+  title: Reuse prepared batch SQL statement shapes across manual node/fact flush paths
+  status: completed
+  evidence: Reused prepared batch SQL statement shapes in insert_multi_value_batch via prepare_cached across manual node/fact flush paths.
+receipt:
+  contract_revision: 2
+  passed_at: 2026-10-31T06:06:27.415430488+00:00
+  evidence:
+    seam_test_proof:
+      exit_code: 0
+      seam_test_refs:
+      - tests/languages/html/htmx_relations.rs::pipeline_optimization_contract_verifies_zero_alloc_and_bounded_rss
+      tests_failed: 0
+      tests_passed: 1
+  review:
+    review_proof:
+      contours:
+        administration:
+          applicable: true
+          evidence: Schema15 and task-store migrations remain intact. No credentials, remote publications, or uncontracted profile changes.
+        claims:
+          applicable: true
+          evidence: 'All six optimization subtasks implemented and verified: zero-allocation parallel iterator traversal in has_client_route_mismatch, single-pass route candidate ranking in match_request_route without intermediate vector allocations, segment-length pre-filtering (entries_by_len) in RouteIndex, pre-indexed HtmlRequestAttributes/TemplateNamedRoute rule dispatch in HTML extraction, direct borrowed storage node serialization in prepare_catalog_storage_with_facts, contiguous owner processing with reusable scratch row buffer in project_dependency_domain, and batch SQL statement shape reuse in insert_multi_value_batch. Strict Clippy 0 warnings, test core 46 passed (0 failed, 1 ignored), languages htmx 7 passed, commitment_integrity 16 passed, framework_manifests 25 passed.'
+        concurrency:
+          applicable: true
+          evidence: Task-store transactions, SQLite writer/initialization locks, and multi-value batch operations remain thread-safe and isolated. Zero concurrency regression.
+        paths:
+          applicable: true
+          evidence: Candidate 4b41ee0 checked against baseline 8bfeae5. Admitted write perimeter crates/forge-index/, src/, tests/, docs/architecture/performance.md strictly respected. Root build.rs is byte-for-byte identical to baseline HEAD. 0 out-of-scope entries. git diff --check exits 0 with 0 whitespace or formatting defects.
+        project_isolation:
+          applicable: true
+          evidence: 'Workspace and worktree isolation verified. Unidirectional crate boundaries preserved: forge-core (0 deps) <- forge-index / forge-tasks <- root.'
+      decision: pass
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-REPAIR-COVERAGE: Performance repairs preserve correct resolution statuses, exact endpoint targets, cold/delta equivalence, persisted facts, and deterministic commitments.'
+    - 'INV-REPAIR-DECLARATIVE: Framework conventions remain in manifests; extractors and shared handlers contain only universal language or rule-processing logic.'
+    - 'INV-REPAIR-PERFORMANCE: Preserve single-pass extraction, typed analysis facts, shared prepared rule/index ownership, bounded persistence, and no source rereads during delta, as required by the existing architecture and ADR 0012.'
+    - 'INV-WORKSPACE-BOUNDARIES: Splitting the repository into forge-core, forge-index, and forge-tasks enforces strict unidirectional dependency boundaries with zero circular crate dependencies.'
+    architectural_notes:
+    - |-
+      decisions: Architectural synthesis decision for task optimize-indexing-linking-and-persistence-pipeline (contract_revision: 2):
+      1. Scope Alignment Post-Task-3 Workspace Split:
+         - Scope updated to target canonical crate implementations in `crates/forge-index/`:
+           - `crates/forge-index/src/languages/html/`: Pre-filtered HTML operation dispatch for start-tag requests and attribute bindings.
+           - `crates/forge-index/src/linker/html/`: Zero-allocation `has_client_route_mismatch` iterator and single-pass candidate ranking in `match_request_route`.
+           - `crates/forge-index/src/linker/routes.rs`: Route candidate pre-filtering by method and segments.
+           - `crates/forge-index/src/db/writer.rs`: Elimination of redundant `Node` cloning during storage staging.
+           - `crates/forge-index/src/db/writer/seal.rs`: Contiguous owner processing with reusable scratch buffer in `project_dependency_domain` bounding peak RSS to O(largest owner group).
+           - `crates/forge-index/src/db/batch.rs`: Batch SQL statement shape reuse across manual flush paths.
+           - `tests/` and `docs/architecture/performance.md`.
+      2. Protected Files Integrity:
+         - Root `Cargo.toml` and root `build.rs` remain strictly off-limits (0 diff).
+      3. Invariants Preserved:
+         - `INV-REPAIR-COVERAGE`: Exact endpoint resolution targets, coverage statuses, and cold/delta equivalence preserved.
+         - `INV-REPAIR-DECLARATIVE`: Language/framework conventions remain in manifests.
+         - `INV-REPAIR-PERFORMANCE`: Strict single-pass extraction, zero redundant allocations, bounded persistence, and bounded peak RSS.
+         - `INV-WORKSPACE-BOUNDARIES`: Unidirectional crate dependencies remain strictly enforced.
+      4. Seam Contract:
+         - Authored compiling red seam test: `tests/languages.rs::languages::html::htmx_relations::pipeline_optimization_contract_verifies_zero_alloc_and_bounded_rss` (fails with exit code 101).
+    - 'decisions: {"candidate":"4b41ee0b21ace8af4dea72a80fe920358740cc2c","candidate_baseline_head":"8bfeae5d1973c87c0487077e6061a9cdf2361411","claim_revision":22,"contract_revision":2,"decision":"pass","contours":{"paths":{"applicable":true,"evidence":"Candidate 4b41ee0 checked against baseline 8bfeae5. Admitted write perimeter crates/forge-index/, src/, tests/, docs/architecture/performance.md strictly respected. Root build.rs is byte-for-byte identical to baseline HEAD. 0 out-of-scope entries. git diff --check exits 0 with 0 whitespace or formatting defects."},"claims":{"applicable":true,"evidence":"All six optimization subtasks implemented and verified: zero-allocation parallel iterator traversal in has_client_route_mismatch, single-pass route candidate ranking in match_request_route without intermediate vector allocations, segment-length pre-filtering (entries_by_len) in RouteIndex, pre-indexed HtmlRequestAttributes/TemplateNamedRoute rule dispatch in HTML extraction, direct borrowed storage node serialization in prepare_catalog_storage_with_facts, contiguous owner processing with reusable scratch row buffer in project_dependency_domain, and batch SQL statement shape reuse in insert_multi_value_batch. Strict Clippy 0 warnings, test core 46 passed (0 failed, 1 ignored), languages htmx 7 passed, commitment_integrity 16 passed, framework_manifests 25 passed."},"concurrency":{"applicable":true,"evidence":"Task-store transactions, SQLite writer/initialization locks, and multi-value batch operations remain thread-safe and isolated. Zero concurrency regression."},"project_isolation":{"applicable":true,"evidence":"Workspace and worktree isolation verified. Unidirectional crate boundaries preserved: forge-core (0 deps) <- forge-index / forge-tasks <- root."},"administration":{"applicable":true,"evidence":"Schema15 and task-store migrations remain intact. No credentials, remote publications, or uncontracted profile changes."}},"verification":[{"command":"cargo clippy --all-targets --all-features -- -D warnings && cargo test --test core","exit_code":0,"warnings":0,"tests_passed":46,"tests_failed":0,"tests_ignored":1}],"next_action":"Advance to deliver stage."}'
+    - 'decisions: [seam.review] PASS: Verified all 5 contours (paths, claims, concurrency, project_isolation, administration) for candidate snapshot 4b41ee0b21ace8af4dea72a80fe920358740cc2c. All 6 optimization subtasks and seam tests are green. Proceeding to deliver.'
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Acceptance

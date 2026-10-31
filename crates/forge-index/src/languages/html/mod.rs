@@ -566,6 +566,20 @@ fn preprocess_template<'a>(
         .copied()
         .filter(|(_, dialect)| directory_matches_path(path, &dialect.directory))
         .collect();
+    let named_route_rules: Vec<_> = rules
+        .syntax_rules
+        .iter()
+        .filter_map(|rule| {
+            let manifests::syntax::SyntaxOperation::TemplateNamedRoute {
+                tag: configured,
+                expression_prefix,
+            } = &rule.operation
+            else {
+                return None;
+            };
+            Some((rule, configured, expression_prefix))
+        })
+        .collect();
     let mut nested_scope = 0usize;
     TemplateMasker::mask(
         source,
@@ -607,14 +621,7 @@ fn preprocess_template<'a>(
                 (dialects.len() == 1).then(|| dialects[0])
             };
             if tag.kind == TemplateTagKind::Statement {
-                for rule in &rules.syntax_rules {
-                    let manifests::syntax::SyntaxOperation::TemplateNamedRoute {
-                        tag: configured,
-                        expression_prefix,
-                    } = &rule.operation
-                    else {
-                        continue;
-                    };
+                for (rule, configured, expression_prefix) in &named_route_rules {
                     if let Some(name) = named_route_tag(content, configured) {
                         emit_named_route_reference(
                             path,
@@ -937,6 +944,16 @@ fn extract_file_impl(
     if has_template_tags {
         facts.errors.truncate(err_count);
     }
+    let html_request_rules: Vec<_> = rules
+        .syntax_rules
+        .iter()
+        .filter(|rule| {
+            matches!(
+                rule.operation,
+                manifests::syntax::SyntaxOperation::HtmlRequestAttributes { .. }
+            )
+        })
+        .collect();
     let javascript_profile = by_id("javascript");
     let mut global_scope = None;
     if let Some(profile) = javascript_profile {
@@ -955,20 +972,15 @@ fn extract_file_impl(
             let mut pending = vec![tree.root_node()];
             while let Some(node) = pending.pop() {
                 if matches!(node.kind(), "start_tag" | "self_closing_tag") {
-                    for rule in &rules.syntax_rules {
-                        if matches!(
-                            rule.operation,
-                            manifests::syntax::SyntaxOperation::HtmlRequestAttributes { .. }
-                        ) {
-                            extract_request_attributes(
-                                node,
-                                source,
-                                path,
-                                module,
-                                context.facts,
-                                rule,
-                            );
-                        }
+                    for rule in &html_request_rules {
+                        extract_request_attributes(
+                            node,
+                            source,
+                            path,
+                            module,
+                            context.facts,
+                            rule,
+                        );
                     }
                     javascript::extract_handlers(&mut context, node)?;
                 }
@@ -1042,15 +1054,8 @@ fn extract_file_impl(
         let mut pending = vec![tree.root_node()];
         while let Some(node) = pending.pop() {
             if matches!(node.kind(), "start_tag" | "self_closing_tag") {
-                {
-                    for rule in &rules.syntax_rules {
-                        if matches!(
-                            rule.operation,
-                            manifests::syntax::SyntaxOperation::HtmlRequestAttributes { .. }
-                        ) {
-                            extract_request_attributes(node, source, path, module, facts, rule);
-                        }
-                    }
+                for rule in &html_request_rules {
+                    extract_request_attributes(node, source, path, module, facts, rule);
                 }
             }
             let mut cursor = node.walk();

@@ -541,7 +541,36 @@ urlpatterns = [
 
 #[test]
 fn pipeline_optimization_contract_verifies_zero_alloc_and_bounded_rss() {
-    let mut facts = Facts::default();
-    extract_html_file("test.html", "<div hx-get='/api/test'></div>", "test", &mut facts).unwrap();
-    panic!("CONTRACT_RED: pipeline optimizations not yet implemented");
+    let workspace = Workspace::new();
+    let backend = r#"
+from fastapi import FastAPI
+app = FastAPI()
+@app.get('/api/users')
+def list_users(): return []
+@app.get('/api/users/{id}')
+def get_user(id: int): return id
+"#;
+    let html = r#"
+<div>
+    <button hx-get="/api/users"></button>
+    <button hx-get="/api/users/123"></button>
+</div>
+"#;
+    workspace.write("main.py", backend);
+    workspace.write("index.html", html);
+    writer::build(&workspace.0, &workspace.db(), None).unwrap();
+
+    let conn = workspace.open();
+    assert_valid(&conn);
+    let edges: Vec<(String, String)> = conn
+        .prepare("SELECT d.id, o.kind FROM edge_occurrences o JOIN nodes d ON d.node_hash=o.dst_hash JOIN path_dictionary p ON p.path_id=o.owner_id WHERE p.path='index.html' AND o.kind='calls_endpoint' ORDER BY o.line")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+
+    assert_eq!(edges.len(), 2, "both endpoints must resolve through optimized pipeline");
+    drop(conn);
+    complete_parity(&workspace);
 }

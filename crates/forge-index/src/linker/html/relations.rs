@@ -85,17 +85,19 @@ fn has_client_route_mismatch(client_url: &str, route_node: &Node) -> bool {
         .trim_start_matches('^')
         .trim_end_matches('$')
         .trim_matches('/');
-    let client_segs: Vec<&str> = client_path.split('/').filter(|s| !s.is_empty()).collect();
-    let route_segs: Vec<&str> = route_path.split('/').filter(|s| !s.is_empty()).collect();
-    if client_segs.len() != route_segs.len() {
-        return true;
-    }
-    for (cs, rs) in client_segs.iter().zip(&route_segs) {
-        if !is_route_param(rs) && !cs.eq_ignore_ascii_case(rs) {
-            return true;
+    let mut client_iter = client_path.split('/').filter(|s| !s.is_empty());
+    let mut route_iter = route_path.split('/').filter(|s| !s.is_empty());
+    loop {
+        match (client_iter.next(), route_iter.next()) {
+            (Some(cs), Some(rs)) => {
+                if !is_route_param(rs) && !cs.eq_ignore_ascii_case(rs) {
+                    return true;
+                }
+            }
+            (None, None) => return false,
+            _ => return true,
         }
     }
-    false
 }
 
 fn match_request_route<'a>(
@@ -103,27 +105,15 @@ fn match_request_route<'a>(
     method: &str,
     url: &str,
 ) -> Result<Option<&'a Node>, ()> {
-    match routes.match_route(method, url) {
-        Ok(Some(route)) => {
-            if has_client_route_mismatch(url, route) {
-                Ok(None)
-            } else {
-                Ok(Some(route))
-            }
-        }
-        Ok(None) => Ok(None),
-        Err(()) => {
-            let candidates = routes.matching_routes(method, url);
-            let valid: Vec<&Node> = candidates
-                .into_iter()
-                .filter(|route| !has_client_route_mismatch(url, route))
-                .collect();
-            match valid.as_slice() {
-                [route] => Ok(Some(*route)),
-                [] => Ok(None),
-                _ => Err(()),
-            }
-        }
+    let candidates = routes.matching_routes(method, url);
+    let mut valid = candidates
+        .into_iter()
+        .filter(|route| !has_client_route_mismatch(url, route));
+    let first = valid.next();
+    if valid.next().is_some() {
+        Err(())
+    } else {
+        Ok(first)
     }
 }
 

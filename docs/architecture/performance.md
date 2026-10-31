@@ -193,6 +193,14 @@ better request latency.
 - **Shared Semantic Context Rule Tables**: [`Context`](../../src/engine/linker/semantic_context.rs) memoizes `Arc<ReceiverTypes>`, `Arc<ArgumentFactories>`, and `implicit_builtins` (`Arc<ImplicitBuiltinMap>`) per `(Arc::as_ptr(&rules), language)` key and Python `hierarchy_results` per `Arc::as_ptr(&rules)` (retaining pinned `Arc<LanguageContext>` clones for the pass lifetime to prevent ABA pointer reuse) instead of rescanning `syntax_rules` and cloning `HashMap<String, String>` for every file path in the workspace.
 - **Single Codegen Unit Release Profile**: `Cargo.toml` configures `[profile.release]` with `codegen-units = 1` and `lto = "thin"` so hot loops across `ast`, `languages`, and `linker` inline across module boundaries.
 
+### 10. Pipeline Hot-Path and Peak-RSS Optimizations
+- **Zero-Allocation Route Mismatch Matching**: `has_client_route_mismatch` in `crates/forge-index/src/linker/html/relations.rs` traverses URL paths using parallel iterators without heap vector allocations, verifying segment counts and parameter boundaries inline.
+- **Segment-Length Route Candidate Pre-Filtering**: `RouteIndex` in `crates/forge-index/src/linker/routes.rs` indexes routes by segment count (`entries_by_len`), allowing `matching_routes_in_context` to filter candidate evaluations to matching lengths immediately and eliminating duplicate candidate scans in `match_request_route`.
+- **Pre-Indexed HTML Rule Operation Dispatch**: HTML extraction in `crates/forge-index/src/languages/html/mod.rs` pre-indexes `HtmlRequestAttributes` and `TemplateNamedRoute` rule families once per file context, avoiding linear syntax ruleset scans on every HTML tag and template directive.
+- **Direct Borrowed Storage Node Serialization**: `prepare_catalog_storage_with_facts` in `crates/forge-index/src/db/writer.rs` serializes storage nodes directly from borrowed `TypedFacts.nodes` without cloning intermediate `Node` records or heap strings.
+- **Bounded Owner-Group Scratch Buffer for Dependency Sealing**: `project_dependency_domain` in `crates/forge-index/src/db/writer/seal.rs` processes contiguous owner slices from sorted dependencies using a single reusable scratch row buffer, bounding peak auxiliary RSS to $O(\text{largest owner group})$.
+- **Batch SQL Statement Shape Reuse**: `insert_multi_value_batch` in `crates/forge-index/src/db/batch.rs` uses `prepare_cached` to reuse compiled SQLite statement shapes across manual node/fact flush paths.
+
 ---
 
 ## Empirically Evaluated and Rejected Optimizations

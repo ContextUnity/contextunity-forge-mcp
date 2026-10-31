@@ -76,14 +76,104 @@ fn decode_prepared_storage(bytes: &[u8]) -> Result<PreparedCatalogStorage> {
     cache::decode_prepared_catalog_storage_payload(bytes)
 }
 
+fn encode_node_for_storage(node: &Node, buf: &mut Vec<u8>) {
+    use crate::core::typed_facts::binary::BinaryEncode;
+    node.id.encode(buf);
+    node.kind.encode(buf);
+    node.name.encode(buf);
+    node.qualname.encode(buf);
+    node.path.encode(buf);
+    node.line.encode(buf);
+    node.end_line.encode(buf);
+    node.is_test.encode(buf);
+    node.language.encode(buf);
+    node.generated.encode(buf);
+    let details = match &node.details {
+        Value::Object(details) if !details.is_empty() => {
+            let has_retained = details.iter().any(|(key, value)| {
+                (key.as_str() == "default_export" && *value == true)
+                    || matches!(key.as_str(), "doc" | "docstring")
+            });
+            if has_retained {
+                let details = details
+                    .iter()
+                    .filter(|(key, value)| {
+                        (key.as_str() == "default_export" && *value == true)
+                            || matches!(key.as_str(), "doc" | "docstring")
+                    })
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect::<serde_json::Map<_, _>>();
+                Value::Object(details)
+            } else {
+                Value::Null
+            }
+        }
+        _ => Value::Null,
+    };
+    details.encode(buf);
+    0u8.encode(buf);
+}
+
 /// Prepares encoded catalog storage rows for a file using extracted typed facts.
 pub fn prepare_catalog_storage_with_facts(
     file: &FileEntry,
     single: &BTreeMap<String, TypedFacts>,
     extracted_facts: Option<&TypedFacts>,
 ) -> Result<Vec<u8>> {
-    let prepared = prepare_catalog_rows(file, single, extracted_facts)?;
-    let mut bytes = cache::encode_prepared_catalog_storage_payload(&prepared)?;
+    use crate::core::typed_facts::binary::BinaryEncode;
+
+    let facts = extracted_facts
+        .or_else(|| single.get(&file.path))
+        .context("missing prepared storage file")?;
+
+    let search_texts = facts
+        .nodes
+        .iter()
+        .map(|node| {
+            let mut text = String::new();
+            write_node_search_text(&mut text, node, facts);
+            text
+        })
+        .collect::<Vec<_>>();
+    let reference_keys = facts
+        .reference_keys()
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let leaves = seal::file_domain_leaves(std::slice::from_ref(file), single, &reference_keys)?;
+    let storage_leaves: BTreeMap<String, BTreeMap<String, String>> = leaves
+        .into_iter()
+        .map(|(domain, leaves)| (domain.to_owned(), leaves))
+        .collect();
+
+    let mut bytes = cache::encode_prepared_catalog_storage_with_borrowed_nodes(|raw| {
+        let count = u32::try_from(facts.nodes.len()).unwrap_or(0);
+        count.encode(raw);
+        for node in &facts.nodes {
+            encode_node_for_storage(node, raw);
+        }
+        0u32.encode(raw);
+        0u32.encode(raw);
+        let docs_count = u32::try_from(facts.docs.len()).unwrap_or(0);
+        docs_count.encode(raw);
+        for doc in &facts.docs {
+            doc.encode(raw);
+        }
+        let errors_count = u32::try_from(facts.errors.len()).unwrap_or(0);
+        errors_count.encode(raw);
+        for error in &facts.errors {
+            error.encode(raw);
+        }
+        0u32.encode(raw);
+        0u32.encode(raw);
+        0u32.encode(raw);
+        0u32.encode(raw);
+        0u32.encode(raw);
+
+        search_texts.encode(raw);
+        reference_keys.encode(raw);
+        storage_leaves.encode(raw);
+    })?;
     bytes.shrink_to_fit();
     Ok(bytes)
 }

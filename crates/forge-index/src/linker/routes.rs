@@ -76,6 +76,7 @@ pub struct RouteEntry<'a> {
 
 pub struct RouteIndex<'a> {
     pub entries: Vec<RouteEntry<'a>>,
+    pub entries_by_len: HashMap<usize, Vec<usize>>,
     pub names: HashMap<&'a str, Vec<&'a Node>>,
 }
 
@@ -112,14 +113,18 @@ fn score_route_match(
 impl<'a> RouteIndex<'a> {
     pub fn build(nodes: &[&'a Node]) -> Self {
         let mut entries = Vec::new();
+        let mut entries_by_len = HashMap::<usize, Vec<usize>>::new();
         let mut names = HashMap::<&'a str, Vec<&'a Node>>::new();
         for node in nodes.iter().copied().filter(|node| node.kind == "route") {
             let method = node.details["method"].as_str().unwrap_or("ANY");
             let path = node.details["route_path"].as_str().unwrap_or("");
+            let segments = normalize_route_segments(path);
+            let idx = entries.len();
+            entries_by_len.entry(segments.len()).or_default().push(idx);
             entries.push(RouteEntry {
                 node,
                 method,
-                segments: normalize_route_segments(path),
+                segments,
             });
             if let Some(name) = node.details["route_name"]
                 .as_str()
@@ -128,7 +133,7 @@ impl<'a> RouteIndex<'a> {
                 names.entry(name).or_default().push(node);
             }
         }
-        Self { entries, names }
+        Self { entries, entries_by_len, names }
     }
 
     pub fn len(&self) -> usize {
@@ -181,9 +186,13 @@ impl<'a> RouteIndex<'a> {
         if remote {
             return Vec::new();
         }
+        let Some(indices) = self.entries_by_len.get(&client_segments.len()) else {
+            return Vec::new();
+        };
         let context = context.filter(|context| context.request_owners.contains(request_owner));
         let mut candidates: Vec<(&'a Node, usize, bool)> = Vec::new();
-        for route in &self.entries {
+        for &idx in indices {
+            let route = &self.entries[idx];
             if context.is_some_and(|context| !context.route_owners.contains(&route.node.path)) {
                 continue;
             }

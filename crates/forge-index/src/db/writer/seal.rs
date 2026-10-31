@@ -904,25 +904,32 @@ fn project_dependency_domain<'a>(
     dependencies.sort_unstable();
     dependencies.dedup();
 
-    let mut by_owner = BTreeMap::<&str, Vec<DependencyLeafRow<'_>>>::new();
-    for dependency in dependencies {
-        let target = dependency
-            .target_hash
-            .and_then(|hash| file_by_hash.get(&hash).copied());
-        by_owner
-            .entry(dependency.owner)
-            .or_default()
-            .push(DependencyLeafRow {
+    let mut leaves = Leaves::new();
+    let mut scratch_rows: Vec<DependencyLeafRow<'_>> = Vec::new();
+    let mut idx = 0;
+    while idx < dependencies.len() {
+        let owner = dependencies[idx].owner;
+        let group_start = idx;
+        while idx < dependencies.len() && dependencies[idx].owner == owner {
+            idx += 1;
+        }
+        let group = &dependencies[group_start..idx];
+
+        scratch_rows.clear();
+        scratch_rows.reserve(group.len());
+        for dependency in group {
+            let target = dependency
+                .target_hash
+                .and_then(|hash| file_by_hash.get(&hash).copied());
+            scratch_rows.push(DependencyLeafRow {
                 target,
                 kind: dependency.kind,
                 symbol: dependency.symbol,
                 resolution: dependency.resolution,
             });
-    }
+        }
 
-    let mut leaves = Leaves::new();
-    for (owner, mut rows) in by_owner {
-        rows.sort_unstable_by(|left, right| {
+        scratch_rows.sort_unstable_by(|left, right| {
             left.target
                 .cmp(&right.target)
                 .then_with(|| left.kind.cmp(right.kind))
@@ -930,7 +937,7 @@ fn project_dependency_domain<'a>(
                 .then_with(|| left.resolution.cmp(right.resolution))
         });
         let mut hasher = new_leaf_hasher("dependencies", owner);
-        for row in rows {
+        for row in &scratch_rows {
             hasher.update([0xff]);
             encode_text(&mut hasher, owner);
             if let Some(target) = row.target {
