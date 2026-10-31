@@ -164,26 +164,7 @@ pub(crate) fn normal_relative_path(value: &str) -> bool {
         })
 }
 
-impl SemanticTarget {
-    pub(crate) fn paths(&self, path: &str, language: &str) -> Vec<String> {
-        let Self::ProjectPathSuffix {
-            prefix,
-            language: expected,
-        } = self
-        else {
-            return Vec::new();
-        };
-        if language != expected || !prefix.strip_suffix('/').is_some_and(normal_relative_path) {
-            return Vec::new();
-        }
-        std::iter::once(0)
-            .chain(path.match_indices('/').map(|(offset, _)| offset + 1))
-            .filter_map(|offset| path[offset..].strip_prefix(prefix))
-            .filter(|literal| normal_relative_path(literal))
-            .map(str::to_owned)
-            .collect()
-    }
-}
+
 
 fn identifier(value: &str) -> bool {
     let mut chars = value.chars();

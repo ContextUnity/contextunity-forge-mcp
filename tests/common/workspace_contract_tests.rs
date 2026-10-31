@@ -1,4 +1,14 @@
-use contextunity_forge_mcp::core::models::stable_hash64;
+use forge_core::commitments::DOMAINS;
+use forge_core::config::ScannerLimits;
+use forge_core::format::stable_hash64;
+use forge_core::interner::{PathId, SymbolId};
+use forge_core::models::Node;
+use forge_index::ast::AstToken;
+use forge_index::languages::LanguageRegistry;
+use forge_index::linker::RouteIndex;
+use forge_tasks::blackboard::BlackboardScope;
+use forge_tasks::lifecycle::{TaskStage, TaskStatus};
+use forge_tasks::verification::ProofPolicy;
 
 #[test]
 fn workspace_builds_and_applies_delta_in_its_owned_temp_directory() {
@@ -40,7 +50,97 @@ fn workspace_builds_and_applies_delta_in_its_owned_temp_directory() {
 
 #[test]
 fn cargo_workspace_declares_independent_crates_and_unidirectional_boundaries() {
-    let _ = stable_hash64("workspace_boundary");
+    // Verify forge-core crate public API & real Merkle root computation
+    assert_eq!(stable_hash64("workspace_boundary"), 7897085170651836845);
+    assert_eq!(forge_core::version(), "0.4.0");
+    let path_id = PathId(42);
+    let sym_id = SymbolId(101);
+    assert_eq!(u32::from(path_id), 42);
+    assert_eq!(u32::from(sym_id), 101);
+    let limits = ScannerLimits::default();
+    assert_eq!(limits.max_files, 100_000);
+    assert!(DOMAINS.contains(&"nodes"));
+    let mut leaves = std::collections::BTreeMap::new();
+    leaves.insert("src/lib.rs".to_string(), "a1b2c3d4".to_string());
+    let agg = forge_core::commitments::aggregate_domain_digest("nodes", &leaves);
+    assert!(!agg.is_empty());
+    let domains = vec![("nodes".to_string(), agg)];
+    let metadata = vec![("schema_version".to_string(), "15".to_string())];
+    let merkle_root = forge_core::commitments::compute_merkle_root(&domains, &metadata);
+    assert_eq!(merkle_root.len(), 64);
+
+    let route_node = Node {
+        id: "route:get_user".into(),
+        kind: "route".into(),
+        name: "get_user".into(),
+        qualname: "api.get_user".into(),
+        path: "src/api.rs".into(),
+        line: 10,
+        end_line: 15,
+        is_test: false,
+        language: "rust".into(),
+        generated: false,
+        details: serde_json::json!({
+            "method": "GET",
+            "route_path": "/api/users/{id}"
+        }),
+        native_semantic: None,
+    };
+
+    // Verify forge-index crate public API & real route matching and schema initialization
+    assert_eq!(forge_index::version(), "0.4.0");
+    let mut reg = LanguageRegistry::new();
+    assert!(reg.is_empty());
+    reg.enable("rust");
+    assert!(reg.is_enabled("rust"));
+    assert_eq!(reg.len(), 1);
+
+    let route_slice = [&route_node];
+    let routes = RouteIndex::build(&route_slice);
+    assert_eq!(routes.len(), 1);
+    let matched = routes.match_route("GET", "/api/users/123").unwrap();
+    assert!(matched.is_some());
+    assert_eq!(matched.unwrap().id, "route:get_user");
+    let unmatched = routes.match_route("POST", "/api/users/123").unwrap();
+    assert!(unmatched.is_none());
+
+    let token = AstToken {
+        kind: "identifier".into(),
+        text: "my_var".into(),
+        row: 1,
+        column: 4,
+    };
+    assert_eq!(token.text, "my_var");
+
+    let mem_conn = rusqlite::Connection::open_in_memory().unwrap();
+    forge_index::db::initialize_code_map_schema(&mem_conn).unwrap();
+    let table_count: i64 = mem_conn
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('nodes', 'edges', 'metadata', 'resolution_coverage')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(table_count, 4);
+
+    // Verify forge-tasks crate public API & real lifecycle, blackboard, and store operations
+    assert_eq!(forge_tasks::version(), "0.4.0");
+    assert_eq!(TaskStage::Build, TaskStage::Build);
+    assert_eq!(TaskStatus::InProgress, TaskStatus::InProgress);
+    assert_eq!(ProofPolicy::DirectProof, ProofPolicy::DirectProof);
+    assert_eq!(BlackboardScope::Task, BlackboardScope::Task);
+
+    let temp_path = std::env::temp_dir().join(format!("test-tasks-store-{}.sqlite", std::process::id()));
+    let store = forge_tasks::store::TasksStore::open_project(
+        &temp_path,
+        "test-repo",
+        "test-proj",
+    )
+    .unwrap();
+    assert!(forge_tasks::store::now() > 0);
+    drop(store);
+    let _ = std::fs::remove_file(&temp_path);
+
     let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let root_cargo = manifest_dir.join("Cargo.toml");
     let content = std::fs::read_to_string(&root_cargo).expect("root Cargo.toml must exist");
@@ -148,4 +248,17 @@ fn cargo_workspace_declares_independent_crates_and_unidirectional_boundaries() {
         tasks_deps.get("forge-index").is_none(),
         "forge-tasks must have zero forge-index dependency"
     );
+}
+
+#[test]
+fn direct_library_task_entrypoint_initializes_extractors_without_caller_bootstrap() {
+    // Calling direct root library task API automatically composes extractors
+    contextunity_forge_mcp::engine::tasks::ensure_extractors();
+    let facts = contextunity_forge_mcp::engine::ast::extract_typed(
+        "tests/seam.rs",
+        "rust",
+        "#[test] fn sample_seam() { assert!(true); }",
+    )
+    .expect("production extractor must be wired");
+    assert!(facts.facts.nodes.iter().any(|n| n.is_test && n.name == "sample_seam"));
 }

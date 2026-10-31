@@ -1,4 +1,4 @@
-use crate::engine::milestones::{self, Init};
+use forge_tasks::milestones::{self, Init};
 use anyhow::Result;
 use clap::{Args, Subcommand};
 use serde_json::Value;
@@ -141,6 +141,7 @@ impl DraftArgs {
 
 /// Runs the selected milestone command within the repository root.
 pub fn run(root: &Path, command: MilestoneCommand) -> Result<Value> {
+    crate::mcp::tasks::ensure_extractors();
     match command {
         MilestoneCommand::DbRecover => milestones::db_recover(root),
         MilestoneCommand::List {

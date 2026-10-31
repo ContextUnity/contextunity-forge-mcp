@@ -46,6 +46,7 @@ invariants:
   - INV-PERF-BORROWED-MAP-KEY-EXPORT-INDEXING
   - INV-PERF-ZERO-CLONE-PARALLEL-MODULE-NAME
   - INV-PERF-BORROWED-PATH-DICTIONARY-BULK-INSERT
+  - INV-WORKSPACE-BOUNDARIES
 ---
 
 # Performance Guidance, Search Architecture, and Storage Compaction
@@ -426,3 +427,10 @@ Autonomous agents, builders, and language models modifying Forge indexing or sto
 > In `src/db/dictionary.rs`, `PathDictionaryCache::bulk_insert` must accept `impl IntoIterator<Item = &'a str>` and push `BorrowedSqlValue::Text(path_ref)` into multi-value insertion batches, cloning strings only once for the in-memory dictionary cache.
 
 - INV-PERF-BORROWED-PATH-DICTIONARY-BULK-INSERT: Borrow path string references in dictionary bulk insertion batches to avoid duplicate SQL string cloning. [`PathDictionaryCache::bulk_insert`](../../src/db/dictionary.rs).
+
+> [!IMPORTANT]
+> Invariant: Strict Cargo Workspace Boundaries
+>
+> Splitting the monolithic codebase into independent Cargo workspace members (`crates/forge-core`, `crates/forge-index`, and `crates/forge-tasks`) enforces unidirectional dependency boundaries, isolates parser and database engines from core models, and reduces incremental compilation overhead.
+
+- INV-WORKSPACE-BOUNDARIES: Splitting the repository into `forge-core`, `forge-index`, and `forge-tasks` enforces strict unidirectional dependency boundaries with zero circular crate dependencies. [Cargo.toml](../../Cargo.toml).

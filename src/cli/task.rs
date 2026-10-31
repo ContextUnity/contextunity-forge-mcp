@@ -1,5 +1,6 @@
-use crate::engine::tasks::{
-    self, Action, BlackboardAction, BlackboardRequest, BlackboardScope, Claim, List, Manage,
+use forge_tasks::engine as tasks;
+use forge_tasks::{
+    Action, BlackboardAction, BlackboardRequest, BlackboardScope, Claim, List, Manage,
     ManageAction, MilestoneStatusFilter, Status, Submit, TaskListDetail,
 };
 use anyhow::Result;
@@ -295,6 +296,7 @@ pub enum TaskCommand {
 
 /// Performs run.
 pub fn run(root: &Path, command: TaskCommand) -> Result<Value> {
+    crate::mcp::tasks::ensure_extractors();
     let mut manage = Manage::default();
     match command {
         TaskCommand::Next {

@@ -1,0 +1,368 @@
+use super::*;
+use crate::core::models::{Edge, Facts, Node};
+use serde_json::json;
+
+fn literal_name<'a>(node: Syntax<'_>, source: &'a str) -> Option<&'a str> {
+    if node.kind() != "string" {
+        return None;
+    }
+    let raw = text(node, source);
+    let quote = raw.as_bytes().first().copied()?;
+    if !matches!(quote, b'\'' | b'"') || raw.as_bytes().last() != Some(&quote) || raw.len() < 2 {
+        return None;
+    }
+    let inner = &raw[1..raw.len() - 1];
+    (!inner.contains('\\') && !inner.is_empty()).then_some(inner)
+}
+
+pub(super) fn decorator_candidates(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
+    if ctx.node.kind() != "function_definition" {
+        return;
+    }
+    let decorators = relations::decorators(ctx.node);
+    if decorators.is_empty() {
+        return;
+    }
+    let mut candidates = Vec::new();
+    super::syntax_operations::for_each_decorated_registration_rule(|rule| {
+        let super::super::manifests::syntax::SyntaxOperation::DecoratedRegistration {
+            member,
+            name_keyword,
+            imported_decorator,
+            ..
+        } = &rule.operation
+        else {
+            return;
+        };
+        for &decorator in &decorators {
+            let Some(expression) = decorator.named_child(0) else {
+                continue;
+            };
+            let (callee, arguments) = if expression.kind() == "call" {
+                (
+                    expression.child_by_field_name("function"),
+                    expression.child_by_field_name("arguments"),
+                )
+            } else {
+                (Some(expression), None)
+            };
+            let Some(callee) = callee else {
+                continue;
+            };
+            let callee_text = text(callee, ctx.source);
+            let receiver = if *imported_decorator {
+                callee_text.split('.').next().unwrap_or("")
+            } else if let Some(receiver) = callee_text.strip_suffix(&format!(".{member}")) {
+                receiver
+            } else {
+                continue;
+            };
+            if receiver.is_empty()
+                || !receiver
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+            {
+                continue;
+            }
+            if !super::lexical_binding_owner(decorator, ctx.source, receiver)
+                .is_some_and(|owner| owner.kind() == "module")
+            {
+                continue;
+            }
+            let mut name = None;
+            let mut name_status = "default";
+            if let Some(arguments) = arguments {
+                let mut cursor = arguments.walk();
+                for argument in arguments.named_children(&mut cursor) {
+                    if argument.kind() == "keyword_argument" {
+                        if argument
+                            .child_by_field_name("name")
+                            .is_some_and(|node| text(node, ctx.source) == name_keyword)
+                        {
+                            name = argument
+                                .child_by_field_name("value")
+                                .and_then(|node| literal_name(node, ctx.source));
+                            name_status = if name.is_some() {
+                                "explicit"
+                            } else {
+                                "dynamic"
+                            };
+                        }
+                    } else {
+                        name_status = "dynamic";
+                    }
+                }
+            }
+            candidates.push(json!({"pack":rule.pack,"rule":rule.id,"receiver":receiver,"callee":callee_text,"line":decorator.start_position().row + ctx.offset + 1,"name":name,"name_status":name_status}));
+        }
+    });
+    if !candidates.is_empty() {
+        if let Some(function) = facts.nodes.iter_mut().find(|node| node.id == ctx.owner) {
+            function.details["decorated_registrations"] = json!(candidates);
+        }
+    }
+}
+
+pub(super) fn module_assignment(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
+    if ctx.node.kind() != "assignment" || !ctx.owner.starts_with("module:") {
+        return;
+    }
+    if !ctx
+        .node
+        .parent()
+        .and_then(|node| node.parent())
+        .is_some_and(|node| node.kind() == "module")
+    {
+        return;
+    }
+    let Some(left) = ctx
+        .node
+        .child_by_field_name("left")
+        .filter(|node| node.kind() == "identifier")
+    else {
+        return;
+    };
+    let callee = ctx
+        .node
+        .child_by_field_name("right")
+        .filter(|node| node.kind() == "call")
+        .and_then(|node| node.child_by_field_name("function"))
+        .map(|node| text(node, ctx.source));
+    let name = text(left, ctx.source);
+    let module_id: String = facts
+        .nodes
+        .iter()
+        .find(|node| node.kind == "module")
+        .map(|m| m.id.clone())
+        .unwrap_or_else(|| ctx.owner.to_owned());
+    if let Some(module) = facts.nodes.iter_mut().find(|node| node.id == module_id) {
+        let events = module.details["assignment_events"].as_array_mut();
+        if let Some(events) = events {
+            events.push(json!({"name":name,"callee":callee,"line":ctx.line()}));
+        } else {
+            module.details["assignment_events"] =
+                json!([{"name":name,"callee":callee,"line":ctx.line()}]);
+        }
+    }
+}
+
+fn imported_constructor(
+    facts: &Facts,
+    module_id: &str,
+    callee: &str,
+    assignment_line: usize,
+    modules: &[String],
+    constructor: &str,
+) -> bool {
+    let (alias, direct) = if let Some(alias) = callee.strip_suffix(&format!(".{constructor}")) {
+        (alias, false)
+    } else if callee
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    {
+        (callee, true)
+    } else {
+        return false;
+    };
+    let mut imports = facts.references.iter().filter(|reference| {
+        reference.kind == "imports"
+            && reference.source == module_id
+            && reference.alias.as_deref() == Some(alias)
+            && reference.line < assignment_line
+            && if direct {
+                reference.expression == constructor
+                    && reference
+                        .module
+                        .as_ref()
+                        .is_some_and(|module| modules.contains(module))
+            } else {
+                modules.contains(&reference.expression)
+                    && reference.module.as_deref() == Some(reference.expression.as_str())
+            }
+    });
+    let Some(import) = imports.next() else {
+        return false;
+    };
+    if imports.next().is_some() {
+        return false;
+    }
+    !facts
+        .nodes
+        .iter()
+        .find(|node| node.id == module_id)
+        .and_then(|module| module.details["assignment_events"].as_array())
+        .is_some_and(|events| {
+            events.iter().any(|event| {
+                event["name"] == alias
+                    && event["line"].as_u64().is_some_and(|line| {
+                        line > import.line as u64 && line < assignment_line as u64
+                    })
+            })
+        })
+}
+
+fn confirmed_instance(
+    facts: &Facts,
+    module: &Node,
+    receiver: &str,
+    decorator_line: usize,
+    modules: &[String],
+    constructor: &str,
+) -> bool {
+    let Some(events) = module.details["assignment_events"].as_array() else {
+        return false;
+    };
+    let mut bindings = events.iter().filter(|event| {
+        event["name"] == receiver
+            && event["line"]
+                .as_u64()
+                .is_some_and(|line| line < decorator_line as u64)
+    });
+    let Some(first) = bindings.next() else {
+        return false;
+    };
+    let mut latest = first;
+    for event in bindings {
+        if event["line"].as_u64() >= latest["line"].as_u64() {
+            latest = event;
+        }
+    }
+    let (Some(callee), Some(line)) = (latest["callee"].as_str(), latest["line"].as_u64()) else {
+        return false;
+    };
+    imported_constructor(
+        facts,
+        &module.id,
+        callee,
+        line as usize,
+        modules,
+        constructor,
+    )
+}
+
+pub(super) fn registrations(facts: &mut Facts) {
+    super::syntax_operations::with_syntax_rules(|rules| registrations_with_rules(facts, rules));
+}
+
+fn registrations_with_rules(
+    facts: &mut Facts,
+    rules: &[super::super::manifests::syntax::SyntaxRule],
+) {
+    let Some(module) = facts
+        .nodes
+        .iter()
+        .find(|node| node.kind == "module")
+        .cloned()
+    else {
+        return;
+    };
+    let functions: Vec<_> = facts
+        .nodes
+        .iter()
+        .filter(|node| {
+            node.kind == "function" && node.details["decorated_registrations"].is_array()
+        })
+        .cloned()
+        .collect();
+    for function in functions {
+        if facts.edges.iter().any(|edge| {
+            edge.dst == function.id
+                && edge.kind == "contains"
+                && facts
+                    .nodes
+                    .iter()
+                    .any(|node| node.id == edge.src && node.kind == "class")
+        }) {
+            continue;
+        }
+        let Some(candidates) = function.details["decorated_registrations"].as_array() else {
+            continue;
+        };
+        for candidate in candidates {
+            let Some(rule) = rules.iter().find(|rule| {
+                candidate["pack"].as_str() == Some(rule.pack.as_str())
+                    && candidate["rule"].as_str() == Some(rule.id.as_str())
+            }) else {
+                continue;
+            };
+            let super::super::manifests::syntax::SyntaxOperation::DecoratedRegistration {
+                modules,
+                constructor,
+                provider,
+                imported_decorator,
+                category,
+                ..
+            } = &rule.operation
+            else {
+                continue;
+            };
+            let (Some(receiver), Some(line)) =
+                (candidate["receiver"].as_str(), candidate["line"].as_u64())
+            else {
+                continue;
+            };
+            let line = line as usize;
+            let confirmed = if *imported_decorator {
+                candidate["callee"].as_str().is_some_and(|callee| {
+                    imported_constructor(facts, &module.id, callee, line, modules, constructor)
+                })
+            } else {
+                confirmed_instance(facts, &module, receiver, line, modules, constructor)
+            };
+            if !confirmed {
+                continue;
+            }
+            let registration_kind = match category {
+                super::super::manifests::syntax::RegistrationCategory::Tool => "tool_registration",
+                super::super::manifests::syntax::RegistrationCategory::CliCommand => "cli_command_registration",
+                super::super::manifests::syntax::RegistrationCategory::EventHandler => "event_handler_registration",
+            };
+            let name_status = candidate["name_status"].as_str().unwrap_or("dynamic");
+            let advertised_name = if name_status == "explicit" {
+                candidate["name"].as_str()
+            } else if name_status == "default" {
+                Some(function.name.as_str())
+            } else {
+                None
+            };
+            let name = advertised_name
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("tool@{line}"));
+            let id_prefix = if registration_kind == "tool_registration" {
+                "tool-registration"
+            } else {
+                registration_kind
+            };
+            let id = format!(
+                "{id_prefix}:{}:{line}:{}",
+                function.path, function.name
+            );
+            facts.pending_flow_nodes.push(facts.nodes.len());
+            facts.nodes.push(Node {
+    native_semantic: None,
+                id: id.clone(), kind: registration_kind.into(), name: name.clone(),
+                qualname: format!("{}.tool.{name}", module.qualname), path: function.path.clone(),
+                line, end_line: line, is_test: function.is_test, language: "python".into(), generated: false,
+                details: json!({"framework":provider,"pack":rule.pack,"rule":rule.id,"receiver":receiver,"advertised_name":advertised_name,"name_status":name_status,"handler":function.id,"value_flow":crate::core::semantic::ValueFlowFacts { framework: Some(Box::new(crate::core::semantic::FrameworkScopeFacts { facts: vec![crate::core::semantic::FrameworkFact::RuleOrigin(crate::core::semantic::ExtractionRuleOrigin { pack: rule.pack.clone(), rule: rule.id.clone() })], ..Default::default() })), ..Default::default() }}),
+            });
+            facts.edges.push(Edge {
+                src: module.id.clone(),
+                dst: id.clone(),
+                kind: "contains".into(),
+                path: function.path.clone(),
+                line,
+                evidence: "configured registration decorator".into(),
+                confidence: "exact".into(),
+            });
+            facts.edges.push(Edge {
+                src: id,
+                dst: function.id.clone(),
+                kind: "handles".into(),
+                path: function.path.clone(),
+                line,
+                evidence: "decorated function".into(),
+                confidence: "exact".into(),
+            });
+        }
+    }
+}

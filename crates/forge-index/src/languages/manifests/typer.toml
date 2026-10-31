@@ -1,0 +1,5 @@
+[[syntax_rules]]
+id = "command"
+language = "python"
+activation = [{ kind = "package", name = "typer" }]
+operation = { kind = "decorated_registration", modules = ["typer"], constructor = "Typer", member = "command", name_keyword = "name", provider = "typer", category = "cli_command" }

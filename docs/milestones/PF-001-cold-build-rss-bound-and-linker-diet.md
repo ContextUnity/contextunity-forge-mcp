@@ -30,6 +30,7 @@ tasks:
 - restore-framework-indexing-performance
 - restore-default-html-endpoint-resolution
 - split-cargo-workspace-into-independent-crates
+- optimize-indexing-linking-and-persistence-pipeline
 started_at: 2026-10-30T17:26:21+00:00
 ---
 
@@ -261,32 +262,96 @@ receipt:
 ```yaml
 task_ref: split-cargo-workspace-into-independent-crates
 depends_on:
-  - restore-default-html-endpoint-resolution
-target: "PF-001-T05: Split the monolithic crate into three independent Cargo workspace crates: forge-core, forge-index, and forge-tasks to decouple domains, enforce unidirectional dependency boundaries, and accelerate incremental compilation"
+- restore-default-html-endpoint-resolution
+target: 'PF-001-T05: Split the monolithic crate into three independent Cargo workspace crates: forge-core, forge-index, and forge-tasks to decouple domains, enforce unidirectional dependency boundaries, and accelerate incremental compilation'
 proof_policy: direct-proof
 contract_revision: 1
 scope:
-  - Cargo.toml
-  - crates/forge-core/
-  - crates/forge-index/
-  - crates/forge-tasks/
-  - src/
-  - tests/
-  - docs/architecture/performance.md
-status: ready
+- Cargo.toml
+- crates/forge-core/
+- crates/forge-index/
+- crates/forge-tasks/
+- src/
+- tests/
+- docs/architecture/performance.md
+status: completed
 subtasks:
-  - subtask_ref: extract-forge-core-crate
-    title: "Extract domain models, string interner, configuration, and Merkle commitments into forge-core crate with zero parser or database dependencies"
-    status: ready
-  - subtask_ref: extract-forge-index-crate
-    title: "Extract Tree-sitter parsers, AST extraction pipelines, declarative ruleset engine, linker resolution, and SQLite storage into forge-index crate"
-    status: ready
-  - subtask_ref: extract-forge-tasks-crate
-    title: "Extract ACDD task lifecycle, blackboard coordination, proof verification, and worktree automation into forge-tasks crate"
-    status: ready
-  - subtask_ref: update-workspace-dependencies-and-imports
-    title: "Configure Cargo workspace root, wire crate dependencies, and update crate:: imports across all repository modules and test suites"
-    status: ready
+- subtask_ref: extract-forge-core-crate
+  title: Extract domain models, string interner, configuration, and Merkle commitments into forge-core crate with zero parser or database dependencies
+  status: completed
+  evidence: Created crates/forge-core with Cargo.toml and src/lib.rs, containing domain models, interned IDs, configuration, and Merkle commitments with zero dependency on AST parsers or SQLite.
+- subtask_ref: extract-forge-index-crate
+  title: Extract Tree-sitter parsers, AST extraction pipelines, declarative ruleset engine, linker resolution, and SQLite storage into forge-index crate
+  status: completed
+  evidence: Created crates/forge-index with Cargo.toml and src/lib.rs, containing Tree-sitter parsers, AST extraction, cross-language linkers, and SQLite index persistence, depending only on forge-core.
+- subtask_ref: extract-forge-tasks-crate
+  title: Extract ACDD task lifecycle, blackboard coordination, proof verification, and worktree automation into forge-tasks crate
+  status: completed
+  evidence: Created crates/forge-tasks with Cargo.toml and src/lib.rs, containing ACDD task lifecycles, blackboard coordination, proof verification, and worktree isolation, depending on forge-core and SQLite task store.
+- subtask_ref: update-workspace-dependencies-and-imports
+  title: 'Configure Cargo workspace root, wire crate dependencies, and update crate:: imports across all repository modules and test suites'
+  status: completed
+  evidence: Configured Cargo workspace root in Cargo.toml with members = ["crates/forge-core", "crates/forge-index", "crates/forge-tasks", "."], wired dependencies, verified unidirectional boundaries and full workspace compilation.
+receipt:
+  contract_revision: 1
+  passed_at: 2026-10-31T05:43:44.885400281+00:00
+  evidence:
+    seam_test_proof:
+      exit_code: 0
+      seam_test_refs:
+      - tests/core.rs::workspace_contract_tests::cargo_workspace_declares_independent_crates_and_unidirectional_boundaries
+      tests_failed: 0
+      tests_passed: 1
+  review:
+    review_proof:
+      contours:
+        administration:
+          applicable: true
+          evidence: Schema15 and task-store migrations remain intact. Cargo workspace configuration enforces acyclic dependencies. No credentials, remote publications, or uncontracted profile changes.
+        claims:
+          applicable: true
+          evidence: 'R1 resolved: Canonical production cutover to forge-index completed. Parallel monolithic implementations in src/engine/linker/, src/engine/ast/, src/db/, src/core/commitments/ completely removed. Root modules strictly re-export/delegate to canonical crate APIs. Independent compilation verified across crates (forge-core: 13 passed, forge-tasks: 12 passed, forge-index: 49 passed). Strict Clippy 0 warnings, test core 46 passed (0 failed, 1 ignored), commitment_integrity 16 passed, framework_manifests 25 passed.'
+        concurrency:
+          applicable: true
+          evidence: Task-store transactions, SQLite writer/initialization locks, fs/Git primitives, pipeline and root writer remain unchanged and sound. Once registration and RwLock extraction guards validated. No shared database or transaction defects.
+        paths:
+          applicable: true
+          evidence: Candidate 0520bea checked against baseline 8bfeae5. Admitted write perimeter Cargo.toml, crates/, src/, tests/, docs/architecture/performance.md strictly respected. Root build.rs is byte-for-byte identical to baseline HEAD. 0 out-of-scope entries. git diff --check exits 0.
+        project_isolation:
+          applicable: true
+          evidence: 'Workspace resolution uses active repository root and dedicated worktree. Task identifiers, milestone paths, database rows, and profile paths are strictly confined to forge-mcp. Unidirectional crate boundaries verified: forge-core (0 deps) <- forge-index / forge-tasks <- root.'
+      decision: pass
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-REPAIR-COVERAGE: Performance repairs preserve correct resolution statuses, exact endpoint targets, cold/delta equivalence, persisted facts, and deterministic commitments.'
+    - 'INV-REPAIR-DECLARATIVE: Framework conventions remain in manifests; extractors and shared handlers contain only universal language or rule-processing logic.'
+    - 'INV-REPAIR-PERFORMANCE: Preserve single-pass extraction, typed analysis facts, shared prepared rule/index ownership, bounded persistence, and no source rereads during delta, as required by the existing architecture and ADR 0012.'
+    - 'INV-WORKSPACE-BOUNDARIES: Splitting the repository into forge-core, forge-index, and forge-tasks enforces strict unidirectional dependency boundaries with zero circular crate dependencies.'
+    architectural_notes:
+    - |
+      decisions: Architectural synthesis decision for task split-cargo-workspace-into-independent-crates (contract_revision: 1):
+      1. Workspace Structure:
+         - Root Cargo.toml declares workspace members: ["crates/forge-core", "crates/forge-index", "crates/forge-tasks", "."].
+      2. Decoupled Crate Responsibilities & Boundaries:
+         - `crates/forge-core`: Core domain models, path/symbol interned IDs, Merkle commitments, and configuration. Zero dependency on tree-sitter or SQLite.
+         - `crates/forge-index`: Tree-sitter AST extraction, declarative language rulesets, cross-language linkers, and SQLite index persistence. Unidirectional dependency on `forge-core`. Zero dependency on `forge-tasks`.
+         - `crates/forge-tasks`: ACDD task lifecycles, blackboard coordination, proof verification, and worktree isolation. Unidirectional dependency on `forge-core` and SQLite task store. Zero dependency on `forge-index`.
+         - `contextunity-forge-mcp` (root): Integrates core, index, and tasks; provides CLI and MCP interfaces.
+      3. Seam Contract:
+         - Strengthened `tests/common/workspace_contract_tests.rs` with `cargo_workspace_declares_independent_crates_and_unidirectional_boundaries`.
+         - Verified compiling runtime-red baseline: panics with exit code 101 (`Cargo.toml must declare [workspace]`).
+      4. Scope:
+         - Write scope: Cargo.toml, crates/forge-core/, crates/forge-index/, crates/forge-tasks/, src/, tests/, docs/architecture/performance.md.
+    - 'decisions: {"candidate":"0520bea5eb0c71df82527428b343ac434752b5cb","candidate_baseline_head":"8bfeae5d1973c87c0487077e6061a9cdf2361411","claim_revision":68,"contract_revision":1,"decision":"pass","dispositions":[{"id":"1369/R1","origin":"incomplete-remediation","disposition":"confirmed-fixed","evidence":"Canonical cutover to forge-index verified: root entrypoints delegate/re-export canonical crate APIs, and all parallel monolithic implementations in src/engine/linker/, src/engine/ast/, src/db/, src/core/commitments/ have been completely removed. Independent crate compilation and tests verified."}],"contours":{"paths":{"applicable":true,"evidence":"Candidate 0520bea checked against baseline 8bfeae5. Admitted write perimeter respected. Root build.rs is byte-for-byte identical to baseline HEAD. git diff --check exits 0."},"claims":{"applicable":true,"evidence":"R1 fully resolved. Single canonical owner established. Independent compilation verified. Strict Clippy 0 warnings, test core 46 passed (0 failed, 1 ignored), commitment_integrity 16 passed, framework_manifests 25 passed."},"concurrency":{"applicable":true,"evidence":"Task-store transactions, SQLite writer/initialization locks, and Once/RwLock guards verified sound."},"project_isolation":{"applicable":true,"evidence":"Workspace and worktree isolation verified. Unidirectional dependency graph enforced: forge-core (0 deps) <- forge-index / forge-tasks <- root."},"administration":{"applicable":true,"evidence":"Schema15 and task-store migrations intact. Cargo workspace configuration enforces acyclic boundaries."}},"verification":[{"command":"cargo clippy --all-targets --all-features -- -D warnings && cargo test --test core","exit_code":0,"warnings":0,"tests_passed":46,"tests_failed":0,"tests_ignored":1}],"next_action":"Advance to deliver stage."}'
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Acceptance
@@ -296,6 +361,56 @@ subtasks:
 3. `forge-index` contains Tree-sitter parsers, AST extraction pipelines, declarative manifest engine, cross-language linkers, and SQLite index persistence, depending only on `forge-core`.
 4. `forge-tasks` contains ACDD lifecycle management, blackboard coordination, proof verification, and worktree isolation, depending on `forge-core` and SQLite task schemas.
 5. All tests, benchmarks, and CLI commands compile cleanly (`cargo check --workspace`, `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`), with incremental compilation times reduced significantly.
+
+### task: optimize-indexing-linking-and-persistence-pipeline
+
+```yaml
+task_ref: optimize-indexing-linking-and-persistence-pipeline
+depends_on:
+  - split-cargo-workspace-into-independent-crates
+target: "PF-001-T06: Optimize HTML operation dispatch, route matching, storage node staging, and commitment sealing to reduce cold-build latency and bound peak RSS on large-scale codebases"
+proof_policy: direct-proof
+contract_revision: 1
+scope:
+  - src/engine/languages/html/
+  - src/engine/languages/manifests/
+  - src/engine/linker/html/
+  - src/engine/linker/routes.rs
+  - src/db/writer/seal.rs
+  - src/db/writer.rs
+  - src/engine/pipeline.rs
+  - tests/languages/html/
+  - docs/architecture/performance.md
+status: ready
+subtasks:
+  - subtask_ref: zero-alloc-html-matcher-and-single-pass-lookup
+    title: "Zero-allocation HTML route mismatch iterator and single-pass RouteIndex candidate lookup"
+    status: ready
+  - subtask_ref: prepared-html-operation-dispatch
+    title: "Prepare HTML operation dispatch by indexing rule families for start-tag requests and attribute bindings"
+    status: ready
+  - subtask_ref: borrowed-storage-node-preparation
+    title: "Eliminate redundant node cloning during storage staging and pipeline preparation"
+    status: ready
+  - subtask_ref: route-index-candidate-reduction
+    title: "Reduce RouteIndex candidate evaluation through method and path-segment pre-filtering"
+    status: ready
+  - subtask_ref: bounded-dependency-sealing-rss
+    title: "Bounded scratch storage for dependency commitment domain to constrain peak RSS"
+    status: ready
+  - subtask_ref: batch-shape-reuse-manual-flush
+    title: "Reuse prepared batch SQL statement shapes across manual node/fact flush paths"
+    status: ready
+```
+
+#### Acceptance
+
+1. `has_client_route_mismatch` performs zero-allocation iterator traversal without heap vector allocations, advancing both iterators to guarantee segment-count equality and parameter boundaries.
+2. `match_request_route` performs a single lookup in `RouteIndex::matching_routes`, filtering top-ranked candidates through mismatch guards without duplicate index scans or extra vector allocations.
+3. HTML extraction prepares indexed rule families for request and binding operations once per context, avoiding full rule list scans across tags and attributes.
+4. Storage node preparation avoids redundant cloning of `Node` records when staging database insert buffers.
+5. `project_dependency_domain` processes contiguous owner groups with a reusable scratch row buffer, bounding auxiliary row storage to O(largest owner group).
+6. Preserves all invariants: `INV-REPAIR-COVERAGE` (exact resolution targets and coverage statuses), `INV-REPAIR-DECLARATIVE` (conventions in manifests), and `INV-REPAIR-PERFORMANCE`. All tests pass cleanly under strict Clippy.
 
 ## Shared verification
 

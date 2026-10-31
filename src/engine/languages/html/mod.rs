@@ -112,7 +112,7 @@ impl LanguageProfile for Html {
                 .is_some_and(|script_type| script_type.eq_ignore_ascii_case("module"))
             && !has_attribute(ctx.node, ctx.source, "async")
             && !has_attribute(ctx.node, ctx.source, "defer")
-            && request_url_status(value) == "local_unverified"
+            && request_url_status(value, "") == "local_unverified"
         {
             if let Some(reference) = facts.references.last_mut() {
                 reference.receiver_hint =

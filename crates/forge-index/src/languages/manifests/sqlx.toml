@@ -1,0 +1,6 @@
+[[semantic_rules]]
+id = "query-as-result"
+namespace = "sql.tables"
+scope = "project"
+activation = [{ kind = "package", name = "sqlx" }]
+operation = { kind = "macro_type_to_table", language = "rust", macro_path = "sqlx::query_as" }

@@ -2,9 +2,27 @@
 name = "forge-tasks"
 version = "0.4.0"
 edition = "2021"
+authors = ["Oleksii Pylypchuk <oleksii.pylypchuk@tuta.com>"]
 description = "Pure Rust ContextUnity Forge ACDD task lifecycle and verification"
 license = "MIT"
 
 [dependencies]
 forge-core = { path = "../forge-core" }
 rusqlite = { version = "0.31", features = ["bundled", "modern_sqlite", "hooks", "limits", "backup"] }
+serde = { version = "1.0", features = ["derive", "rc"] }
+serde_json = { version = "1.0", features = ["preserve_order", "float_roundtrip"] }
+serde_yaml = "0.9"
+anyhow = "1.0"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+sha2 = "0.10"
+hex = "0.4"
+schemars = "1.0"
+tempfile = "3.10"
+dirs = "5.0"
+indexmap = { version = "2", features = ["serde"] }
+ignore = "0.4"
+pulldown-cmark = { version = "0.10", default-features = false }
+clap = { version = "4", features = ["derive"] }
+walkdir = "2"
+libc = "0.2"
+regex = "1.10"

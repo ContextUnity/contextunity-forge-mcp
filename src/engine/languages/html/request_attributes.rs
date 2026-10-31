@@ -130,7 +130,7 @@ pub(super) fn extract_request_attributes(
         let mut details = context.clone();
         details.insert(
             "url_status".into(),
-            json!(request_url_status(attribute.value)),
+            json!(request_url_status(attribute.value, namespace)),
         );
         facts.pending_flow_nodes.push(facts.nodes.len());
         facts.nodes.push(super::source_node(
@@ -185,7 +185,7 @@ pub(super) fn extract_request_attributes(
     }
 }
 
-pub(super) fn request_url_status(value: &str) -> &'static str {
+pub(super) fn request_url_status(value: &str, namespace: &str) -> &'static str {
     if value.is_empty() || value.starts_with('#') {
         "current_page"
     } else if value.starts_with("//")
@@ -207,7 +207,7 @@ pub(super) fn request_url_status(value: &str) -> &'static str {
         } else {
             "local_unverified"
         }
-    } else if is_valid_parameterized_url(value) {
+    } else if namespace == "htmx" && is_valid_parameterized_url(value) {
         "local_unverified"
     } else {
         "dynamic_or_nonlocal"

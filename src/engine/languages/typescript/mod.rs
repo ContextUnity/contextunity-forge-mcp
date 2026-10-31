@@ -10,7 +10,7 @@ mod types;
 #[cfg(test)]
 pub(super) use dom::first_callback_parameter;
 use dom::*;
-pub(crate) use dom::{typed_dom_property, typed_dom_receiver};
+pub use dom::{typed_dom_property, typed_dom_receiver};
 use projections::*;
 use prototypes::*;
 use types::*;

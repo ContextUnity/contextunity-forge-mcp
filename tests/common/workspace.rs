@@ -16,6 +16,10 @@ pub struct Workspace {
 impl Workspace {
     /// Creates a unique temporary directory that is removed when this value drops.
     pub fn new() -> Self {
+        static INIT: std::sync::Once = std::sync::Once::new();
+        INIT.call_once(|| {
+            contextunity_forge_mcp::mcp::tasks::ensure_extractors();
+        });
         static NEXT_WORKSPACE: AtomicU64 = AtomicU64::new(0);
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)

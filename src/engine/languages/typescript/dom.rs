@@ -1,6 +1,7 @@
 use super::*;
 
-pub(crate) fn typed_dom_receiver(name: &str) -> Option<&'static str> {
+/// Resolves a DOM receiver type name to a canonical receiver classification.
+pub fn typed_dom_receiver(name: &str) -> Option<&'static str> {
     match name {
         "Document" | "document" => Some("Document"),
         "Window" | "window" => Some("Window"),
@@ -23,7 +24,8 @@ pub(crate) fn typed_dom_receiver(name: &str) -> Option<&'static str> {
     }
 }
 
-pub(crate) fn typed_dom_property(receiver: &str, property: &str) -> Option<&'static str> {
+/// Resolves a DOM property on a receiver to its return type.
+pub fn typed_dom_property(receiver: &str, property: &str) -> Option<&'static str> {
     match (typed_dom_receiver(receiver)?, property) {
         (
             "Element",

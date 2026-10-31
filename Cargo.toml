@@ -1,3 +1,11 @@
+[workspace]
+members = [
+    "crates/forge-core",
+    "crates/forge-index",
+    "crates/forge-tasks",
+    ".",
+]
+
 [package]
 name = "contextunity-forge-mcp"
 version = "0.4.0"
@@ -32,6 +40,9 @@ lang-c = ["dep:tree-sitter-c"]
 lang-cpp = ["dep:tree-sitter-cpp"]
 
 [dependencies]
+forge-core = { path = "crates/forge-core" }
+forge-index = { path = "crates/forge-index" }
+forge-tasks = { path = "crates/forge-tasks" }
 indexmap = { version = "2", features = ["serde"] }
 rmcp = { version = "3.4", features = ["transport-io", "schemars"] }
 clap = { version = "4.5", features = ["derive", "env"] }
