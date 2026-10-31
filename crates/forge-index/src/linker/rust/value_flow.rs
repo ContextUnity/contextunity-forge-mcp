@@ -38,15 +38,28 @@ pub(in crate::linker) fn constructor_result<'a>(
                 | "with_capacity"
                 | "default"
                 | "open"
+                | "open_in_memory"
                 | "create"
                 | "build"
                 | "from_str"
                 | "parse"
+                | "connect"
+                | "bind"
         ) {
             let type_sym = resolver.resolve_symbol(owner, receiver, at, SymbolRole::Type);
             if let Symbol::Type(target @ (TypeTarget::External { .. } | TypeTarget::Builtin(_))) =
                 type_sym
             {
+                if matches!(
+                    member,
+                    "open" | "open_in_memory" | "from_str" | "parse" | "connect" | "build"
+                ) {
+                    return Some(TypeTarget::RustWrapper {
+                        wrapper: RustWrapperKind::Result,
+                        ok: Box::new(target),
+                        err: None,
+                    });
+                }
                 return Some(target);
             }
         }
@@ -68,6 +81,13 @@ pub(in crate::linker) fn is_adapter(member: &str) -> bool {
             | "iter"
             | "into_iter"
             | "next"
+            | "map"
+            | "filter"
+            | "enumerate"
+            | "take"
+            | "skip"
+            | "step_by"
+            | "collect"
     )
 }
 
@@ -363,6 +383,12 @@ pub(in crate::linker) fn project<'a>(
                         .map_or(TypeTarget::Unknown, |item| TypeTarget::RustIterator {
                             item: Box::new(item),
                         }),
+                    "filter" | "take" | "skip" | "step_by" => receiver.clone(),
+                    // Project facts carry no closure output or tuple type proof.
+                    "map" | "enumerate" => TypeTarget::Unknown,
+                    "collect" => TypeTarget::RustCollection {
+                        item: item.clone(),
+                    },
                     _ => TypeTarget::Unknown,
                 };
             Some(projected)
@@ -388,6 +414,9 @@ pub(in crate::linker) fn project<'a>(
             Some(TypeTarget::RustIterator {
                 item: Box::new(item),
             })
+        }
+        TypeTarget::External { .. } if matches!(member, "?" | "unwrap" | "expect") => {
+            Some(receiver.clone())
         }
         _ => None,
     }

@@ -317,6 +317,36 @@ fn test_ast_parameterless_declaration() {
     assert_eq!(matches[0]["text"], "fn target() { call(value); }");
 }
 
+static RUST_STD_MEMBERS: std::sync::OnceLock<
+    std::collections::HashMap<String, std::collections::HashSet<String>>,
+> = std::sync::OnceLock::new();
+
+fn rust_std_members()
+-> &'static std::collections::HashMap<String, std::collections::HashSet<String>> {
+    RUST_STD_MEMBERS.get_or_init(|| {
+        let manifest = super::manifests::FrameworkManifest::parse(
+            "rust-std".to_owned(),
+            "toml",
+            include_str!("../manifests/rust-std.toml"),
+        )
+        .expect("rust-std.toml must be valid");
+        let mut members: std::collections::HashMap<String, std::collections::HashSet<String>> =
+            std::collections::HashMap::new();
+        for rule in manifest.class_hierarchy_receivers {
+            for base in rule.bases {
+                let short = base.rsplit("::").next().unwrap_or(&base);
+                for name in [base.as_str(), short] {
+                    members
+                        .entry(name.to_owned())
+                        .or_default()
+                        .extend(rule.members.iter().cloned());
+                }
+            }
+        }
+        members
+    })
+}
+
 impl LanguageProfile for Rust {
     fn id(&self) -> &'static str {
         "rust"
@@ -578,6 +608,21 @@ impl LanguageProfile for Rust {
         if !member.is_empty() {
             return self.builtin_member(receiver, member);
         }
+        if self.builtin_type(symbol)
+            && !matches!(
+                symbol,
+                "Path"
+                    | "PathBuf"
+                    | "Rc"
+                    | "Arc"
+                    | "HashMap"
+                    | "HashSet"
+                    | "BTreeMap"
+                    | "BTreeSet"
+            )
+        {
+            return true;
+        }
         matches!(
             symbol,
             "Ok" | "Err"
@@ -617,39 +662,38 @@ impl LanguageProfile for Rust {
                 | "isize"
                 | "f32"
                 | "f64"
-                | "String"
-                | "Vec"
-                | "Option"
-                | "Result"
-                | "Box"
                 | "Drop"
-                | "Clone"
-                | "Default"
         )
     }
     fn builtin_type(&self, name: &str) -> bool {
-        matches!(
+        if matches!(
             name,
             "str"
-                | "String"
-                | "Vec"
-                | "Option"
-                | "Result"
-                | "Box"
-                | "Rc"
-                | "Arc"
-                | "Path"
-                | "PathBuf"
-                | "HashMap"
-                | "HashSet"
-                | "BTreeMap"
-                | "BTreeSet"
-        )
+                | "bool"
+                | "char"
+                | "u8"
+                | "u16"
+                | "u32"
+                | "u64"
+                | "u128"
+                | "usize"
+                | "i8"
+                | "i16"
+                | "i32"
+                | "i64"
+                | "i128"
+                | "isize"
+                | "f32"
+                | "f64"
+        ) {
+            return true;
+        }
+        rust_std_members().contains_key(name)
     }
 
     fn builtin_member(&self, receiver: &str, member: &str) -> bool {
-        match receiver {
-            "str" => matches!(
+        if receiver == "str"
+            && matches!(
                 member,
                 "len"
                     | "is_empty"
@@ -669,156 +713,16 @@ impl LanguageProfile for Rust {
                     | "ends_with"
                     | "is_ascii"
                     | "eq_ignore_ascii_case"
-            ),
-            "String" => matches!(
-                member,
-                "new"
-                    | "from"
-                    | "with_capacity"
-                    | "default"
-                    | "clone"
-                    | "as_ref"
-                    | "as_mut"
-                    | "len"
-                    | "is_empty"
-                    | "capacity"
-                    | "clear"
-                    | "push"
-                    | "push_str"
-                    | "as_str"
-                    | "as_bytes"
-                    | "chars"
-                    | "bytes"
-                    | "lines"
-                    | "into_bytes"
-                    | "to_string"
-                    | "trim"
-                    | "split"
-                    | "contains"
-                    | "starts_with"
-                    | "ends_with"
-            ),
-            "Vec" => matches!(
-                member,
-                "new"
-                    | "from"
-                    | "with_capacity"
-                    | "default"
-                    | "clone"
-                    | "as_ref"
-                    | "as_mut"
-                    | "len"
-                    | "is_empty"
-                    | "capacity"
-                    | "clear"
-                    | "push"
-                    | "pop"
-                    | "get"
-                    | "get_mut"
-                    | "first"
-                    | "last"
-                    | "iter"
-                    | "iter_mut"
-                    | "into_iter"
-                    | "extend"
-                    | "drain"
-                    | "as_slice"
-                    | "as_mut_slice"
-                    | "contains"
-                    | "sort"
-                    | "sort_unstable"
-                    | "retain"
-                    | "truncate"
-            ),
-            "Iterator" => matches!(member, "next" | "cloned" | "copied"),
-            "Slice" => matches!(member, "iter" | "into_iter"),
-            "Path" | "PathBuf" => matches!(
-                member,
-                "new"
-                    | "from"
-                    | "join"
-                    | "parent"
-                    | "file_name"
-                    | "file_stem"
-                    | "extension"
-                    | "exists"
-                    | "is_file"
-                    | "is_dir"
-                    | "to_str"
-                    | "to_string_lossy"
-                    | "display"
-                    | "as_path"
-            ),
-            "Box" => matches!(
-                member,
-                "new" | "from" | "clone" | "default" | "as_ref" | "as_mut"
-            ),
-            "Rc" | "Arc" => matches!(member, "new" | "from" | "clone" | "default" | "as_ref"),
-            "HashMap" | "HashSet" | "BTreeMap" | "BTreeSet" => matches!(
-                member,
-                "new"
-                    | "with_capacity"
-                    | "default"
-                    | "insert"
-                    | "get"
-                    | "get_mut"
-                    | "contains_key"
-                    | "contains"
-                    | "remove"
-                    | "iter"
-                    | "keys"
-                    | "values"
-                    | "len"
-                    | "is_empty"
-                    | "clear"
-                    | "entry"
-            ),
-            "Option" => matches!(
-                member,
-                "default"
-                    | "from"
-                    | "clone"
-                    | "is_some"
-                    | "is_none"
-                    | "unwrap"
-                    | "expect"
-                    | "map"
-                    | "and_then"
-                    | "unwrap_or"
-                    | "unwrap_or_else"
-                    | "unwrap_or_default"
-                    | "ok_or"
-                    | "ok_or_else"
-                    | "cloned"
-                    | "copied"
-                    | "as_ref"
-                    | "as_mut"
-                    | "as_deref"
-                    | "take"
-                    | "replace"
-            ),
-            "Result" => matches!(
-                member,
-                "clone"
-                    | "is_ok"
-                    | "is_err"
-                    | "unwrap"
-                    | "expect"
-                    | "unwrap_err"
-                    | "expect_err"
-                    | "map"
-                    | "map_err"
-                    | "unwrap_or"
-                    | "unwrap_or_else"
-                    | "unwrap_or_default"
-                    | "ok"
-                    | "err"
-                    | "as_ref"
-                    | "as_mut"
-                    | "as_deref"
-            ),
-            _ => false,
+            )
+        {
+            return true;
         }
+        if receiver == "Slice" && matches!(member, "iter" | "into_iter") {
+            return true;
+        }
+        rust_std_members()
+            .get(receiver)
+            .is_some_and(|members| members.contains(member))
     }
     fn builtin_generic(&self, receiver: &str) -> bool {
         matches!(
@@ -880,18 +784,26 @@ impl LanguageProfile for Rust {
         } else {
             let (first, tail) = module.split_once("::").unwrap_or((module, ""));
             let mut resolved_crate = None;
+            let hyphenated = first.contains('_').then(|| first.replace('_', "-"));
             for prefix in ["crates", "packages", "libs", "modules", ""] {
-                let candidate = if prefix.is_empty() {
-                    std::path::PathBuf::from(first).join("src")
-                } else {
-                    std::path::PathBuf::from(prefix).join(first).join("src")
-                };
-                if candidate.exists() {
-                    let mod_prefix = candidate
-                        .to_string_lossy()
-                        .replace('\\', "/")
-                        .replace('/', ".");
-                    resolved_crate = Some(mod_prefix);
+                for crate_dir in std::iter::once(first).chain(hyphenated.as_deref()) {
+                    let candidate = if prefix.is_empty() {
+                        std::path::PathBuf::from(crate_dir).join("src")
+                    } else {
+                        std::path::PathBuf::from(prefix)
+                            .join(crate_dir)
+                            .join("src")
+                    };
+                    if candidate.exists() {
+                        let mod_prefix = candidate
+                            .to_string_lossy()
+                            .replace('\\', "/")
+                            .replace('/', ".");
+                        resolved_crate = Some(mod_prefix);
+                        break;
+                    }
+                }
+                if resolved_crate.is_some() {
                     break;
                 }
             }

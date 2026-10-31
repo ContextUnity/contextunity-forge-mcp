@@ -1,0 +1,111 @@
+# Declarative Cargo ecosystem manifest for common third-party crates
+enabled = true
+
+# rusqlite
+[[class_hierarchy_receivers]]
+bases = ["rusqlite::Connection", "Connection"]
+provider = "rusqlite"
+members = [
+    "open", "open_in_memory", "open_with_flags", "execute", "execute_batch",
+    "prepare", "prepare_cached", "query_row", "query_row_and_then",
+    "transaction", "unchecked_transaction", "close", "is_autocommit"
+]
+
+[[class_hierarchy_receivers]]
+bases = ["rusqlite::Statement", "Statement"]
+provider = "rusqlite"
+members = [
+    "execute", "query", "query_map", "query_row", "query_and_then",
+    "raw_bind_parameter", "parameter_count", "column_count", "column_names"
+]
+
+[[class_hierarchy_receivers]]
+bases = ["rusqlite::Row", "Row"]
+provider = "rusqlite"
+members = ["get", "get_ref", "get_unwrap"]
+
+# tree-sitter
+[[class_hierarchy_receivers]]
+bases = ["tree_sitter::Parser", "Parser"]
+provider = "tree-sitter"
+members = ["new", "set_language", "language", "parse", "parse_with", "reset", "timeout_micros", "set_timeout_micros"]
+
+[[class_hierarchy_receivers]]
+bases = ["tree_sitter::Tree", "Tree"]
+provider = "tree-sitter"
+members = ["root_node", "language", "edit", "walk"]
+
+[[class_hierarchy_receivers]]
+bases = ["tree_sitter::Node", "Node"]
+provider = "tree-sitter"
+members = [
+    "kind", "kind_id", "is_named", "is_extra", "has_changes", "has_error",
+    "start_byte", "end_byte", "start_position", "end_position",
+    "child", "child_count", "named_child", "named_child_count",
+    "child_by_field_name", "child_by_field_id",
+    "parent", "next_sibling", "prev_sibling", "next_named_sibling", "prev_named_sibling",
+    "utf8_text", "walk"
+]
+
+[[class_hierarchy_receivers]]
+bases = ["tree_sitter::Query", "Query"]
+provider = "tree-sitter"
+members = ["new", "matches", "captures", "pattern_count", "capture_names", "disable_pattern", "disable_capture"]
+
+[[class_hierarchy_receivers]]
+bases = ["tree_sitter::QueryCursor", "QueryCursor"]
+provider = "tree-sitter"
+members = ["new", "matches", "captures", "set_byte_range", "set_point_range"]
+
+# serde
+[[class_hierarchy_receivers]]
+bases = ["serde::Serialize", "Serialize"]
+provider = "serde"
+members = ["serialize"]
+
+[[class_hierarchy_receivers]]
+bases = ["serde::Deserialize", "Deserialize"]
+provider = "serde"
+members = ["deserialize"]
+
+[[class_hierarchy_receivers]]
+bases = ["serde_json::Value", "Value"]
+provider = "serde_json"
+members = [
+    "get", "get_mut", "is_null", "is_boolean", "is_number", "is_i64", "is_u64",
+    "is_f64", "is_string", "is_array", "is_object", "as_bool", "as_i64", "as_u64",
+    "as_f64", "as_str", "as_array", "as_array_mut", "as_object", "as_object_mut",
+    "to_string"
+]
+
+# tokio
+[[class_hierarchy_receivers]]
+bases = ["tokio::sync::mpsc::Sender", "Sender"]
+provider = "tokio"
+members = ["send", "try_send", "reserve", "capacity", "is_closed", "max_capacity"]
+
+[[class_hierarchy_receivers]]
+bases = ["tokio::sync::mpsc::Receiver", "Receiver"]
+provider = "tokio"
+members = ["recv", "try_recv", "close", "poll_recv"]
+
+[[class_hierarchy_receivers]]
+bases = ["tokio::sync::Mutex", "Mutex"]
+provider = "tokio"
+members = ["lock", "try_lock", "blocking_lock"]
+
+[[class_hierarchy_receivers]]
+bases = ["tokio::sync::RwLock", "RwLock"]
+provider = "tokio"
+members = ["read", "write", "try_read", "try_write", "blocking_read", "blocking_write"]
+
+[[class_hierarchy_receivers]]
+bases = ["tokio::task::JoinHandle", "JoinHandle"]
+provider = "tokio"
+members = ["abort", "is_finished"]
+
+# anyhow
+[[class_hierarchy_receivers]]
+bases = ["anyhow::Error", "Error"]
+provider = "anyhow"
+members = ["context", "backtrace", "root_cause", "chain", "downcast", "downcast_ref", "downcast_mut", "to_string"]

@@ -5,7 +5,9 @@
     feature = "lang-go"
 ))]
 
-use contextunity_forge_mcp::engine::ast;
+use contextunity_forge_mcp::engine::{ast, linker};
+#[cfg(feature = "lang-rust")]
+use forge_index::languages::rust::kind;
 
 #[cfg(feature = "lang-python")]
 mod scope_allocations {
@@ -118,6 +120,197 @@ impl Config {
     assert_eq!(constructor.details["receiver_type"], "Config");
     assert!(constructor.details.get("is_method").is_none());
     assert_eq!(constructor.details["is_static"], true);
+
+    #[cfg(feature = "lang-rust")]
+    {
+        let rust_kind = kind("function_item");
+        assert_eq!(rust_kind, Some("function"));
+    }
+
+    // Contract baseline for LS-001: Rust std prelude trait resolution and declarative manifests.
+    // Standard prelude traits (Clone, Default, Iterator) must resolve or classify as external via rust-std.toml.
+    let std_source = r#"
+fn run() {
+    let _default: Result<i32, ()> = Result::default();
+    let text = String::from("hello");
+    let _cloned = text.clone();
+    let _default_trait: i32 = Default::default();
+    let numbers = Vec::new();
+    let _iter = numbers.iter();
+}
+"#;
+    let std_facts =
+        ast::extract("std_prelude.rs", "rust", std_source).expect("std_prelude extraction failed");
+    let std_graph = linker::link(&std::collections::BTreeMap::from([(
+        "std_prelude.rs".to_owned(),
+        std_facts,
+    )]));
+    let default_coverage = std_graph
+        .coverage
+        .iter()
+        .find(|c| c.expression == "Result::default")
+        .expect("missing coverage for Result::default");
+    assert_eq!(
+        default_coverage.status, "unresolved",
+        "Result does not implement Default: {default_coverage:#?}"
+    );
+    let string_coverage = std_graph
+        .coverage
+        .iter()
+        .find(|c| c.expression == "String::from")
+        .expect("missing coverage for String::from");
+    assert_eq!(
+        string_coverage.status, "external",
+        "String::from must resolve to external Rust standard library prelude via rust-std.toml: {string_coverage:#?}"
+    );
+    let clone_coverage = std_graph
+        .coverage
+        .iter()
+        .find(|c| c.expression == "text.clone")
+        .expect("missing coverage for text.clone");
+    assert_eq!(
+        clone_coverage.status, "external",
+        "text.clone must resolve to external Rust standard library prelude via rust-std.toml: {clone_coverage:#?}"
+    );
+    let default_trait_coverage = std_graph
+        .coverage
+        .iter()
+        .find(|c| c.expression == "Default::default")
+        .expect("missing coverage for Default::default");
+    assert_eq!(
+        default_trait_coverage.status, "external",
+        "Default::default must resolve to external Rust standard library prelude via rust-std.toml: {default_trait_coverage:#?}"
+    );
+    let vec_new_coverage = std_graph
+        .coverage
+        .iter()
+        .find(|c| c.expression == "Vec::new")
+        .expect("missing coverage for Vec::new");
+    assert_eq!(
+        vec_new_coverage.status, "external",
+        "Vec::new must resolve to external: {vec_new_coverage:#?}"
+    );
+    let iter_coverage = std_graph
+        .coverage
+        .iter()
+        .find(|c| c.expression == "numbers.iter")
+        .expect("missing coverage for numbers.iter");
+    assert_eq!(
+        iter_coverage.status, "external",
+        "numbers.iter must resolve to external: {iter_coverage:#?}"
+    );
+
+    // Verify Cargo third-party ecosystem crate routing (Task 2 contract)
+    let cargo_source = r#"
+use rusqlite::Connection;
+use tree_sitter::Parser;
+
+fn run_cargo_crates() {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute("SELECT 1", []).unwrap();
+    let mut parser = Parser::new();
+    parser.set_language(&lang).unwrap();
+}
+"#;
+    let cargo_facts = ast::extract("cargo_test.rs", "rust", cargo_source).unwrap();
+    let cargo_graph = linker::link(&std::collections::BTreeMap::from([(
+        "cargo_test.rs".to_owned(),
+        cargo_facts,
+    )]));
+    let execute_cov = cargo_graph
+        .coverage
+        .iter()
+        .find(|c| c.expression == "conn.execute")
+        .expect("missing coverage for conn.execute");
+    assert_eq!(
+        execute_cov.status, "external",
+        "conn.execute must resolve to external via rust-cargo.toml declarative pack: {execute_cov:#?}"
+    );
+    let parser_cov = cargo_graph
+        .coverage
+        .iter()
+        .find(|c| c.expression == "parser.set_language")
+        .expect("missing coverage for parser.set_language");
+    assert_eq!(
+        parser_cov.status, "external",
+        "parser.set_language must resolve to external via rust-cargo.toml declarative pack: {parser_cov:#?}"
+    );
+
+    let iso_source = r#"
+fn check_string_trait_isolation() {
+    let s = String::new();
+    s.clone();
+    s.next();
+}
+"#;
+    let iso_facts = ast::extract("iso_test.rs", "rust", iso_source).unwrap();
+    let iso_graph = linker::link(&std::collections::BTreeMap::from([(
+        "iso_test.rs".to_owned(),
+        iso_facts,
+    )]));
+    let next_cov = iso_graph
+        .coverage
+        .iter()
+        .find(|c| c.expression == "s.next")
+        .expect("missing coverage for s.next");
+    assert_eq!(
+        next_cov.status, "unresolved",
+        "s.next must remain unresolved because String does not implement Iterator: {next_cov:#?}"
+    );
+    for (adapter, preserves_item) in [
+        ("filter(|_| true)", true),
+        ("take(1)", true),
+        ("skip(1)", true),
+        ("step_by(1)", true),
+        ("collect::<Vec<_>>().into_iter()", true),
+        ("map(|_| B)", false),
+        ("map(convert)", false),
+        ("enumerate()", false),
+        ("map(|item| item)", false),
+    ] {
+        let source = format!(
+            "struct A; impl A {{ fn finish(&self) {{}} }}
+             struct B; impl B {{ fn finish(&self) {{}} }}
+             fn convert(_: A) -> B {{ B }}
+             trait Finish {{ fn finish(&self); }}
+             impl Finish for (usize, A) {{ fn finish(&self) {{}} }}
+             fn run(items: Vec<A>) {{
+                 let mut adapted = items.into_iter().{adapter};
+                 let item = adapted.next().unwrap();
+                 item.finish();
+             }}"
+        );
+        let facts = ast::extract("iterator.rs", "rust", &source).unwrap();
+        assert!(facts.errors.is_empty(), "{adapter}: {facts:#?}");
+        let target = facts
+            .nodes
+            .iter()
+            .find(|node| node.name == "finish" && node.details["receiver_type"] == "A")
+            .unwrap()
+            .id
+            .clone();
+        let graph = linker::link(&std::collections::BTreeMap::from([(
+            "iterator.rs".to_owned(),
+            facts,
+        )]));
+        assert_eq!(
+            graph.edges.iter().any(|edge| edge.kind == "calls"
+                && edge.evidence == "item.finish"
+                && edge.dst == target),
+            preserves_item,
+            "{adapter}: {graph:#?}"
+        );
+        let coverage = graph
+            .coverage
+            .iter()
+            .find(|row| row.expression == "item.finish")
+            .unwrap();
+        assert_eq!(
+            coverage.status,
+            if preserves_item { "resolved" } else { "unresolved" },
+            "{adapter}: {coverage:#?}"
+        );
+    }
     assert!(ast::parser("sql", "schema.sql").is_err());
     let mut public_facts = contextunity_forge_mcp::core::models::Facts::default();
     contextunity_forge_mcp::engine::languages::parse_file(

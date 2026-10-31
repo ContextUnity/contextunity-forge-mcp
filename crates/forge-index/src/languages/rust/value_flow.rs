@@ -260,9 +260,15 @@ pub(super) fn value(node: Node<'_>, source: &str) -> ValueExpr {
             .and_then(|name| static_name(name, source))
             .map_or(ValueExpr::Unknown, |callee| ValueExpr::Construct { callee }),
         "call_expression" => {
-            let Some(function) = node.child_by_field_name("function") else {
+            let Some(mut function) = node.child_by_field_name("function") else {
                 return ValueExpr::Unknown;
             };
+            if function.kind() == "generic_function" {
+                let Some(inner) = function.child_by_field_name("function") else {
+                    return ValueExpr::Unknown;
+                };
+                function = inner;
+            }
             if function.kind() == "field_expression" {
                 if let (Some(receiver), Some(member)) = (
                     function.child_by_field_name("value"),
@@ -281,6 +287,13 @@ pub(super) fn value(node: Node<'_>, source: &str) -> ValueExpr {
                             | "iter"
                             | "into_iter"
                             | "next"
+                            | "map"
+                            | "filter"
+                            | "enumerate"
+                            | "take"
+                            | "skip"
+                            | "step_by"
+                            | "collect"
                     ) {
                         return ValueExpr::Project {
                             value: Box::new(value(receiver, source)),

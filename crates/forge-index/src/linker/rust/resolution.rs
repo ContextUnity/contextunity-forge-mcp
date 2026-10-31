@@ -6,6 +6,11 @@ use crate::core::models::{
 use crate::engine::languages::LanguageProfile;
 use hashbrown::HashMap;
 
+/// Helper to verify registered Cargo ecosystem crates
+pub fn is_registered_cargo_crate(crate_name: &str) -> bool {
+    matches!(crate_name, "rusqlite" | "tree-sitter" | "tree_sitter" | "serde" | "tokio" | "anyhow")
+}
+
 #[cfg(feature = "lang-rust")]
 pub(in crate::linker) fn rust_explicit_module_target(
     profile: Option<&dyn LanguageProfile>,

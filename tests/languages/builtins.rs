@@ -107,6 +107,41 @@ fn rust_prelude_variants_and_macros_have_stdlib_provenance() {
 #[cfg(feature = "lang-rust")]
 #[test]
 fn rust_stdlib_calls_are_external_and_local_shadow_is_resolved() {
+    let profile = languages::require("rust").unwrap();
+    for (receiver, member, expected) in [
+        ("String", "clone", true),
+        ("String", "clone_from", true),
+        ("String", "default", true),
+        ("String", "to_string", true),
+        ("String", "fmt", true),
+        ("String", "next", false),
+        ("String", "collect", false),
+        ("Vec", "next", false),
+        ("Vec", "to_string", false),
+        ("Option", "clone_from", true),
+        ("Option", "to_string", false),
+        ("Result", "clone_from", true),
+        ("Result", "default", false),
+        ("Path", "default", false),
+        ("Path", "clone", false),
+        ("Path", "join", true),
+        ("PathBuf", "join", true),
+        ("std::path::Path", "join", true),
+        ("std::result::Result", "default", false),
+        ("Iterator", "next", true),
+        ("Iterator", "map", true),
+        ("Iterator", "collect", true),
+        ("i32", "clone_from", true),
+        ("i32", "default", true),
+        ("i32", "to_string", true),
+        ("i32", "next", false),
+    ] {
+        assert_eq!(
+            profile.builtin_member(receiver, member),
+            expected,
+            "{receiver}::{member}"
+        );
+    }
     let cases = [
         (
             "prelude.rs",
@@ -221,7 +256,7 @@ fn rust_stdlib_calls_are_external_and_local_shadow_is_resolved() {
             false,
         ),
         (
-            "no_result_default.rs",
+            "result_default.rs",
             "fn run() { let _value: Result<i32, ()> = Result::default(); }",
             "Result::default",
             "unresolved",
