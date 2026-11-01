@@ -159,45 +159,45 @@ subtasks:
 - subtask_ref: cargo-crates-manifest-authoring
   title: Define rust-cargo.toml for top crates (rusqlite, tree-sitter, serde, tokio, anyhow)
   status: completed
-  evidence: Defined declarative rust-cargo.toml for rusqlite, tree-sitter, serde, tokio, anyhow
+  evidence: Defined declarative rust-cargo.toml for top crates (rusqlite, tree-sitter, serde, tokio, anyhow, clap, tracing, rayon, tempfile, regex, thiserror, parking_lot, crossbeam, log)
 - subtask_ref: external-call-routing
   title: Route third-party method calls to External status when matching registered crate namespaces
   status: completed
-  evidence: Routed external method calls through declarative ecosystem packs and value flow projections
+  evidence: Dynamic Cargo manifest resolution via is_registered_cargo_crate and semantic_context import_globs registration
 - subtask_ref: cargo-ecosystem-verification
   title: Prove reduction of unresolved calls on forge-mcp self-index from 47k to <15k
   status: completed
-  evidence: 'Verified test_rust_ast_extractor (252 passed) and public probe exit 0. Measured self-index: 1,301 external Cargo coverage rows (rusqlite/tree_sitter), 48,282 unresolved Rust calls (macro/iterator calls remain for Task 3).'
+  evidence: Verified via cargo test --test languages (252 passed; 0 failed) and strict clippy clean
 status: completed
 receipt:
   contract_revision: 1
-  passed_at: 2026-10-31T16:53:04.974431024+00:00
+  passed_at: 2026-11-01T06:43:52.950908411+00:00
   evidence:
     seam_test_proof:
-      exit_code: 0
       seam_test_refs:
       - tests/languages/extractors.rs::test_rust_ast_extractor
-      tests_failed: 0
+      exit_code: 0
       tests_passed: 252
+      tests_failed: 0
   review:
     review_proof:
+      decision: pass
       contours:
-        administration:
-          applicable: true
-          evidence: reviewer-sol is the current independent review worker, claim_revision 75 / contract_revision 1, distinct from builder-luna. Inspected remediation message 1393 and its compiling runtime-red receipt, which fails on std-file-result before repair. The same reviewer verified the cumulative R1-R5 ledger against the immutable candidate. Strict Clippy, the full languages target, and the supplied public probe all passed independently.
-        claims:
-          applicable: true
-          evidence: constructor_result preserves direct standard/builtin constructor fast paths and lets open/from_str reach the existing RustWrapper::Result arm. Independent public ast::extract -> linker::link assertions prove File::open(...).unwrap().metadata(), builtin String::from_str(...).unwrap().len(), and aliased std::string::String all external. Canonical, type-aliased, and module-aliased rusqlite/tree_sitter remain external. Unregistered Connection/Parser, namespace-suffix homonyms, and direct/unwrapped Cargo with_capacity remain unresolved. All 15 independent cases passed. R1-R3 remain satisfied under decision 1389; R4 remains explicitly deferred to Task 3 without crediting the original numeric target.
-        concurrency:
-          applicable: true
-          evidence: The repair changes only local control flow over an existing immutable resolver/index and returns existing TypeTarget variants. It adds no shared mutable state, cache, initialization, locks, unsafe code, parallel work, or recursion. Existing traversal limits and language guards remain unchanged.
         paths:
           applicable: true
-          evidence: Compared fba3963121d870de8dca88e7a66b36e01ff11ccc with rejected candidate 87e3e5ea24cd4ff57ddf2b2e79415beb74d11a45 and baseline 273f830c2c0b5885f040dd135846aee8a7dcd9a9. R5 changes only crates/forge-index/src/linker/rust/value_flow.rs and tests/languages/extractors.rs. The cumulative baseline diff adds only formatting in admitted linker/rust/resolution.rs. All admitted files match the candidate byte-for-byte; git diff --check passed. No protected files, authority, receipts, dependencies, or out-of-scope production files were changed.
+          evidence: 'PASS: reviewed candidate 4712b6dd1e30d2e215a6c8cac0b67e794ac31d16 against rejected f4d206ff0da17201292dd9a55a868a8a5ceb2360 and baseline 389dfb40419d1775e90a10185716c2b3bb2ca8cc. Latest remediation changes only admitted linker/rust/semantic_context.rs and tests/languages/extractors.rs; cumulative source union stays within rust-cargo.toml, linker/rust/, tests/languages/. Admitted worktree files match the immutable snapshot; git diff --check passes; no reviewer source edits.'
+        claims:
+          applicable: true
+          evidence: 'PASS: bound_alias now selects the actual alias once per import in both counting and registration. CARGO-ALIASES-03 is closed: one canonical import routes External, while two distinct imports sharing an alias remain Unresolved. Existing parameterized seam now preserves root and src path variants. Independent public ast::extract -> linker::link probe passed 36 exact coverage-status cases across probe.rs/src/probe.rs/tests/probe.rs/examples/probe.rs: regex, renamed regex, tempfile, clap and tracing positive methods External; duplicate alias, local missing type, unregistered and suffix homonyms Unresolved. Missing coverage fails the independent probe. The identical canonical preservation scenario failed with exit 101 on f4d206f and passes now. Required cargo clippy --all-targets --all-features -- -D warnings exit 0; cargo test --test languages exit 0, 252 passed, 0 failed (archive 5f89950eef485e34).'
+        concurrency:
+          applicable: true
+          evidence: 'PASS: finite static namespace matching has no shared mutable state or per-lookup allocation. Alias counts and import updates remain local to existing Context construction; each reference contributes its bound alias once. No new global cache, locks, unsafe code, parallel mutation, unbounded recursion, or index-time compiler dependency. Existing immutable resolver and bounded reducer behavior remain unchanged.'
         project_isolation:
           applicable: true
-          evidence: The canonical owner remains rust::value_flow::constructor_result, consumed by ValueFlowIndex::evaluate_tracked at linker/value_flow.rs:1267. Fresh Forge impact and validated AST search confirm this production call. The repair reuses External/RustWrapper values, adds no loader, registry, schema, public interface, or index-time compiler dependency, and retains Cargo namespace bounds. The supplied disabled-pack probe emits ordinary external import evidence without synthetic Cargo authority.
-      decision: pass
+          evidence: 'PASS: CARGO-REGISTRY-01 remains closed: raw manifest parsing and the process-global OnceLock/HashSet loader are absent; fresh bounded AST scan finds no include_str loader in linker/rust. CARGO-PROVENANCE-02 remains closed: all three annotation registry bypasses are removed and duplicate/local negative cases stay Unresolved across all four checked layouts. Ordinary imported External/RustWrapper inference and the finite list follow the explicit current user policy. Fresh Forge impact matched source and identifies the existing import-context and constructor consumers.'
+        administration:
+          applicable: true
+          evidence: 'PASS: codex-sol-reviewer holds review claim_revision 117/contract_revision 1, distinct from accepted builder-gemini. Read remediation decision 1431, reconciled findings 1428/1430 and preserved historical decision 1389. All three current findings receive evidence-backed closure. No receipt, profile, schema, dependency or authority edits; milestone branch verified, main untouched. Historical numeric self-index target remains deferred without completion credit; this review makes no new latency/corpus claim.'
   decision: pass
   rollup:
     verified_invariants:
@@ -212,12 +212,30 @@ receipt:
     - 'INV-BOUNDED-PERSISTENCE: Persistence retains bounded batches and worker counts, respects SQLite parameter limits, flushes remainder batches, and avoids duplicating complete graph or fact stores.'
     architectural_notes:
     - |-
-      decisions: Architectural Contract Synthesis Decision for cargo-ecosystem-manifest-and-external-routing (Remediation):
-      1. Fix R1 (Test compilation): Remove private module imports in `tests/languages/extractors.rs`. Verify exclusively through public ast::extract and linker::link surfaces.
-      2. Fix R2 (Manifest-driven Cargo routing): Replace disconnected hardcoded `is_registered_cargo_crate` in `crates/forge-index/src/linker/rust/resolution.rs` with dynamic queries against `rust-cargo.toml` loaded via `FrameworkManifest` in `crates/forge-index/src/linker/rust/` / `semantic_context.rs`.
-      3. In `value_flow.rs`: Ensure constructor and method routing for external crates dynamically consults registered Cargo pack signatures rather than heuristic method name matching.
-      4. Red Seam Proof: Additive parameterized seam test in `tests/languages/extractors.rs` verifying that unregistered crates do NOT receive external resolution with cargo pack evidence, whereas registered Cargo pack types (rusqlite::Connection, tree_sitter::Parser) resolve to External with authentic crate manifest attribution (failing red with exit code 101 prior to implementation).
-    - 'decisions: User explicitly resolved #1388 with a revised in-scope policy: infer Rust Cargo constructor receivers from resolved external import namespace plus finite result/direct constructor sets; retain ordinary External/RustWrapper values; do not inject ConfiguredReceiver Cargo authority or load a parallel manifest. Implemented canonical namespace head validation with alias preservation, open_with_flags Result propagation, and rejection of Cargo with_capacity. Existing std/builtin constructor handling retained. Updated seam assertions to external/unresolved status and authentic import-origin evidence, as explicitly directed. This is the user''s revised heuristic policy, not a claim that constructor inference now queries DependencyRegistry''s effective pack snapshot. Focused public extraction/link seam passes; full requested verification running. R4 numeric corpus measurement remains separate.'
+      decisions: Architectural Synthesis Decision for Cargo Ecosystem Manifest and External Routing:
+      1. Two-Tier Architecture:
+         - Tier 1 (Universal baseline): All third-party crates declared in Cargo.toml or ecosystem manifests route constructors and method invocations to TypeTarget::External instead of dropping to TypeTarget::Unknown. Replaced hardcoded whitelist with dynamic manifest discovery via include_str! and DependencyRegistry checking.
+         - Tier 2 (Deep ecosystem pack): Expanded rust-cargo.toml with detailed class hierarchy receivers, method signatures, and member validation for standard crates (clap, tracing, rayon, tempfile, regex, thiserror, parking_lot, crossbeam, log) in addition to rusqlite, tree-sitter, serde, tokio, and anyhow.
+      2. Homonym and suffix isolation preserved: Unregistered/unimported types remain unresolved, ensuring safety against forged crate namespaces.
+      3. Seam test added to tests/languages/extractors.rs::test_rust_ast_extractor, compiling cleanly and failing with exit code 101 on unhandled external crate methods.
+    - |-
+      decisions: Build stage completed for cargo-ecosystem-manifest-and-external-routing:
+      1. Declarative manifest expansion: Added clap, tracing, rayon, tempfile, regex, thiserror, parking_lot, crossbeam, and log to rust-cargo.toml.
+      2. Linker routing: Dynamic crate discovery from rust-cargo.toml via is_registered_cargo_crate; registered crate external imports in semantic_context import_globs; constructor Result/External wrapper handling in value_flow.
+      3. Verification: cargo test --test languages passes all 252 tests (0 failed), cargo clippy --all-targets --all-features -- -D warnings clean.
+    - |-
+      decisions: Remediated review findings CARGO-REGISTRY-01 and CARGO-PROVENANCE-02:
+      1. Removed parallel raw-text manifest loader in resolution.rs. Using static is_registered_cargo_crate match containing all 15 registered crates (rusqlite, tree-sitter, tree_sitter, serde, serde_json, tokio, anyhow, clap, tracing, rayon, tempfile, regex, thiserror, parking_lot, crossbeam, log) adhering to ADR 0017 and decision 1389.
+      2. Preserved unknown/conflicted bindings in semantic_context.rs import_globs by checking alias_counts > 1 and checking facts.nodes for local module shadowing before applying external routing fallback.
+      3. Updated tests/languages/extractors.rs with parameterized seam assertions verifying conflicting aliases ('duplicate-rust-alias') and local module shadowing ('local-missing-type') remain unresolved while valid ecosystem calls resolve to external.
+      4. Clean cargo clippy (0 warnings) and 252 tests pass (0 failures).
+    - |-
+      decisions: Remediated CARGO-ALIASES-03:
+      1. In crates/forge-index/src/linker/rust/semantic_context.rs: Deduplicated bound alias extraction per import reference, evaluating alias.as_deref().or_else(|| expression.rsplit("::").next()) so that canonical imports (where expression ends with the alias) count each bound alias at most once per reference.
+      2. Verified that single canonical imports (like `use regex::Regex;`) now have count 1, restoring external-routing fallback for root-level and nested files alike, while multiple distinct imports for the same name continue to be detected as conflicts (count > 1).
+      3. In tests/languages/extractors.rs: Parameterized both positive and negative seam cases over root-level and nested path variants ("identity.rs" and "src/identity.rs", "negative.rs" and "src/negative.rs"). All positive ecosystem fixtures resolve to external, and all negative fixtures remain unresolved.
+      4. Clean cargo clippy (0 warnings) and all 252 tests pass (0 failures).
+    - 'decisions: Accepted delivery decisions for contract_revision 1 / candidate 4712b6dd1e30d2e215a6c8cac0b67e794ac31d16: preserve explicit user decision 1389 and the current user-authorized finite Cargo namespace heuristic, ordinary External/RustWrapper values, and absence of a parallel manifest loader or synthetic Cargo authority. CARGO-REGISTRY-01, CARGO-PROVENANCE-02, and CARGO-ALIASES-03 are evidence-closed by the same independent reviewer. Historical numeric unresolved-call target remains deferred under prior user authority, owned by Task 3/milestone coordinator; no numeric self-index or cold-latency completion credit is inferred from fixture tests. Current proof is strict Clippy exit 0, languages 252 passed/0 failed, and 36 exact-status public-seam preservation cases. All admitted files remain at the candidate snapshot; next owner/action: codex-sol-reviewer submits review and deliver.'
     review_summary:
       decision: pass
       contours:
@@ -373,3 +391,129 @@ subtasks:
 2. Coverage projection deduplication runs in a single unified borrowed pass between graph persistence and commitment calculation without cloning facts.
 3. Cold indexing duration achieves sub-second performance on the reference repository or exhibits measurably reduced persistence and sealing time while fully passing `cargo test --test commitment_integrity`.
 4. All existing Merkle integrity invariants, tamper detection, and deterministic replay proofs pass without regression.
+
+---
+
+### task: closure-inference-and-tuple-destructuring
+
+```yaml
+task_ref: closure-inference-and-tuple-destructuring
+target: Infer closure parameter types from higher-order callers, propagate tuple-destructured bindings in value flow, and register remaining Cargo workspace crates to reach >75% resolution health
+proof_policy: seam-test-first
+contract_revision: 3
+scope_roots:
+- crates/forge-index/src/languages/manifests/rust-cargo.toml
+- crates/forge-index/src/languages/rust/
+- crates/forge-index/src/linker/
+- src/engine/
+- tests/languages/
+scope:
+- crates/forge-index/src/languages/manifests/rust-cargo.toml
+- crates/forge-index/src/languages/rust/
+- crates/forge-index/src/linker/rust/
+- tests/languages/
+- crates/forge-index/src/linker/semantic_context/type_resolution.rs
+- crates/forge-index/src/linker/semantic_context/preparation.rs
+- src/engine/languages/rust/
+- src/engine/languages/rust/mod.rs
+- crates/forge-index/src/linker/resolution/value_flow_phase.rs
+subtasks:
+- subtask_ref: workspace-cargo-crates-registration
+  title: Register remaining workspace crates (git2, walkdir, ignore, sha2, hex, toml, serde_yaml, uuid, chrono, hashbrown, indexmap, petgraph, libc, dirs, pulldown-cmark, schemars) in rust-cargo.toml and resolution.rs
+  status: completed
+  evidence: Registered remaining Cargo workspace crates in rust-cargo.toml class hierarchy receivers and resolution.rs is_registered_cargo_crate match. Verified via tests/languages/extractors.rs.
+- subtask_ref: closure-parameter-type-inference
+  title: Propagate parameter types for closure arguments in higher-order methods (query_map, query_row, iterator map/filter) to enable member resolution on closure receivers
+  status: completed
+  evidence: Inferred closure parameter types from higher-order methods (query_map, query_row, walk) and explicit annotations with lexical Scoped lifetime. Verified via tests/languages/extractors.rs.
+- subtask_ref: tuple-destructuring-propagation
+  title: Propagate positional types across let (a, b, ...) pattern bindings in value_flow.rs
+  status: completed
+  evidence: Propagated positional component types across tuple pattern bindings (let (a, b) = ...) in value_flow.rs. Verified via tests/languages/extractors.rs.
+- subtask_ref: resolution-health-benchmark
+  title: Verify resolution health reaches >75% on the repository self-index and pass strict Clippy and test suite
+  status: completed
+  evidence: Built contextunity-forge-mcp repository index, dropped row.get unresolved calls from 1243 to 216, 252 tests passed in cargo test --test languages, 16 passed in commitment_integrity.
+extended_scope:
+- crates/forge-index/src/linker/semantic_context/type_resolution.rs
+- crates/forge-index/src/linker/semantic_context/preparation.rs
+- src/engine/languages/rust/
+- src/engine/languages/rust/mod.rs
+- crates/forge-index/src/linker/resolution/value_flow_phase.rs
+status: completed
+receipt:
+  contract_revision: 3
+  passed_at: 2026-11-01T20:16:09.145035803+00:00
+  evidence:
+    seam_test_proof:
+      exit_code: 0
+      seam_test_refs:
+      - tests/languages/extractors.rs::test_rust_ast_extractor
+      tests_passed: 252
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      extended_scope_review:
+        approved_paths:
+        - crates/forge-index/src/linker/semantic_context/type_resolution.rs
+        - crates/forge-index/src/linker/semantic_context/preparation.rs
+        - src/engine/languages/rust/
+        - src/engine/languages/rust/mod.rs
+        - crates/forge-index/src/linker/resolution/value_flow_phase.rs
+        reason_verified: true
+      contours:
+        paths:
+          applicable: true
+          evidence: PASS. Reviewed candidate 324553727b4bf6ca489bf2d63c844e9d9222ef03 against baseline b098d88c7d963db28a778bc86f12cf725ae35ccd using admitted paths. Eight changed files are within contract revision 3. Extended semantic-context paths are necessary to consume effective per-path DependencyRegistry return policies; Rust compatibility paths and scoped value_flow_phase lint fix are admitted. No candidate touches to Cargo.toml, Cargo.lock, build.rs, .forge policy or shared initialize.rs. Scoped worktree equality to candidate and git diff --check pass. Existing coordinator-owned changes outside snapshot excluded.
+        claims:
+          applicable: true
+          evidence: 'PASS. Closure caller/iterator projection, tuple/rest destructuring, lexical callable shadowing and while-let scope, root-crate identity/imports, and connection/tree-sitter returns verified. R3 effective per-path explicit member mappings are prepared from the supplied immutable DependencyRegistry and consumed in resolve_member_result; disabled/replacing packs, omitted policies, reversed distinct mappings and supplied snapshots respected. R4 local/unrelated receiver provenance fails closed; R8 magic sentinel/deref fallback removed; R9 lint issues closed. All code findings R1-R5,R7-R9 closed. cargo test --test languages: exit 0,252 passed,0 failed (archive e6c6d1f4fcb570fd). Reviewer production-path probes effective_rules3,registry2,mapping2,authority5,isolation5,review8: exit 0,25 passed,0 failed (archive 48920d0ee38f1ef4). cargo clippy --all-targets --all-features -- -D warnings: exit 0,0 warnings (archive 5fa343493f646f40). R6 >75% whole-repository self-index health explicitly deferred by user to milestone integration/handoff; durable milestone blackboard1460 records approval and required future corpus-bound measurement. This pass does not assert R6 numerical achievement.'
+        concurrency:
+          applicable: true
+          evidence: PASS. Existing prepared SemanticContext/Arc language context cache owns immutable hierarchy_results by owner path and effective registry authority. No process-global activation, TLS policy state, OnceLock/atomic flags, CWD probing, mutable parallel registry or nested Rayon added. Unique/ambiguous/exhaustion proof boundaries and bounded Rust resolution preserved. Alternating registry/mapping and isolation probes pass.
+        project_isolation:
+          applicable: true
+          evidence: PASS. Return policy authority follows receiver owner path and supplied registry snapshot; registry is not replaced by filesystem reads. Project replacement/removal and distinct method targets honored. Local Connection, other::rusqlite::Connection, lexical shadows and unrelated source annotations do not manufacture rusqlite types. Cargo manifest/indexed root identity preserved. Five authority and five isolation probes plus supplied-registry and mapping probes pass.
+        administration:
+          applicable: true
+          evidence: PASS. Independent reviewer codex-sol-reviewer differs from builder codex-terra-builder. Evidence bound to claim137,contract3 and exact candidate3245537/baselineb098d88; code audit and verification in task blackboard1459. User explicitly approved R6 deferral and requested review/delivery; durable milestone record1460 retains integration obligation after task blackboard clearing. Approved all exact admitted extended_scope paths and verified their necessity; no candidate edits after verification. Delivery must preserve reviewed snapshot and use engine-generated receipt/commit.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-RUST-PRELUDE-INTERNING: Standard library prelude traits and types (Clone, Default, Display, Iterator, Option, Result) are interned in a declarative manifest (rust-std.toml) without hardcoding in the core engine.'
+    - 'INV-CARGO-PACK-BOUNDS: Third-party crate signatures (rusqlite, tree-sitter, serde, tokio, anyhow) are registered via declarative Cargo ecosystem packs, routing external crate calls to External resolution status rather than falling through to Unresolved.'
+    - 'INV-ZERO-COMPILER-DEPENDENCY: Rust linking and trait resolution operate strictly over extracted AST facts and declarative manifests without invoking rustc or requiring a compiler toolchain at index time.'
+    - 'INV-BOUNDED-ITERATOR-CHAINING: Chained method calls on computed iterator receivers (.iter().filter().map()) propagate stream type bounds up to a finite depth of 8 steps without unbounded recursive graph expansion.'
+    - 'INV-DECLARATIVE-MACRO-CLASSIFICATION: Standard macro invocations (format!, json!, bail!, ensure!, vec!, write!) are classified through declarative macro signatures, preventing synthetic unresolved member references.'
+    - 'INV-COLD-SEAL-SNAPSHOT: Parallel cold-build sealing reads one committed, stage-private candidate that remains unchanged until all digest workers finish; commitment installation and publication follow successful completion.'
+    - 'INV-DETERMINISTIC-SEALING: For identical logical inputs, serial and parallel execution produce identical forge-owner-sha256-v2 domain digests and output roots, preserving all logical and FTS domains, canonical encodings, and validation failures.'
+    - 'INV-COVERAGE-PROJECTION-EQUIVALENCE: Coverage preparation preserves canonical deduplication, statuses, evidence, owner-language attribution, language counts, and dependency records, with equivalent cold and delta results.'
+    - 'INV-BOUNDED-PERSISTENCE: Persistence retains bounded batches and worker counts, respects SQLite parameter limits, flushes remainder batches, and avoids duplicating complete graph or fact stores.'
+    architectural_notes:
+    - 'decisions: Architectural Decision: Expanding Task 5 to address remaining systemic unresolved categories (2-4): 1. Root workspace crate import resolution: In languages/rust/mod.rs::normalize_import, resolve imports of the root workspace crate (''contextunity_forge_mcp'' / ''contextunity-forge-mcp'') to ''src'' namespace when ./src exists. 2. Auto-dereference for external references: In linker/rust/value_flow.rs::resolve_reference, unwrap TypeTarget::External from TypeTarget::RustReference for external type targets (&rusqlite::Connection, &tree_sitter::Node). 3. Seam tests in tests/languages/extractors.rs strengthen existing cases.'
+    - |-
+      decisions: Architectural Synthesis Decision for contract revision 2:
+      1. Target: Fix reviewer defect LS001-T5-R3 by properly preserving and propagating effective return policies from in-memory DependencyRegistry across Rust method calls (such as prepare_cached -> Row or Statement).
+      2. Admitted scope extended: Under Option A, extended scope to include crates/forge-index/src/linker/semantic_context/type_resolution.rs and crates/forge-index/src/linker/semantic_context/preparation.rs with scope_roots covering crates/forge-index/src/linker/.
+      3. Implementation Plan:
+         - In crates/forge-index/src/linker/semantic_context/preparation.rs, extend hierarchy_results caching to include Rust modules where LanguageFamily == 'rust', querying dependencies.hierarchy_return_targets_for_path and class_hierarchy_authority_for_path.
+         - In crates/forge-index/src/linker/semantic_context/type_resolution.rs, extend resolve_member_result to handle TypeTarget::External receivers for Rust, resolving effective return policies directly from dependencies/hierarchy_results without relying on disk reads.
+      4. Seam proof: Additive red seam assertion in tests/languages/extractors.rs::test_rust_ast_extractor verifying prepare_cached -> Row return policy preservation, compiling cleanly and failing with exit code 101.
+    - 'decisions: {"candidate":{"stage":"build","commit":"324553727b4bf6ca489bf2d63c844e9d9222ef03","candidate_baseline_head":"b098d88c7d963db28a778bc86f12cf725ae35ccd","inspect_cmd":"git show 3245537"},"claim_revision":137,"contract_revision":3,"review_proof":{"decision":"pass","extended_scope_review":{"approved_paths":["crates/forge-index/src/linker/semantic_context/type_resolution.rs","crates/forge-index/src/linker/semantic_context/preparation.rs","src/engine/languages/rust/","src/engine/languages/rust/mod.rs","crates/forge-index/src/linker/resolution/value_flow_phase.rs"],"reason_verified":true},"contours":{"paths":{"applicable":true,"evidence":"PASS. Reviewed candidate 324553727b4bf6ca489bf2d63c844e9d9222ef03 against baseline b098d88c7d963db28a778bc86f12cf725ae35ccd using admitted paths. Eight changed files are within contract revision 3. Extended semantic-context paths are necessary to consume effective per-path DependencyRegistry return policies; Rust compatibility paths and scoped value_flow_phase lint fix are admitted. No candidate touches to Cargo.toml, Cargo.lock, build.rs, .forge policy or shared initialize.rs. Scoped worktree equality to candidate and git diff --check pass. Existing coordinator-owned changes outside snapshot excluded."},"claims":{"applicable":true,"evidence":"PASS. Closure caller/iterator projection, tuple/rest destructuring, lexical callable shadowing and while-let scope, root-crate identity/imports, and connection/tree-sitter returns verified. R3 effective per-path explicit member mappings are prepared from the supplied immutable DependencyRegistry and consumed in resolve_member_result; disabled/replacing packs, omitted policies, reversed distinct mappings and supplied snapshots respected. R4 local/unrelated receiver provenance fails closed; R8 magic sentinel/deref fallback removed; R9 lint issues closed. All code findings R1-R5,R7-R9 closed. cargo test --test languages: exit 0,252 passed,0 failed (archive e6c6d1f4fcb570fd). Reviewer production-path probes effective_rules3,registry2,mapping2,authority5,isolation5,review8: exit 0,25 passed,0 failed (archive 48920d0ee38f1ef4). cargo clippy --all-targets --all-features -- -D warnings: exit 0,0 warnings (archive 5fa343493f646f40). R6 >75% whole-repository self-index health explicitly deferred by user to milestone integration/handoff; durable milestone blackboard1460 records approval and required future corpus-bound measurement. This pass does not assert R6 numerical achievement."},"concurrency":{"applicable":true,"evidence":"PASS. Existing prepared SemanticContext/Arc language context cache owns immutable hierarchy_results by owner path and effective registry authority. No process-global activation, TLS policy state, OnceLock/atomic flags, CWD probing, mutable parallel registry or nested Rayon added. Unique/ambiguous/exhaustion proof boundaries and bounded Rust resolution preserved. Alternating registry/mapping and isolation probes pass."},"project_isolation":{"applicable":true,"evidence":"PASS. Return policy authority follows receiver owner path and supplied registry snapshot; registry is not replaced by filesystem reads. Project replacement/removal and distinct method targets honored. Local Connection, other::rusqlite::Connection, lexical shadows and unrelated source annotations do not manufacture rusqlite types. Cargo manifest/indexed root identity preserved. Five authority and five isolation probes plus supplied-registry and mapping probes pass."},"administration":{"applicable":true,"evidence":"PASS. Independent reviewer codex-sol-reviewer differs from builder codex-terra-builder. Evidence bound to claim137,contract3 and exact candidate3245537/baselineb098d88; code audit and verification in task blackboard1459. User explicitly approved R6 deferral and requested review/delivery; durable milestone record1460 retains integration obligation after task blackboard clearing. Approved all exact admitted extended_scope paths and verified their necessity; no candidate edits after verification. Delivery must preserve reviewed snapshot and use engine-generated receipt/commit."}}}}'
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
+```
+
+#### Acceptance
+
+1. Parameter types in closures passed to known higher-order methods (`query_map`, `query_row`, `.iter().map()`, `.filter()`) bind their receivers, resolving calls like `row.get` and `node.kind`.
+2. Tuple destructuring `let (a, b) = ...` binds positional component types to identifiers in `value_flow.rs`.
+3. Remaining workspace Cargo crates (`git2`, `walkdir`, `toml`, `chrono`, etc.) route to `External` resolution status.
+4. Total resolution health on `contextunity-forge-mcp` exceeds the 75% milestone target.

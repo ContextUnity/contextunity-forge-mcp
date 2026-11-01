@@ -41,6 +41,17 @@ fn type_expr_inner(
             args: vec![type_expr_inner(inner, source, generic_names, depth + 1)],
         };
     }
+    if node.kind() == "tuple_type" {
+        let mut cursor = node.walk();
+        let mut args = Vec::new();
+        for child in node.named_children(&mut cursor) {
+            args.push(type_expr_inner(child, source, generic_names, depth + 1));
+        }
+        return TypeExpr::Applied {
+            base: "()".to_owned(),
+            args,
+        };
+    }
     if matches!(node.kind(), "array_type" | "slice_type") {
         let Some(element) = node
             .child_by_field_name("element")
@@ -246,6 +257,21 @@ pub(super) fn callee_name<'a>(mut node: Node<'_>, source: &'a str) -> Option<Cow
     Some(Cow::Owned(canonical))
 }
 
+fn pattern_identifier<'t>(node: Node<'t>) -> Option<Node<'t>> {
+    match node.kind() {
+        "identifier" => Some(node),
+        "mut_pattern" | "ref_pattern" | "reference_pattern" => node
+            .child_by_field_name("pattern")
+            .or_else(|| {
+                node.named_child(0)
+                    .filter(|c| c.kind() != "mutable_specifier")
+                    .or_else(|| node.named_child(1))
+            })
+            .and_then(pattern_identifier),
+        _ => None,
+    }
+}
+
 const MAX_ADAPTER_CHAIN_DEPTH: usize = 7;
 
 pub(super) fn value(node: Node<'_>, source: &str) -> ValueExpr {
@@ -363,6 +389,57 @@ fn value_depth(
         "identifier" | "scoped_identifier" => ValueExpr::Alias {
             name: text(node, source).to_owned(),
         },
+        "match_expression" => {
+            let scrutinee = node.child_by_field_name("value");
+            if let Some(scrutinee) = scrutinee {
+                let inner = value_depth(scrutinee, source, depth + 1, shadowed_macros);
+                if !matches!(inner, ValueExpr::Unknown) {
+                    let block = node.child_by_field_name("body").unwrap_or(node);
+                    let mut cursor = block.walk();
+                    let has_unwrap_arm = block.named_children(&mut cursor).any(|child| {
+                        if child.kind() == "match_arm" {
+                            let pat_opt = child.child_by_field_name("pattern");
+                            let arm_val_opt = child
+                                .child_by_field_name("value")
+                                .or_else(|| child.named_child(1));
+                            if let (Some(mut pat), Some(arm_val)) = (pat_opt, arm_val_opt) {
+                                if pat.kind() == "match_pattern" {
+                                    if let Some(inner_pat) = pat.named_child(0) {
+                                        pat = inner_pat;
+                                    }
+                                }
+                                if pat.kind() == "tuple_struct_pattern" {
+                                    let type_name = pat
+                                        .child_by_field_name("type")
+                                        .map(|t| text(t, source).trim().to_owned());
+                                    if matches!(type_name.as_deref(), Some("Ok" | "Some")) {
+                                        let pat_id = pat
+                                            .named_children(&mut pat.walk())
+                                            .find(|c| pat.child_by_field_name("type") != Some(*c))
+                                            .and_then(pattern_identifier)
+                                            .map(|id| text(id, source));
+                                        let val_text = text(arm_val, source).trim();
+                                        if let Some(p_id) = pat_id {
+                                            if p_id == val_text {
+                                                return true;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        false
+                    });
+                    if has_unwrap_arm {
+                        return ValueExpr::Project {
+                            value: Box::new(inner),
+                            member: "unwrap".to_string(),
+                        };
+                    }
+                }
+            }
+            ValueExpr::Unknown
+        }
         _ => ValueExpr::Unknown,
     }
 }
@@ -376,6 +453,51 @@ pub(crate) struct Collector<'source, 'tree> {
     generic_names: Option<HashSet<&'source str>>,
     states: Vec<(bool, bool)>,
     block_shadows: Vec<HashSet<&'static str>>,
+}
+
+fn extract_function_return_tuple_elements<'a>(func_item: Node<'a>) -> Option<Vec<Node<'a>>> {
+    let ret_type = func_item.child_by_field_name("return_type")?;
+    let target_tuple = if ret_type.kind() == "tuple_type" {
+        Some(ret_type)
+    } else {
+        (0..ret_type.named_child_count()).find_map(|i| {
+            let c = ret_type.named_child(i)?;
+            (c.kind() == "tuple_type").then_some(c)
+        })
+    };
+    let tup = target_tuple?;
+    Some(
+        (0..tup.named_child_count())
+            .filter_map(|i| tup.named_child(i))
+            .collect(),
+    )
+}
+
+fn resolve_function_return_tuple<'a>(
+    mut curr: Node<'a>,
+    fn_name: &str,
+    source: &str,
+    bindings: &[BindingFact],
+) -> Option<Vec<Node<'a>>> {
+    if bindings.iter().any(|b| b.name == fn_name) {
+        return None;
+    }
+    while let Some(parent) = curr.parent() {
+        let count = parent.named_child_count();
+        for i in 0..count {
+            if let Some(child) = parent.named_child(i) {
+                if child.kind() == "function_item" {
+                    if let Some(name_node) = child.child_by_field_name("name") {
+                        if text(name_node, source).trim() == fn_name {
+                            return extract_function_return_tuple_elements(child);
+                        }
+                    }
+                }
+            }
+        }
+        curr = parent;
+    }
+    None
 }
 
 impl<'source, 'tree> Collector<'source, 'tree> {
@@ -533,7 +655,6 @@ impl<'source, 'tree> Collector<'source, 'tree> {
                 && !matches!(
                     current.kind(),
                     "function_item"
-                        | "closure_expression"
                         | "impl_item"
                         | "trait_item"
                         | "mod_item"
@@ -576,6 +697,138 @@ impl<'source, 'tree> Collector<'source, 'tree> {
                 }
             }
         }
+        if current.kind() == "closure_expression" {
+            let body_end_pos = current.end_position();
+            let body_end = SourcePosition {
+                line: body_end_pos.row + 1,
+                column: body_end_pos.column,
+            };
+
+            let mut inferred_param_types: Vec<Option<TypeExpr>> = Vec::new();
+            let mut inferred_param_values: Vec<Option<ValueExpr>> = Vec::new();
+            if let Some(parent) = current.parent() {
+                if parent.kind() == "arguments" {
+                    if let Some(call) = parent.parent() {
+                        if call.kind() == "call_expression" {
+                            if let Some(func) = call.child_by_field_name("function") {
+                                if func.kind() == "field_expression" {
+                                    let recv_opt = func.child_by_field_name("value");
+                                    if let Some(field) = func.child_by_field_name("field") {
+                                        let method_name = text(field, source);
+                                        if matches!(
+                                            method_name,
+                                            "query_map"
+                                                | "query_row"
+                                                | "query_and_then"
+                                                | "query_row_and_then"
+                                        ) {
+                                            if let Some(recv) = recv_opt {
+                                                let shadows = self.current_shadows();
+                                                let recv_val = value_depth(recv, source, 0, &shadows);
+                                                if !matches!(recv_val, ValueExpr::Unknown) {
+                                                    inferred_param_values.push(Some(ValueExpr::Project {
+                                                        value: Box::new(recv_val),
+                                                        member: "__rust_closure_row".to_string(),
+                                                    }));
+                                                }
+                                            }
+                                        } else if matches!(
+                                            method_name,
+                                            "map"
+                                                | "filter"
+                                                | "find"
+                                                | "any"
+                                                | "all"
+                                                | "for_each"
+                                                | "flat_map"
+                                                | "filter_map"
+                                        ) {
+                                            if let Some(recv) = recv_opt {
+                                                let shadows = self.current_shadows();
+                                                let recv_val = value_depth(recv, source, 0, &shadows);
+                                                if !matches!(recv_val, ValueExpr::Unknown) {
+                                                    inferred_param_values.push(Some(ValueExpr::Project {
+                                                        value: Box::new(recv_val),
+                                                        member: "__rust_iter_item".to_string(),
+                                                    }));
+                                                }
+                                            }
+                                        }
+                                    }
+                                } else if func.kind() == "identifier" || func.kind() == "scoped_identifier" {
+                                    let callee = text(func, source);
+                                    if callee.ends_with("walk") || callee.ends_with("visit") {
+                                        inferred_param_types.push(Some(TypeExpr::Named {
+                                            name: "tree_sitter::Node".to_string(),
+                                        }));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let Some(params) = current.child_by_field_name("parameters") {
+                let mut cursor = params.walk();
+                for (idx, param) in params.named_children(&mut cursor).enumerate() {
+                    let (param_node, explicit_type) = if param.kind() == "parameter" {
+                        (
+                            param.child_by_field_name("pattern"),
+                            param.child_by_field_name("type").map(|ty| {
+                                type_expr_inner(
+                                    ty,
+                                    source,
+                                    self.generic_names
+                                        .get_or_insert_with(|| generic_names(self.root, source)),
+                                    0,
+                                )
+                            }),
+                        )
+                    } else {
+                        (Some(param), None)
+                    };
+
+                    let Some(param_node) = param_node else { continue; };
+                    if let Some(id_node) = pattern_identifier(param_node) {
+                        let name = text(id_node, source);
+                        let pos = param.end_position();
+                        let position = SourcePosition {
+                            line: pos.row + 1,
+                            column: pos.column,
+                        };
+
+                        let val_expr = if let Some(ty) = explicit_type {
+                            ValueExpr::Annotated { type_expr: ty }
+                        } else if let Some(Some(inferred_ty)) = inferred_param_types.get(idx) {
+                            ValueExpr::Annotated {
+                                type_expr: inferred_ty.clone(),
+                            }
+                        } else if let Some(Some(inferred_val)) = inferred_param_values.get(idx) {
+                            inferred_val.clone()
+                        } else {
+                            ValueExpr::Unknown
+                        };
+
+                        let scoped_val = if matches!(val_expr, ValueExpr::Unknown) {
+                            ValueExpr::Unknown
+                        } else {
+                            ValueExpr::Scoped {
+                                value: Box::new(val_expr),
+                                body_end,
+                            }
+                        };
+
+                        self.facts.bindings.push(BindingFact {
+                            name: name.to_owned(),
+                            position,
+                            value: scoped_val,
+                            conditional: false,
+                        });
+                    }
+                }
+            }
+        }
         if matches!(
             current.kind(),
             "let_declaration" | "assignment_expression" | "compound_assignment_expr"
@@ -584,60 +837,307 @@ impl<'source, 'tree> Collector<'source, 'tree> {
                 .child_by_field_name("pattern")
                 .or_else(|| current.child_by_field_name("left"));
             if let Some(pattern) = pattern {
-                let mut emit = |pattern: Node<'_>| {
-                    let position = current.end_position();
-                    let inferred = if current.kind() == "let_declaration"
-                        && current.child_by_field_name("value").is_some()
-                        && current
-                            .child_by_field_name("pattern")
-                            .is_some_and(|pattern| {
-                                matches!(pattern.kind(), "identifier" | "mut_pattern")
-                            }) {
-                        current
-                            .child_by_field_name("type")
-                            .map(|ty| ValueExpr::Annotated {
-                                type_expr: type_expr_inner(
-                                    ty,
-                                    source,
-                                    self.generic_names
-                                        .get_or_insert_with(|| generic_names(self.root, source)),
-                                    0,
-                                ),
-                            })
-                            .unwrap_or_else(|| {
-                                let shadows = self.current_shadows();
-                                value_depth(
-                                    current.child_by_field_name("value").expect("value checked"),
-                                    source,
-                                    0,
-                                    &shadows,
-                                )
-                            })
-                    } else {
-                        ValueExpr::Unknown
-                    };
-                    self.facts.bindings.push(BindingFact {
-                        name: text(pattern, source).to_owned(),
-                        position: SourcePosition {
-                            line: position.row + 1,
-                            column: position.column,
-                        },
-                        value: inferred,
-                        conditional,
-                    });
-                };
-                if current.kind() == "let_declaration" {
-                    super::patterns::bindings(pattern, emit);
-                } else {
-                    let mut names = vec![pattern];
-                    while let Some(pattern) = names.pop() {
-                        if pattern.kind() == "identifier" {
-                            emit(pattern);
+                if current.kind() == "let_declaration" && pattern.kind() == "tuple_pattern" {
+                    let mut pat_cursor = pattern.walk();
+                    let pat_elements: Vec<Node<'_>> = pattern.named_children(&mut pat_cursor).collect();
+
+                    let val_opt = current.child_by_field_name("value");
+                    let val_elements: Option<Vec<Node<'_>>> = val_opt.and_then(|v| {
+                        if v.kind() == "tuple_expression" {
+                            let mut v_cursor = v.walk();
+                            Some(v.named_children(&mut v_cursor).collect())
                         } else {
-                            let mut cursor = pattern.walk();
-                            names.extend(pattern.named_children(&mut cursor));
+                            None
+                        }
+                    });
+
+                    let type_opt = current.child_by_field_name("type");
+                    let mut type_elements: Option<Vec<Node<'_>>> = type_opt.and_then(|t| {
+                        if t.kind() == "tuple_type" {
+                            let mut t_cursor = t.walk();
+                            Some(t.named_children(&mut t_cursor).collect())
+                        } else {
+                            None
+                        }
+                    });
+
+                    if val_elements.is_none() && type_elements.is_none() {
+                        if let Some(val_node) = val_opt {
+                            if val_node.kind() == "call_expression" {
+                                if let Some(func_node) = val_node.child_by_field_name("function") {
+                                    let fn_name = text(func_node, source).trim();
+                                    if let Some(types) = resolve_function_return_tuple(current, fn_name, source, &self.facts.bindings) {
+                                        type_elements = Some(types);
+                                    }
+                                }
+                            }
                         }
                     }
+
+                    let rest_idx = pat_elements
+                        .iter()
+                        .position(|p| p.kind() == "rest_pattern" || text(*p, source).trim() == "..");
+
+                    let shadows = self.current_shadows();
+                    let position = current.end_position();
+
+                    for (i, pat_node) in pat_elements.iter().enumerate() {
+                        if pat_node.kind() == "rest_pattern" || text(*pat_node, source).trim() == ".." {
+                            continue;
+                        }
+                        if let Some(id_node) = pattern_identifier(*pat_node) {
+                            let name = text(id_node, source).to_owned();
+                            let inferred = if let Some(ref types) = type_elements {
+                                let target_idx = if let Some(r) = rest_idx {
+                                    if i < r {
+                                        Some(i)
+                                    } else {
+                                        let from_end = pat_elements.len() - 1 - i;
+                                        if types.len() > from_end {
+                                            Some(types.len() - 1 - from_end)
+                                        } else {
+                                            None
+                                        }
+                                    }
+                                } else {
+                                    Some(i)
+                                };
+                                if let Some(idx) = target_idx {
+                                    if let Some(&ty_node) = types.get(idx) {
+                                        ValueExpr::Annotated {
+                                            type_expr: type_expr_inner(
+                                                ty_node,
+                                                source,
+                                                self.generic_names
+                                                    .get_or_insert_with(|| generic_names(self.root, source)),
+                                                0,
+                                            ),
+                                        }
+                                    } else {
+                                        ValueExpr::Unknown
+                                    }
+                                } else {
+                                    ValueExpr::Unknown
+                                }
+                            } else if let Some(ref vals) = val_elements {
+                                let target_idx = if let Some(r) = rest_idx {
+                                    if i < r {
+                                        Some(i)
+                                    } else {
+                                        let from_end = pat_elements.len() - 1 - i;
+                                        if vals.len() > from_end {
+                                            Some(vals.len() - 1 - from_end)
+                                        } else {
+                                            None
+                                        }
+                                    }
+                                } else {
+                                    Some(i)
+                                };
+                                if let Some(idx) = target_idx {
+                                    if let Some(&val_node) = vals.get(idx) {
+                                        value_depth(val_node, source, 0, &shadows)
+                                    } else {
+                                        ValueExpr::Unknown
+                                    }
+                                } else {
+                                    ValueExpr::Unknown
+                                }
+                            } else if rest_idx.is_none() {
+                                if let Some(val_node) = val_opt {
+                                    let base_val = value_depth(val_node, source, 0, &shadows);
+                                    if matches!(base_val, ValueExpr::Unknown) {
+                                        ValueExpr::Unknown
+                                    } else {
+                                        ValueExpr::Project {
+                                            value: Box::new(base_val),
+                                            member: i.to_string(),
+                                        }
+                                    }
+                                } else {
+                                    ValueExpr::Unknown
+                                }
+                            } else {
+                                ValueExpr::Unknown
+                            };
+
+                            self.facts.bindings.push(BindingFact {
+                                name,
+                                position: SourcePosition {
+                                    line: position.row + 1,
+                                    column: position.column,
+                                },
+                                value: inferred,
+                                conditional,
+                            });
+                        }
+                    }
+                } else {
+                    let mut emit = |pattern: Node<'_>| {
+                        let position = current.end_position();
+                        let inferred = if current.kind() == "let_declaration"
+                            && current.child_by_field_name("value").is_some()
+                            && current
+                                .child_by_field_name("pattern")
+                                .is_some_and(|pattern| {
+                                    matches!(pattern.kind(), "identifier" | "mut_pattern")
+                                }) {
+                            current
+                                .child_by_field_name("type")
+                                .map(|ty| ValueExpr::Annotated {
+                                    type_expr: type_expr_inner(
+                                        ty,
+                                        source,
+                                        self.generic_names
+                                            .get_or_insert_with(|| generic_names(self.root, source)),
+                                        0,
+                                    ),
+                                })
+                                .unwrap_or_else(|| {
+                                    let shadows = self.current_shadows();
+                                    value_depth(
+                                        current.child_by_field_name("value").expect("value checked"),
+                                        source,
+                                        0,
+                                        &shadows,
+                                    )
+                                })
+                        } else {
+                            ValueExpr::Unknown
+                        };
+                        self.facts.bindings.push(BindingFact {
+                            name: text(pattern, source).to_owned(),
+                            position: SourcePosition {
+                                line: position.row + 1,
+                                column: position.column,
+                            },
+                            value: inferred,
+                            conditional,
+                        });
+                    };
+                    if current.kind() == "let_declaration" {
+                        super::patterns::bindings(pattern, emit);
+                    } else {
+                        let mut names = vec![pattern];
+                        while let Some(pattern) = names.pop() {
+                            if pattern.kind() == "identifier" {
+                                emit(pattern);
+                            } else {
+                                let mut cursor = pattern.walk();
+                                names.extend(pattern.named_children(&mut cursor));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if current.kind() == "let_condition" {
+            let pattern = current.child_by_field_name("pattern");
+            let value_node = current.child_by_field_name("value");
+            if let (Some(pattern), Some(val_node)) = (pattern, value_node) {
+                let shadows = self.current_shadows();
+                let base_val = value_depth(val_node, source, 0, &shadows);
+                let body_end = {
+                    let mut p = current.parent();
+                    while let Some(parent) = p {
+                        if parent.kind() == "if_expression" || parent.kind() == "while_expression" {
+                            break;
+                        }
+                        if parent.kind() == "block" || parent.kind() == "function_item" {
+                            p = None;
+                            break;
+                        }
+                        p = parent.parent();
+                    }
+                    p.and_then(|parent| {
+                        if parent.kind() == "if_expression" {
+                            parent.child_by_field_name("consequence")
+                        } else if parent.kind() == "while_expression" {
+                            parent.child_by_field_name("body")
+                        } else {
+                            None
+                        }
+                    })
+                    .map(|b| {
+                        let pos = b.end_position();
+                        SourcePosition {
+                            line: pos.row + 1,
+                            column: pos.column,
+                        }
+                    })
+                };
+                let is_conditional = body_end.is_none();
+
+                if pattern.kind() == "tuple_struct_pattern" {
+                    let type_name = pattern
+                        .child_by_field_name("type")
+                        .map(|t| text(t, source).trim().to_owned());
+                    if matches!(type_name.as_deref(), Some("Ok" | "Some")) {
+                        let unwrapped_val = if matches!(base_val, ValueExpr::Unknown) {
+                            ValueExpr::Unknown
+                        } else {
+                            ValueExpr::Project {
+                                value: Box::new(base_val),
+                                member: "unwrap".to_string(),
+                            }
+                        };
+                        let mut cursor = pattern.walk();
+                        for child in pattern.named_children(&mut cursor) {
+                            if pattern.child_by_field_name("type") == Some(child) {
+                                continue;
+                            }
+                            let id_node = pattern_identifier(child);
+                            if let Some(id_node) = id_node {
+                                let name = text(id_node, source).to_owned();
+                                let pos = current.end_position();
+                                let scoped_val = if let Some(end) = body_end {
+                                    if matches!(unwrapped_val, ValueExpr::Unknown) {
+                                        ValueExpr::Unknown
+                                    } else {
+                                        ValueExpr::Scoped {
+                                            value: Box::new(unwrapped_val.clone()),
+                                            body_end: end,
+                                        }
+                                    }
+                                } else {
+                                    unwrapped_val.clone()
+                                };
+                                self.facts.bindings.push(BindingFact {
+                                    name,
+                                    position: SourcePosition {
+                                        line: pos.row + 1,
+                                        column: pos.column,
+                                    },
+                                    value: scoped_val,
+                                    conditional: is_conditional,
+                                });
+                            }
+                        }
+                    }
+                } else if let Some(id_node) = pattern_identifier(pattern) {
+                    let name = text(id_node, source).to_owned();
+                    let pos = current.end_position();
+                    let scoped_val = if let Some(end) = body_end {
+                        if matches!(base_val, ValueExpr::Unknown) {
+                            ValueExpr::Unknown
+                        } else {
+                            ValueExpr::Scoped {
+                                value: Box::new(base_val),
+                                body_end: end,
+                            }
+                        }
+                    } else {
+                        base_val
+                    };
+                    self.facts.bindings.push(BindingFact {
+                        name,
+                        position: SourcePosition {
+                            line: pos.row + 1,
+                            column: pos.column,
+                        },
+                        value: scoped_val,
+                        conditional: is_conditional,
+                    });
                 }
             }
         }

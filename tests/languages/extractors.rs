@@ -5,9 +5,35 @@
     feature = "lang-go"
 ))]
 
-use contextunity_forge_mcp::engine::{ast, linker};
+use contextunity_forge_mcp::engine::{ast, languages::rust, linker};
 #[cfg(feature = "lang-rust")]
 use forge_index::languages::rust::kind;
+#[cfg(all(feature = "lang-rust", not(test)))]
+use forge_index::linker::rust::resolution::is_registered_cargo_crate;
+
+#[cfg(feature = "lang-rust")]
+#[cfg(test)]
+fn is_registered_cargo_crate(crate_name: &str) -> bool {
+    matches!(
+        crate_name,
+        "rusqlite"
+            | "tree-sitter"
+            | "tree_sitter"
+            | "serde"
+            | "serde_json"
+            | "tokio"
+            | "anyhow"
+            | "clap"
+            | "tracing"
+            | "rayon"
+            | "tempfile"
+            | "regex"
+            | "thiserror"
+            | "parking_lot"
+            | "crossbeam"
+            | "log"
+    )
+}
 #[cfg(feature = "lang-rust")]
 use forge_index::linker::value_flow::ValueFlowIndex;
 
@@ -100,11 +126,8 @@ mod scope_allocations {
 fn test_rust_ast_extractor() {
     let empty_catalog = std::collections::BTreeMap::new();
     let seam_resolver = SeamValueFlowResolver;
-    let _seam_index = ValueFlowIndex::build_with_limits(
-        &empty_catalog,
-        &seam_resolver,
-        Default::default(),
-    );
+    let _seam_index =
+        ValueFlowIndex::build_with_limits(&empty_catalog, &seam_resolver, Default::default());
     let source = r#"
 use std::collections::HashMap;
 
@@ -150,7 +173,8 @@ impl Config {
     {
         let rust_kind = kind("function_item");
         assert_eq!(rust_kind, Some("function"));
-        let _ = forge_index::languages::rust::language();
+        let _ = rust::language();
+        let _ = is_registered_cargo_crate("rusqlite");
     }
 
     // Contract baseline for LS-001: Rust std prelude trait resolution and declarative manifests.
@@ -304,29 +328,75 @@ fn run_cargo_crates() {
             "len",
             true,
         ),
+        (
+            "tempfile-named",
+            "use tempfile::NamedTempFile;",
+            "NamedTempFile::new()",
+            "path",
+            true,
+        ),
+        (
+            "clap-command",
+            "use clap::Command;",
+            "Command::new(\"app\")",
+            "get_matches",
+            true,
+        ),
+        (
+            "regex-match",
+            "use regex::Regex;",
+            "Regex::new(\"pattern\")",
+            "is_match",
+            true,
+        ),
     ] {
-        let source = format!(
-            "{import}\nfn run() {{ let conn = {constructor}.unwrap(); conn.{member}(); }}"
-        );
-        let facts = ast::extract("identity.rs", "rust", &source).unwrap();
-        let graph = linker::link(&std::collections::BTreeMap::from([(
-            "identity.rs".into(),
-            facts,
-        )]));
-        let coverage = graph
-            .coverage
-            .iter()
-            .find(|row| row.expression == format!("conn.{member}"))
-            .unwrap();
-        assert_eq!(
-            coverage.status == "external",
-            authorized,
-            "{label}: {coverage:#?}"
-        );
-        if authorized {
-            assert_eq!(coverage.status, "external", "{label}: {coverage:#?}");
+        let source =
+            format!("{import}\nfn run() {{ let conn = {constructor}.unwrap(); conn.{member}(); }}");
+        for path in ["identity.rs", "src/identity.rs"] {
+            let facts = ast::extract(path, "rust", &source).unwrap();
+            let graph = linker::link(&std::collections::BTreeMap::from([(path.into(), facts)]));
+            let coverage = graph
+                .coverage
+                .iter()
+                .find(|row| row.expression == format!("conn.{member}"))
+                .unwrap();
+            assert_eq!(
+                coverage.status == "external",
+                authorized,
+                "{label} at {path}: {coverage:#?}"
+            );
+            if authorized {
+                assert_eq!(
+                    coverage.status, "external",
+                    "{label} at {path}: {coverage:#?}"
+                );
+            }
         }
     }
+    // Prove negative isolation: conflicting imported alias and explicitly local module shadowing
+    for (label, source, expected_expr) in [
+        (
+            "duplicate-rust-alias",
+            "use regex::Regex as Re; use unregistered_crate::Other as Re; fn run() { let r = Re::new(\"x\").unwrap(); r.is_match(\"x\"); }",
+            "r.is_match",
+        ),
+        (
+            "local-missing-type",
+            "mod regex {} fn run(r: regex::Missing) { r.is_match(\"x\"); }",
+            "r.is_match",
+        ),
+    ] {
+        for path in ["negative.rs", "src/negative.rs"] {
+            let facts = ast::extract(path, "rust", source).unwrap();
+            let graph = linker::link(&std::collections::BTreeMap::from([(path.into(), facts)]));
+            let coverage = graph.coverage.iter().find(|row| row.expression == expected_expr);
+            assert!(
+                coverage.is_none() || coverage.unwrap().status == "unresolved",
+                "{label} at {path}: expected unresolved, got {coverage:#?}"
+            );
+        }
+    }
+
     let cargo_facts = ast::extract("cargo_test.rs", "rust", cargo_source).unwrap();
     let cargo_graph = linker::link(&std::collections::BTreeMap::from([(
         "cargo_test.rs".to_owned(),
@@ -436,7 +506,11 @@ fn check_string_trait_isolation() {
             .unwrap();
         assert_eq!(
             coverage.status,
-            if preserves_item { "resolved" } else { "unresolved" },
+            if preserves_item {
+                "resolved"
+            } else {
+                "unresolved"
+            },
             "{adapter}: {coverage:#?}"
         );
     }
@@ -499,7 +573,8 @@ fn run_unimported_macros() {
     let _e = ensure!(true);
 }
 "#;
-    let unimported_facts = ast::extract("unimported_macros.rs", "rust", unimported_macro_source).unwrap();
+    let unimported_facts =
+        ast::extract("unimported_macros.rs", "rust", unimported_macro_source).unwrap();
     let unimported_graph = linker::link(&std::collections::BTreeMap::from([(
         "unimported_macros.rs".to_owned(),
         unimported_facts,
@@ -539,7 +614,11 @@ fn run_unimported_macros() {
                 "struct A; mod local {{ {definition} }} {import} fn run() {{ let item = {name}!(); item.len(); }}"
             );
             let facts = ast::extract("probe.rs", "rust", &source).unwrap();
-            assert!(facts.errors.is_empty(), "{name}/{label}: {:?}", facts.errors);
+            assert!(
+                facts.errors.is_empty(),
+                "{name}/{label}: {:?}",
+                facts.errors
+            );
             let graph = linker::link(&std::collections::BTreeMap::from([(
                 "probe.rs".to_owned(),
                 facts,
@@ -749,19 +828,36 @@ fn run_std_fn_calls() {
         let source = format!("struct A; impl A {{ fn finish(&self) {{}} }} macro_rules! {name} {{ () => {{ A }}; }} fn run() {{ let item = {name}!(); item.len(); }}");
         let facts = ast::extract("probe.rs", "rust", &source).unwrap();
         assert!(facts.errors.is_empty(), "{:?}", facts.errors);
-        let graph = linker::link(&std::collections::BTreeMap::from([("probe.rs".to_owned(), facts)]));
-        let row = graph.coverage.iter().find(|r| r.expression == "item.len").unwrap();
-        assert_ne!(row.status, "external", "local {name} result must not fabricate stdlib type: {row:?}");
+        let graph = linker::link(&std::collections::BTreeMap::from([(
+            "probe.rs".to_owned(),
+            facts,
+        )]));
+        let row = graph
+            .coverage
+            .iter()
+            .find(|r| r.expression == "item.len")
+            .unwrap();
+        assert_ne!(
+            row.status, "external",
+            "local {name} result must not fabricate stdlib type: {row:?}"
+        );
     }
 
     // Verify qualified logging macro providers come from TOML
     {
         let source = "fn run() { tracing::info!(\"hello\"); log::info!(\"hello\"); }";
         let facts = ast::extract("probe.rs", "rust", source).unwrap();
-        let graph = linker::link(&std::collections::BTreeMap::from([("probe.rs".to_owned(), facts)]));
+        let graph = linker::link(&std::collections::BTreeMap::from([(
+            "probe.rs".to_owned(),
+            facts,
+        )]));
         for provider in ["tracing", "log"] {
             let expression = format!("{provider}::info");
-            let row = graph.coverage.iter().find(|r| r.expression == expression).unwrap();
+            let row = graph
+                .coverage
+                .iter()
+                .find(|r| r.expression == expression)
+                .unwrap();
             assert_eq!(row.status, "external");
             assert!(row.evidence.contains(&format!("macro {provider}::")));
         }
@@ -785,9 +881,20 @@ fn run_std_fn_calls() {
         let source = "mod local { macro_rules! custom { () => { 1 }; } pub(crate) use custom; } mod child { use crate::local::custom as json; fn scoped() { json!(); } }\nfn run() { json!(); }";
         let facts = ast::extract("probe.rs", "rust", source).unwrap();
         assert!(facts.errors.is_empty(), "{:?}", facts.errors);
-        let graph = linker::link(&std::collections::BTreeMap::from([("probe.rs".to_owned(), facts)]));
-        let row = graph.coverage.iter().filter(|r| r.expression == "json").max_by_key(|r| r.line).unwrap();
-        assert_ne!(row.status, "resolved", "child import must not supply exact target for outer json!");
+        let graph = linker::link(&std::collections::BTreeMap::from([(
+            "probe.rs".to_owned(),
+            facts,
+        )]));
+        let row = graph
+            .coverage
+            .iter()
+            .filter(|r| r.expression == "json")
+            .max_by_key(|r| r.line)
+            .unwrap();
+        assert_ne!(
+            row.status, "resolved",
+            "child import must not supply exact target for outer json!"
+        );
     }
 
     // Verify Review 42: unrelated macro or value import does not suppress std macro result
@@ -805,6 +912,620 @@ fn run_std_fn_calls() {
         let row = graph.coverage.iter().find(|r| r.expression == "item.len").unwrap();
         assert_eq!(row.status, "external", "{label}: proven std macro output suppressed: {row:?}");
     }
+
+    // Seam Contract: closure-inference-and-tuple-destructuring (LS-001 Task 5)
+    // 1. Tuple destructuring: let (file, code) = (NamedTempFile::new().unwrap(), 42); file.path();
+    // 2. Additional workspace Cargo crates: WalkDir::new(".").into_iter();
+    // 3. Closure parameter type inference: query_map(..., |row| row.get(...))
+    assert!(
+        contextunity_forge_mcp::engine::languages::rust::is_registered_rust_type(
+            "walkdir::WalkDir"
+        )
+    );
+    let seam_source = r#"
+        use tempfile::NamedTempFile;
+        use walkdir::WalkDir;
+        use rusqlite::Connection;
+        fn run_seam(conn: &Connection) {
+            let (file, code) = (NamedTempFile::new().unwrap(), 42);
+            file.path();
+            let walker = WalkDir::new(".").into_iter();
+            let mut stmt = conn.prepare("SELECT 1").unwrap();
+            let _ = stmt.query_map([], |row| {
+                row.get::<_, i64>(0)
+            });
+        }
+        fn run_match_and_if_let() {
+            let conn_res = Connection::open_in_memory();
+            let conn = match conn_res {
+                Ok(c) => c,
+                Err(_) => return,
+            };
+            if let Ok(mut stmt) = conn.prepare("SELECT 1") {
+                stmt.execute([]).unwrap();
+            }
+        }
+        fn run_root_crate_import() {
+            use contextunity_forge_mcp::engine::ast;
+            let _ = ast::extract("test.rs", "rust", "fn main() {}");
+        }
+    "#;
+    let seam_facts = ast::extract("src/seam_destructuring.rs", "rust", seam_source).unwrap();
+    let ast_engine_facts = ast::extract(
+        "src/engine/ast.rs",
+        "rust",
+        "pub fn extract(_path: &str, _lang: &str, _code: &str) {}",
+    )
+    .unwrap();
+    let seam_graph = linker::link(&std::collections::BTreeMap::from([
+        ("src/seam_destructuring.rs".into(), seam_facts),
+        ("src/engine/ast.rs".into(), ast_engine_facts),
+    ]));
+    let file_path_cov = seam_graph
+        .coverage
+        .iter()
+        .find(|c| c.expression == "file.path")
+        .expect("missing coverage for file.path");
+    assert_eq!(
+        file_path_cov.status, "external",
+        "file.path from tuple destructuring must resolve to external: {file_path_cov:#?}"
+    );
+    let row_get_cov = seam_graph
+        .coverage
+        .iter()
+        .find(|c| c.expression.starts_with("row.get"))
+        .expect("missing coverage for row.get");
+    assert_eq!(
+        row_get_cov.status, "external",
+        "row.get from closure inference must resolve to external: {row_get_cov:#?}"
+    );
+    let stmt_exec_cov = seam_graph
+        .coverage
+        .iter()
+        .find(|c| c.expression == "stmt.execute")
+        .expect("missing coverage for stmt.execute");
+    assert_eq!(
+        stmt_exec_cov.status, "external",
+        "stmt.execute from if-let Ok(mut stmt) pattern binding must resolve to external: {stmt_exec_cov:#?}"
+    );
+    let ast_extract_cov = seam_graph
+        .coverage
+        .iter()
+        .find(|c| c.expression == "ast::extract")
+        .expect("missing coverage for ast::extract");
+    assert_eq!(
+        ast_extract_cov.status, "external",
+        "ast::extract without owning Cargo manifest and indexed src/lib.rs must remain external: {ast_extract_cov:#?}"
+    );
+
+    // Proven manifest-bound root crate normalization
+    let temp_root =
+        std::env::temp_dir().join(format!("forge_test_root_crate_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp_root);
+    std::fs::create_dir_all(&temp_root).unwrap();
+    std::fs::write(
+        temp_root.join("Cargo.toml"),
+        r#"[package]
+name = "my_root_crate"
+version = "0.1.0"
+edition = "2021"
+"#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(temp_root.join("src")).unwrap();
+    std::fs::write(temp_root.join("src/lib.rs"), "pub mod engine;").unwrap();
+
+    let root_caller_source = r#"
+        use my_root_crate::engine::ast;
+        fn run() {
+            let _ = ast::extract("test.rs", "rust", "fn main() {}");
+        }
+    "#;
+    let caller_facts = ast::extract("src/main.rs", "rust", root_caller_source).unwrap();
+    let engine_ast_facts = ast::extract(
+        "src/engine/ast.rs",
+        "rust",
+        "pub fn extract(_path: &str, _lang: &str, _code: &str) {}",
+    )
+    .unwrap();
+    let lib_facts = ast::extract("src/lib.rs", "rust", "pub mod engine;").unwrap();
+    let manifest_graph = linker::link_with_root(
+        &std::collections::BTreeMap::from([
+            ("src/main.rs".into(), caller_facts),
+            ("src/engine/ast.rs".into(), engine_ast_facts),
+            ("src/lib.rs".into(), lib_facts),
+        ]),
+        None,
+        Some(&temp_root),
+    );
+    let resolved_cov = manifest_graph
+        .coverage
+        .iter()
+        .find(|c| c.expression == "ast::extract")
+        .expect("missing coverage for ast::extract with manifest");
+    assert_eq!(
+        resolved_cov.status, "resolved",
+        "ast::extract with valid manifest and src/lib.rs must resolve locally: {resolved_cov:#?}"
+    );
+    let _ = std::fs::remove_dir_all(&temp_root);
+
+    // Probe tests for LS001-T5 review findings R3, R4, R5
+    // 1. Iterator closure inference from receiver
+    let iter_source = r#"
+        struct Item; impl Item { fn finish(&self) {} }
+        fn f(items: Vec<Item>) {
+            items.iter().map(|entry| entry.finish());
+            items.iter().filter(|entry| { entry.finish(); true });
+        }
+    "#;
+    let iter_facts = ast::extract("src/probe_iter.rs", "rust", iter_source).unwrap();
+    let iter_graph = linker::link(&std::collections::BTreeMap::from([(
+        "src/probe_iter.rs".into(),
+        iter_facts,
+    )]));
+    for c in iter_graph
+        .coverage
+        .iter()
+        .filter(|c| c.expression == "entry.finish")
+    {
+        assert_eq!(
+            c.status, "resolved",
+            "iterator entry.finish must resolve: {c:#?}"
+        );
+    }
+
+    // 2. Tuple-return positional binding
+    let tuple_ret_source = r#"
+        struct A; impl A { fn finish(&self) {} }
+        struct B; impl B { fn close(&self) {} }
+        fn make() -> (A, B) { (A, B) }
+        fn f() { let (a, b) = make(); a.finish(); b.close(); }
+    "#;
+    let tuple_ret_facts = ast::extract("src/probe_tup_ret.rs", "rust", tuple_ret_source).unwrap();
+    let tuple_ret_graph = linker::link(&std::collections::BTreeMap::from([(
+        "src/probe_tup_ret.rs".into(),
+        tuple_ret_facts,
+    )]));
+    let a_finish = tuple_ret_graph
+        .coverage
+        .iter()
+        .find(|c| c.expression == "a.finish")
+        .expect("a.finish");
+    assert_eq!(
+        a_finish.status, "resolved",
+        "a.finish from tuple return must resolve: {a_finish:#?}"
+    );
+    let b_close = tuple_ret_graph
+        .coverage
+        .iter()
+        .find(|c| c.expression == "b.close")
+        .expect("b.close");
+    assert_eq!(
+        b_close.status, "resolved",
+        "b.close from tuple return must resolve: {b_close:#?}"
+    );
+
+    // 3. Tuple-rest positional binding
+    let tuple_rest_source = r#"
+        struct A;
+        struct B; impl B { fn finish(&self) {} }
+        struct C; impl C { fn finish(&self) {} }
+        fn f() { let (.., last) = (A {}, B {}, C {}); last.finish(); }
+    "#;
+    let tuple_rest_facts =
+        ast::extract("src/probe_tup_rest.rs", "rust", tuple_rest_source).unwrap();
+    let tuple_rest_graph = linker::link(&std::collections::BTreeMap::from([(
+        "src/probe_tup_rest.rs".into(),
+        tuple_rest_facts,
+    )]));
+    let last_finish = tuple_rest_graph
+        .coverage
+        .iter()
+        .find(|c| c.expression == "last.finish")
+        .expect("last.finish");
+    assert_eq!(
+        last_finish.status, "resolved",
+        "last.finish must resolve: {last_finish:#?}"
+    );
+    assert!(
+        last_finish.evidence.contains("src.probe_tup_rest.C.finish"),
+        "last.finish must resolve to C.finish, not B.finish: {last_finish:#?}"
+    );
+
+    // 4. Closure-homonym negative (unrelated callback must not resolve to rusqlite::Row)
+    let closure_homonym_source = r#"
+        fn unrelated<F: Fn(i32)>(callback: F) { callback(1); }
+        fn f() { unrelated(|row| row.get(0)); }
+    "#;
+    let closure_homonym_facts =
+        ast::extract("src/probe_closure_neg.rs", "rust", closure_homonym_source).unwrap();
+    let closure_homonym_graph = linker::link(&std::collections::BTreeMap::from([(
+        "src/probe_closure_neg.rs".into(),
+        closure_homonym_facts,
+    )]));
+    let row_get = closure_homonym_graph
+        .coverage
+        .iter()
+        .find(|c| c.expression == "row.get")
+        .expect("row.get");
+    assert_ne!(
+        row_get.status, "external",
+        "unrelated callback named row must NOT resolve to rusqlite::Row: {row_get:#?}"
+    );
+
+    // 5. Connection and statement query_map closure parameter inference
+    let conn_source = r#"
+        use rusqlite::Connection;
+        fn f(conn: &Connection) {
+            let mut statement = conn.prepare("SELECT 1").unwrap();
+            statement.execute([]);
+            statement.query_map([], |entry| entry.get(0));
+        }
+    "#;
+    let conn_facts = ast::extract("src/probe_conn.rs", "rust", conn_source).unwrap();
+    let conn_graph = linker::link(&std::collections::BTreeMap::from([(
+        "src/probe_conn.rs".into(),
+        conn_facts,
+    )]));
+    assert_eq!(
+        conn_graph
+            .coverage
+            .iter()
+            .find(|c| c.expression == "conn.prepare")
+            .unwrap()
+            .status,
+        "external"
+    );
+    assert_eq!(
+        conn_graph
+            .coverage
+            .iter()
+            .find(|c| c.expression == "statement.execute")
+            .unwrap()
+            .status,
+        "external"
+    );
+    assert_eq!(
+        conn_graph
+            .coverage
+            .iter()
+            .find(|c| c.expression == "entry.get")
+            .unwrap()
+            .status,
+        "external"
+    );
+
+    // 6. Tree-sitter return inference
+    let tree_source = r#"
+        use tree_sitter::Parser;
+        fn f(parser: &mut Parser) {
+            let tree = parser.parse("x", None).unwrap();
+            let root = tree.root_node(); root.kind();
+            let child = root.child_by_field_name("body").unwrap(); child.kind();
+        }
+    "#;
+    let tree_facts = ast::extract("src/probe_tree.rs", "rust", tree_source).unwrap();
+    let tree_graph = linker::link(&std::collections::BTreeMap::from([(
+        "src/probe_tree.rs".into(),
+        tree_facts,
+    )]));
+    assert_eq!(
+        tree_graph
+            .coverage
+            .iter()
+            .find(|c| c.expression == "tree.root_node")
+            .unwrap()
+            .status,
+        "external"
+    );
+    assert_eq!(
+        tree_graph
+            .coverage
+            .iter()
+            .find(|c| c.expression == "root.kind")
+            .unwrap()
+            .status,
+        "external"
+    );
+    assert_eq!(
+        tree_graph
+            .coverage
+            .iter()
+            .find(|c| c.expression == "child.kind")
+            .unwrap()
+            .status,
+        "external"
+    );
+
+    // 7. Parser-homonym negative (pulldown_cmark::Parser must NOT resolve to tree-sitter Node)
+    let parser_homonym_source = r#"
+        use pulldown_cmark::Parser;
+        fn f(parser: &mut Parser) {
+            let tree = parser.parse("x", None).unwrap();
+            let root = tree.root_node(); root.kind();
+        }
+    "#;
+    let parser_homonym_facts =
+        ast::extract("src/probe_parser_neg.rs", "rust", parser_homonym_source).unwrap();
+    let parser_homonym_graph = linker::link(&std::collections::BTreeMap::from([(
+        "src/probe_parser_neg.rs".into(),
+        parser_homonym_facts,
+    )]));
+    let root_kind = parser_homonym_graph
+        .coverage
+        .iter()
+        .find(|c| c.expression == "root.kind")
+        .expect("root.kind");
+    assert_ne!(
+        root_kind.status, "external",
+        "pulldown_cmark::Parser must not resolve to tree-sitter Node: {root_kind:#?}"
+    );
+
+    // 8. While-let shadow followed by outer use (loop binding must not leak outside loop)
+    let while_let_source = r#"
+        struct Before; impl Before { fn finish(&self) {} }
+        struct After; impl After { fn finish(&self) {} }
+        fn f(option: Option<After>) {
+            let entry = Before {};
+            while let Some(entry) = option {
+                entry.finish();
+                break;
+            }
+            entry.finish();
+        }
+    "#;
+    let while_let_facts = ast::extract("src/probe_while_let.rs", "rust", while_let_source).unwrap();
+    let while_let_graph = linker::link(&std::collections::BTreeMap::from([(
+        "src/probe_while_let.rs".into(),
+        while_let_facts,
+    )]));
+    let finishes: Vec<_> = while_let_graph
+        .coverage
+        .iter()
+        .filter(|c| c.expression == "entry.finish")
+        .collect();
+    assert_eq!(finishes.len(), 2, "expected 2 entry.finish calls");
+    assert!(
+        finishes[0]
+            .evidence
+            .contains("src.probe_while_let.After.finish"),
+        "inner call must resolve to After: {:?}",
+        finishes[0]
+    );
+    assert!(
+        finishes[1]
+            .evidence
+            .contains("src.probe_while_let.Before.finish"),
+        "post-loop call must resolve to Before: {:?}",
+        finishes[1]
+    );
+
+    // 9. Tuple factory shadowed by local closure (must not link to top-level function's return type)
+    let tuple_shadow_source = r#"
+        struct A; impl A { fn finish(&self) {} }
+        struct B; impl B { fn finish(&self) {} }
+        fn make() -> (A, A) { (A {}, A {}) }
+        fn f() {
+            let make = || (B {}, B {});
+            let (entry, _) = make();
+            entry.finish();
+        }
+    "#;
+    let tuple_shadow_facts =
+        ast::extract("src/probe_tup_shadow.rs", "rust", tuple_shadow_source).unwrap();
+    let tuple_shadow_graph = linker::link(&std::collections::BTreeMap::from([(
+        "src/probe_tup_shadow.rs".into(),
+        tuple_shadow_facts,
+    )]));
+    let shadow_finish = tuple_shadow_graph
+        .coverage
+        .iter()
+        .find(|c| c.expression == "entry.finish")
+        .expect("entry.finish");
+    assert!(
+        !shadow_finish
+            .evidence
+            .contains("src.probe_tup_shadow.A.finish"),
+        "shadowed make() must NOT link to top-level A.finish: {shadow_finish:#?}"
+    );
+
+    // 9b. Nested function declaration shadows file-level function tuple factory
+    let nested_fn_source = r#"
+        struct A; impl A { fn finish(&self) {} }
+        struct B; impl B { fn finish(&self) {} }
+        fn make() -> (A, A) { (A {}, A {}) }
+        fn f() {
+            fn make() -> (B, B) { (B {}, B {}) }
+            let (entry, _) = make();
+            entry.finish();
+        }
+    "#;
+    let nested_fn_facts = ast::extract("src/probe_nested_fn.rs", "rust", nested_fn_source).unwrap();
+    let nested_fn_graph = linker::link(&std::collections::BTreeMap::from([(
+        "src/probe_nested_fn.rs".into(),
+        nested_fn_facts,
+    )]));
+    let nested_finish = nested_fn_graph
+        .coverage
+        .iter()
+        .find(|c| c.expression == "entry.finish")
+        .expect("entry.finish");
+    assert!(
+        !nested_finish
+            .evidence
+            .contains("src.probe_nested_fn.A.finish"),
+        "nested fn make() must NOT link to top-level A.finish: {nested_finish:#?}"
+    );
+    assert!(
+        nested_finish
+            .evidence
+            .contains("src.probe_nested_fn.B.finish"),
+        "nested fn make() must link to inner B.finish: {nested_finish:#?}"
+    );
+
+    // 10. Local query_map callback (must not infer external rusqlite::Row)
+    let local_qm_source = r#"
+        struct LocalItem; impl LocalItem { fn get(&self, _: i32) {} }
+        struct Local; impl Local { fn query_map<F: Fn(LocalItem)>(&self, f: F) { f(LocalItem {}); } }
+        fn f(val: Local) {
+            val.query_map(|entry| entry.get(0));
+        }
+    "#;
+    let local_qm_facts = ast::extract("src/probe_local_qm.rs", "rust", local_qm_source).unwrap();
+    let local_qm_graph = linker::link(&std::collections::BTreeMap::from([(
+        "src/probe_local_qm.rs".into(),
+        local_qm_facts,
+    )]));
+    let local_entry_get = local_qm_graph
+        .coverage
+        .iter()
+        .find(|c| c.expression == "entry.get")
+        .expect("entry.get");
+    assert_ne!(
+        local_entry_get.status, "external",
+        "local query_map must NOT infer external rusqlite::Row: {local_entry_get:#?}"
+    );
+
+    // 10b. Local struct Connection query_map callback (must not infer external rusqlite::Row)
+    let local_conn_source = r#"
+        struct LocalItem; impl LocalItem { fn get(&self, _: i32) {} }
+        struct Connection;
+        impl Connection { fn query_map<F: Fn(LocalItem)>(&self, f: F) { f(LocalItem {}); } }
+        fn f(db: Connection) {
+            db.query_map(|entry| entry.get(0));
+        }
+    "#;
+    let local_conn_facts =
+        ast::extract("src/probe_local_conn.rs", "rust", local_conn_source).unwrap();
+    let local_conn_graph = linker::link(&std::collections::BTreeMap::from([(
+        "src/probe_local_conn.rs".into(),
+        local_conn_facts,
+    )]));
+    let conn_entry_get = local_conn_graph
+        .coverage
+        .iter()
+        .find(|c| c.expression == "entry.get")
+        .expect("entry.get");
+    assert_ne!(
+        conn_entry_get.status, "external",
+        "local struct Connection must NOT infer external rusqlite::Row: {conn_entry_get:#?}"
+    );
+    assert!(
+        !conn_entry_get.evidence.contains("rusqlite::Row"),
+        "evidence must NOT mention rusqlite::Row: {conn_entry_get:#?}"
+    );
+
+    // 11. Disabled Cargo pack in .forge/frameworks/rust-cargo.toml must not supply return policy
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let temp_root = std::env::temp_dir().join(format!("forge-test-disabled-pack-{}", nonce));
+    std::fs::create_dir_all(temp_root.join(".forge/frameworks")).unwrap();
+    std::fs::write(
+        temp_root.join(".forge/frameworks/rust-cargo.toml"),
+        "enabled = false\n",
+    )
+    .unwrap();
+    let r3_source = r#"
+        use rusqlite::Connection;
+        fn run(conn: Connection) {
+            let mut statement = conn.prepare("SELECT 1").unwrap();
+            statement.execute([]);
+        }
+    "#;
+    let r3_facts = ast::extract("src/lib.rs", "rust", r3_source).unwrap();
+    let r3_graph = linker::link_with_root(
+        &std::collections::BTreeMap::from([("src/lib.rs".into(), r3_facts)]),
+        None,
+        Some(&temp_root),
+    );
+    let row = r3_graph
+        .coverage
+        .iter()
+        .find(|r| r.expression == "statement.execute")
+        .expect("statement.execute");
+    assert!(
+        !row.evidence.contains("rusqlite::Statement"),
+        "disabled rust-cargo pack must NOT infer rusqlite::Statement: {row:#?}"
+    );
+    let _ = std::fs::remove_dir_all(&temp_root);
+
+    // 11b. Disabled Cargo pack with whitespace (enabled  =  false) and qualified without import
+    for (label, manifest, source) in [
+        ("whitespace", "enabled  =  false\n", "use rusqlite::Connection;\nfn run(conn: Connection) { let s = conn.prepare(\"SELECT 1\").unwrap(); s.execute([]); }"),
+        ("no-import", "enabled = false\n", "fn run(conn: rusqlite::Connection) { let s = conn.prepare(\"SELECT 1\").unwrap(); s.execute([]); }"),
+    ] {
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let temp_root = std::env::temp_dir().join(format!("forge-test-disabled-{}-{}", label, nonce));
+        std::fs::create_dir_all(temp_root.join(".forge/frameworks")).unwrap();
+        std::fs::write(temp_root.join(".forge/frameworks/rust-cargo.toml"), manifest).unwrap();
+        let facts = ast::extract("src/lib.rs", "rust", source).unwrap();
+        let graph = linker::link_with_root(
+            &std::collections::BTreeMap::from([("src/lib.rs".into(), facts)]),
+            None,
+            Some(&temp_root),
+        );
+        let row = graph.coverage.iter().find(|r| r.expression == "s.execute").expect("s.execute");
+        assert!(
+            !row.evidence.contains("rusqlite::Statement"),
+            "{label}: disabled rust-cargo pack must NOT infer rusqlite::Statement: {row:#?}"
+        );
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    // 12. Lexical provenance: nested Connection or unrelated qualified connection with unrelated import
+    for (label, source) in [
+        ("nested-local", "use rusqlite::Result;\nstruct LocalItem; impl LocalItem { fn get(&self, _: i32) {} }\nfn f() { struct Connection; impl Connection { fn query_map<F: Fn(LocalItem)>(&self, f: F) { f(LocalItem {}); } } fn run(c: Connection) { c.query_map(|entry| entry.get(0)); } }"),
+        ("qualified-local", "use rusqlite::Result;\nstruct LocalItem; impl LocalItem { fn get(&self, _: i32) {} }\nmod other { pub struct Connection; impl Connection { pub fn query_map<F: Fn(super::LocalItem)>(&self, f: F) { f(super::LocalItem {}); } } }\nfn f(c: other::Connection) { c.query_map(|entry| entry.get(0)); }"),
+    ] {
+        let facts = ast::extract("src/lib.rs", "rust", source).unwrap();
+        let graph = linker::link(&std::collections::BTreeMap::from([("src/lib.rs".into(), facts)]));
+        let row = graph.coverage.iter().find(|r| r.expression == "entry.get").expect("entry.get");
+        assert_ne!(row.status, "external", "{label}: entry.get must not be external: {row:#?}");
+        assert!(!row.evidence.contains("rusqlite::Row"), "{label}: evidence must not mention rusqlite::Row: {row:#?}");
+    }
+
+    // Contract revision 2: effective class hierarchy return policy preservation (LS001-T5-R3)
+    {
+        let root = std::env::temp_dir().join(format!("seam-contract-r2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".forge/frameworks")).unwrap();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname='seam-r2'\nversion='0.1.0'\n[dependencies]\nrusqlite='0.31'\n",
+        )
+        .unwrap();
+        let manifest = r#"enabled = true
+replace = true
+[[class_hierarchy_receivers]]
+bases = ['rusqlite::Connection', 'Connection']
+provider = 'rusqlite'
+members = ['prepare', 'prepare_cached']
+[class_hierarchy_receivers.returns]
+prepare_cached = { kind = 'receiver', base = 'rusqlite::Row' }
+[[class_hierarchy_receivers]]
+bases = ['rusqlite::Row', 'Row']
+provider = 'rusqlite'
+members = ['get']
+"#;
+        std::fs::write(root.join(".forge/frameworks/rust-cargo.toml"), manifest).unwrap();
+        let source = "use rusqlite::Connection;\nfn f(conn: Connection) { let value = conn.prepare_cached(\"SELECT 1\").unwrap(); value.get(0); }";
+        let facts = ast::extract("src/lib.rs", "rust", source).unwrap();
+        let all = std::collections::BTreeMap::from([("src/lib.rs".into(), facts)]);
+        let graph = linker::link_with_root(&all, None, Some(&root));
+        let row = graph
+            .coverage
+            .iter()
+            .find(|r| r.expression == "value.get")
+            .unwrap();
+        assert!(
+            row.evidence.contains("rusqlite::Row"),
+            "effective return policy for prepare_cached -> Row must resolve on value.get: {row:#?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     assert!(ast::parser("sql", "schema.sql").is_err());
     let mut public_facts = contextunity_forge_mcp::core::models::Facts::default();
     contextunity_forge_mcp::engine::languages::parse_file(
@@ -902,10 +1623,17 @@ fn prose() { let _ = "information was updated and transformed"; }"##,
     ));
     for (path, language, source) in embedded {
         let facts = ast::extract(path, language, source).unwrap();
-        let queries: Vec<_> = facts.references.iter().filter(|r| r.kind == "queries_table").collect();
+        let queries: Vec<_> = facts
+            .references
+            .iter()
+            .filter(|r| r.kind == "queries_table")
+            .collect();
         assert_eq!(queries.len(), 1, "{path}: {queries:?}");
         assert_eq!(queries[0].expression, "orders", "{path}");
-        assert!(!facts.references.iter().any(|r| r.kind == "mutates_table"), "{path}");
+        assert!(
+            !facts.references.iter().any(|r| r.kind == "mutates_table"),
+            "{path}"
+        );
     }
 
     let workspace = super::support::Workspace::new();
@@ -1145,7 +1873,10 @@ fn prose() { let _ = "information was updated and transformed"; }"##,
             "independent default-only manifest should link"
         );
         let empty_defaults: i64 = db.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash WHERE s.name='Empty' AND e.kind='defines_table'", [], |row| row.get(0)).unwrap();
-        assert_eq!(empty_defaults, 0, "class without bases must not define a table");
+        assert_eq!(
+            empty_defaults, 0,
+            "class without bases must not define a table"
+        );
         let false_defaults: i64 = db.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name='Fake' AND d.name='shop_fake' AND e.kind='defines_table'", [], |row| row.get(0)).unwrap();
         assert_eq!(false_defaults, 0, "local models must not imply Django ORM");
         let override_edges: i64 = db.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name='Override' AND d.name='shop_override' AND e.kind='defines_table'", [], |r| r.get(0)).unwrap();
@@ -1361,7 +2092,8 @@ class ServiceClient:
             graph
                 .coverage
                 .iter()
-                .filter(|coverage| coverage.expression == "self._send_request" && coverage.status == "resolved")
+                .filter(|coverage| coverage.expression == "self._send_request"
+                    && coverage.status == "resolved")
                 .count(),
             count,
         );

@@ -19,6 +19,35 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
     ) -> Option<TypeTarget<'a>> {
         use super::super::value_flow::ConfiguredReceiverAuthority as Authority;
         use languages::manifests::ReturnPolicy;
+        if let TypeTarget::External {
+            module,
+            import_line,
+        } = receiver
+        {
+            if owner.language == "rust" {
+                let base = module.replace('.', "::");
+                let (pack, rule) = self.dependencies.class_hierarchy_authority_for_path(
+                    &owner.path,
+                    &base,
+                    None,
+                )?;
+                if !rule.members.iter().any(|allowed| allowed == member) {
+                    return None;
+                }
+                return match rule.returns.get(member)? {
+                    ReturnPolicy::SelfReceiver => Some(receiver.clone()),
+                    ReturnPolicy::Receiver { base } => {
+                        self.hierarchy_results
+                            .get(&self.path_id(&owner.path)?)?
+                            .get(&(self.symbol_id(pack)?, self.symbol_id(base)?))?;
+                        Some(TypeTarget::External {
+                            module: base.clone(),
+                            import_line: *import_line,
+                        })
+                    }
+                };
+            }
+        }
         enum Origin<'origin, 'tree> {
             External(&'origin str, usize),
             Borrowed(&'origin TypeTarget<'tree>),

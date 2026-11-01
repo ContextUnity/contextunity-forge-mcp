@@ -10,6 +10,12 @@ members = [
     "prepare", "prepare_cached", "query_row", "query_row_and_then",
     "transaction", "unchecked_transaction", "close", "is_autocommit"
 ]
+[class_hierarchy_receivers.returns]
+open = { kind = "self" }
+open_in_memory = { kind = "self" }
+open_with_flags = { kind = "self" }
+prepare = { kind = "receiver", base = "rusqlite::Statement" }
+prepare_cached = { kind = "receiver", base = "rusqlite::Statement" }
 
 [[class_hierarchy_receivers]]
 bases = ["rusqlite::Statement", "Statement"]
@@ -29,11 +35,16 @@ members = ["get", "get_ref", "get_unwrap"]
 bases = ["tree_sitter::Parser", "Parser"]
 provider = "tree-sitter"
 members = ["new", "set_language", "language", "parse", "parse_with", "reset", "timeout_micros", "set_timeout_micros"]
+[class_hierarchy_receivers.returns]
+parse = { kind = "receiver", base = "tree_sitter::Tree" }
+parse_with = { kind = "receiver", base = "tree_sitter::Tree" }
 
 [[class_hierarchy_receivers]]
 bases = ["tree_sitter::Tree", "Tree"]
 provider = "tree-sitter"
 members = ["root_node", "language", "edit", "walk"]
+[class_hierarchy_receivers.returns]
+root_node = { kind = "receiver", base = "tree_sitter::Node" }
 
 [[class_hierarchy_receivers]]
 bases = ["tree_sitter::Node", "Node"]
@@ -46,6 +57,14 @@ members = [
     "parent", "next_sibling", "prev_sibling", "next_named_sibling", "prev_named_sibling",
     "utf8_text", "walk"
 ]
+[class_hierarchy_receivers.returns]
+child = { kind = "receiver", base = "tree_sitter::Node" }
+child_by_field_name = { kind = "receiver", base = "tree_sitter::Node" }
+parent = { kind = "receiver", base = "tree_sitter::Node" }
+next_sibling = { kind = "receiver", base = "tree_sitter::Node" }
+prev_sibling = { kind = "receiver", base = "tree_sitter::Node" }
+next_named_sibling = { kind = "receiver", base = "tree_sitter::Node" }
+prev_named_sibling = { kind = "receiver", base = "tree_sitter::Node" }
 
 [[class_hierarchy_receivers]]
 bases = ["tree_sitter::Query", "Query"]
@@ -109,3 +128,324 @@ members = ["abort", "is_finished"]
 bases = ["anyhow::Error", "Error"]
 provider = "anyhow"
 members = ["context", "backtrace", "root_cause", "chain", "downcast", "downcast_ref", "downcast_mut", "to_string"]
+
+# clap
+[[class_hierarchy_receivers]]
+bases = ["clap::Parser", "Parser"]
+provider = "clap"
+members = ["parse", "try_parse", "parse_from", "try_parse_from", "command", "update_from_arg_matches"]
+
+[[class_hierarchy_receivers]]
+bases = ["clap::Command", "Command"]
+provider = "clap"
+members = [
+    "new", "name", "bin_name", "version", "author", "about", "arg", "args",
+    "subcommand", "subcommands", "get_matches", "get_matches_from", "try_get_matches",
+    "help_template"
+]
+[class_hierarchy_receivers.returns]
+new = { kind = "self" }
+
+[[class_hierarchy_receivers]]
+bases = ["clap::Arg", "Arg"]
+provider = "clap"
+members = [
+    "new", "short", "long", "help", "action", "value_name", "num_args",
+    "required", "default_value"
+]
+
+[[class_hierarchy_receivers]]
+bases = ["clap::ArgMatches", "ArgMatches"]
+provider = "clap"
+members = [
+    "get_one", "get_many", "get_flag", "get_count", "subcommand",
+    "subcommand_matches", "subcommand_name", "contains_id"
+]
+
+# tracing
+[[class_hierarchy_receivers]]
+bases = ["tracing::Span", "Span"]
+provider = "tracing"
+members = [
+    "current", "none", "enter", "in_scope", "record", "follows_from", "id",
+    "is_disabled", "is_none"
+]
+
+[[class_hierarchy_receivers]]
+bases = ["tracing::Subscriber", "Subscriber"]
+provider = "tracing"
+members = ["enabled", "new_span", "record", "event", "enter", "exit"]
+
+[[class_hierarchy_receivers]]
+bases = ["tracing::Event", "Event"]
+provider = "tracing"
+members = ["metadata", "fields", "parent"]
+
+# rayon
+[[class_hierarchy_receivers]]
+bases = ["rayon::iter::ParallelIterator", "ParallelIterator"]
+provider = "rayon"
+members = [
+    "par_iter", "par_iter_mut", "into_par_iter", "for_each", "map", "filter",
+    "filter_map", "flat_map", "collect", "reduce", "sum", "count", "find_any",
+    "any", "all"
+]
+
+[[class_hierarchy_receivers]]
+bases = ["rayon::ThreadPool", "ThreadPool"]
+provider = "rayon"
+members = ["new", "build", "install", "spawn", "scope"]
+
+# tempfile
+[[class_hierarchy_receivers]]
+bases = ["tempfile::NamedTempFile", "NamedTempFile"]
+provider = "tempfile"
+members = [
+    "new", "new_in", "path", "as_file", "reopen", "keep", "persist",
+    "persist_noclobber", "close"
+]
+[class_hierarchy_receivers.returns]
+new = { kind = "self" }
+new_in = { kind = "self" }
+
+[[class_hierarchy_receivers]]
+bases = ["tempfile::TempDir", "TempDir"]
+provider = "tempfile"
+members = ["new", "new_in", "path", "into_path", "close"]
+[class_hierarchy_receivers.returns]
+new = { kind = "self" }
+new_in = { kind = "self" }
+
+[[class_hierarchy_receivers]]
+bases = ["tempfile::Builder", "Builder"]
+provider = "tempfile"
+members = ["new", "prefix", "suffix", "rand_bytes", "tempfile", "tempfile_in", "tempdir", "tempdir_in"]
+
+# regex
+[[class_hierarchy_receivers]]
+bases = ["regex::Regex", "Regex"]
+provider = "regex"
+members = [
+    "new", "is_match", "find", "find_iter", "captures", "captures_iter",
+    "split", "replace", "replace_all", "as_str"
+]
+[class_hierarchy_receivers.returns]
+new = { kind = "self" }
+
+[[class_hierarchy_receivers]]
+bases = ["regex::Captures", "Captures"]
+provider = "regex"
+members = ["get", "name", "len", "is_empty", "extract"]
+
+[[class_hierarchy_receivers]]
+bases = ["regex::Match", "Match"]
+provider = "regex"
+members = ["as_str", "start", "end", "range", "len", "is_empty"]
+
+# thiserror
+[[class_hierarchy_receivers]]
+bases = ["thiserror::Error", "Error"]
+provider = "thiserror"
+members = ["source", "from", "backtrace"]
+
+# parking_lot
+[[class_hierarchy_receivers]]
+bases = ["parking_lot::Mutex", "Mutex"]
+provider = "parking_lot"
+members = ["new", "lock", "try_lock", "try_lock_for", "try_lock_until", "is_locked", "get_mut"]
+
+[[class_hierarchy_receivers]]
+bases = ["parking_lot::RwLock", "RwLock"]
+provider = "parking_lot"
+members = ["new", "read", "write", "try_read", "try_write", "try_read_for", "try_write_for", "is_locked"]
+
+[[class_hierarchy_receivers]]
+bases = ["parking_lot::MutexGuard", "MutexGuard"]
+provider = "parking_lot"
+members = ["deref", "deref_mut"]
+
+[[class_hierarchy_receivers]]
+bases = ["parking_lot::RwLockReadGuard", "RwLockReadGuard"]
+provider = "parking_lot"
+members = ["deref"]
+
+[[class_hierarchy_receivers]]
+bases = ["parking_lot::RwLockWriteGuard", "RwLockWriteGuard"]
+provider = "parking_lot"
+members = ["deref", "deref_mut"]
+
+# crossbeam
+[[class_hierarchy_receivers]]
+bases = ["crossbeam::channel::Sender", "Sender"]
+provider = "crossbeam"
+members = ["send", "try_send", "send_timeout", "is_empty", "is_full", "len", "capacity"]
+
+[[class_hierarchy_receivers]]
+bases = ["crossbeam::channel::Receiver", "Receiver"]
+provider = "crossbeam"
+members = ["recv", "try_recv", "recv_timeout", "is_empty", "is_full", "len", "capacity"]
+
+# log
+[[class_hierarchy_receivers]]
+bases = ["log::Record", "Record"]
+provider = "log"
+members = ["args", "metadata", "level", "target", "module_path", "file", "line", "key_values"]
+
+[[class_hierarchy_receivers]]
+bases = ["log::Metadata", "Metadata"]
+provider = "log"
+members = ["level", "target"]
+
+# walkdir
+[[class_hierarchy_receivers]]
+bases = ["walkdir::WalkDir", "WalkDir"]
+provider = "walkdir"
+members = ["new", "into_iter", "min_depth", "max_depth", "follow_links", "filter_entry", "sort_by", "sort_by_file_name"]
+[class_hierarchy_receivers.returns]
+new = { kind = "self" }
+
+[[class_hierarchy_receivers]]
+bases = ["walkdir::DirEntry", "DirEntry"]
+provider = "walkdir"
+members = ["path", "file_name", "depth", "file_type", "metadata"]
+
+# ignore
+[[class_hierarchy_receivers]]
+bases = ["ignore::WalkBuilder", "WalkBuilder"]
+provider = "ignore"
+members = ["new", "build", "add", "hidden", "ignore", "git_global", "git_ignore", "git_exclude", "parents"]
+
+[[class_hierarchy_receivers]]
+bases = ["ignore::DirEntry", "DirEntry"]
+provider = "ignore"
+members = ["path", "file_name", "depth", "file_type", "metadata"]
+
+# toml
+[[class_hierarchy_receivers]]
+bases = ["toml::Value", "Value"]
+provider = "toml"
+members = [
+    "get", "get_mut", "is_str", "is_integer", "is_float", "is_bool", "is_datetime",
+    "is_array", "is_table", "as_str", "as_integer", "as_float", "as_bool",
+    "as_datetime", "as_array", "as_table", "to_string"
+]
+
+# chrono
+[[class_hierarchy_receivers]]
+bases = ["chrono::DateTime", "DateTime"]
+provider = "chrono"
+members = [
+    "to_rfc3339", "timestamp", "timestamp_millis", "timestamp_micros",
+    "timestamp_nanos", "format", "naive_utc", "naive_local"
+]
+
+[[class_hierarchy_receivers]]
+bases = ["chrono::Utc", "Utc"]
+provider = "chrono"
+members = ["now"]
+
+# git2
+[[class_hierarchy_receivers]]
+bases = ["git2::Repository", "Repository"]
+provider = "git2"
+members = [
+    "open", "init", "discover", "head", "find_commit", "find_reference",
+    "find_tree", "status", "statuses", "diff_tree_to_tree", "diff_tree_to_workdir",
+    "worktrees", "find_worktree"
+]
+
+[[class_hierarchy_receivers]]
+bases = ["git2::Commit", "Commit"]
+provider = "git2"
+members = ["id", "message", "author", "committer", "time", "tree", "parent", "parent_count", "parents"]
+
+# sha2
+[[class_hierarchy_receivers]]
+bases = ["sha2::Sha256", "Sha256"]
+provider = "sha2"
+members = ["new", "update", "chain_update", "finalize", "finalize_reset"]
+[class_hierarchy_receivers.returns]
+new = { kind = "self" }
+
+# uuid
+[[class_hierarchy_receivers]]
+bases = ["uuid::Uuid", "Uuid"]
+provider = "uuid"
+members = ["new_v4", "parse_str", "to_string", "as_bytes", "to_hyphenated"]
+
+# hashbrown
+[[class_hierarchy_receivers]]
+bases = ["hashbrown::HashMap", "HashMap"]
+provider = "hashbrown"
+members = [
+    "new", "with_capacity", "insert", "get", "get_mut", "remove", "contains_key",
+    "len", "is_empty", "clear", "entry", "keys", "values", "iter", "iter_mut"
+]
+[class_hierarchy_receivers.returns]
+new = { kind = "self" }
+with_capacity = { kind = "self" }
+
+[[class_hierarchy_receivers]]
+bases = ["hashbrown::HashSet", "HashSet"]
+provider = "hashbrown"
+members = ["new", "with_capacity", "insert", "contains", "remove", "len", "is_empty", "clear", "iter"]
+[class_hierarchy_receivers.returns]
+new = { kind = "self" }
+with_capacity = { kind = "self" }
+
+# indexmap
+[[class_hierarchy_receivers]]
+bases = ["indexmap::IndexMap", "IndexMap"]
+provider = "indexmap"
+members = [
+    "new", "with_capacity", "insert", "get", "get_mut", "remove", "contains_key",
+    "len", "is_empty", "clear", "entry", "keys", "values", "iter", "iter_mut", "get_index"
+]
+[class_hierarchy_receivers.returns]
+new = { kind = "self" }
+with_capacity = { kind = "self" }
+
+[[class_hierarchy_receivers]]
+bases = ["indexmap::IndexSet", "IndexSet"]
+provider = "indexmap"
+members = ["new", "with_capacity", "insert", "contains", "remove", "len", "is_empty", "clear", "iter", "get_index"]
+[class_hierarchy_receivers.returns]
+new = { kind = "self" }
+with_capacity = { kind = "self" }
+
+# petgraph
+[[class_hierarchy_receivers]]
+bases = ["petgraph::graph::Graph", "petgraph::Graph", "Graph"]
+provider = "petgraph"
+members = [
+    "new", "add_node", "add_edge", "node_weight", "edge_weight", "node_count",
+    "edge_count", "neighbors", "node_indices", "edge_indices"
+]
+[class_hierarchy_receivers.returns]
+new = { kind = "self" }
+
+[[class_hierarchy_receivers]]
+bases = ["petgraph::graph::DiGraph", "petgraph::DiGraph", "DiGraph"]
+provider = "petgraph"
+members = [
+    "new", "add_node", "add_edge", "node_weight", "edge_weight", "node_count",
+    "edge_count", "neighbors", "node_indices", "edge_indices"
+]
+[class_hierarchy_receivers.returns]
+new = { kind = "self" }
+
+# pulldown-cmark
+[[class_hierarchy_receivers]]
+bases = ["pulldown_cmark::Parser", "Parser"]
+provider = "pulldown-cmark"
+members = ["new", "new_ext", "into_offset_iter"]
+
+# serde_yaml
+[[class_hierarchy_receivers]]
+bases = ["serde_yaml::Value", "Value"]
+provider = "serde_yaml"
+members = [
+    "get", "get_mut", "is_null", "is_bool", "is_i64", "is_u64", "is_f64",
+    "is_string", "is_sequence", "is_mapping", "as_bool", "as_i64", "as_u64",
+    "as_f64", "as_str", "as_sequence", "as_mapping"
+]

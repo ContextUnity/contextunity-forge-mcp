@@ -672,6 +672,7 @@ pub(crate) struct RustMembers<'a> {
     receivers_by_method: HashMap<&'a str, &'a Node>,
     dynamic_declarations: HashMap<(&'a str, &'a str), &'a Node>,
     dynamic_implementors: HashMap<(&'a str, &'a str), Vec<&'a Node>>,
+    cargo_pack_enabled: bool,
 }
 
 fn namespace(path: &str, module: &str, name: &str) -> String {
@@ -811,6 +812,7 @@ impl<'a> RustMembers<'a> {
             by_qual.entry(&node.qualname).or_default().push(node);
             by_id.insert(node.id.as_str(), node);
         }
+        let cargo_pack_enabled = interner.lookup_symbol("rust-cargo").is_some();
         let mut index = Self {
             deref_targets: HashMap::new(),
             inherent: HashMap::new(),
@@ -818,6 +820,7 @@ impl<'a> RustMembers<'a> {
             receivers_by_method: HashMap::new(),
             dynamic_declarations: HashMap::new(),
             dynamic_implementors: HashMap::new(),
+            cargo_pack_enabled,
         };
         let mut traits: TraitImplMap<'a> = HashMap::new();
         let mut visible_traits: HashMap<&'a str, HashSet<&'a str>> = HashMap::new();

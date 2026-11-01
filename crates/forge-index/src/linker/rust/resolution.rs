@@ -5,11 +5,46 @@ use hashbrown::HashMap;
 
 pub use crate::languages::rust::declarative_macro_classification;
 
-/// Helper to verify registered Cargo ecosystem crates
+/// Helper to verify registered Cargo ecosystem crates statically from ecosystem list
 pub fn is_registered_cargo_crate(crate_name: &str) -> bool {
     matches!(
         crate_name,
-        "rusqlite" | "tree-sitter" | "tree_sitter" | "serde" | "serde_json" | "tokio" | "anyhow"
+        "rusqlite"
+            | "tree-sitter"
+            | "tree_sitter"
+            | "serde"
+            | "serde_json"
+            | "serde_yaml"
+            | "tokio"
+            | "anyhow"
+            | "clap"
+            | "tracing"
+            | "rayon"
+            | "tempfile"
+            | "regex"
+            | "thiserror"
+            | "parking_lot"
+            | "crossbeam"
+            | "log"
+            | "git2"
+            | "walkdir"
+            | "ignore"
+            | "sha2"
+            | "hex"
+            | "toml"
+            | "uuid"
+            | "chrono"
+            | "hashbrown"
+            | "indexmap"
+            | "petgraph"
+            | "libc"
+            | "dirs"
+            | "pulldown-cmark"
+            | "pulldown_cmark"
+            | "schemars"
+            | "rmcp"
+            | "zstd"
+            | "cc"
     )
 }
 

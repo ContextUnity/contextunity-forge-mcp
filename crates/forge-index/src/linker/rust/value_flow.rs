@@ -1,8 +1,8 @@
 //! Rust-only wrapper and reference projection rules used by the shared reducer.
 
 use super::super::value_flow::{
-    ReadTrace, RustWrapperKind, SemanticLimits, SemanticResolver, Symbol, SymbolRole, TypeTarget,
-    ValueFlowIndex, resolve_type,
+    resolve_type, ReadTrace, RustWrapperKind, SemanticLimits, SemanticResolver, Symbol, SymbolRole,
+    TypeTarget, ValueFlowIndex,
 };
 use crate::core::{
     models::Node,
@@ -31,39 +31,82 @@ pub(in crate::linker) fn constructor_result<'a>(
     }
     let callee_clean = callee.replace("::", ".");
     let (receiver, member) = callee_clean.rsplit_once('.')?;
-    let Symbol::Type(target) = resolver.resolve_symbol(owner, receiver, at, SymbolRole::Type)
-    else {
-        return None;
+    let (target, _borrowed) = if let Some(t) = index.lookup_tracked(owner, receiver, at, trace) {
+        let (t, b, _) = referent(t);
+        (t.clone(), b)
+    } else {
+        let Symbol::Type(target) = resolver.resolve_symbol(owner, receiver, at, SymbolRole::Type)
+        else {
+            return None;
+        };
+        (target, false)
     };
     match &target {
         TypeTarget::Builtin(_) => {
             if matches!(member, "new" | "from" | "with_capacity" | "default") {
-                return Some(target);
+                return Some(target.clone());
             }
         }
         TypeTarget::External { module, .. } => {
-            let module = import_path(module.trim_start_matches("::"));
-            let crate_name = module.split('.').next()?;
+            let module_ref = import_path(module.trim_start_matches("::"));
+            let crate_name = module_ref.split('.').next()?;
             if matches!(crate_name, "std" | "alloc" | "core") {
                 if matches!(member, "new" | "from" | "with_capacity" | "default") {
-                    return Some(target);
+                    return Some(target.clone());
                 }
             } else if !super::resolution::is_registered_cargo_crate(crate_name)
                 && crate_name != "serde_json"
             {
                 return None;
             }
+            if let Some(target_type) = resolver.resolve_member_result(&target, member, owner, at) {
+                let is_option = matches!(
+                    member,
+                    "child"
+                        | "child_by_field_name"
+                        | "parent"
+                        | "next_sibling"
+                        | "prev_sibling"
+                        | "next_named_sibling"
+                        | "prev_named_sibling"
+                        | "parse"
+                        | "parse_with"
+                );
+                let is_result = matches!(
+                    member,
+                    "open" | "open_in_memory" | "open_with_flags" | "prepare" | "prepare_cached"
+                ) || (matches!(member, "new" | "new_in")
+                    && (module_ref.ends_with("NamedTempFile")
+                        || module_ref.ends_with("TempDir")
+                        || module_ref.ends_with("Regex")));
+
+                if is_option {
+                    return Some(TypeTarget::RustWrapper {
+                        wrapper: RustWrapperKind::Option,
+                        ok: Box::new(target_type),
+                        err: None,
+                    });
+                } else if is_result {
+                    return Some(TypeTarget::RustWrapper {
+                        wrapper: RustWrapperKind::Result,
+                        ok: Box::new(target_type),
+                        err: None,
+                    });
+                } else {
+                    return Some(target_type);
+                }
+            }
         }
         _ => return None,
     }
     match member {
         "open" | "open_in_memory" | "open_with_flags" | "from_str" | "parse" | "connect"
-        | "build" => Some(TypeTarget::RustWrapper {
+        | "build" | "try_new" => Some(TypeTarget::RustWrapper {
             wrapper: RustWrapperKind::Result,
             ok: Box::new(target),
             err: None,
         }),
-        "new" | "default" | "create" => Some(target),
+        "new" | "default" | "create" | "current" | "none" => Some(target),
         _ => None,
     }
 }
@@ -89,6 +132,8 @@ pub(in crate::linker) fn is_adapter(member: &str) -> bool {
             | "skip"
             | "step_by"
             | "collect"
+            | "__rust_iter_item"
+            | "__rust_closure_row"
     )
 }
 
@@ -103,9 +148,13 @@ pub(in crate::linker) fn resolve_reference<'a>(
     if owner.language != "rust" {
         return TypeTarget::Unknown;
     }
+    let inner = resolve_type(owner, target, at, resolver, limits);
+    if matches!(inner, TypeTarget::External { .. }) {
+        return inner;
+    }
     TypeTarget::RustReference {
         mutable,
-        target: Box::new(resolve_type(owner, target, at, resolver, limits)),
+        target: Box::new(inner),
     }
 }
 
@@ -170,31 +219,58 @@ pub(in crate::linker) fn resolve_applied<'a>(
             true,
         ));
     }
+    let is_collection = matches!(
+        base,
+        "Vec" | "std::vec::Vec" | "alloc::vec::Vec" | "std.vec.Vec" | "alloc.vec.Vec"
+    ) || matches!(nominal, Symbol::Type(target) if standard_collection(target));
+    if is_collection {
+        return Some(match args {
+            [item] => TypeTarget::RustCollection {
+                item: Box::new(resolve_type(
+                    owner,
+                    item,
+                    at,
+                    resolver,
+                    SemanticLimits::default(),
+                )),
+            },
+            _ => TypeTarget::Unknown,
+        });
+    }
+    let standard_opt_or_res = if matches!(
+        base,
+        "Option"
+            | "std::option::Option"
+            | "core::option::Option"
+            | "std.option.Option"
+            | "core.option.Option"
+    ) {
+        Some(RustWrapperKind::Option)
+    } else if matches!(
+        base,
+        "Result"
+            | "std::result::Result"
+            | "core::result::Result"
+            | "std.result.Result"
+            | "core.result.Result"
+    ) {
+        Some(RustWrapperKind::Result)
+    } else if let Symbol::Type(target) = nominal {
+        standard_wrapper(target)
+    } else {
+        None
+    };
+    if let Some(wrapper) = standard_opt_or_res {
+        let valid_arity = match wrapper {
+            RustWrapperKind::Option => args.len() == 1,
+            RustWrapperKind::Result => args.len() == 2,
+        };
+        if !valid_arity {
+            return Some(TypeTarget::Unknown);
+        }
+        return Some(wrapper_type(owner, wrapper, args, at, resolver, false));
+    }
     if let Symbol::Type(target) = nominal {
-        if standard_collection(target) {
-            return Some(match args {
-                [item] => TypeTarget::RustCollection {
-                    item: Box::new(resolve_type(
-                        owner,
-                        item,
-                        at,
-                        resolver,
-                        SemanticLimits::default(),
-                    )),
-                },
-                _ => TypeTarget::Unknown,
-            });
-        }
-        if let Some(wrapper) = standard_wrapper(target) {
-            let valid_arity = match wrapper {
-                RustWrapperKind::Option => args.len() == 1,
-                RustWrapperKind::Result => args.len() == 2,
-            };
-            if !valid_arity {
-                return Some(TypeTarget::Unknown);
-            }
-            return Some(wrapper_type(owner, wrapper, args, at, resolver, false));
-        }
         if args.len() == 1 {
             if let Some(wrapper) = deref_wrapper(target) {
                 let mut pointee =
@@ -316,6 +392,18 @@ pub(in crate::linker) fn project<'a>(
     resolver: &impl SemanticResolver<'a>,
 ) -> Option<TypeTarget<'a>> {
     let (receiver, borrowed, mutable) = referent(receiver);
+    if member == "__rust_closure_row" {
+        if let TypeTarget::External { module, .. } = receiver {
+            let clean = module.replace("::", ".");
+            if clean == "rusqlite.Connection" || clean == "rusqlite.Statement" {
+                return Some(TypeTarget::External {
+                    module: "rusqlite::Row".to_string(),
+                    import_line: 0,
+                });
+            }
+        }
+        return Some(TypeTarget::Unknown);
+    }
     match receiver {
         TypeTarget::RustWrapper { wrapper, ok, err } => {
             let projected = match member {
@@ -373,6 +461,9 @@ pub(in crate::linker) fn project<'a>(
             Some(projected)
         }
         TypeTarget::RustIterator { item } => {
+            if member == "__rust_iter_item" {
+                return Some((**item).clone());
+            }
             let projected =
                 match member {
                     "next" if !borrowed || mutable => TypeTarget::RustWrapper {
@@ -388,14 +479,15 @@ pub(in crate::linker) fn project<'a>(
                     "map" | "enumerate" | "filter_map" => TypeTarget::RustIterator {
                         item: Box::new(reference(&TypeTarget::Unknown, false)),
                     },
-                    "collect" => TypeTarget::RustCollection {
-                        item: item.clone(),
-                    },
+                    "collect" => TypeTarget::RustCollection { item: item.clone() },
                     _ => TypeTarget::Unknown,
                 };
             Some(projected)
         }
         TypeTarget::RustCollection { item } => {
+            if member == "__rust_iter_item" {
+                return Some(reference(item, false));
+            }
             let item = match member {
                 "iter" => reference(item, false),
                 "into_iter" if borrowed => reference(item, mutable),
@@ -407,6 +499,9 @@ pub(in crate::linker) fn project<'a>(
             })
         }
         TypeTarget::RustSlice { item } => {
+            if member == "__rust_iter_item" {
+                return Some(reference(item, false));
+            }
             let item = match member {
                 "iter" => reference(item, false),
                 "into_iter" if borrowed => reference(item, mutable),
@@ -430,6 +525,11 @@ pub(in crate::linker) fn project<'a>(
         }
         TypeTarget::External { .. } if matches!(member, "?" | "unwrap" | "expect") => {
             Some(receiver.clone())
+        }
+        TypeTarget::External { .. } if matches!(member, "into_iter" | "iter") => {
+            Some(TypeTarget::RustIterator {
+                item: Box::new(TypeTarget::Unknown),
+            })
         }
         _ => None,
     }

@@ -141,7 +141,7 @@ impl<'a> Context<'a> {
             };
             let rules = dependencies.language_context_for_path(path);
             let rules_ptr = std::sync::Arc::as_ptr(&rules) as usize;
-            if module.language == "python" {
+            if matches!(module.language.as_str(), "python" | "rust") {
                 let cached = hierarchy_cache.entry(rules_ptr).or_insert_with(|| {
                     pinned_rules.push(std::sync::Arc::clone(&rules));
                     let mut map = HashMap::new();

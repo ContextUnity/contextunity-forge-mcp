@@ -136,7 +136,7 @@ where
                         )
                     })
             };
-            component_module.is_some_and(&matches_facts)
+            component_module.is_some_and(matches_facts)
                 || facts
                     .nodes
                     .iter()

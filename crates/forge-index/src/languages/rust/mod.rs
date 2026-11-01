@@ -361,6 +361,17 @@ pub fn declarative_macro_classification(expression: &str) -> Option<(&'static st
     table.get(name).copied()
 }
 
+pub fn is_registered_rust_type(name: &str) -> bool {
+    let colon_name = name.replace('.', "::");
+    let dot_name = name.replace("::", ".");
+    let short = name.rsplit("::").next().unwrap_or(name);
+    let short = short.rsplit('.').next().unwrap_or(short);
+    rust_std_members().contains_key(name)
+        || rust_std_members().contains_key(&colon_name)
+        || rust_std_members().contains_key(&dot_name)
+        || rust_std_members().contains_key(short)
+}
+
 fn rust_std_members()
 -> &'static std::collections::HashMap<String, std::collections::HashSet<String>> {
     RUST_STD_MEMBERS.get_or_init(|| {
@@ -373,6 +384,23 @@ fn rust_std_members()
         let mut members: std::collections::HashMap<String, std::collections::HashSet<String>> =
             std::collections::HashMap::new();
         for rule in manifest.class_hierarchy_receivers {
+            for base in rule.bases {
+                let short = base.rsplit("::").next().unwrap_or(&base);
+                for name in [base.as_str(), short] {
+                    members
+                        .entry(name.to_owned())
+                        .or_default()
+                        .extend(rule.members.iter().cloned());
+                }
+            }
+        }
+        let cargo_manifest = super::manifests::FrameworkManifest::parse(
+            "rust-cargo".to_owned(),
+            "toml",
+            include_str!("../manifests/rust-cargo.toml"),
+        )
+        .expect("rust-cargo.toml must be valid");
+        for rule in cargo_manifest.class_hierarchy_receivers {
             for base in rule.bases {
                 let short = base.rsplit("::").next().unwrap_or(&base);
                 for name in [base.as_str(), short] {
@@ -823,27 +851,27 @@ impl LanguageProfile for Rust {
             let mut resolved_crate = None;
             let hyphenated = first.contains('_').then(|| first.replace('_', "-"));
             for prefix in ["crates", "packages", "libs", "modules", ""] {
-                for crate_dir in std::iter::once(first).chain(hyphenated.as_deref()) {
-                    let candidate = if prefix.is_empty() {
-                        std::path::PathBuf::from(crate_dir).join("src")
-                    } else {
-                        std::path::PathBuf::from(prefix)
-                            .join(crate_dir)
-                            .join("src")
-                    };
-                    if candidate.exists() {
-                        let mod_prefix = candidate
-                            .to_string_lossy()
-                            .replace('\\', "/")
-                            .replace('/', ".");
-                        resolved_crate = Some(mod_prefix);
+                    for crate_dir in std::iter::once(first).chain(hyphenated.as_deref()) {
+                        let candidate = if prefix.is_empty() {
+                            std::path::PathBuf::from(crate_dir).join("src")
+                        } else {
+                            std::path::PathBuf::from(prefix)
+                                .join(crate_dir)
+                                .join("src")
+                        };
+                        if candidate.exists() {
+                            let mod_prefix = candidate
+                                .to_string_lossy()
+                                .replace('\\', "/")
+                                .replace('/', ".");
+                            resolved_crate = Some(mod_prefix);
+                            break;
+                        }
+                    }
+                    if resolved_crate.is_some() {
                         break;
                     }
                 }
-                if resolved_crate.is_some() {
-                    break;
-                }
-            }
             if let Some(crate_mod) = resolved_crate {
                 let full = if tail.is_empty() {
                     crate_mod
