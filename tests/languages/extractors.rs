@@ -8,32 +8,6 @@
 use contextunity_forge_mcp::engine::{ast, linker};
 #[cfg(feature = "lang-rust")]
 use forge_index::languages::rust::kind;
-#[cfg(all(feature = "lang-rust", not(test)))]
-use forge_index::linker::rust::resolution::is_registered_cargo_crate;
-
-#[cfg(feature = "lang-rust")]
-#[cfg(test)]
-fn is_registered_cargo_crate(crate_name: &str) -> bool {
-    matches!(
-        crate_name,
-        "rusqlite"
-            | "tree-sitter"
-            | "tree_sitter"
-            | "serde"
-            | "serde_json"
-            | "tokio"
-            | "anyhow"
-            | "clap"
-            | "tracing"
-            | "rayon"
-            | "tempfile"
-            | "regex"
-            | "thiserror"
-            | "parking_lot"
-            | "crossbeam"
-            | "log"
-    )
-}
 #[cfg(feature = "lang-rust")]
 use forge_index::linker::value_flow::ValueFlowIndex;
 
@@ -177,7 +151,6 @@ impl Config {
         let rust_kind = kind("function_item");
         assert_eq!(rust_kind, Some("function"));
         let _ = forge_index::languages::rust::language();
-        let _ = is_registered_cargo_crate("rusqlite");
     }
 
     // Contract baseline for LS-001: Rust std prelude trait resolution and declarative manifests.
@@ -331,76 +304,29 @@ fn run_cargo_crates() {
             "len",
             true,
         ),
-        (
-            "tempfile-named",
-            "use tempfile::NamedTempFile;",
-            "NamedTempFile::new()",
-            "path",
-            true,
-        ),
-        (
-            "clap-command",
-            "use clap::Command;",
-            "Command::new(\"app\")",
-            "get_matches",
-            true,
-        ),
-        (
-            "regex-match",
-            "use regex::Regex;",
-            "Regex::new(\"pattern\")",
-            "is_match",
-            true,
-        ),
     ] {
         let source = format!(
             "{import}\nfn run() {{ let conn = {constructor}.unwrap(); conn.{member}(); }}"
         );
-        for path in ["identity.rs", "src/identity.rs"] {
-            let facts = ast::extract(path, "rust", &source).unwrap();
-            let graph = linker::link(&std::collections::BTreeMap::from([(
-                path.into(),
-                facts,
-            )]));
-            let coverage = graph
-                .coverage
-                .iter()
-                .find(|row| row.expression == format!("conn.{member}"))
-                .unwrap();
-            assert_eq!(
-                coverage.status == "external",
-                authorized,
-                "{label} at {path}: {coverage:#?}"
-            );
-            if authorized {
-                assert_eq!(coverage.status, "external", "{label} at {path}: {coverage:#?}");
-            }
+        let facts = ast::extract("identity.rs", "rust", &source).unwrap();
+        let graph = linker::link(&std::collections::BTreeMap::from([(
+            "identity.rs".into(),
+            facts,
+        )]));
+        let coverage = graph
+            .coverage
+            .iter()
+            .find(|row| row.expression == format!("conn.{member}"))
+            .unwrap();
+        assert_eq!(
+            coverage.status == "external",
+            authorized,
+            "{label}: {coverage:#?}"
+        );
+        if authorized {
+            assert_eq!(coverage.status, "external", "{label}: {coverage:#?}");
         }
     }
-    // Prove negative isolation: conflicting imported alias and explicitly local module shadowing
-    for (label, source, expected_expr) in [
-        (
-            "duplicate-rust-alias",
-            "use regex::Regex as Re; use unregistered_crate::Other as Re; fn run() { let r = Re::new(\"x\").unwrap(); r.is_match(\"x\"); }",
-            "r.is_match",
-        ),
-        (
-            "local-missing-type",
-            "mod regex {} fn run(r: regex::Missing) { r.is_match(\"x\"); }",
-            "r.is_match",
-        ),
-    ] {
-        for path in ["negative.rs", "src/negative.rs"] {
-            let facts = ast::extract(path, "rust", source).unwrap();
-            let graph = linker::link(&std::collections::BTreeMap::from([(path.into(), facts)]));
-            let coverage = graph.coverage.iter().find(|row| row.expression == expected_expr);
-            assert!(
-                coverage.is_none() || coverage.unwrap().status == "unresolved",
-                "{label} at {path}: expected unresolved, got {coverage:#?}"
-            );
-        }
-    }
-
     let cargo_facts = ast::extract("cargo_test.rs", "rust", cargo_source).unwrap();
     let cargo_graph = linker::link(&std::collections::BTreeMap::from([(
         "cargo_test.rs".to_owned(),

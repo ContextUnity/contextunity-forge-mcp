@@ -58,12 +58,12 @@ pub(in crate::linker) fn constructor_result<'a>(
     }
     match member {
         "open" | "open_in_memory" | "open_with_flags" | "from_str" | "parse" | "connect"
-        | "build" | "try_new" => Some(TypeTarget::RustWrapper {
+        | "build" => Some(TypeTarget::RustWrapper {
             wrapper: RustWrapperKind::Result,
             ok: Box::new(target),
             err: None,
         }),
-        "new" | "default" | "create" | "current" | "none" => Some(target),
+        "new" | "default" | "create" => Some(target),
         _ => None,
     }
 }
