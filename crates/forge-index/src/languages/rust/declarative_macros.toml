@@ -1,0 +1,151 @@
+# Declarative signatures for standard library and Cargo ecosystem macros.
+
+[[macros]]
+name = "json"
+provider = "serde_json"
+pack = "Cargo ecosystem pack"
+
+[[macros]]
+name = "bail"
+provider = "anyhow"
+pack = "Cargo ecosystem pack"
+
+[[macros]]
+name = "ensure"
+provider = "anyhow"
+pack = "Cargo ecosystem pack"
+
+[[macros]]
+name = "anyhow"
+provider = "anyhow"
+pack = "Cargo ecosystem pack"
+
+[[macros]]
+name = "info"
+provider = "tracing"
+pack = "Cargo ecosystem pack"
+
+[[macros]]
+name = "warn"
+provider = "tracing"
+pack = "Cargo ecosystem pack"
+
+[[macros]]
+name = "error"
+provider = "tracing"
+pack = "Cargo ecosystem pack"
+
+[[macros]]
+name = "debug"
+provider = "tracing"
+pack = "Cargo ecosystem pack"
+
+[[macros]]
+name = "trace"
+provider = "tracing"
+pack = "Cargo ecosystem pack"
+
+[[macros]]
+name = "info"
+provider = "log"
+pack = "Cargo ecosystem pack"
+
+[[macros]]
+name = "warn"
+provider = "log"
+pack = "Cargo ecosystem pack"
+
+[[macros]]
+name = "error"
+provider = "log"
+pack = "Cargo ecosystem pack"
+
+[[macros]]
+name = "debug"
+provider = "log"
+pack = "Cargo ecosystem pack"
+
+[[macros]]
+name = "trace"
+provider = "log"
+pack = "Cargo ecosystem pack"
+
+[[macros]]
+name = "vec"
+provider = "Rust standard library"
+pack = "Rust standard library"
+
+[[macros]]
+name = "format"
+provider = "Rust standard library"
+pack = "Rust standard library"
+
+[[macros]]
+name = "write"
+provider = "Rust standard library"
+pack = "Rust standard library"
+
+[[macros]]
+name = "writeln"
+provider = "Rust standard library"
+pack = "Rust standard library"
+
+[[macros]]
+name = "print"
+provider = "Rust standard library"
+pack = "Rust standard library"
+
+[[macros]]
+name = "println"
+provider = "Rust standard library"
+pack = "Rust standard library"
+
+[[macros]]
+name = "eprint"
+provider = "Rust standard library"
+pack = "Rust standard library"
+
+[[macros]]
+name = "eprintln"
+provider = "Rust standard library"
+pack = "Rust standard library"
+
+[[macros]]
+name = "panic"
+provider = "Rust standard library"
+pack = "Rust standard library"
+
+[[macros]]
+name = "assert"
+provider = "Rust standard library"
+pack = "Rust standard library"
+
+[[macros]]
+name = "assert_eq"
+provider = "Rust standard library"
+pack = "Rust standard library"
+
+[[macros]]
+name = "assert_ne"
+provider = "Rust standard library"
+pack = "Rust standard library"
+
+[[macros]]
+name = "matches"
+provider = "Rust standard library"
+pack = "Rust standard library"
+
+[[macros]]
+name = "todo"
+provider = "Rust standard library"
+pack = "Rust standard library"
+
+[[macros]]
+name = "unimplemented"
+provider = "Rust standard library"
+pack = "Rust standard library"
+
+[[macros]]
+name = "unreachable"
+provider = "Rust standard library"
+pack = "Rust standard library"

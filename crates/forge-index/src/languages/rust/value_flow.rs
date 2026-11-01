@@ -5,7 +5,10 @@ use crate::{
     core::models::Facts,
     engine::ast::{relations, text},
 };
-use std::{borrow::Cow, collections::HashSet};
+use std::{
+    borrow::Cow,
+    collections::{HashMap, HashSet},
+};
 use tree_sitter::Node;
 
 pub(super) fn type_expr(node: Node<'_>, source: &str) -> TypeExpr {
@@ -243,22 +246,67 @@ pub(super) fn callee_name<'a>(mut node: Node<'_>, source: &'a str) -> Option<Cow
     Some(Cow::Owned(canonical))
 }
 
+const MAX_ADAPTER_CHAIN_DEPTH: usize = 7;
+
 pub(super) fn value(node: Node<'_>, source: &str) -> ValueExpr {
+    let file_facts = file_macro_facts(node, source);
+    let shadows = collect_ancestor_shadows(node, source, &file_facts);
+    value_depth(node, source, 0, &shadows)
+}
+
+fn value_depth(
+    node: Node<'_>,
+    source: &str,
+    depth: usize,
+    shadowed_macros: &HashSet<&'static str>,
+) -> ValueExpr {
+    if depth >= MAX_ADAPTER_CHAIN_DEPTH && node.kind() == "call_expression" {
+        return ValueExpr::Unknown;
+    }
+    if depth > MAX_ADAPTER_CHAIN_DEPTH {
+        return ValueExpr::Unknown;
+    }
     match node.kind() {
         "try_expression" => {
             node.named_child(0)
                 .map_or(ValueExpr::Unknown, |inner| ValueExpr::Project {
-                    value: Box::new(value(inner, source)),
+                    value: Box::new(value_depth(inner, source, depth + 1, shadowed_macros)),
                     member: "?".to_owned(),
                 })
         }
         "parenthesized_expression" => node
             .named_child(0)
-            .map_or(ValueExpr::Unknown, |inner| value(inner, source)),
+            .map_or(ValueExpr::Unknown, |inner| value_depth(inner, source, depth, shadowed_macros)),
         "struct_expression" => node
             .child_by_field_name("name")
             .and_then(|name| static_name(name, source))
             .map_or(ValueExpr::Unknown, |callee| ValueExpr::Construct { callee }),
+        "macro_invocation" => {
+            let callee = node
+                .child_by_field_name("macro")
+                .map(|m| text(m, source).trim());
+            match callee {
+                Some("vec") => {
+                    if shadowed_macros.contains("vec") {
+                        ValueExpr::Unknown
+                    } else {
+                        ValueExpr::Construct {
+                            callee: "Vec".to_string(),
+                        }
+                    }
+                }
+                Some("format") => {
+                    if shadowed_macros.contains("format") {
+                        ValueExpr::Unknown
+                    } else {
+                        ValueExpr::Construct {
+                            callee: "String".to_string(),
+                        }
+                    }
+                }
+                _ => ValueExpr::Unknown,
+            }
+        }
         "call_expression" => {
             let Some(mut function) = node.child_by_field_name("function") else {
                 return ValueExpr::Unknown;
@@ -274,8 +322,9 @@ pub(super) fn value(node: Node<'_>, source: &str) -> ValueExpr {
                     function.child_by_field_name("value"),
                     function.child_by_field_name("field"),
                 ) {
+                    let member_name = text(member, source);
                     if matches!(
-                        text(member, source),
+                        member_name,
                         "unwrap"
                             | "expect"
                             | "ok"
@@ -288,16 +337,20 @@ pub(super) fn value(node: Node<'_>, source: &str) -> ValueExpr {
                             | "into_iter"
                             | "next"
                             | "map"
-                            | "filter"
                             | "enumerate"
+                            | "filter"
                             | "take"
                             | "skip"
                             | "step_by"
                             | "collect"
                     ) {
+                        let inner = value_depth(receiver, source, depth + 1, shadowed_macros);
+                        if matches!(inner, ValueExpr::Unknown) {
+                            return ValueExpr::Unknown;
+                        }
                         return ValueExpr::Project {
-                            value: Box::new(value(receiver, source)),
-                            member: text(member, source).to_owned(),
+                            value: Box::new(inner),
+                            member: member_name.to_owned(),
                         };
                     }
                 }
@@ -318,13 +371,18 @@ pub(crate) struct Collector<'source, 'tree> {
     root: Node<'tree>,
     body: Option<Node<'tree>>,
     source: &'source str,
+    file_facts: std::sync::Arc<FileMacroFacts>,
     facts: ValueFlowFacts,
     generic_names: Option<HashSet<&'source str>>,
     states: Vec<(bool, bool)>,
+    block_shadows: Vec<HashSet<&'static str>>,
 }
 
 impl<'source, 'tree> Collector<'source, 'tree> {
     pub(crate) fn new(node: Node<'tree>, source: &'source str) -> Self {
+        let file_facts = file_macro_facts(node, source);
+        let root_shadows = collect_ancestor_shadows(node, source, &file_facts);
+        let block_shadows = vec![root_shadows];
         let mut facts = ValueFlowFacts::default();
         let mut generics = None;
         let mut resolve = |ty: Node<'_>| {
@@ -395,9 +453,11 @@ impl<'source, 'tree> Collector<'source, 'tree> {
                 root: node,
                 body: None,
                 source,
+                file_facts,
                 facts,
                 generic_names: generics,
                 states: Vec::new(),
+                block_shadows,
             };
         };
         if node.kind() == "struct_item" {
@@ -437,19 +497,31 @@ impl<'source, 'tree> Collector<'source, 'tree> {
                 root: node,
                 body: None,
                 source,
+                file_facts,
                 facts,
                 generic_names: generics,
                 states: Vec::new(),
+                block_shadows,
             };
         }
         Self {
             root: node,
             body: Some(body),
             source,
+            file_facts,
             facts,
             generic_names: generics,
             states: Vec::new(),
+            block_shadows,
         }
+    }
+
+    fn current_shadows(&self) -> HashSet<&'static str> {
+        let mut shadows = HashSet::new();
+        for scope in &self.block_shadows {
+            shadows.extend(scope);
+        }
+        shadows
     }
 
     pub(crate) fn enter(&mut self, current: Node<'tree>) {
@@ -481,6 +553,29 @@ impl<'source, 'tree> Collector<'source, 'tree> {
         if !active {
             return;
         }
+        if current.kind() == "block" {
+            let block_set = self
+                .file_facts
+                .blocks
+                .get(&current.id())
+                .map(|b| b.imports.clone())
+                .unwrap_or_default();
+            self.block_shadows.push(block_set);
+        }
+        if current.kind() == "macro_definition" {
+            if let Some(m_name) = current.child_by_field_name("name") {
+                let name = text(m_name, source).trim();
+                if name == "vec" || name == "format" {
+                    if let Some(last) = self.block_shadows.last_mut() {
+                        if name == "vec" {
+                            last.insert("vec");
+                        } else {
+                            last.insert("format");
+                        }
+                    }
+                }
+            }
+        }
         if matches!(
             current.kind(),
             "let_declaration" | "assignment_expression" | "compound_assignment_expr"
@@ -510,9 +605,12 @@ impl<'source, 'tree> Collector<'source, 'tree> {
                                 ),
                             })
                             .unwrap_or_else(|| {
-                                value(
+                                let shadows = self.current_shadows();
+                                value_depth(
                                     current.child_by_field_name("value").expect("value checked"),
                                     source,
+                                    0,
+                                    &shadows,
                                 )
                             })
                     } else {
@@ -545,7 +643,10 @@ impl<'source, 'tree> Collector<'source, 'tree> {
         }
     }
 
-    pub(crate) fn exit(&mut self, _node: Node<'tree>) {
+    pub(crate) fn exit(&mut self, node: Node<'tree>) {
+        if node.kind() == "block" && self.block_shadows.len() > 1 {
+            self.block_shadows.pop();
+        }
         self.states.pop();
     }
 
@@ -646,4 +747,454 @@ pub(super) fn type_references(
             }
         }
     }
+}
+
+#[derive(Clone, Default, Debug)]
+pub(crate) struct BlockMacroFacts {
+    pub(crate) defs: Vec<(usize, &'static str)>,
+    pub(crate) imports: HashSet<&'static str>,
+}
+
+#[derive(Clone, Default, Debug)]
+pub(crate) struct ModuleMacroFacts {
+    pub(crate) defs: Vec<(usize, &'static str)>,
+    pub(crate) imports: HashSet<&'static str>,
+}
+
+#[derive(Clone, Default, Debug)]
+pub(crate) struct FileMacroFacts {
+    pub(crate) root_macro_defs: Vec<(usize, &'static str)>,
+    pub(crate) root_macro_imports: HashSet<&'static str>,
+    pub(crate) modules: HashMap<usize, ModuleMacroFacts>,
+    pub(crate) blocks: HashMap<usize, BlockMacroFacts>,
+}
+
+fn get_file_root(mut node: Node<'_>) -> Node<'_> {
+    while let Some(parent) = node.parent() {
+        node = parent;
+    }
+    node
+}
+
+fn module_of<'a>(mut node: Node<'a>) -> Node<'a> {
+    if node.kind() == "declaration_list" {
+        if let Some(parent) = node.parent() {
+            if parent.kind() == "mod_item" {
+                return node;
+            }
+        }
+    }
+    if node.kind() == "source_file" {
+        return node;
+    }
+    while let Some(parent) = node.parent() {
+        if parent.kind() == "declaration_list" {
+            if let Some(grandparent) = parent.parent() {
+                if grandparent.kind() == "mod_item" {
+                    return parent;
+                }
+            }
+        }
+        node = parent;
+    }
+    node
+}
+
+fn parent_module<'a>(mod_node: Node<'a>, file_root: Node<'a>) -> Option<Node<'a>> {
+    if mod_node == file_root {
+        return None;
+    }
+    let mod_item = mod_node.parent()?;
+    let enclosing = mod_item.parent()?;
+    Some(module_of(enclosing))
+}
+
+fn find_child_module<'a>(body: Node<'a>, mod_name: &str, source: &str) -> Option<Node<'a>> {
+    let mut cursor = body.walk();
+    for child in body.named_children(&mut cursor) {
+        if child.kind() == "mod_item" {
+            if let Some(name_node) = child.child_by_field_name("name") {
+                if text(name_node, source).trim() == mod_name {
+                    return child.child_by_field_name("body");
+                }
+            }
+        }
+    }
+    None
+}
+
+fn resolve_module_path<'a, 's>(
+    context: Node<'a>,
+    path: &'s str,
+    source: &str,
+    file_root: Node<'a>,
+) -> Option<(Node<'a>, &'s str)> {
+    let enc_mod = module_of(context);
+    let (mut current, clean_path) = if let Some(stripped) = path.strip_prefix("crate::") {
+        (file_root, stripped)
+    } else if let Some(stripped) = path.strip_prefix("self::") {
+        (enc_mod, stripped)
+    } else if path.starts_with("super::") {
+        let mut curr_mod = enc_mod;
+        let mut remaining = path;
+        while let Some(stripped) = remaining.strip_prefix("super::") {
+            curr_mod = parent_module(curr_mod, file_root)?;
+            remaining = stripped;
+        }
+        (curr_mod, remaining)
+    } else {
+        let first_seg = path.split("::").next().unwrap_or(path);
+        if find_child_module(enc_mod, first_seg, source).is_some() || !path.contains("::") {
+            (enc_mod, path)
+        } else {
+            (file_root, path)
+        }
+    };
+
+    let parts: Vec<&str> = clean_path.split("::").collect();
+    if parts.is_empty() {
+        return None;
+    }
+    let target_name = parts[parts.len() - 1];
+    let mod_parts = &parts[..parts.len() - 1];
+
+    for &mod_name in mod_parts {
+        current = find_child_module(current, mod_name, source)?;
+    }
+
+    Some((current, target_name))
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+enum MacroResolution {
+    KnownMacro,
+    KnownNonMacro,
+    UnknownOrExhausted,
+}
+
+fn module_has_macro(
+    body: Node<'_>,
+    target_name: &str,
+    source: &str,
+    file_root: Node<'_>,
+    visited: &mut HashSet<(usize, String)>,
+    depth: usize,
+) -> MacroResolution {
+    if depth > 8 || !visited.insert((body.id(), target_name.to_string())) {
+        return MacroResolution::UnknownOrExhausted;
+    }
+
+    let mut saw_exhausted = false;
+    let mut saw_non_macro = false;
+    let mut cursor = body.walk();
+    for item in body.named_children(&mut cursor) {
+        if item.kind() == "macro_definition" {
+            if let Some(m_name) = item.child_by_field_name("name") {
+                if text(m_name, source).trim() == target_name {
+                    return MacroResolution::KnownMacro;
+                }
+            }
+        } else if matches!(
+            item.kind(),
+            "function_item"
+                | "function_signature_item"
+                | "struct_item"
+                | "enum_item"
+                | "type_item"
+                | "const_item"
+                | "static_item"
+                | "trait_item"
+                | "union_item"
+                | "mod_item"
+        ) {
+            if let Some(name_node) = item.child_by_field_name("name") {
+                if text(name_node, source).trim() == target_name {
+                    saw_non_macro = true;
+                }
+            }
+        } else if item.kind() == "foreign_mod_item" {
+            let mut f_cursor = item.walk();
+            for f_child in item.named_children(&mut f_cursor) {
+                if f_child.kind() == "declaration_list" {
+                    let mut d_cursor = f_child.walk();
+                    for d_child in f_child.named_children(&mut d_cursor) {
+                        if let Some(name_node) = d_child.child_by_field_name("name") {
+                            if text(name_node, source).trim() == target_name {
+                                saw_non_macro = true;
+                            }
+                        }
+                    }
+                } else if let Some(name_node) = f_child.child_by_field_name("name") {
+                    if text(name_node, source).trim() == target_name {
+                        saw_non_macro = true;
+                    }
+                }
+            }
+        } else if item.kind() == "extern_crate_declaration" {
+            let bound_name = item
+                .child_by_field_name("alias")
+                .or_else(|| item.child_by_field_name("name"));
+            if let Some(name_node) = bound_name {
+                if text(name_node, source).trim() == target_name {
+                    saw_non_macro = true;
+                }
+            }
+        } else if item.kind() == "use_declaration" {
+            if let Some(arg) = item.child_by_field_name("argument") {
+                let mut mod_imports = Vec::new();
+                super::collect_use(arg, source, "", &mut mod_imports);
+                for (re_path, re_alias) in mod_imports {
+                    if re_alias == target_name {
+                        let clean = re_path
+                            .strip_prefix("crate::")
+                            .or_else(|| re_path.strip_prefix("self::"))
+                            .unwrap_or(&re_path);
+                        if clean.starts_with("std::")
+                            || clean.starts_with("core::")
+                            || clean.starts_with("alloc::")
+                        {
+                            saw_non_macro = true;
+                            continue;
+                        }
+                        if let Some((target_body, actual_target)) =
+                            resolve_module_path(body, &re_path, source, file_root)
+                        {
+                            match module_has_macro(
+                                target_body,
+                                actual_target,
+                                source,
+                                file_root,
+                                visited,
+                                depth + 1,
+                            ) {
+                                MacroResolution::KnownMacro => return MacroResolution::KnownMacro,
+                                MacroResolution::UnknownOrExhausted => saw_exhausted = true,
+                                MacroResolution::KnownNonMacro => saw_non_macro = true,
+                            }
+                        } else {
+                            saw_exhausted = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if saw_non_macro && !saw_exhausted {
+        MacroResolution::KnownNonMacro
+    } else {
+        MacroResolution::UnknownOrExhausted
+    }
+}
+
+fn is_imported_target_macro(
+    context: Node<'_>,
+    path: &str,
+    source: &str,
+    file_root: Node<'_>,
+) -> bool {
+    let clean = path
+        .strip_prefix("crate::")
+        .or_else(|| path.strip_prefix("self::"))
+        .unwrap_or(path);
+    if clean.starts_with("std::") || clean.starts_with("core::") || clean.starts_with("alloc::") {
+        return false;
+    }
+    if let Some((target_body, target_name)) = resolve_module_path(context, path, source, file_root) {
+        let mut visited = HashSet::new();
+        let res = module_has_macro(target_body, target_name, source, file_root, &mut visited, 0);
+        return matches!(
+            res,
+            MacroResolution::KnownMacro | MacroResolution::UnknownOrExhausted
+        );
+    }
+    true
+}
+
+fn build_file_macro_facts(root: Node<'_>, source: &str) -> FileMacroFacts {
+    let file_root = get_file_root(root);
+    let mut facts = FileMacroFacts::default();
+
+    let mut stack = vec![file_root];
+    while let Some(node) = stack.pop() {
+        let kind = node.kind();
+        if node == file_root {
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                if child.kind() == "macro_definition" {
+                    if let Some(m_name) = child.child_by_field_name("name") {
+                        let name = text(m_name, source).trim();
+                        if name == "vec" {
+                            facts.root_macro_defs.push((child.end_byte(), "vec"));
+                        } else if name == "format" {
+                            facts.root_macro_defs.push((child.end_byte(), "format"));
+                        }
+                    }
+                } else if child.kind() == "use_declaration" {
+                    if let Some(argument) = child.child_by_field_name("argument") {
+                        let mut imports = Vec::new();
+                        super::collect_use(argument, source, "", &mut imports);
+                        for (path, alias) in imports {
+                            if (alias == "vec" || alias == "format")
+                                && !path.starts_with("std::")
+                                && !path.starts_with("core::")
+                                && !path.starts_with("alloc::")
+                                && is_imported_target_macro(file_root, &path, source, file_root)
+                            {
+                                facts.root_macro_imports.insert(if alias == "vec" { "vec" } else { "format" });
+                            }
+                        }
+                    }
+                } else {
+                    stack.push(child);
+                }
+            }
+        } else if kind == "declaration_list" {
+            let mut mod_facts = ModuleMacroFacts::default();
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                if child.kind() == "macro_definition" {
+                    if let Some(m_name) = child.child_by_field_name("name") {
+                        let name = text(m_name, source).trim();
+                        if name == "vec" {
+                            mod_facts.defs.push((child.end_byte(), "vec"));
+                        } else if name == "format" {
+                            mod_facts.defs.push((child.end_byte(), "format"));
+                        }
+                    }
+                } else if child.kind() == "use_declaration" {
+                    if let Some(argument) = child.child_by_field_name("argument") {
+                        let mut imports = Vec::new();
+                        super::collect_use(argument, source, "", &mut imports);
+                        for (path, alias) in imports {
+                            if (alias == "vec" || alias == "format")
+                                && !path.starts_with("std::")
+                                && !path.starts_with("core::")
+                                && !path.starts_with("alloc::")
+                                && is_imported_target_macro(node, &path, source, file_root)
+                            {
+                                mod_facts.imports.insert(if alias == "vec" { "vec" } else { "format" });
+                            }
+                        }
+                    }
+                } else {
+                    stack.push(child);
+                }
+            }
+            facts.modules.insert(node.id(), mod_facts);
+        } else if kind == "block" {
+            let mut block_facts = BlockMacroFacts::default();
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                if child.kind() == "macro_definition" {
+                    if let Some(m_name) = child.child_by_field_name("name") {
+                        let name = text(m_name, source).trim();
+                        if name == "vec" {
+                            block_facts.defs.push((child.end_byte(), "vec"));
+                        } else if name == "format" {
+                            block_facts.defs.push((child.end_byte(), "format"));
+                        }
+                    }
+                } else if child.kind() == "use_declaration" {
+                    if let Some(argument) = child.child_by_field_name("argument") {
+                        let mut imports = Vec::new();
+                        super::collect_use(argument, source, "", &mut imports);
+                        for (path, alias) in imports {
+                            if (alias == "vec" || alias == "format")
+                                && !path.starts_with("std::")
+                                && !path.starts_with("core::")
+                                && !path.starts_with("alloc::")
+                                && is_imported_target_macro(node, &path, source, file_root)
+                            {
+                                block_facts.imports.insert(if alias == "vec" { "vec" } else { "format" });
+                            }
+                        }
+                    }
+                } else {
+                    stack.push(child);
+                }
+            }
+            facts.blocks.insert(node.id(), block_facts);
+        } else {
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                stack.push(child);
+            }
+        }
+    }
+
+    facts
+}
+
+std::thread_local! {
+    static CACHED_FILE_FACTS: std::cell::RefCell<Option<(usize, std::sync::Arc<FileMacroFacts>)>> = const { std::cell::RefCell::new(None) };
+}
+
+pub(crate) fn clear_file_macro_facts() {
+    CACHED_FILE_FACTS.with(|cell| {
+        *cell.borrow_mut() = None;
+    });
+}
+
+pub(crate) fn file_macro_facts(root: Node<'_>, source: &str) -> std::sync::Arc<FileMacroFacts> {
+    let file_root = get_file_root(root);
+    let root_id = file_root.id();
+    CACHED_FILE_FACTS.with(|cell| {
+        let mut borrow = cell.borrow_mut();
+        if let Some((cached_id, ref facts)) = *borrow {
+            if cached_id == root_id {
+                return facts.clone();
+            }
+        }
+        let facts = std::sync::Arc::new(build_file_macro_facts(file_root, source));
+        *borrow = Some((root_id, facts.clone()));
+        facts
+    })
+}
+
+fn collect_ancestor_shadows(
+    node: Node<'_>,
+    _source: &str,
+    file_facts: &FileMacroFacts,
+) -> HashSet<&'static str> {
+    let mut shadows = file_facts.root_macro_imports.clone();
+    for (end_byte, name) in &file_facts.root_macro_defs {
+        if *end_byte <= node.start_byte() {
+            shadows.insert(name);
+        }
+    }
+
+    let file_root = get_file_root(node);
+    let mut curr = node;
+    while let Some(parent) = curr.parent() {
+        if parent == file_root {
+            break;
+        }
+        if parent.kind() == "declaration_list" {
+            if let Some(grandparent) = parent.parent() {
+                if grandparent.kind() == "mod_item" {
+                    if let Some(mod_facts) = file_facts.modules.get(&parent.id()) {
+                        shadows.extend(&mod_facts.imports);
+                        for (end_byte, name) in &mod_facts.defs {
+                            if *end_byte <= node.start_byte() {
+                                shadows.insert(name);
+                            }
+                        }
+                    }
+                }
+            }
+        } else if parent.kind() == "block" {
+            if let Some(block_facts) = file_facts.blocks.get(&parent.id()) {
+                shadows.extend(&block_facts.imports);
+                for (end_byte, name) in &block_facts.defs {
+                    if *end_byte <= node.start_byte() {
+                        shadows.insert(name);
+                    }
+                }
+            }
+        }
+        curr = parent;
+    }
+
+    shadows
 }

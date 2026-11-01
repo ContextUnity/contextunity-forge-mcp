@@ -89,8 +89,10 @@ fn rust_prelude_variants_and_macros_have_stdlib_provenance() {
     let facts = ast::extract("builtins.rs", "rust", source).unwrap();
     assert!(facts.errors.is_empty(), "{:?}", facts.errors);
     let graph = linker::link(&BTreeMap::from([("builtins.rs".to_owned(), facts)]));
-    for name in names {
+    for name in ["Some", "Ok", "Err"] {
         assert!(profile.builtin(name), "missing Rust builtin {name}");
+    }
+    for name in names {
         let coverage = graph
             .coverage
             .iter()

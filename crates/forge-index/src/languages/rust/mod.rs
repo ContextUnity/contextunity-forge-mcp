@@ -321,6 +321,46 @@ static RUST_STD_MEMBERS: std::sync::OnceLock<
     std::collections::HashMap<String, std::collections::HashSet<String>>,
 > = std::sync::OnceLock::new();
 
+#[derive(Debug, Clone, serde::Deserialize)]
+struct DeclarativeMacroEntry {
+    name: String,
+    provider: String,
+    pack: String,
+    #[serde(default)]
+    aliases: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct DeclarativeMacrosFile {
+    macros: Vec<DeclarativeMacroEntry>,
+}
+
+static DECLARATIVE_MACRO_TABLE: std::sync::OnceLock<
+    std::collections::HashMap<String, (&'static str, &'static str)>,
+> = std::sync::OnceLock::new();
+
+pub fn declarative_macro_classification(expression: &str) -> Option<(&'static str, &'static str)> {
+    let table = DECLARATIVE_MACRO_TABLE.get_or_init(|| {
+        let parsed: DeclarativeMacrosFile = ::toml::from_str(include_str!("declarative_macros.toml"))
+            .expect("declarative_macros.toml must be valid TOML");
+        let mut map = std::collections::HashMap::new();
+        for entry in parsed.macros {
+            let provider: &'static str = Box::leak(entry.provider.into_boxed_str());
+            let pack: &'static str = Box::leak(entry.pack.into_boxed_str());
+            map.insert(entry.name.clone(), (provider, pack));
+            if provider != "Rust standard library" {
+                map.insert(format!("{provider}::{}", entry.name), (provider, pack));
+            }
+            for alias in entry.aliases {
+                map.insert(alias, (provider, pack));
+            }
+        }
+        map
+    });
+    let name = expression.strip_prefix("::").unwrap_or(expression);
+    table.get(name).copied()
+}
+
 fn rust_std_members()
 -> &'static std::collections::HashMap<String, std::collections::HashSet<String>> {
     RUST_STD_MEMBERS.get_or_init(|| {
@@ -448,6 +488,7 @@ impl LanguageProfile for Rust {
         rules: &std::sync::Arc<LanguageContext>,
     ) -> FileContext {
         cli_registration::prepare(root, source, rules);
+        value_flow::clear_file_macro_facts();
         FileContext {
             rules: std::sync::Arc::clone(rules),
             ..FileContext::default()
@@ -455,6 +496,7 @@ impl LanguageProfile for Rust {
     }
     fn finish(&self, _facts: &mut Facts) {
         cli_registration::clear();
+        value_flow::clear_file_macro_facts();
     }
     fn module_exports_with_bindings(
         &self,
@@ -542,6 +584,8 @@ impl LanguageProfile for Rust {
     fn external_import(&self, module: &str) -> Option<&'static str> {
         match module.split("::").next()? {
             "std" | "core" | "alloc" => Some("Rust standard library"),
+            "rusqlite" | "tree_sitter" | "tree-sitter" | "serde" | "serde_json" | "tokio"
+            | "anyhow" => Some("Cargo ecosystem pack"),
             _ => None,
         }
     }
@@ -574,7 +618,14 @@ impl LanguageProfile for Rust {
             }
         } else if ctx.node.kind() == "macro_invocation" {
             super::sql::extract_macro_type(ctx, facts);
+            let previous = facts.references.len();
             call(ctx, facts, false);
+            if let Some(reference) = facts.references.get_mut(previous) {
+                reference.receiver_hint = Some(ReceiverHint::CallResult {
+                    callee: "macro_invocation".to_string(),
+                    member: String::new(),
+                });
+            }
         } else if ctx.node.kind() == "struct_expression" {
             if let Some(name) = ctx.node.child_by_field_name("name") {
                 let text = relations::type_name(name, ctx.source);
@@ -628,22 +679,6 @@ impl LanguageProfile for Rust {
             "Ok" | "Err"
                 | "Some"
                 | "None"
-                | "vec"
-                | "println"
-                | "eprintln"
-                | "print"
-                | "eprint"
-                | "format"
-                | "panic"
-                | "assert"
-                | "assert_eq"
-                | "assert_ne"
-                | "matches"
-                | "write"
-                | "writeln"
-                | "todo"
-                | "unimplemented"
-                | "unreachable"
                 | "drop"
                 | "str"
                 | "bool"
@@ -747,11 +782,13 @@ impl LanguageProfile for Rust {
                 format!("{}.src", before_src.replace('/', "."))
             } else if local.starts_with("src/") {
                 "src".to_string()
-            } else {
+            } else if local.contains('/') {
                 local
                     .split_once('/')
                     .map_or("src", |(first, _)| first)
                     .replace('/', ".")
+            } else {
+                self.module_name(local)
             };
             let ns = if tail == "*" {
                 crate_prefix
@@ -814,6 +851,10 @@ impl LanguageProfile for Rust {
                     format!("{crate_mod}.{}", tail.replace("::", "."))
                 };
                 (full, false)
+            } else if self.is_stdlib(first) || self.external_import(first).is_some() {
+                (module.replace("::", "."), false)
+            } else if !local.contains('/') {
+                (format!("{}.{}", self.module_name(local), module.replace("::", ".")), true)
             } else {
                 (module.replace("::", "."), false)
             }
@@ -1151,7 +1192,7 @@ fn macro_transcription_references(node: Syntax<'_>, source: &str, owner: &str, f
     }
 }
 
-fn collect_use(node: Syntax<'_>, source: &str, prefix: &str, out: &mut Vec<(String, String)>) {
+pub(super) fn collect_use(node: Syntax<'_>, source: &str, prefix: &str, out: &mut Vec<(String, String)>) {
     fn joined(prefix: &str, name: &str) -> String {
         if prefix.is_empty() {
             name.to_owned()

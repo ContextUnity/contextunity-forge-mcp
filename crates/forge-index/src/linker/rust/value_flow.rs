@@ -30,41 +30,42 @@ pub(in crate::linker) fn constructor_result<'a>(
         return Some(returned);
     }
     let callee_clean = callee.replace("::", ".");
-    if let Some((receiver, member)) = callee_clean.rsplit_once('.') {
-        if matches!(
-            member,
-            "new"
-                | "from"
-                | "with_capacity"
-                | "default"
-                | "open"
-                | "open_in_memory"
-                | "create"
-                | "build"
-                | "from_str"
-                | "parse"
-                | "connect"
-                | "bind"
-        ) {
-            let type_sym = resolver.resolve_symbol(owner, receiver, at, SymbolRole::Type);
-            if let Symbol::Type(target @ (TypeTarget::External { .. } | TypeTarget::Builtin(_))) =
-                type_sym
-            {
-                if matches!(
-                    member,
-                    "open" | "open_in_memory" | "from_str" | "parse" | "connect" | "build"
-                ) {
-                    return Some(TypeTarget::RustWrapper {
-                        wrapper: RustWrapperKind::Result,
-                        ok: Box::new(target),
-                        err: None,
-                    });
-                }
+    let (receiver, member) = callee_clean.rsplit_once('.')?;
+    let Symbol::Type(target) = resolver.resolve_symbol(owner, receiver, at, SymbolRole::Type)
+    else {
+        return None;
+    };
+    match &target {
+        TypeTarget::Builtin(_) => {
+            if matches!(member, "new" | "from" | "with_capacity" | "default") {
                 return Some(target);
             }
         }
+        TypeTarget::External { module, .. } => {
+            let module = import_path(module.trim_start_matches("::"));
+            let crate_name = module.split('.').next()?;
+            if matches!(crate_name, "std" | "alloc" | "core") {
+                if matches!(member, "new" | "from" | "with_capacity" | "default") {
+                    return Some(target);
+                }
+            } else if !super::resolution::is_registered_cargo_crate(crate_name)
+                && crate_name != "serde_json"
+            {
+                return None;
+            }
+        }
+        _ => return None,
     }
-    Some(TypeTarget::Unknown)
+    match member {
+        "open" | "open_in_memory" | "open_with_flags" | "from_str" | "parse" | "connect"
+        | "build" | "try_new" => Some(TypeTarget::RustWrapper {
+            wrapper: RustWrapperKind::Result,
+            ok: Box::new(target),
+            err: None,
+        }),
+        "new" | "default" | "create" | "current" | "none" => Some(target),
+        _ => None,
+    }
 }
 
 pub(in crate::linker) fn is_adapter(member: &str) -> bool {
@@ -384,8 +385,9 @@ pub(in crate::linker) fn project<'a>(
                             item: Box::new(item),
                         }),
                     "filter" | "take" | "skip" | "step_by" => receiver.clone(),
-                    // Project facts carry no closure output or tuple type proof.
-                    "map" | "enumerate" => TypeTarget::Unknown,
+                    "map" | "enumerate" | "filter_map" => TypeTarget::RustIterator {
+                        item: Box::new(reference(&TypeTarget::Unknown, false)),
+                    },
                     "collect" => TypeTarget::RustCollection {
                         item: item.clone(),
                     },
@@ -409,6 +411,17 @@ pub(in crate::linker) fn project<'a>(
                 "iter" => reference(item, false),
                 "into_iter" if borrowed => reference(item, mutable),
                 "into_iter" => (**item).clone(),
+                _ => return None,
+            };
+            Some(TypeTarget::RustIterator {
+                item: Box::new(item),
+            })
+        }
+        _ if standard_collection(receiver) => {
+            let item = match member {
+                "iter" => reference(&TypeTarget::Unknown, false),
+                "into_iter" if borrowed => reference(&TypeTarget::Unknown, mutable),
+                "into_iter" => TypeTarget::Unknown,
                 _ => return None,
             };
             Some(TypeTarget::RustIterator {

@@ -306,6 +306,74 @@ pub(in crate::linker) fn import_globs<'a, F: AsRef<Facts>>(
             }
         }
     }
+
+    // Build alias counts per owner across all import references to detect conflicting aliases
+    let mut alias_counts: hashbrown::HashMap<(&str, &str), usize> = hashbrown::HashMap::new();
+    for facts in all.values() {
+        let facts = facts.as_ref();
+        for reference in facts.references.iter().filter(|r| r.kind == "imports") {
+            let bound_alias = reference
+                .alias
+                .as_deref()
+                .or_else(|| reference.expression.rsplit("::").next());
+            if let Some(alias) = bound_alias {
+                if alias != "*" {
+                    *alias_counts.entry((reference.source.as_str(), alias)).or_default() += 1;
+                }
+            }
+        }
+    }
+
+    for facts in all.values() {
+        let facts = facts.as_ref();
+        for reference in facts.references.iter().filter(|r| r.kind == "imports") {
+            let expr = reference.module.as_deref().unwrap_or(&reference.expression);
+            let first = expr.split("::").next().unwrap_or(expr);
+            // Guard against local module shadowing: if facts declare a local module named `first`, do not route as external
+            let has_local_module = facts.nodes.iter().any(|node| {
+                (node.kind == "module" || node.kind == "module_declaration")
+                    && (node.name == first || node.qualname.rsplit_once('.').is_some_and(|(_, n)| n == first))
+            });
+            if has_local_module {
+                continue;
+            }
+
+            if super::resolution::is_registered_cargo_crate(first) {
+                let Some(owner_id) = context.symbol_id(&reference.source) else {
+                    continue;
+                };
+                let bound_alias = reference
+                    .alias
+                    .as_deref()
+                    .or_else(|| reference.expression.rsplit("::").next());
+                let Some(alias) = bound_alias else {
+                    continue;
+                };
+                if alias == "*" {
+                    continue;
+                }
+                if alias_counts.get(&(reference.source.as_str(), alias)).copied().unwrap_or(0) > 1 {
+                    // Conflicting duplicate alias: preserve Imported::Unknown
+                    continue;
+                }
+                let Some(alias_id) = context.symbol_id(alias) else {
+                    continue;
+                };
+                let aliases = context.imports.entry(owner_id).or_default();
+                if matches!(aliases.get(&alias_id), None | Some(Imported::Unknown)) {
+                    aliases.insert(
+                        alias_id,
+                        Imported::External(
+                            expr.to_owned(),
+                            reference.position(),
+                            reference,
+                            true,
+                        ),
+                    );
+                }
+            }
+        }
+    }
 }
 
 pub(in crate::linker) fn visible(owner: &Node, candidate: &Node) -> Option<bool> {

@@ -255,12 +255,12 @@ impl<'a> RustForwarding<'a> {
         let mut exports = PackageExports::new();
         let modules: Vec<_> = all
             .values()
-            .filter_map(|facts| {
+            .flat_map(|facts| {
                 facts
                     .as_ref()
                     .nodes
                     .iter()
-                    .find(|node| node.kind == "module" && node.language == "rust")
+                    .filter(|node| matches!(node.kind.as_str(), "module" | "module_declaration") && node.language == "rust")
             })
             .collect();
         let mut names_by_module = HashMap::<&str, HashSet<&str>>::new();
@@ -273,11 +273,9 @@ impl<'a> RustForwarding<'a> {
                     .nodes
                     .iter()
                     .filter(|node| {
-                        node.kind != "module_declaration"
-                            && node
-                                .qualname
-                                .rsplit_once('.')
-                                .is_some_and(|(owner, _)| owner == module.qualname)
+                        node.qualname
+                            .rsplit_once('.')
+                            .is_some_and(|(owner, _)| owner == module.qualname)
                     })
                     .map(|node| node.name.as_str()),
             );
@@ -497,6 +495,46 @@ impl LanguageLinker for RustLinker {
         if !context.candidates.is_empty() {
             return resolution;
         }
+        if let Some(normalized) = context.normalized {
+            if let Some(nodes) = context.by_qual.get(normalized.namespace.as_str()) {
+                context.candidates.extend(
+                    nodes
+                        .iter()
+                        .copied()
+                        .filter(|n| n.path == context.path),
+                );
+                if !context.candidates.is_empty() {
+                    return resolution;
+                }
+            }
+            if let Some(owner) = context
+                .by_module
+                .get(context.path)
+                .into_iter()
+                .flatten()
+                .find(|n| n.id == context.reference.source)
+            {
+                let owner_qual = format!(
+                    "{}.{}",
+                    owner.qualname,
+                    context.reference.expression.replace("::", ".")
+                );
+                if let Some(nodes) = context.by_qual.get(owner_qual.as_str()) {
+                    context.candidates.extend(
+                        nodes
+                            .iter()
+                            .copied()
+                            .filter(|n| n.path == context.path),
+                    );
+                    if !context.candidates.is_empty() {
+                        if context.modules.is_empty() {
+                            context.modules.push(owner);
+                        }
+                        return resolution;
+                    }
+                }
+            }
+        }
         let Some(name) = context.tail().filter(|name| !name.is_empty()) else {
             return resolution;
         };
@@ -541,13 +579,31 @@ impl LanguageLinker for RustLinker {
         lookup_key.push_str(&module.qualname);
         lookup_key.push('.');
         lookup_key.push_str(member);
-        by_module
+        let direct: Vec<&'a Node> = by_module
             .get(module.path.as_str())
             .into_iter()
             .flatten()
             .copied()
             .filter(|node| node.qualname == lookup_key.as_str() && node.kind != "module")
-            .collect()
+            .collect();
+        if !direct.is_empty() {
+            return direct;
+        }
+        let prefix = format!("{}.", module.qualname);
+        let items: Vec<&'a Node> = by_module
+            .get(module.path.as_str())
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(|node| {
+                node.qualname.starts_with(&prefix)
+                    && matches!(node.kind.as_str(), "macro" | "function")
+            })
+            .collect();
+        if let [single] = items.as_slice() {
+            return vec![single];
+        }
+        items.into_iter().filter(|node| node.name == member).collect()
     }
 
     fn package_exports<'a>(

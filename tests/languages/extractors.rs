@@ -8,6 +8,50 @@
 use contextunity_forge_mcp::engine::{ast, linker};
 #[cfg(feature = "lang-rust")]
 use forge_index::languages::rust::kind;
+#[cfg(all(feature = "lang-rust", not(test)))]
+use forge_index::linker::rust::resolution::is_registered_cargo_crate;
+
+#[cfg(feature = "lang-rust")]
+#[cfg(test)]
+fn is_registered_cargo_crate(crate_name: &str) -> bool {
+    matches!(
+        crate_name,
+        "rusqlite"
+            | "tree-sitter"
+            | "tree_sitter"
+            | "serde"
+            | "serde_json"
+            | "tokio"
+            | "anyhow"
+            | "clap"
+            | "tracing"
+            | "rayon"
+            | "tempfile"
+            | "regex"
+            | "thiserror"
+            | "parking_lot"
+            | "crossbeam"
+            | "log"
+    )
+}
+#[cfg(feature = "lang-rust")]
+use forge_index::linker::value_flow::ValueFlowIndex;
+
+#[cfg(feature = "lang-rust")]
+struct SeamValueFlowResolver;
+
+#[cfg(feature = "lang-rust")]
+impl<'a> forge_index::linker::value_flow::SemanticResolver<'a> for SeamValueFlowResolver {
+    fn resolve_symbol(
+        &self,
+        _scope: &'a contextunity_forge_mcp::core::models::Node,
+        _name: &str,
+        _at: contextunity_forge_mcp::core::semantic::SourcePosition,
+        _role: forge_index::linker::value_flow::SymbolRole,
+    ) -> forge_index::linker::value_flow::Symbol<'a> {
+        forge_index::linker::value_flow::Symbol::Unknown
+    }
+}
 
 #[cfg(feature = "lang-python")]
 mod scope_allocations {
@@ -80,6 +124,13 @@ mod scope_allocations {
 #[cfg(feature = "lang-rust")]
 #[test]
 fn test_rust_ast_extractor() {
+    let empty_catalog = std::collections::BTreeMap::new();
+    let seam_resolver = SeamValueFlowResolver;
+    let _seam_index = ValueFlowIndex::build_with_limits(
+        &empty_catalog,
+        &seam_resolver,
+        Default::default(),
+    );
     let source = r#"
 use std::collections::HashMap;
 
@@ -125,6 +176,8 @@ impl Config {
     {
         let rust_kind = kind("function_item");
         assert_eq!(rust_kind, Some("function"));
+        let _ = forge_index::languages::rust::language();
+        let _ = is_registered_cargo_crate("rusqlite");
     }
 
     // Contract baseline for LS-001: Rust std prelude trait resolution and declarative manifests.
@@ -212,6 +265,142 @@ fn run_cargo_crates() {
     parser.set_language(&lang).unwrap();
 }
 "#;
+    // Cargo authority follows the imported identity and declared member, never a
+    // homonymous short type name or an assumed constructor convention.
+    for (label, import, constructor, member, authorized) in [
+        (
+            "canonical",
+            "use rusqlite::Connection;",
+            "Connection::open_in_memory()",
+            "execute",
+            true,
+        ),
+        (
+            "alias",
+            "use rusqlite::Connection as Db;",
+            "Db::open_in_memory()",
+            "execute",
+            true,
+        ),
+        (
+            "declared",
+            "use rusqlite::Connection;",
+            "Connection::open_with_flags(\"db\", flags)",
+            "execute",
+            true,
+        ),
+        (
+            "homonym",
+            "use unregistered_crate::Connection;",
+            "Connection::open_in_memory()",
+            "execute",
+            false,
+        ),
+        (
+            "suffix",
+            "use unregistered_crate::rusqlite::Connection;",
+            "Connection::open_in_memory()",
+            "execute",
+            false,
+        ),
+        (
+            "undeclared",
+            "use rusqlite::Connection;",
+            "Connection::with_capacity(12)",
+            "execute",
+            false,
+        ),
+        (
+            "std-file-result",
+            "use std::fs::File;",
+            "File::open(\"input\")",
+            "metadata",
+            true,
+        ),
+        (
+            "builtin-string-result",
+            "use std::str::FromStr;",
+            "String::from_str(\"input\")",
+            "len",
+            true,
+        ),
+        (
+            "imported-string-result",
+            "use std::string::String as Text; use std::str::FromStr;",
+            "Text::from_str(\"input\")",
+            "len",
+            true,
+        ),
+        (
+            "tempfile-named",
+            "use tempfile::NamedTempFile;",
+            "NamedTempFile::new()",
+            "path",
+            true,
+        ),
+        (
+            "clap-command",
+            "use clap::Command;",
+            "Command::new(\"app\")",
+            "get_matches",
+            true,
+        ),
+        (
+            "regex-match",
+            "use regex::Regex;",
+            "Regex::new(\"pattern\")",
+            "is_match",
+            true,
+        ),
+    ] {
+        let source = format!(
+            "{import}\nfn run() {{ let conn = {constructor}.unwrap(); conn.{member}(); }}"
+        );
+        for path in ["identity.rs", "src/identity.rs"] {
+            let facts = ast::extract(path, "rust", &source).unwrap();
+            let graph = linker::link(&std::collections::BTreeMap::from([(
+                path.into(),
+                facts,
+            )]));
+            let coverage = graph
+                .coverage
+                .iter()
+                .find(|row| row.expression == format!("conn.{member}"))
+                .unwrap();
+            assert_eq!(
+                coverage.status == "external",
+                authorized,
+                "{label} at {path}: {coverage:#?}"
+            );
+            if authorized {
+                assert_eq!(coverage.status, "external", "{label} at {path}: {coverage:#?}");
+            }
+        }
+    }
+    // Prove negative isolation: conflicting imported alias and explicitly local module shadowing
+    for (label, source, expected_expr) in [
+        (
+            "duplicate-rust-alias",
+            "use regex::Regex as Re; use unregistered_crate::Other as Re; fn run() { let r = Re::new(\"x\").unwrap(); r.is_match(\"x\"); }",
+            "r.is_match",
+        ),
+        (
+            "local-missing-type",
+            "mod regex {} fn run(r: regex::Missing) { r.is_match(\"x\"); }",
+            "r.is_match",
+        ),
+    ] {
+        for path in ["negative.rs", "src/negative.rs"] {
+            let facts = ast::extract(path, "rust", source).unwrap();
+            let graph = linker::link(&std::collections::BTreeMap::from([(path.into(), facts)]));
+            let coverage = graph.coverage.iter().find(|row| row.expression == expected_expr);
+            assert!(
+                coverage.is_none() || coverage.unwrap().status == "unresolved",
+                "{label} at {path}: expected unresolved, got {coverage:#?}"
+            );
+        }
+    }
+
     let cargo_facts = ast::extract("cargo_test.rs", "rust", cargo_source).unwrap();
     let cargo_graph = linker::link(&std::collections::BTreeMap::from([(
         "cargo_test.rs".to_owned(),
@@ -226,6 +415,13 @@ fn run_cargo_crates() {
         execute_cov.status, "external",
         "conn.execute must resolve to external via rust-cargo.toml declarative pack: {execute_cov:#?}"
     );
+    assert!(
+        execute_cov.evidence.contains("rusqlite::Connection")
+            && execute_cov
+                .evidence
+                .contains("receiver origin statically inferred"),
+        "conn.execute must retain its resolved import origin: {execute_cov:#?}"
+    );
     let parser_cov = cargo_graph
         .coverage
         .iter()
@@ -234,6 +430,13 @@ fn run_cargo_crates() {
     assert_eq!(
         parser_cov.status, "external",
         "parser.set_language must resolve to external via rust-cargo.toml declarative pack: {parser_cov:#?}"
+    );
+    assert!(
+        parser_cov.evidence.contains("tree_sitter::Parser")
+            && parser_cov
+                .evidence
+                .contains("receiver origin statically inferred"),
+        "parser.set_language must retain its resolved import origin: {parser_cov:#?}"
     );
 
     let iso_source = r#"
@@ -310,6 +513,371 @@ fn check_string_trait_isolation() {
             if preserves_item { "resolved" } else { "unresolved" },
             "{adapter}: {coverage:#?}"
         );
+    }
+
+    // Task 3 Contract: Declarative macro classification and bounded receiver repair (LS-001)
+    // 1. Declarative standard and Cargo macro classification: format!, json!, bail!, ensure!, vec!, write!
+    let macro_contract_source = r#"
+use anyhow::bail;
+use anyhow::ensure;
+use serde_json::json;
+
+fn run_macros() {
+    let _f = format!("hello {}", 42);
+    let _v = vec![1, 2, 3];
+    let _w = write!(f, "data");
+    let _j = json!({ "key": "value" });
+    let _b = bail!("operation failed");
+    let _e = ensure!(true);
+    let _qb = anyhow::bail!("qualified bail");
+    let _qe = anyhow::ensure!(true);
+    let _qj = serde_json::json!({ "status": 200 });
+}
+"#;
+    let macro_facts = ast::extract("macros.rs", "rust", macro_contract_source).unwrap();
+    let macro_graph = linker::link(&std::collections::BTreeMap::from([(
+        "macros.rs".to_owned(),
+        macro_facts,
+    )]));
+    for macro_name in [
+        "format",
+        "vec",
+        "write",
+        "json",
+        "bail",
+        "ensure",
+        "anyhow::bail",
+        "anyhow::ensure",
+        "serde_json::json",
+    ] {
+        let cov = macro_graph
+            .coverage
+            .iter()
+            .find(|c| c.expression == macro_name)
+            .unwrap_or_else(|| panic!("missing coverage for macro {macro_name}"));
+        assert_ne!(
+            cov.status, "unresolved",
+            "macro {macro_name} must not be unresolved: {cov:#?}"
+        );
+        assert_eq!(
+            cov.status, "external",
+            "macro {macro_name} status mismatch: {cov:#?}"
+        );
+    }
+
+    // Unimported Cargo ecosystem macros (json!, bail!, ensure!) must classify via declarative macro signatures
+    let unimported_macro_source = r#"
+fn run_unimported_macros() {
+    let _j = json!({ "key": "value" });
+    let _b = bail!("operation failed");
+    let _e = ensure!(true);
+}
+"#;
+    let unimported_facts = ast::extract("unimported_macros.rs", "rust", unimported_macro_source).unwrap();
+    let unimported_graph = linker::link(&std::collections::BTreeMap::from([(
+        "unimported_macros.rs".to_owned(),
+        unimported_facts,
+    )]));
+    for name in ["json", "bail", "ensure"] {
+        let cov = unimported_graph
+            .coverage
+            .iter()
+            .find(|c| c.expression == name)
+            .unwrap_or_else(|| panic!("missing coverage for unimported {name}"));
+        assert_ne!(
+            cov.status, "unresolved",
+            "unimported macro {name} must be classified through declarative macro signatures: {cov:#?}"
+        );
+    }
+
+    // Imported local macros (named, renamed, crate) must not manufacture Vec/String stdlib receiver provenance
+    for name in ["vec", "format"] {
+        for (label, import, definition) in [
+            (
+                "named",
+                format!("use local::{name};"),
+                format!("macro_rules! {name} {{ () => {{ A }}; }} pub(crate) use {name};"),
+            ),
+            (
+                "renamed",
+                format!("use local::custom as {name};"),
+                "macro_rules! custom { () => { A }; } pub(crate) use custom;".to_owned(),
+            ),
+            (
+                "crate",
+                format!("use crate::local::{name};"),
+                format!("macro_rules! {name} {{ () => {{ A }}; }} pub(crate) use {name};"),
+            ),
+        ] {
+            let source = format!(
+                "struct A; mod local {{ {definition} }} {import} fn run() {{ let item = {name}!(); item.len(); }}"
+            );
+            let facts = ast::extract("probe.rs", "rust", &source).unwrap();
+            assert!(facts.errors.is_empty(), "{name}/{label}: {:?}", facts.errors);
+            let graph = linker::link(&std::collections::BTreeMap::from([(
+                "probe.rs".to_owned(),
+                facts,
+            )]));
+            let row = graph
+                .coverage
+                .iter()
+                .find(|r| r.expression == "item.len")
+                .unwrap();
+            assert_ne!(
+                row.status, "external",
+                "local imported macro {name}/{label} fabricated stdlib type: {row:?}"
+            );
+        }
+    }
+
+    // 2. Bounded iterator receiver propagation: chained .iter().filter().map() must bind intermediate receivers and resolve .collect()
+    let chain_source = r#"
+fn run_iterator_chain() {
+    let numbers = Vec::new();
+    let _collected = numbers.into_iter().filter(|x| true).map(|x| x).collect();
+    let _deep = numbers.into_iter().filter(|_| true).map(|x| x).take(5).enumerate().skip(1).step_by(2).collect();
+    let _from_macro = vec![1, 2, 3].into_iter().filter(|x| true).map(|x| x).collect();
+}
+"#;
+    let chain_facts = ast::extract("chain.rs", "rust", chain_source).unwrap();
+    let chain_graph = linker::link(&std::collections::BTreeMap::from([(
+        "chain.rs".to_owned(),
+        chain_facts,
+    )]));
+    for expr in [
+        "numbers.into_iter().filter(|x| true).map(|x| x).collect",
+        "numbers.into_iter().filter(|_| true).map(|x| x).take(5).enumerate().skip(1).step_by(2).collect",
+        "vec![1, 2, 3].into_iter().filter(|x| true).map(|x| x).collect",
+    ] {
+        let collect_cov = chain_graph
+            .coverage
+            .iter()
+            .find(|c| c.expression == expr)
+            .unwrap_or_else(|| panic!("missing coverage for {expr}"));
+        assert_ne!(
+            collect_cov.status, "unresolved",
+            "collect() on chained iterator receiver must not be unresolved: {collect_cov:#?}"
+        );
+    }
+
+    // Verify R2 remediation: ordinary function calls json() without macro ! must remain unresolved
+    let fn_call_source = r#"
+fn run_unresolved_function() {
+    let _call = json();
+}
+"#;
+    let fn_call_facts = ast::extract("fn_call.rs", "rust", fn_call_source).unwrap();
+    let fn_call_graph = linker::link(&std::collections::BTreeMap::from([(
+        "fn_call.rs".to_owned(),
+        fn_call_facts,
+    )]));
+    let fn_cov = fn_call_graph
+        .coverage
+        .iter()
+        .find(|c| c.expression == "json")
+        .expect("missing coverage for json call");
+    assert_eq!(
+        fn_cov.status, "unresolved",
+        "ordinary function call json() must remain unresolved: {fn_cov:#?}"
+    );
+
+    // Verify R1 boundary: 7 and 8 calls propagate, while 9+ calls exhaust and leave collect() unresolved
+    let over_eight_source = r#"
+fn run_over_eight_chain() {
+    let numbers = Vec::new();
+    let _call7 = numbers.into_iter().map(|x| x).take(1).take(1).take(1).take(1).collect();
+    let _call8 = numbers.into_iter().map(|x| x).take(1).take(1).take(1).take(1).take(1).collect();
+    let _over9 = numbers.into_iter().map(|x| x).take(1).take(1).take(1).take(1).take(1).take(1).collect();
+    let _over10 = numbers.into_iter().map(|x| x).take(1).take(1).take(1).take(1).take(1).take(1).take(1).collect();
+    let _over19 = numbers.into_iter().map(|x| x).take(1).take(1).take(1).take(1).take(1).take(1).take(1).take(1).take(1).take(1).take(1).take(1).take(1).take(1).take(1).take(1).collect();
+}
+"#;
+    let over_eight_facts = ast::extract("over_eight.rs", "rust", over_eight_source).unwrap();
+    let over_eight_graph = linker::link(&std::collections::BTreeMap::from([(
+        "over_eight.rs".to_owned(),
+        over_eight_facts,
+    )]));
+    for (expr, expected) in [
+        ("numbers.into_iter().map(|x| x).take(1).take(1).take(1).take(1).collect", "external"),
+        ("numbers.into_iter().map(|x| x).take(1).take(1).take(1).take(1).take(1).collect", "external"),
+        ("numbers.into_iter().map(|x| x).take(1).take(1).take(1).take(1).take(1).take(1).collect", "unresolved"),
+        ("numbers.into_iter().map(|x| x).take(1).take(1).take(1).take(1).take(1).take(1).take(1).collect", "unresolved"),
+        ("numbers.into_iter().map(|x| x).take(1).take(1).take(1).take(1).take(1).take(1).take(1).take(1).take(1).take(1).take(1).take(1).take(1).take(1).take(1).take(1).collect", "unresolved"),
+    ] {
+        let cov = over_eight_graph
+            .coverage
+            .iter()
+            .find(|c| c.expression == expr)
+            .unwrap_or_else(|| panic!("missing coverage for {expr}"));
+        assert_eq!(
+            cov.status, expected,
+            "chain call {expr} expected status {expected}: {cov:#?}"
+        );
+    }
+
+    // Verify R4: local take() returning another type must NOT preserve original receiver across iterator spellings
+    for iter_name in ["iter", "into_iter", "iter_mut"] {
+        for adapter in ["take(1)", "skip(1)", "step_by(1)", "filter(|_| true)"] {
+            let r4_source = format!(
+                "struct A; struct B;
+                 impl A {{
+                     fn {iter_name}(&self) -> A {{ A }}
+                     fn take(&self, _: usize) -> B {{ B }}
+                     fn skip(&self, _: usize) -> B {{ B }}
+                     fn step_by(&self, _: usize) -> B {{ B }}
+                     fn filter(&self, _: fn(&A) -> bool) -> B {{ B }}
+                     fn finish(&self) {{}}
+                 }}
+                 fn run(a: A) {{
+                     let item = a.{iter_name}().{adapter};
+                     item.finish();
+                 }}"
+            );
+            let r4_facts = ast::extract("r4.rs", "rust", &r4_source).unwrap();
+            let r4_graph = linker::link(&std::collections::BTreeMap::from([(
+                "r4.rs".to_owned(),
+                r4_facts,
+            )]));
+            let r4_cov = r4_graph
+                .coverage
+                .iter()
+                .find(|c| c.expression == "item.finish")
+                .expect("missing coverage for item.finish");
+            assert_ne!(
+                r4_cov.status, "resolved",
+                "item.finish on non-iterator B from {iter_name}.{adapter} must not resolve to A.finish: {r4_cov:#?}"
+            );
+        }
+    }
+
+    // Verify R2: local macro_rules! definition must preserve local identity and not become external serde_json
+    let local_macro_source = r#"
+macro_rules! json {
+    () => { 1 };
+}
+fn run_local_macro() {
+    let _val = json!();
+}
+"#;
+    let local_macro_facts = ast::extract("local_macro.rs", "rust", local_macro_source).unwrap();
+    let local_macro_graph = linker::link(&std::collections::BTreeMap::from([(
+        "local_macro.rs".to_owned(),
+        local_macro_facts,
+    )]));
+    let local_cov = local_macro_graph
+        .coverage
+        .iter()
+        .find(|c| c.expression == "json")
+        .expect("missing coverage for local json call");
+    assert_ne!(
+        local_cov.status, "external",
+        "local macro json!() must not be classified as external serde_json: {local_cov:#?}"
+    );
+
+    // Verify R2: standard macro spellings called as ordinary functions must remain unresolved
+    let std_fn_calls_source = r#"
+fn run_std_fn_calls() {
+    let _f = format();
+    let _v = vec();
+    let _w = write();
+    let _p = println();
+}
+"#;
+    let std_fn_calls_facts = ast::extract("std_fn_calls.rs", "rust", std_fn_calls_source).unwrap();
+    let std_fn_calls_graph = linker::link(&std::collections::BTreeMap::from([(
+        "std_fn_calls.rs".to_owned(),
+        std_fn_calls_facts,
+    )]));
+    for name in ["format", "vec", "write", "println"] {
+        let std_cov = std_fn_calls_graph
+            .coverage
+            .iter()
+            .find(|c| c.expression == name)
+            .unwrap_or_else(|| panic!("missing coverage for std fn call {name}"));
+        assert_eq!(
+            std_cov.status, "unresolved",
+            "ordinary function call {name}() must remain unresolved: {std_cov:#?}"
+        );
+    }
+
+    // Verify R2 boundary tests: local macro imports/aliases precede external names
+    for (label, source, expression) in [
+        ("qualified", "mod serde_json { macro_rules! json { () => { 1 }; } pub(crate) use json; } fn run() { serde_json::json!(); }", "serde_json::json"),
+        ("import", "mod local { macro_rules! json { () => { 1 }; } pub(crate) use json; } use local::json; fn run() { json!(); }", "json"),
+        ("renamed-import", "mod local { macro_rules! custom { () => { 1 }; } pub(crate) use custom; } use local::custom as json; fn run() { json!(); }", "json"),
+        ("crate-import", "mod local { macro_rules! json { () => { 1 }; } pub(crate) use json; } use crate::local::json; fn run() { json!(); }", "json"),
+        ("module-alias", "mod local { macro_rules! custom { () => { 1 }; } pub(crate) use custom as json; } use local as serde_json; fn run() { serde_json::json!(); }", "serde_json::json"),
+        ("parent-module", "mod outer { macro_rules! json { () => { 1 }; } mod inner { fn run() { json!(); } } }", "json"),
+        ("parent-control", "mod outer { macro_rules! custom { () => { 1 }; } mod inner { fn run() { custom!(); } } }", "custom"),
+    ] {
+        let facts = ast::extract("probe.rs", "rust", source).unwrap();
+        assert!(facts.errors.is_empty(), "{label}: {:?}", facts.errors);
+        let graph = linker::link(&std::collections::BTreeMap::from([("probe.rs".to_owned(), facts)]));
+        let row = graph.coverage.iter().find(|r| r.expression == expression).unwrap();
+        assert_ne!(row.status, "external", "{label}: local macro misclassified external: {row:?}");
+        assert_eq!(row.status, "resolved", "{label}: local macro should resolve locally: {row:?}");
+    }
+
+    // Verify R2-output: local macro result must not fabricate stdlib type
+    for name in ["vec", "format"] {
+        let source = format!("struct A; impl A {{ fn finish(&self) {{}} }} macro_rules! {name} {{ () => {{ A }}; }} fn run() {{ let item = {name}!(); item.len(); }}");
+        let facts = ast::extract("probe.rs", "rust", &source).unwrap();
+        assert!(facts.errors.is_empty(), "{:?}", facts.errors);
+        let graph = linker::link(&std::collections::BTreeMap::from([("probe.rs".to_owned(), facts)]));
+        let row = graph.coverage.iter().find(|r| r.expression == "item.len").unwrap();
+        assert_ne!(row.status, "external", "local {name} result must not fabricate stdlib type: {row:?}");
+    }
+
+    // Verify qualified logging macro providers come from TOML
+    {
+        let source = "fn run() { tracing::info!(\"hello\"); log::info!(\"hello\"); }";
+        let facts = ast::extract("probe.rs", "rust", source).unwrap();
+        let graph = linker::link(&std::collections::BTreeMap::from([("probe.rs".to_owned(), facts)]));
+        for provider in ["tracing", "log"] {
+            let expression = format!("{provider}::info");
+            let row = graph.coverage.iter().find(|r| r.expression == expression).unwrap();
+            assert_eq!(row.status, "external");
+            assert!(row.evidence.contains(&format!("macro {provider}::")));
+        }
+    }
+
+    // Verify Review 42: nonexistent import member does not select different member
+    for (label, source, expression) in [
+        ("direct-import", "mod local { pub fn available() {} } use local::missing; fn run() { missing(); }", "missing"),
+        ("module-alias", "mod local { pub fn available() {} } use local as alias; fn run() { alias::missing(); }", "alias::missing"),
+        ("macro-member", "mod local { macro_rules! custom { () => { 1 }; } pub(crate) use custom; } use local as serde_json; fn run() { serde_json::json!(); }", "serde_json::json"),
+    ] {
+        let facts = ast::extract("probe.rs", "rust", source).unwrap();
+        assert!(facts.errors.is_empty(), "{label}: {:?}", facts.errors);
+        let graph = linker::link(&std::collections::BTreeMap::from([("probe.rs".to_owned(), facts)]));
+        let row = graph.coverage.iter().find(|r| r.expression == expression).unwrap();
+        assert_ne!(row.status, "resolved", "{label}: invented member should not be resolved: {row:?}");
+    }
+
+    // Verify Review 42: scoped macro import does not leak to unrelated outer scope
+    {
+        let source = "mod local { macro_rules! custom { () => { 1 }; } pub(crate) use custom; } mod child { use crate::local::custom as json; fn scoped() { json!(); } }\nfn run() { json!(); }";
+        let facts = ast::extract("probe.rs", "rust", source).unwrap();
+        assert!(facts.errors.is_empty(), "{:?}", facts.errors);
+        let graph = linker::link(&std::collections::BTreeMap::from([("probe.rs".to_owned(), facts)]));
+        let row = graph.coverage.iter().filter(|r| r.expression == "json").max_by_key(|r| r.line).unwrap();
+        assert_ne!(row.status, "resolved", "child import must not supply exact target for outer json!");
+    }
+
+    // Verify Review 42: unrelated macro or value import does not suppress std macro result
+    for (label, source) in [
+        ("sibling-macro", "mod other { macro_rules! vec { () => { 1 }; } } fn run() { let item = vec![1]; item.len(); }"),
+        ("value-namespace", "use std::fmt::format; fn run() { let item = format!(\"hello\"); item.len(); }"),
+        ("later-macro", "fn run() { let item = vec![1]; item.len(); } macro_rules! vec { () => { 1 }; }"),
+        ("foreign-function", "mod local { extern \"C\" { pub fn custom(); } } use local::custom as vec; fn run() { let item = vec![1]; item.len(); }"),
+        ("foreign-static", "mod local { extern \"C\" { pub static custom: u8; } } use local::custom as format; fn run() { let item = format!(\"hello\"); item.len(); }"),
+        ("extern-crate", "mod local { pub extern crate core as custom; } use local::custom as vec; fn run() { let item = vec![1]; item.len(); }"),
+    ] {
+        let facts = ast::extract("probe.rs", "rust", source).unwrap();
+        assert!(facts.errors.is_empty(), "{label}: {:?}", facts.errors);
+        let graph = linker::link(&std::collections::BTreeMap::from([("probe.rs".to_owned(), facts)]));
+        let row = graph.coverage.iter().find(|r| r.expression == "item.len").unwrap();
+        assert_eq!(row.status, "external", "{label}: proven std macro output suppressed: {row:?}");
     }
     assert!(ast::parser("sql", "schema.sql").is_err());
     let mut public_facts = contextunity_forge_mcp::core::models::Facts::default();
