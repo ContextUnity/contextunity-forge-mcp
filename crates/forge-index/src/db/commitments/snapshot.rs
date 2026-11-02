@@ -5,7 +5,7 @@ use super::{
     FTS,
 };
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OpenFlags};
 use std::collections::BTreeMap;
 use std::time::Instant;
 
@@ -23,14 +23,68 @@ pub(crate) fn seal_snapshot(conn: &Connection) -> Result<String> {
 
 /// Computes the FTS commitment digests independently from the logical table leaves.
 pub(crate) fn fts_commitment_digests(conn: &Connection) -> Result<BTreeMap<&'static str, String>> {
+    anyhow::ensure!(
+        conn.is_autocommit(),
+        "FTS sealing requires committed indexes"
+    );
+    let workers = rayon::current_num_threads().min(FTS.len()).min(4);
+    let candidate = conn.path().filter(|path| !path.is_empty());
+    let large: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM nodes LIMIT 1 OFFSET 8191)",
+        [],
+        |row| row.get(0),
+    )?;
+    if let Some(candidate) = candidate.filter(|_| workers >= 2 && large) {
+        // The cold writer owns this private candidate and keeps it unchanged
+        // until the entire scope has joined, before installing or publishing.
+        let results = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..workers)
+                .map(|worker| {
+                    scope.spawn(move || -> Result<Vec<_>> {
+                        let reader = Connection::open_with_flags(
+                            candidate,
+                            OpenFlags::SQLITE_OPEN_READ_ONLY,
+                        )?;
+                        reader.pragma_update(None, "query_only", true)?;
+                        // Keep adjacent posting/config pairs together with two
+                        // workers, so the two posting streams run independently.
+                        FTS[worker * FTS.len() / workers..(worker + 1) * FTS.len() / workers]
+                            .iter()
+                            .map(|&(table, order_by)| {
+                                Ok((table, fts_domain_digest(&reader, table, order_by)?))
+                            })
+                            .collect()
+                    })
+                })
+                .collect();
+            // Join every worker even if an earlier worker fails or panics.
+            handles
+                .into_iter()
+                .map(|handle| {
+                    handle
+                        .join()
+                        .map_err(|_| anyhow::anyhow!("FTS digest worker panicked"))?
+                })
+                .collect::<Vec<_>>()
+        });
+        let mut digests = BTreeMap::new();
+        for result in results {
+            digests.extend(result?);
+        }
+        return Ok(digests);
+    }
     let mut digests = BTreeMap::new();
     for &(table, order_by) in FTS {
-        if let Some(index) = table.strip_suffix("_postings") {
-            ensure_fts_vocab(conn, index)?;
-        }
-        digests.insert(table, fts_digest(conn, table, order_by)?);
+        digests.insert(table, fts_domain_digest(conn, table, order_by)?);
     }
     Ok(digests)
+}
+
+fn fts_domain_digest(conn: &Connection, table: &str, order_by: &str) -> Result<String> {
+    if let Some(index) = table.strip_suffix("_postings") {
+        ensure_fts_vocab(conn, index)?;
+    }
+    fts_digest(conn, table, order_by)
 }
 
 /// Seal logical owner leaves produced from the post-linking in-memory projection.

@@ -1,15 +1,15 @@
 //! SQLite persistence and indexing operations for Forge.
 
-use crate::core::models::compact_graph::Graph as CompactGraph;
-use crate::core::semantic::CatalogStoragePayload;
-use crate::core::typed_facts::{encode_facts, TypedFacts};
-use crate::core::{
-    commitments,
+use crate::db::commitments;
+use crate::db::schema::SCHEMA_DDL;
+use anyhow::{bail, Context, Result};
+use forge_core::models::compact_graph::Graph as CompactGraph;
+use forge_core::semantic::CatalogStoragePayload;
+use forge_core::typed_facts::{encode_facts, TypedFacts};
+use forge_core::{
     config::{self, Adapter},
     models::*,
 };
-use crate::db::schema::SCHEMA_DDL;
-use anyhow::{bail, Context, Result};
 use rayon::prelude::*;
 use rusqlite::{params, types::Value as SqlValue, Connection, OptionalExtension};
 use serde_json::{json, Value};
@@ -77,7 +77,7 @@ fn decode_prepared_storage(bytes: &[u8]) -> Result<PreparedCatalogStorage> {
 }
 
 fn encode_node_for_storage(node: &Node, buf: &mut Vec<u8>) {
-    use crate::core::typed_facts::binary::BinaryEncode;
+    use forge_core::typed_facts::binary::BinaryEncode;
     node.id.encode(buf);
     node.kind.encode(buf);
     node.name.encode(buf);
@@ -120,7 +120,7 @@ pub fn prepare_catalog_storage_with_facts(
     single: &BTreeMap<String, TypedFacts>,
     extracted_facts: Option<&TypedFacts>,
 ) -> Result<Vec<u8>> {
-    use crate::core::typed_facts::binary::BinaryEncode;
+    use forge_core::typed_facts::binary::BinaryEncode;
 
     let facts = extracted_facts
         .or_else(|| single.get(&file.path))
@@ -277,7 +277,6 @@ pub struct BuildInputs<'a> {
     /// Whether schema DDL tables have already been prepared on the connection.
     pub schema_ready: bool,
 }
-
 
 /// Prepares pipeline SQLite schema with appropriate PRAGMAs and tables.
 pub fn prepare_pipeline_schema(
@@ -588,6 +587,7 @@ pub fn populate_owned(
             // SAFETY: glibc synchronizes allocator arenas; no pointers are passed.
             libc::malloc_trim(0);
         }
+        let coverage = ingest::PreparedCoverage::new(graph, &facts, Some(entries));
         let (mut domains, graph_timings, persist_graph_ms, graph_projection_ms) =
             std::thread::scope(|scope| -> Result<_> {
                 let projection = scope.spawn(|| {
@@ -596,6 +596,7 @@ pub fn populate_owned(
                         entries,
                         &facts,
                         graph,
+                        &coverage,
                         &mut projection_timings,
                         !streamed_payloads,
                     );
@@ -632,13 +633,13 @@ pub fn populate_owned(
                 }
                 drop(shared_paths);
                 let started = Instant::now();
-                let stored = persist_graph(
+                let stored = ingest::persist_graph_prepared(
                     &tx,
                     &mut path_cache,
                     graph,
                     &facts,
                     None,
-                    Some(entries),
+                    &coverage,
                     &mut node_paths,
                     true,
                 );
@@ -649,6 +650,7 @@ pub fn populate_owned(
                     .map_err(|_| anyhow::anyhow!("graph commitment projection panicked"))?;
                 Ok((domains?, stored?, persist_ms, projection_ms))
             })?;
+        drop(coverage);
         seal_projection_ms += graph_projection_ms;
         if streamed_payloads {
             for (domain, leaves) in logical_commitments {
@@ -734,8 +736,8 @@ fn restore_catalog_file(
 }
 
 fn catalog_payload(path: &str, encoded: &[u8]) -> Result<CatalogStoragePayload> {
-    let facts = crate::core::typed_facts::decode_facts(encoded)?;
-    Ok(crate::core::semantic::SymbolCatalog::default().insert_typed(path.to_owned(), facts, true))
+    let facts = forge_core::typed_facts::decode_facts(encoded)?;
+    Ok(forge_core::semantic::SymbolCatalog::default().insert_typed(path.to_owned(), facts, true))
 }
 
 fn retain_graph_storage_facts(facts: &mut TypedFacts) {
@@ -743,7 +745,7 @@ fn retain_graph_storage_facts(facts: &mut TypedFacts) {
         .nodes
         .iter()
         .any(|node| node.kind == "module" && node.language == "html");
-    let mut flows = crate::core::typed_facts::FlowStore::default();
+    let mut flows = forge_core::typed_facts::FlowStore::default();
     for node in &mut facts.facts.nodes {
         if let Some(flow) = facts.flows.get_mut(&node.id) {
             let template_contexts: Vec<_> = flow
@@ -752,18 +754,18 @@ fn retain_graph_storage_facts(facts: &mut TypedFacts) {
                 .into_iter()
                 .flat_map(|framework| framework.facts)
                 .filter_map(|fact| match fact {
-                    crate::core::semantic::FrameworkFact::TemplateContext(context) => Some(context),
+                    forge_core::semantic::FrameworkFact::TemplateContext(context) => Some(context),
                     _ => None,
                 })
                 .collect();
             if !template_contexts.is_empty() {
                 flows.insert(
                     node.id.clone(),
-                    crate::core::semantic::ValueFlowFacts {
-                        framework: Some(Box::new(crate::core::semantic::FrameworkScopeFacts {
+                    forge_core::semantic::ValueFlowFacts {
+                        framework: Some(Box::new(forge_core::semantic::FrameworkScopeFacts {
                             facts: template_contexts
                                 .into_iter()
-                                .map(crate::core::semantic::FrameworkFact::TemplateContext)
+                                .map(forge_core::semantic::FrameworkFact::TemplateContext)
                                 .collect(),
                             ..Default::default()
                         })),
@@ -789,9 +791,6 @@ fn cached(conn: &Connection, sql: &str, params: impl rusqlite::Params) -> rusqli
     conn.prepare_cached(sql)?.execute(params)
 }
 
-// #[cfg(test)]
-// #[path = "writer/memory_budget_tests.rs"]
-// mod memory_budget_tests;
 #[cfg(test)]
 #[path = "writer/multi_value_batch_tests.rs"]
 mod multi_value_batch_tests;

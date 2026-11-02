@@ -1,9 +1,10 @@
+use super::ingest::PreparedCoverage;
 use super::{CompactGraph, FileEntry, TypedFacts};
-use crate::core::{
-    commitments::{ALGORITHM, DOMAINS},
-    models::{compact_graph::Coverage, compact_graph::Edge, is_test, stable_hash64, Node},
-};
 use anyhow::{ensure, Context, Result};
+use forge_core::{
+    commitments::{ALGORITHM, DOMAINS},
+    models::{compact_graph::Edge, is_test, stable_hash64, Node},
+};
 use hashbrown::HashMap;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -94,9 +95,9 @@ struct DependencyLeafRow<'a> {
 }
 
 struct GraphProjection<'a> {
-    entries: &'a [FileEntry],
     facts: &'a BTreeMap<String, TypedFacts>,
     graph: &'a CompactGraph,
+    coverage: &'a PreparedCoverage<'a>,
     projected_nodes: &'a [ProjectedNode<'a>],
     node_by_id: &'a NodePathMap<'a>,
     file_by_hash: &'a HashMap<i64, &'a str>,
@@ -151,6 +152,7 @@ pub(super) fn logical_domain_leaves(
     entries: &[FileEntry],
     facts: &BTreeMap<String, TypedFacts>,
     graph: &CompactGraph,
+    coverage: &PreparedCoverage<'_>,
     timings: &mut ProjectionTimings,
     include_restored_file_domains: bool,
 ) -> Result<BTreeMap<&'static str, Leaves>> {
@@ -165,9 +167,9 @@ pub(super) fn logical_domain_leaves(
     let started = Instant::now();
     project_graph_domains(
         GraphProjection {
-            entries,
             facts,
             graph,
+            coverage,
             projected_nodes: &projected_nodes,
             node_by_id: &node_by_id,
             file_by_hash: &file_by_hash,
@@ -383,9 +385,9 @@ fn project_graph_domains<'a>(
     include_shared_owners: bool,
 ) -> Result<()> {
     let GraphProjection {
-        entries,
         facts,
         graph,
+        coverage,
         projected_nodes,
         node_by_id,
         file_by_hash,
@@ -523,7 +525,7 @@ fn project_graph_domains<'a>(
     }
     timings.graph_shared_owners_ms = shared_started.elapsed().as_secs_f64() * 1000.;
     let coverage_started = Instant::now();
-    let (coverage_domains, unresolved) = project_coverage_domains(entries, facts, graph)?;
+    let (coverage_domains, unresolved) = project_coverage_domains(coverage)?;
     domains.insert("resolution_coverage", coverage_domains.0);
     domains.insert("coverage_owner_language", coverage_domains.1);
     domains.insert("coverage_language_counts", coverage_domains.2);
@@ -653,86 +655,14 @@ fn register_shared_key<'a>(keys: &mut HashMap<i64, &'a str>, key: &'a str) -> Re
 }
 
 type CoverageDomains = (Leaves, Leaves, Leaves);
-type HtmlOwners = HashMap<String, HashMap<usize, HashMap<String, Option<String>>>>;
-
 fn project_coverage_domains<'a>(
-    entries: &[FileEntry],
-    facts: &BTreeMap<String, TypedFacts>,
-    graph: &'a CompactGraph,
+    prepared: &PreparedCoverage<'a>,
 ) -> Result<(CoverageDomains, Vec<Dependency<'a>>)> {
-    let mut coverage_rows: Vec<_> = graph.coverage.iter().collect();
-    coverage_rows.sort_unstable_by(|left, right| compare_coverage(left, right));
-    coverage_rows.dedup_by(|right, left| compare_coverage(left, right).is_eq());
-
-    let mut file_languages = HashMap::<String, String>::new();
-    let mut html_owners = HtmlOwners::new();
-    let mut html_islands = HashMap::<String, Vec<(usize, usize)>>::new();
-    for (path, file_facts) in facts {
-        if let Some(module) = file_facts.nodes.iter().find(|node| node.kind == "module") {
-            if !module.language.is_empty() {
-                file_languages.insert(path.clone(), module.language.clone());
-            }
-        }
-        if !file_facts
-            .nodes
-            .iter()
-            .any(|node| node.kind == "module" && node.language == "html")
-        {
-            continue;
-        }
-        let node_languages: HashMap<_, _> = file_facts
-            .nodes
-            .iter()
-            .map(|node| (node.id.as_str(), node.language.as_str()))
-            .collect();
-        let islands: Vec<_> = file_facts
-            .nodes
-            .iter()
-            .filter(|node| node.kind == "island_scope" && node.language == "javascript")
-            .map(|node| (node.line, node.end_line))
-            .collect();
-        let mut owners = HashMap::<usize, HashMap<String, Option<String>>>::new();
-        for reference in &file_facts.references {
-            let Some(language) = node_languages.get(reference.source.as_str()).copied() else {
-                continue;
-            };
-            let entry = owners
-                .entry(reference.line)
-                .or_default()
-                .entry(reference.expression.clone())
-                .or_insert_with(|| Some(language.to_owned()));
-            if entry.as_deref() != Some(language) {
-                *entry = None;
-            }
-        }
-        owners.retain(|line, expressions| {
-            let whole_line_js = islands
-                .iter()
-                .any(|(first, last)| first <= line && line <= last);
-            expressions.retain(|_, language| match language.as_deref() {
-                Some("javascript") => !whole_line_js,
-                Some("html") | None => whole_line_js,
-                _ => false,
-            });
-            !expressions.is_empty()
-        });
-        if !owners.is_empty() {
-            html_owners.insert(path.clone(), owners);
-        }
-        if !islands.is_empty() {
-            html_islands.insert(path.clone(), islands);
-        }
-    }
-    let entry_languages: HashMap<_, _> = entries
-        .iter()
-        .map(|entry| (entry.path.as_str(), entry.language.as_str()))
-        .collect();
-
     let mut coverage_hashers = OwnerHashers::new();
     let mut owner_language_rows = BTreeMap::<String, Vec<OwnerLanguageLeafRow<'_>>>::new();
     let mut language_counts = BTreeMap::<String, BTreeMap<(String, String), i64>>::new();
     let mut unresolved_dependencies = Vec::new();
-    for coverage in &coverage_rows {
+    for &coverage in &prepared.rows {
         let owner = coverage.path.as_ref();
         let line = i64::try_from(coverage.line).context("coverage line exceeds SQLite range")?;
         let expression = coverage.expression.as_str();
@@ -745,11 +675,7 @@ fn project_coverage_domains<'a>(
         encode_text(hasher, status);
         encode_text(hasher, evidence);
 
-        let html_language = html_owners
-            .get(owner)
-            .and_then(|owners| owners.get(&coverage.line))
-            .and_then(|expressions| expressions.get(expression))
-            .map(|language| language.as_deref().unwrap_or("html"));
+        let html_language = prepared.owner_language(coverage);
         if let Some(language) = html_language {
             owner_language_rows
                 .entry(owner.to_owned())
@@ -763,25 +689,7 @@ fn project_coverage_domains<'a>(
                 });
         }
 
-        let base_language = file_languages
-            .get(owner)
-            .map(String::as_str)
-            .or_else(|| entry_languages.get(owner).copied())
-            .filter(|language| !language.is_empty());
-        let language = if let Some(language) = html_language {
-            Some(language)
-        } else if let Some(islands) = html_islands.get(owner) {
-            if islands
-                .iter()
-                .any(|(first, last)| *first <= coverage.line && coverage.line <= *last)
-            {
-                Some("javascript")
-            } else {
-                base_language.or(Some("html"))
-            }
-        } else {
-            base_language
-        };
+        let language = prepared.language(coverage, None);
         if let Some(language) = language.filter(|language| !language.is_empty()) {
             let count = language_counts
                 .entry(owner.to_owned())
@@ -853,16 +761,6 @@ fn project_coverage_domains<'a>(
     ))
 }
 
-fn compare_coverage(left: &Coverage, right: &Coverage) -> std::cmp::Ordering {
-    left.path
-        .as_bytes()
-        .cmp(right.path.as_bytes())
-        .then_with(|| left.line.cmp(&right.line))
-        .then_with(|| left.expression.as_bytes().cmp(right.expression.as_bytes()))
-        .then_with(|| left.status.as_str().cmp(right.status.as_str()))
-        .then_with(|| left.evidence.as_ref().cmp(right.evidence.as_ref()))
-}
-
 fn project_dependency_domain<'a>(
     facts: &'a BTreeMap<String, TypedFacts>,
     file_by_hash: &'a HashMap<i64, &'a str>,
@@ -879,12 +777,12 @@ fn project_dependency_domain<'a>(
             };
             for context in flow.template_contexts() {
                 let Some(target) =
-                    crate::core::config::local_template_target(provider_path, &context.target)
+                    forge_core::config::local_template_target(provider_path, &context.target)
                 else {
                     continue;
                 };
-                if crate::core::config::workspace_path(provider_path).0
-                    != crate::core::config::workspace_path(&target).0
+                if forge_core::config::workspace_path(provider_path).0
+                    != forge_core::config::workspace_path(&target).0
                 {
                     continue;
                 }

@@ -108,7 +108,7 @@ Around 45 KiB per source file or 3 KiB per node are useful reference values when
 - **Indexed Edge Persistence**: Bidirectional node traversal uses indexed `edges` (`src_hash`, `dst_hash`). Directory boundary queries start with the indexed path dictionary range, join its nodes, and follow incoming and outgoing edge indexes. Query work depends on the directory's nodes and incident edges, as well as SQLite aggregation and ordering. Ingestion hot paths stream batches without ad-hoc per-edge heap allocations.
 - **Index Compaction**: Use SQLite `WITHOUT ROWID` tables for junction tables (`edge_occurrences`, `dependencies`, `shared_owners`).
 - **Dictionary Storage**: `nodes` stores path and owner IDs from `path_dictionary`. File and directory filters use the dictionary's indexed text paths and join node rows through `path_id`; lexical path ranges apply to dictionary text. Graph evidence and confidence share `coverage_evidence`. `shared_keys` references node qualified names by node ID; node mutation materializes the original key before its source changes. Readers query canonical tables directly, and commitment hashers resolve dictionary IDs through preloaded maps.
-- **Commitment Storage**: `domain_commitments` stores a domain, owner path ID, and 32-byte digest. Cold builds commit imported rows, checkpoint, and create ordinary indexes before sealing. Sufficiently large candidates with multiple Rayon threads hash independent domains through read-only connections; one transaction installs commitments and the root. Delta sealing retains its transaction boundary.
+- **Commitment Storage**: `domain_commitments` stores a domain, owner path ID, and 32-byte digest. Cold builds commit imported rows, checkpoint, and create ordinary indexes before sealing. File candidates with at least 8,192 nodes and multiple available Rayon threads compute the four FTS domains on 2–4 scoped workers, bounded by the Rayon thread count. Each worker opens its own read-only connection to the committed stage-private candidate and creates only TEMP vocabulary tables. All workers join before errors propagate, commitments are installed, or publication begins; one transaction installs commitments and the root. Small, in-memory, and single-thread builds compute FTS digests serially. Delta sealing retains its transaction boundary.
 - **Phase Timing**: `indexes_ms` and `seal_ms` measure their individual wall times. `index_and_seal_ms` measures their combined wall time; `persist_ms` includes that interval.
 
 ### 5. Serialization and Throughput Guidance (ADR 0012)
@@ -116,6 +116,7 @@ See [ADR 0012: Lean Serialization and Measured Performance](../adr/0012-zero-reg
 - **Lean Node Details**: Restrict `nodes.details` to selected navigation fields, including `signature`, `doc`, `receiver_name`, explicit decorators, parameter types and declared return types. Report `rows_ms` according to its actual phase scope; it includes broader persistence work rather than only node insertion.
 - **Bulk SQLite Ingestion Pragmas**: Cold indexing uses `PRAGMA synchronous = OFF; PRAGMA journal_mode = MEMORY;` on an isolated candidate database. It seals and commits the candidate, restores WAL mode, verifies SQLite integrity, and checkpoints WAL before atomic publication.
 - **Bounded cold fact writes**: Cold builds serialize each complete `local_facts` payload in parallel chunks instead of retaining a workspace-wide second map of compressed payloads. The writer holds at most 500 compressed facts per chunk and inserts each row batch in the existing write transaction, bounded by SQLite's live parameter limit; secondary indexes are created after the bulk load. `sqlite_ingestion` reports the active mode, deferred-index behavior, and effective row-batch size. Graph endpoint caching shares one path allocation across nodes in the same file, avoiding per-node path string copies.
+- **Shared coverage preparation**: [`PreparedCoverage`](../../crates/forge-index/src/db/ingest.rs) sorts and deduplicates borrowed coverage rows once after retained facts are ready. SQL persistence and logical commitment projection share its module/file language fallback, ambiguous HTML reference ownership, and JavaScript island decisions. Each consumer streams its existing SQL rows or canonical commitment bytes. Delta uses the same preparation through the compatible `persist_graph` entry point and retains its database language fallback and transaction boundary.
 - **Cold-build phase timing**: `encode_facts_ms` totals the per-file serialization and compression time performed while `local_facts` rows are batched. `batch_rows` reports the effective local-facts row cap, not the size of every other table's row batch.
 - **Throughput Recommendation**: Around 400 files/sec end-to-end and 800 files/sec for extraction are useful initial comparison values. The 10-second Commerce cold-build aspiration helps prioritize phase-level work; it is a gate only where a milestone explicitly admits it.
 
@@ -165,9 +166,29 @@ better request latency.
 - **Safe WAL Restoration**: Before atomic file publication, `populate_owned` restores `PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;` and forces a checkpoint via `PRAGMA wal_checkpoint(TRUNCATE);`, ensuring published databases are immediately durable and concurrent-reader safe.
 
 ### 5. Hybrid In-Memory Merkle Commitment Sealing
-- **In-Memory Leaf Hashing**: Prior implementations re-scanned entire SQLite tables to compute Merkle leaf commitments across 17 domains. Milestone 031 implemented hybrid in-memory hashing in `seal::file_domain_leaves` and `seal::logical_domain_leaves` (`src/db/writer/seal.rs`, `src/core/commitments.rs`, `src/core/commitments/snapshot.rs`).
+- **In-Memory Leaf Hashing**: [`file_domain_leaves`](../../crates/forge-index/src/db/writer/seal.rs) and [`logical_domain_leaves`](../../crates/forge-index/src/db/writer/seal.rs) hash logical records from in-memory projections and persistence buffers.
 - **13 Logical Domains**: Commitments for `files`, `source_inventory`, `nodes`, `edges`, `edge_occurrences`, `dependencies`, `resolution_coverage`, `coverage_language_counts`, `coverage_owner_language`, `doc_sections`, `shared_owners`, `errors`, and `local_facts` are computed directly from in-memory projections and streaming buffers. This cut `seal_ms` from `~1,012 ms` down to `~75–112 ms`.
-- **4 FTS5 Search Domains via C-API Tokenizer**: `node_search_postings`, `node_search_config`, `doc_search_postings`, and `doc_search_config` are tokenized in a single stream using SQLite's native C-API FTS5 tokenizer and verified against `docsize` tables, maintaining 100% bit-identical `forge-owner-sha256-v2` roots across all 17 domains without table re-scans.
+- **Four independent FTS domains**: [`fts_commitment_digests`](../../crates/forge-index/src/db/commitments/snapshot.rs) uses the existing FTS domain list for `node_search_postings`, `node_search_config`, `doc_search_postings`, and `doc_search_config`. Posting digests retain the canonical vocabulary streaming or sorted fallback encoding and document-size/owner validation. Config digests retain their canonical SQL encoding.
+- **Correctness evidence**: `parallel_owner_sealing_matches_serial_encoding_and_thread_counts` in `tests/commitment_integrity.rs` compares every persisted domain and owner digest across one, two, and four threads and against the SQL sealing oracle. Its SQLite authorizer observes stage-private read-only FTS access and verifies that a reader failure preserves the published database.
+
+The reference-corpus measurements supplied on 2026-11-02 cover `commerce-release-update` (4,086 files, 69,966 nodes, approximately 255,000 edges), with the host governor set to `performance`. Three runs per thread count compare the serial fallback with bounded concurrent FTS calculation. The saved raw runs and aggregates are in `/tmp/ls001-task6-benchmark-results.json`.
+
+| Metric | 1 thread (serial baseline) | 2 threads | 4 threads |
+| :--- | ---: | ---: | ---: |
+| `seal_fts_ms` median | 1,070.36 | 992.20 | 926.52 |
+| `seal_fts_ms` mean | 1,055.64 | 999.70 | 959.51 |
+| `seal_fts_ms` minimum | 1,001.23 | 936.43 | 903.78 |
+| FTS median speedup | 1.00× | 1.08× | 1.16× |
+| `index_and_seal_ms` median | 2,025.83 | 1,980.82 | 1,856.42 |
+| `index_and_seal_ms` minimum | 1,815.83 | 1,803.81 | 1,767.73 |
+| `index_and_seal_ms` mean | 1,958.32 | 1,961.06 | 1,953.74 |
+| Index-and-seal median speedup | 1.00× | 1.02× | 1.09× |
+| `persist_ms` median | 5,842.14 | 5,995.77 | 5,303.49 |
+| Total wall time median (seconds) | 12.140 | 10.973 | 9.996 |
+
+Concurrent FTS domain calculation reduces the measured FTS median by 78.16 ms with two workers and 143.84 ms with four workers. The combined index-and-seal median falls by 45.01 ms and 169.41 ms respectively. The FTS phase directly measures the concurrent calculation; the combined phase also includes index construction and commitment installation, so its entire change cannot be attributed solely to FTS concurrency. Its nearly unchanged means and the higher two-thread persistence median show run variability. These results demonstrate a measured sealing reduction on this corpus, without establishing sub-second cold builds or an isolated benefit from shared coverage preparation.
+
+All nine runs preserve the bit-identical Merkle root `2526c77ce1f50d4c06609b289feb12f60b5a9668824289d27b32fa4563ad3e74`. The supplied artifact records raw timings, thread counts, corpus counts, and governor, but omits command lines, source/binary hashes, adapter/features, and cache states; this evidence is a thread-scaling comparison rather than a fully bound historical before/after benchmark.
 
 ### 6. Cross-Worktree Content-Addressed Binary Extraction Cache
 - **Extraction Cache v3**: `src/db/writer/cache.rs` provides cross-worktree AST and typed-facts reuse for unmodified files.
@@ -299,9 +320,9 @@ Autonomous agents, builders, and language models modifying Forge indexing or sto
 > [!IMPORTANT]
 > Invariant: Deterministic 17-Domain Merkle Commitments
 >
-> In `src/db/writer/seal.rs` (`seal::file_domain_leaves`, `seal::logical_domain_leaves`) and `src/core/commitments.rs`, in-memory leaf hashing for the 13 logical domains and C-API tokenizer hashing for the 4 FTS domains must yield 100% bit-identical digests matching SQLite table scans (`forge-owner-sha256-v2`). Tokens must be ordered canonically by `(term, docid, col, pos)` using `term_map`. Any modification must pass `tests/commitment_integrity.rs`.
+> In-memory leaf hashing for the 13 logical domains and SQLite FTS hashing for the four search domains must yield bit-identical digests matching canonical SQL sealing (`forge-owner-sha256-v2`). Parallel workers preserve the existing posting and configuration encodings and validation failures. Any modification must pass `cargo test --test commitment_integrity`.
 
-- INV-PERF-DETERMINISTIC-MERKLE-SEALING: Compute 13 logical domain commitments from in-memory projections and 4 FTS5 domain commitments via the native C-API tokenizer with canonical `(term, docid, col, pos)` ordering so `forge-owner-sha256-v2` roots remain bit-identical. [`file_domain_leaves`](../../src/db/writer/seal.rs) [`logical_domain_leaves`](../../src/db/writer/seal.rs).
+- INV-PERF-DETERMINISTIC-MERKLE-SEALING: Preserve canonical logical and FTS encodings across serial and parallel execution. [`file_domain_leaves`](../../crates/forge-index/src/db/writer/seal.rs) [`logical_domain_leaves`](../../crates/forge-index/src/db/writer/seal.rs) [`fts_commitment_digests`](../../crates/forge-index/src/db/commitments/snapshot.rs).
 
 > [!IMPORTANT]
 > Invariant: Strict Extraction Cache Key Binding

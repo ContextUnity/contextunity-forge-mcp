@@ -1,12 +1,12 @@
 use super::*;
-use crate::core::typed_facts::encode_facts;
+use forge_core::typed_facts::encode_facts;
 use std::borrow::Cow;
 
 const COLD_LOCAL_FACTS_BATCH_ROWS: usize = 500;
 
 fn compare_coverage_rows(
-    left: &crate::core::models::compact_graph::Coverage,
-    right: &crate::core::models::compact_graph::Coverage,
+    left: &forge_core::models::compact_graph::Coverage,
+    right: &forge_core::models::compact_graph::Coverage,
 ) -> std::cmp::Ordering {
     left.path
         .as_bytes()
@@ -15,6 +15,142 @@ fn compare_coverage_rows(
         .then_with(|| left.expression.as_bytes().cmp(right.expression.as_bytes()))
         .then_with(|| left.status.cmp(&right.status))
         .then_with(|| left.evidence.as_bytes().cmp(right.evidence.as_bytes()))
+}
+
+type HtmlCoverageOwners<'a> =
+    hashbrown::HashMap<&'a str, hashbrown::HashMap<(usize, &'a str), Option<&'a str>>>;
+
+/// Canonical borrowed coverage input shared by SQL persistence and sealing.
+pub(super) struct PreparedCoverage<'a> {
+    pub(super) rows: Vec<&'a forge_core::models::compact_graph::Coverage>,
+    file_languages: hashbrown::HashMap<&'a str, &'a str>,
+    html_owners: HtmlCoverageOwners<'a>,
+    html_islands: hashbrown::HashMap<&'a str, Vec<(usize, usize)>>,
+}
+
+impl<'a> PreparedCoverage<'a> {
+    pub(super) fn new(
+        graph: &'a CompactGraph,
+        facts: &'a BTreeMap<String, TypedFacts>,
+        entries: Option<&'a [FileEntry]>,
+    ) -> Self {
+        let mut rows: Vec<_> = graph.coverage.iter().collect();
+        if !rows
+            .windows(2)
+            .all(|pair| compare_coverage_rows(pair[0], pair[1]).is_le())
+        {
+            if rows.len() >= 8192 {
+                rows.par_sort_unstable_by(|left, right| compare_coverage_rows(left, right));
+            } else {
+                rows.sort_unstable_by(|left, right| compare_coverage_rows(left, right));
+            }
+        }
+        rows.dedup_by(|later, first| compare_coverage_rows(first, later).is_eq());
+        let mut prepared = Self {
+            rows,
+            file_languages: entries
+                .into_iter()
+                .flatten()
+                .filter(|entry| !entry.language.is_empty())
+                .map(|entry| (entry.path.as_str(), entry.language.as_str()))
+                .collect(),
+            html_owners: hashbrown::HashMap::new(),
+            html_islands: hashbrown::HashMap::new(),
+        };
+        for (path, file_facts) in facts {
+            if let Some(module) = file_facts.nodes.iter().find(|node| node.kind == "module") {
+                if !module.language.is_empty() {
+                    prepared
+                        .file_languages
+                        .insert(path.as_str(), module.language.as_str());
+                }
+            }
+            if !file_facts
+                .nodes
+                .iter()
+                .any(|node| node.kind == "module" && node.language == "html")
+            {
+                continue;
+            }
+            let node_languages: hashbrown::HashMap<_, _> = file_facts
+                .nodes
+                .iter()
+                .map(|node| (node.id.as_str(), node.language.as_str()))
+                .collect();
+            let islands: Vec<_> = file_facts
+                .nodes
+                .iter()
+                .filter(|node| node.kind == "island_scope" && node.language == "javascript")
+                .map(|node| (node.line, node.end_line))
+                .collect();
+            let mut owners = hashbrown::HashMap::new();
+            for reference in &file_facts.references {
+                let Some(language) = node_languages.get(reference.source.as_str()).copied() else {
+                    continue;
+                };
+                let entry = owners
+                    .entry((reference.line, reference.expression.as_str()))
+                    .or_insert(Some(language));
+                if *entry != Some(language) {
+                    *entry = None;
+                }
+            }
+            owners.retain(|(line, _), language| {
+                let whole_line_js = islands
+                    .iter()
+                    .any(|(first, last)| first <= line && line <= last);
+                match language {
+                    Some("javascript") => !whole_line_js,
+                    Some("html") | None => whole_line_js,
+                    _ => false,
+                }
+            });
+            if !owners.is_empty() {
+                prepared.html_owners.insert(path.as_str(), owners);
+            }
+            if !islands.is_empty() {
+                prepared.html_islands.insert(path.as_str(), islands);
+            }
+        }
+        prepared
+    }
+
+    pub(super) fn file_language(&self, path: &str) -> Option<&'a str> {
+        self.file_languages.get(path).copied()
+    }
+
+    pub(super) fn owner_language(
+        &self,
+        row: &forge_core::models::compact_graph::Coverage,
+    ) -> Option<&'a str> {
+        self.html_owners
+            .get(row.path.as_ref())
+            .and_then(|owners| owners.get(&(row.line, row.expression.as_str())))
+            .map(|language| language.unwrap_or("html"))
+    }
+
+    pub(super) fn language<'b>(
+        &'b self,
+        row: &forge_core::models::compact_graph::Coverage,
+        fallback: Option<&'b str>,
+    ) -> Option<&'b str> {
+        if let Some(language) = self.owner_language(row) {
+            return Some(language);
+        }
+        let base = self.file_language(row.path.as_ref()).or(fallback);
+        if let Some(islands) = self.html_islands.get(row.path.as_ref()) {
+            if islands
+                .iter()
+                .any(|(first, last)| *first <= row.line && row.line <= *last)
+            {
+                Some("javascript")
+            } else {
+                base.or(Some("html"))
+            }
+        } else {
+            base
+        }
+    }
 }
 
 fn flush_owner_language_counts<'a>(
@@ -83,7 +219,15 @@ pub(super) fn persist_catalog_files(
     loader: ChunkLoader<'_>,
     graph_ranks: &hashbrown::HashMap<&str, Option<i64>>,
 ) -> Result<FilePersistenceTimings> {
-    persist_files_impl(tx, path_cache, entries, facts, true, Some(loader), Some(graph_ranks))
+    persist_files_impl(
+        tx,
+        path_cache,
+        entries,
+        facts,
+        true,
+        Some(loader),
+        Some(graph_ranks),
+    )
 }
 
 fn persist_files_impl(
@@ -260,7 +404,10 @@ fn persist_files_impl(
                             .filter(|node| node.id == n.id)
                             .or_else(|| detail_facts.nodes.iter().find(|node| node.id == n.id))
                             .context("staged node is missing matching navigation facts")?;
-                        let return_type = if matches!(navigation_node.kind.as_str(), "function" | "method" | "constructor") {
+                        let return_type = if matches!(
+                            navigation_node.kind.as_str(),
+                            "function" | "method" | "constructor"
+                        ) {
                             declared_return_type(navigation_node, detail_facts)
                         } else {
                             None
@@ -269,12 +416,25 @@ fn persist_files_impl(
                         let intrinsic = entrypoint_base
                             .and_then(Value::as_str)
                             .and_then(super::entrypoints::rank);
-                        let graph = graph_ranks.and_then(|ranks| ranks.get(n.id.as_str())).copied().flatten();
-                        let category = intrinsic.into_iter().chain(graph).min().and_then(super::entrypoints::category);
-                        let intrinsic_candidate = entrypoint_base
-                            .is_some_and(|value| !value.is_null() && !value.as_str().is_some_and(str::is_empty) && !value.as_array().is_some_and(Vec::is_empty));
-                        let clear_entrypoint = graph_ranks.is_some() && category.is_none()
-                            && (intrinsic_candidate || graph_ranks.is_some_and(|ranks| ranks.contains_key(n.id.as_str())));
+                        let graph = graph_ranks
+                            .and_then(|ranks| ranks.get(n.id.as_str()))
+                            .copied()
+                            .flatten();
+                        let category = intrinsic
+                            .into_iter()
+                            .chain(graph)
+                            .min()
+                            .and_then(super::entrypoints::category);
+                        let intrinsic_candidate = entrypoint_base.is_some_and(|value| {
+                            !value.is_null()
+                                && !value.as_str().is_some_and(str::is_empty)
+                                && !value.as_array().is_some_and(Vec::is_empty)
+                        });
+                        let clear_entrypoint = graph_ranks.is_some()
+                            && category.is_none()
+                            && (intrinsic_candidate
+                                || graph_ranks
+                                    .is_some_and(|ranks| ranks.contains_key(n.id.as_str())));
                         let navigation = navigation_node
                             .navigation_details_with_documentation(&n.details)
                             .persisted(return_type.as_deref(), category, clear_entrypoint);
@@ -724,8 +884,8 @@ fn declared_return_type<'a>(node: &'a Node, facts: &TypedFacts) -> Option<Cow<'a
     (!output.is_empty()).then_some(Cow::Owned(output))
 }
 
-fn write_return_type(output: &mut String, ty: &crate::core::semantic::TypeExpr) {
-    use crate::core::semantic::TypeExpr;
+fn write_return_type(output: &mut String, ty: &forge_core::semantic::TypeExpr) {
+    use forge_core::semantic::TypeExpr;
     match ty {
         TypeExpr::Named { name } | TypeExpr::Applied { base: name, .. } => {
             output.push_str(name);
@@ -851,8 +1011,8 @@ struct StoredDependency<'a> {
 
 #[derive(Default)]
 struct DependencyInput<'a> {
-    edges: Vec<(usize, &'a [crate::core::models::compact_graph::Edge])>,
-    coverage: Vec<&'a [crate::core::models::compact_graph::Coverage]>,
+    edges: Vec<(usize, &'a [forge_core::models::compact_graph::Edge])>,
+    coverage: Vec<&'a [forge_core::models::compact_graph::Coverage]>,
 }
 
 fn persist_dependencies(
@@ -903,8 +1063,8 @@ fn persist_dependencies(
                         let Some(target) = context.target_path.as_ref() else {
                             continue;
                         };
-                        if crate::core::config::workspace_path(path).0
-                            != crate::core::config::workspace_path(target).0
+                        if forge_core::config::workspace_path(path).0
+                            != forge_core::config::workspace_path(target).0
                         {
                             continue;
                         }
@@ -986,6 +1146,30 @@ pub(super) fn persist_graph(
     facts: &BTreeMap<String, TypedFacts>,
     dependency_owners: Option<&std::collections::BTreeSet<String>>,
     known_file_entries: Option<&[FileEntry]>,
+    node_paths: &mut hashbrown::HashMap<Cow<'_, str>, Option<CachedNodePath>>,
+    materialize_edges: bool,
+) -> Result<GraphPersistenceTimings> {
+    let coverage = PreparedCoverage::new(graph, facts, known_file_entries);
+    persist_graph_prepared(
+        tx,
+        path_cache,
+        graph,
+        facts,
+        dependency_owners,
+        &coverage,
+        node_paths,
+        materialize_edges,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn persist_graph_prepared(
+    tx: &Connection,
+    path_cache: &mut PathDictionaryCache,
+    graph: &CompactGraph,
+    facts: &BTreeMap<String, TypedFacts>,
+    dependency_owners: Option<&std::collections::BTreeSet<String>>,
+    coverage: &PreparedCoverage<'_>,
     node_paths: &mut hashbrown::HashMap<Cow<'_, str>, Option<CachedNodePath>>,
     materialize_edges: bool,
 ) -> Result<GraphPersistenceTimings> {
@@ -1123,59 +1307,19 @@ pub(super) fn persist_graph(
         CoverageDictionaryCache::prefill_expressions(tx, graph, materialize_edges)?;
     let dictionaries = evidence_dictionary_ms + phase.elapsed().as_secs_f64() * 1000.;
     let phase = Instant::now();
-    // Coverage intentionally has no source column. The extracted reference still
-    // carries its exact AST owner, so retain only rows where that owner changes
-    // the HTML file/whole-line island classification. Conflicting owners stay
-    // with the file language rather than receiving a guessed JavaScript owner.
-    let mut file_languages: hashbrown::HashMap<i64, &str> =
-        hashbrown::HashMap::with_capacity(facts.len());
-    let entry_languages: hashbrown::HashMap<&str, &str> = known_file_entries
-        .into_iter()
-        .flatten()
-        .map(|entry| (entry.path.as_str(), entry.language.as_str()))
-        .collect();
-    for (path, file_facts) in facts {
-        if let Some(module) = file_facts.nodes.iter().find(|node| node.kind == "module") {
-            if !module.language.is_empty() {
-                if let Ok(owner_id) = path_cache.get_or_insert(tx, path) {
-                    file_languages.insert(owner_id, module.language.as_str());
-                }
-            }
-        }
-    }
+    let coverage_rows = &coverage.rows;
     let mut owned_languages: hashbrown::HashMap<i64, String> = hashbrown::HashMap::new();
-    let mut coverage_rows: Vec<_> = graph.coverage.iter().collect();
-    if !coverage_rows
-        .windows(2)
-        .all(|rows| compare_coverage_rows(rows[0], rows[1]).is_le())
-    {
-        if coverage_rows.len() >= 8192 {
-            coverage_rows.par_sort_unstable_by(|left, right| compare_coverage_rows(left, right));
-        } else {
-            coverage_rows.sort_unstable_by(|left, right| compare_coverage_rows(left, right));
-        }
-    }
-    coverage_rows.dedup_by(|later, first| compare_coverage_rows(first, later).is_eq());
-
     let mut path_ids: hashbrown::HashMap<&str, i64> =
         hashbrown::HashMap::with_capacity(coverage_rows.len().min(facts.len()));
     let mut missing_owners = Vec::new();
     let mut previous_path = None;
-    for c in &coverage_rows {
+    for c in coverage_rows {
         if previous_path != Some(c.path.as_ref()) {
             let owner_id = path_cache.get_or_insert(tx, &c.path)?;
             path_ids.insert(c.path.as_ref(), owner_id);
             previous_path = Some(c.path.as_ref());
-            if !file_languages.contains_key(&owner_id) {
-                if let Some(language) = entry_languages
-                    .get(c.path.as_ref())
-                    .copied()
-                    .filter(|language| !language.is_empty())
-                {
-                    file_languages.insert(owner_id, language);
-                } else {
-                    missing_owners.push(owner_id);
-                }
+            if coverage.file_language(c.path.as_ref()).is_none() {
+                missing_owners.push(owner_id);
             }
         }
     }
@@ -1194,56 +1338,6 @@ pub(super) fn persist_graph(
         }
     }
 
-    let mut html_owners = hashbrown::HashMap::new();
-    let mut html_islands: hashbrown::HashMap<&str, Vec<(usize, usize)>> = hashbrown::HashMap::new();
-    for (path, file_facts) in facts {
-        if !file_facts
-            .nodes
-            .iter()
-            .any(|node| node.kind == "module" && node.language == "html")
-        {
-            continue;
-        }
-        let node_languages: hashbrown::HashMap<_, _> = file_facts
-            .nodes
-            .iter()
-            .map(|node| (node.id.as_str(), node.language.as_str()))
-            .collect();
-        let full_islands: Vec<_> = file_facts
-            .nodes
-            .iter()
-            .filter(|node| node.kind == "island_scope" && node.language == "javascript")
-            .map(|node| (node.line, node.end_line))
-            .collect();
-        let mut owners = hashbrown::HashMap::new();
-        for reference in &file_facts.references {
-            let Some(language) = node_languages.get(reference.source.as_str()).copied() else {
-                continue;
-            };
-            let entry = owners
-                .entry((reference.line, reference.expression.as_str()))
-                .or_insert(Some(language));
-            if *entry != Some(language) {
-                *entry = None;
-            }
-        }
-        owners.retain(|(line, _), language| {
-            let whole_line_js = full_islands
-                .iter()
-                .any(|(first, last)| first <= line && line <= last);
-            match language {
-                Some("javascript") => !whole_line_js,
-                Some("html") | None => whole_line_js,
-                _ => false,
-            }
-        });
-        if !owners.is_empty() {
-            html_owners.insert(path.as_str(), owners);
-        }
-        if !full_islands.is_empty() {
-            html_islands.insert(path.as_str(), full_islands);
-        }
-    }
     let mut language_counts: BTreeMap<(i64, &str, &str), i64> = BTreeMap::new();
     let mut current_path = None;
     let mut current_owner_id = None;
@@ -1279,37 +1373,19 @@ pub(super) fn persist_graph(
             BorrowedSqlValue::Text(c.status.as_str()),
             BorrowedSqlValue::Integer(evidence_id),
         ])?;
-        let item_language = if let Some(language) = html_owners
-            .get(c.path.as_ref())
-            .and_then(|owners| owners.get(&(c.line, c.expression.as_str())))
-        {
-            let lang = language.unwrap_or("html");
+        if let Some(language) = coverage.owner_language(c) {
             owner_language_batch.push([
                 BorrowedSqlValue::Integer(owner_id),
                 BorrowedSqlValue::Integer(i64::try_from(c.line)?),
                 BorrowedSqlValue::Integer(expression_id),
                 BorrowedSqlValue::Text(c.status.as_str()),
                 BorrowedSqlValue::Integer(evidence_id),
-                BorrowedSqlValue::Text(lang),
+                BorrowedSqlValue::Text(language),
             ])?;
-            lang
-        } else if let Some(islands) = html_islands.get(c.path.as_ref()) {
-            if islands.iter().any(|(s, e)| *s <= c.line && c.line <= *e) {
-                "javascript"
-            } else if let Some(lang) = file_languages.get(&owner_id) {
-                lang
-            } else if let Some(lang) = owned_languages.get(&owner_id) {
-                lang.as_str()
-            } else {
-                "html"
-            }
-        } else if let Some(lang) = file_languages.get(&owner_id) {
-            lang
-        } else if let Some(lang) = owned_languages.get(&owner_id) {
-            lang.as_str()
-        } else {
-            ""
-        };
+        }
+        let item_language = coverage
+            .language(c, owned_languages.get(&owner_id).map(String::as_str))
+            .unwrap_or("");
         if !item_language.is_empty() {
             if let Some((_, _, count)) =
                 owner_language_counts
