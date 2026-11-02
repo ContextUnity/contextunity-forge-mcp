@@ -1,5 +1,5 @@
 use super::{text, Syntax};
-use crate::core::models::{Edge, Facts, Node, Reference};
+use forge_core::models::{Edge, Facts, Node, Reference};
 
 pub(crate) fn reference(facts: &mut Facts, owner: &str, expression: &str, kind: &str, line: usize) {
     if expression.is_empty() || expression == "_" {
@@ -159,7 +159,7 @@ fn is_declaring_type_parameter(node: Syntax<'_>, source: &str, name: &str) -> bo
 }
 
 pub(crate) fn decorator_references(
-    ctx: &crate::engine::languages::SyntaxContext<'_, '_>,
+    ctx: &crate::languages::SyntaxContext<'_, '_>,
     facts: &mut Facts,
 ) {
     let (node, source, id, offset) = (ctx.node, ctx.source, ctx.owner, ctx.offset);
@@ -254,7 +254,7 @@ fn add_field(
 }
 
 pub(crate) fn mutation(
-    ctx: &crate::engine::languages::SyntaxContext<'_, '_>,
+    ctx: &crate::languages::SyntaxContext<'_, '_>,
     facts: &mut Facts,
     field_kinds: &[&str],
     assignment_kinds: &[&str],
@@ -365,7 +365,7 @@ pub(crate) fn mutation(
 }
 
 pub(crate) fn member_access(
-    ctx: &crate::engine::languages::SyntaxContext<'_, '_>,
+    ctx: &crate::languages::SyntaxContext<'_, '_>,
     facts: &mut Facts,
     member_kinds: &[&str],
 ) {

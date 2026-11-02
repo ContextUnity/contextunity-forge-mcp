@@ -1,14 +1,14 @@
+use crate::languages;
 #[cfg(feature = "lang-rust")]
-use crate::core::models::Facts;
-use crate::core::models::Node;
-use crate::engine::languages;
+use crate::languages::ImportPath;
 #[cfg(feature = "lang-rust")]
-use crate::engine::languages::ImportPath;
+use crate::languages::{dependency_registry::DependencyRegistry, LanguageProfile};
 #[cfg(feature = "lang-rust")]
-use crate::engine::languages::{dependency_registry::DependencyRegistry, LanguageProfile};
+use crate::linker::traits::ModulesByNamespace;
+use crate::linker::value_flow::{Symbol, TypeTarget};
 #[cfg(feature = "lang-rust")]
-use crate::engine::linker::traits::ModulesByNamespace;
-use crate::engine::linker::value_flow::{Symbol, TypeTarget};
+use forge_core::models::Facts;
+use forge_core::models::Node;
 #[cfg(feature = "lang-rust")]
 use hashbrown::HashMap;
 #[cfg(feature = "lang-rust")]
@@ -50,7 +50,9 @@ pub(in crate::linker) fn receiver_symbol<'a>(
             .as_str()
             .filter(|name| *name != "Self")
         {
-            return Some(resolve_type(receiver_type));
+            let clean = super::super::receiver_type_name(receiver_type)
+                .unwrap_or(std::borrow::Cow::Borrowed(receiver_type));
+            return Some(resolve_type(clean.as_ref()));
         }
         return None;
     }
@@ -240,7 +242,7 @@ pub(in crate::linker) fn import_globs<'a, F: AsRef<Facts>>(
         }
     }
 
-    for (facts, module) in rust_modules {
+    for (facts, module) in rust_modules.clone() {
         for reference in facts.references.iter().filter(|reference| {
             reference.kind == "imports"
                 && reference.source != module.id
@@ -264,6 +266,7 @@ pub(in crate::linker) fn import_globs<'a, F: AsRef<Facts>>(
                 languages::LanguageFamily("rust"),
                 normalized,
                 languages::workspace_path(&module.path).0,
+                |namespace| rust_forwarding.module_path_visible(namespace, &module.qualname),
             );
             let [(provider, tail)] = providers.as_slice() else {
                 continue;
@@ -371,6 +374,19 @@ pub(in crate::linker) fn import_globs<'a, F: AsRef<Facts>>(
                     continue;
                 };
                 if alias == "*" {
+                    if expr.trim_end_matches("::*") == "rayon::prelude" {
+                        if let Some(namespace) = context.symbol_id(expr) {
+                            context.imports.entry(owner_id).or_default().insert(
+                                namespace,
+                                Imported::External(
+                                    expr.to_owned(),
+                                    reference.position(),
+                                    reference,
+                                    true,
+                                ),
+                            );
+                        }
+                    }
                     continue;
                 }
                 if alias_counts
@@ -393,6 +409,233 @@ pub(in crate::linker) fn import_globs<'a, F: AsRef<Facts>>(
                     );
                 }
             }
+        }
+    }
+
+    // Carry external provenance through ancestor imports independently of file order.
+    // Only ancestor imports can expose private bindings; unrelated glob providers
+    // continue to use the public forwarding projection above.
+    let mut conflicts = hashbrown::HashSet::new();
+    for _ in 0..64 {
+        let mut additions = Vec::new();
+        for facts in all.values() {
+            let facts = facts.as_ref();
+            for reference in facts.references.iter().filter(|reference| {
+                reference.kind == "imports"
+                    && reference.alias.as_deref() == Some("*")
+                    && reference
+                        .module
+                        .as_deref()
+                        .unwrap_or(&reference.expression)
+                        .trim_end_matches("::*")
+                        == "super"
+            }) {
+                let Some(owner_id) = context.symbol_id(&reference.source) else {
+                    continue;
+                };
+                let Some(owner) = by_id.get(&owner_id) else {
+                    continue;
+                };
+                let mut scope = owner.qualname.as_str();
+                let mut module = None;
+                loop {
+                    if let Some(found) = context
+                        .nodes_in_path(scope, &owner.path)
+                        .find(|node| matches!(node.kind.as_str(), "module" | "module_declaration"))
+                    {
+                        module = Some(found);
+                        break;
+                    }
+                    let Some((parent, _)) = scope.rsplit_once('.') else {
+                        break;
+                    };
+                    scope = parent;
+                }
+                let Some(module) = module else {
+                    continue;
+                };
+                let namespace = if module.kind == "module" {
+                    module
+                        .qualname
+                        .strip_suffix(".lib")
+                        .or_else(|| module.qualname.strip_suffix(".main"))
+                        .unwrap_or(&module.qualname)
+                } else {
+                    &module.qualname
+                };
+                let Some((parent, _)) = namespace.rsplit_once('.') else {
+                    continue;
+                };
+                let parent_lib = format!("{parent}.lib");
+                let parent_main = format!("{parent}.main");
+                let mut providers: Vec<_> = [parent, parent_lib.as_str(), parent_main.as_str()]
+                    .into_iter()
+                    .flat_map(|scope| {
+                        context.nodes_in_path(scope, &owner.path).chain(
+                            modules
+                                .get(&languages::LanguageFamily("rust"))
+                                .and_then(|modules| modules.get(scope))
+                                .into_iter()
+                                .flatten()
+                                .copied(),
+                        )
+                    })
+                    .filter(|node| matches!(node.kind.as_str(), "module" | "module_declaration"))
+                    .collect();
+                providers.sort_by_key(|node| node.id.as_str());
+                providers.dedup_by_key(|node| node.id.as_str());
+                let [provider] = providers.as_slice() else {
+                    continue;
+                };
+                let Some(provider_id) = context.symbol_id(&provider.id) else {
+                    continue;
+                };
+                for (&name, imported) in context.imports.get(&provider_id).into_iter().flatten() {
+                    let Imported::External(origin, _, original, _) = imported else {
+                        continue;
+                    };
+                    if original.alias.as_deref() == Some("*")
+                        && origin.trim_end_matches("::*") == "rayon::prelude"
+                        && !context
+                            .imports
+                            .get(&owner_id)
+                            .is_some_and(|aliases| aliases.contains_key(&name))
+                    {
+                        additions.push((
+                            owner_id,
+                            name,
+                            origin.clone(),
+                            reference.position(),
+                            *original,
+                        ));
+                    }
+                }
+            }
+        }
+        for (facts, module) in rust_modules.clone() {
+            for reference in facts
+                .references
+                .iter()
+                .filter(|reference| reference.kind == "imports" && reference.alias.is_some())
+            {
+                let glob = reference.alias.as_deref() == Some("*");
+                let raw = reference.module.as_deref().unwrap_or(&reference.expression);
+                let Some(normalized) = normalized_imports
+                    .get(&(module.path.as_str(), raw))
+                    .and_then(Option::as_ref)
+                else {
+                    continue;
+                };
+                let providers = languages::rust::linker::modules_at_import(
+                    modules,
+                    languages::LanguageFamily("rust"),
+                    normalized,
+                    languages::workspace_path(&module.path).0,
+                    |namespace| rust_forwarding.module_path_visible(namespace, &module.qualname),
+                );
+                let [(provider, tail)] = providers.as_slice() else {
+                    continue;
+                };
+                let namespace = provider
+                    .qualname
+                    .strip_suffix(".lib")
+                    .or_else(|| provider.qualname.strip_suffix(".main"))
+                    .unwrap_or(&provider.qualname);
+                if (glob && !matches!(tail.as_str(), "" | "*"))
+                    || (!glob && (tail.is_empty() || tail.contains('.') || tail == "*"))
+                    || !module
+                        .qualname
+                        .strip_prefix(namespace)
+                        .is_some_and(|suffix| suffix.starts_with('.'))
+                {
+                    continue;
+                }
+                let Some(owner_id) = context.symbol_id(&reference.source) else {
+                    continue;
+                };
+                let Some(provider_id) = context.symbol_id(&provider.id) else {
+                    continue;
+                };
+                for (&provider_name_id, imported) in
+                    context.imports.get(&provider_id).into_iter().flatten()
+                {
+                    let Imported::External(origin, _, original, _) = imported else {
+                        continue;
+                    };
+                    if original.alias.as_deref() == Some("*") {
+                        continue;
+                    }
+                    let provider_name = context.symbol_name(provider_name_id);
+                    if !glob && provider_name != tail {
+                        continue;
+                    }
+                    let name = if glob {
+                        provider_name
+                    } else {
+                        reference.alias.as_deref().unwrap()
+                    };
+                    let Some(name_id) = context.symbol_id(name) else {
+                        continue;
+                    };
+                    if conflicts.contains(&(owner_id, name_id)) {
+                        continue;
+                    }
+                    if facts.references.iter().any(|candidate| {
+                        !std::ptr::eq(candidate, reference)
+                            && candidate.kind == "imports"
+                            && candidate.source == reference.source
+                            && candidate.alias.as_deref() == Some(name)
+                    }) || facts.nodes.iter().any(|node| {
+                        node.kind != "module_declaration"
+                            && node.kind != "impl"
+                            && node
+                                .qualname
+                                .rsplit_once('.')
+                                .is_some_and(|(scope, candidate)| {
+                                    scope == module.qualname && candidate == name
+                                })
+                    }) {
+                        continue;
+                    }
+                    let existing = context
+                        .imports
+                        .get(&owner_id)
+                        .and_then(|aliases| aliases.get(&name_id));
+                    if matches!(existing, None | Some(Imported::Unknown))
+                        || matches!(existing, Some(Imported::External(existing, ..)) if existing != origin)
+                    {
+                        additions.push((
+                            owner_id,
+                            name_id,
+                            origin.clone(),
+                            reference.position(),
+                            if glob { *original } else { reference },
+                        ));
+                    }
+                }
+            }
+        }
+        if additions.is_empty() {
+            break;
+        }
+        for (owner, name, origin, position, reference) in additions {
+            let aliases = context.imports.entry(owner).or_default();
+            if matches!(aliases.get(&name), Some(Imported::External(existing, ..)) if existing != &origin)
+            {
+                conflicts.insert((owner, name));
+            }
+            if conflicts.contains(&(owner, name)) {
+                aliases.insert(name, Imported::Unknown);
+            } else {
+                aliases.insert(name, Imported::External(origin, position, reference, true));
+            }
+        }
+        for &(owner, name) in &conflicts {
+            context
+                .imports
+                .entry(owner)
+                .or_default()
+                .insert(name, Imported::Unknown);
         }
     }
 }

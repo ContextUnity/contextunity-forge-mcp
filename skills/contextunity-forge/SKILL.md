@@ -157,12 +157,22 @@ milestone-frontmatter divergence from task-spec changes and gives exact remediat
 
 ### Tests and scope
 
-Drive admitted contracts through real collaborating components and the existing domain suites, not
-synthetic stubs. Prefer existing test suites; inspect `covering_tests` during contract work and add cases
-to existing domain suites where possible. Create a test file only when no existing suite covers the
-module or a genuinely isolated regression harness is required. Use structured case tables, shared
-fixtures/harnesses/temp directories, and `TESTS.md` plus `tests/AGENTS.md` for target placement and
-commands.
+Drive admitted contracts through real collaborating components and existing domain suites, not
+synthetic stubs. Contract authoring is an architectural synthesis phase: design the subsystem
+data flow and typed invariants first, then establish a compiling runtime-red seam test as executable
+proof of the unfulfilled contract.
+
+Extend existing domain suites with structured case tables (`for case in cases`) ONLY when testing
+input permutations of the same unit/capability. For distinct capabilities, task contracts, or invariants,
+author dedicated, descriptively-named test functions within the domain file; NEVER dump unrelated
+scenarios into single monolithic test functions. Create a new test file only when no existing suite
+covers the module or a genuinely isolated regression harness is required.
+
+Reviewers MUST strictly reject superficial hacks, string-based heuristics (e.g. path shape guesses,
+magic substrings), duplicate registries, or duct-tape patches designed merely to appease a test. If an
+implementation requires repeated duct-tape fixes across review rounds, reject the architecture and
+require root-cause redesign. Use shared fixtures/harnesses/temp directories, and `TESTS.md` plus
+`tests/AGENTS.md` for target placement and commands.
 
 Keep each task focused on one public production seam and add subtask cases there. Stay within
 admitted scope; use `task_manage(action="extend_scope")` before editing outside it and follow the contract's scope

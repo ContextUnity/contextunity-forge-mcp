@@ -1,6 +1,6 @@
 use super::*;
-use crate::core::models::ReceiverHint;
-use crate::engine::ast::{relations, routes};
+use forge_core::models::ReceiverHint;
+use crate::ast::{relations, routes};
 
 mod dom;
 mod projections;
@@ -57,7 +57,7 @@ fn simple_reference(
 
 pub(crate) fn finalize_configured_projections(
     facts: &mut Facts,
-    flows: Option<&mut crate::core::typed_facts::FlowStore>,
+    flows: Option<&mut forge_core::typed_facts::FlowStore>,
     file: &FileContext,
 ) {
     projections::finalize_projections(facts, flows, file);
@@ -1593,7 +1593,7 @@ impl LanguageProfile for TypeScript {
         root: Syntax<'_>,
         source: &str,
         bindings: &ast::ScopeBindings,
-    ) -> Option<Vec<crate::core::semantic::ExportBinding>> {
+    ) -> Option<Vec<forge_core::semantic::ExportBinding>> {
         Some(value_flow::exports(root, source, bindings))
     }
 
@@ -1604,7 +1604,7 @@ impl LanguageProfile for TypeScript {
         path: &str,
         file: &FileContext,
     ) -> Option<&'static str> {
-        if !crate::core::models::is_test(path)
+        if !forge_core::models::is_test(path)
             || !matches!(
                 node.kind(),
                 "function_declaration"
@@ -1623,12 +1623,12 @@ impl LanguageProfile for TypeScript {
         root: Syntax<'_>,
         source: &str,
         facts: &mut Facts,
-        exports: &[crate::core::semantic::ExportBinding],
+        exports: &[forge_core::semantic::ExportBinding],
     ) {
         visibility::finalize_file_visibility(self.javascript, root, source, facts, exports);
     }
 
-    fn value_flow(&self, node: Syntax<'_>, source: &str) -> crate::core::semantic::ValueFlowFacts {
+    fn value_flow(&self, node: Syntax<'_>, source: &str) -> forge_core::semantic::ValueFlowFacts {
         value_flow::extract(node, source)
     }
 
@@ -1648,7 +1648,7 @@ impl LanguageProfile for TypeScript {
         source: &str,
         name: &str,
         file: &FileContext,
-    ) -> (SymbolMetadata, crate::core::semantic::ValueFlowFacts) {
+    ) -> (SymbolMetadata, forge_core::semantic::ValueFlowFacts) {
         let (parameters, returned, _) = value_flow::jsdoc(node, source);
         let metadata = self.metadata_with_documented(node, source, name, file, parameters);
         let flow = value_flow::extract_with_return(node, source, || returned);
@@ -1968,7 +1968,7 @@ impl LanguageProfile for TypeScript {
         facts: &mut Facts,
         symbols: &HashMap<usize, String>,
         rules: &super::LanguageContext,
-        route_context: &crate::engine::ast::routes::RouteContext,
+        route_context: &crate::ast::routes::RouteContext,
     ) {
         self.extract_routes_with_rule_ir(ctx, facts, symbols, rules, &rules.rule_ir, route_context);
     }
@@ -1979,7 +1979,7 @@ impl LanguageProfile for TypeScript {
         symbols: &HashMap<usize, String>,
         rules: &super::LanguageContext,
         rule_ir: &super::manifests::RuleIRHandle,
-        route_context: &crate::engine::ast::routes::RouteContext,
+        route_context: &crate::ast::routes::RouteContext,
     ) {
         let mut projections = HashMap::new();
         self.extract_routes_with_typed_projections(
@@ -2003,8 +2003,8 @@ impl LanguageProfile for TypeScript {
         symbols: &HashMap<usize, String>,
         rules: &super::LanguageContext,
         rule_ir: &super::manifests::RuleIRHandle,
-        route_context: &crate::engine::ast::routes::RouteContext,
-        projections: &mut HashMap<String, crate::core::semantic::ValueFlowFacts>,
+        route_context: &crate::ast::routes::RouteContext,
+        projections: &mut HashMap<String, forge_core::semantic::ValueFlowFacts>,
     ) {
         extract_projections(ctx, rules);
         if matches!(ctx.node.kind(), "method_definition" | "method_declaration") {

@@ -22,5 +22,5 @@ pub mod semantic;
 /// Implements host and cgroup system support.
 pub mod sys;
 /// Implements tasks support.
-pub mod tasks;
+pub use forge_tasks::tasks;
 pub(crate) mod typed_facts;

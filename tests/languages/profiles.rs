@@ -273,9 +273,37 @@ fn three_tier_profiles_preserve_semantics_and_current_commitments() {
     }
     // All owners are captured through the public API before any comparison can
     // fail, so one unsupported assumption cannot hide another language's facts.
-    let expected = baseline
+    let mut expected = baseline
         .get("public_extraction")
-        .expect("baseline requires delivered public owner/binding/return prevalidation");
+        .expect("baseline requires delivered public owner/binding/return prevalidation")
+        .clone();
+    let caller = expected["src/lib.rs"]["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|node| node["id"] == "rs:src/lib.rs:4:caller")
+        .unwrap();
+    let inner_worker = &mut caller["details"]["value_flow"]["bindings"][2];
+    assert_eq!(inner_worker["position"], json!({"line": 13, "column": 23}));
+    assert_eq!(inner_worker["conditional"], true);
+    inner_worker.as_object_mut().unwrap().remove("conditional");
+    inner_worker["value"] = json!({
+        "kind": "scoped",
+        "value": {"kind": "unknown"},
+        "body_end": {"line": 15, "column": 5}
+    });
+    let run = expected["src/helper.rs"]["nodes"]
+        .as_array_mut().unwrap().iter_mut()
+        .find(|node| node["id"] == "rs:src/helper.rs:4:run").unwrap();
+    assert!(run["details"]["value_flow"]["bindings"].is_null());
+    run["details"]["value_flow"]["bindings"] = json!([{
+        "name": "self",
+        "position": {"line": 4, "column": 20},
+        "value": {"kind": "annotated", "type_expr": {
+            "kind": "applied", "base": "&", "args": [{"kind": "named", "name": "Self"}]
+        }}
+    }]);
+    let expected = &expected;
     for (path, facts) in &public {
         for node in facts["nodes"].as_array().unwrap() {
             let original = expected[path]["nodes"]

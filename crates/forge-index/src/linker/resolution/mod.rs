@@ -1,9 +1,9 @@
 use super::*;
-use crate::core::typed_facts::FlowState;
-use crate::engine::languages::{
+use forge_core::typed_facts::FlowState;
+use crate::languages::{
     ImportPath, LanguageProfile, dependency_registry::DependencyRegistry,
 };
-use crate::engine::linker::traits::{ModulesByNamespace, PackageExports, import_provider_modules};
+use crate::linker::traits::{ModulesByNamespace, PackageExports, import_provider_modules};
 
 type ExternalAliases<'a> = HashMap<&'a str, Option<(String, usize)>>;
 mod documentation;
@@ -17,7 +17,7 @@ fn chained_member_receiver<'a, 'idx, F>(
     fields: &str,
     owner: &'a Node,
     path: &str,
-    at: crate::core::semantic::SourcePosition,
+    at: forge_core::semantic::SourcePosition,
     input: &ResolutionInput<'a, F>,
     profile: Option<&dyn LanguageProfile>,
 ) -> Option<Cow<'idx, value_flow::TypeTarget<'a>>>
@@ -139,8 +139,8 @@ fn document_symbol_candidates<'a>(
             !matches!(node.kind.as_str(), "document" | "invariant" | "component")
                 && target_path.map_or_else(
                     || {
-                        crate::core::config::workspace_path(&node.path).0
-                            == crate::core::config::workspace_path(source_path).0
+                        forge_core::config::workspace_path(&node.path).0
+                            == forge_core::config::workspace_path(source_path).0
                     },
                     |path| node.path == path,
                 )
@@ -346,7 +346,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
             let path = *path;
             let facts = *facts;
             let restored_references = occurrences.and_then(|files| files.get(path)).map(|bytes| {
-                crate::core::semantic::decode_catalog_references(bytes, &facts.references)
+                forge_core::semantic::decode_catalog_references(bytes, &facts.references)
             });
             let references = restored_references.as_deref().unwrap_or(&facts.references);
             let profile = profiles.get(path).copied();

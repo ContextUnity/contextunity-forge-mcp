@@ -16,6 +16,16 @@ open_in_memory = { kind = "self" }
 open_with_flags = { kind = "self" }
 prepare = { kind = "receiver", base = "rusqlite::Statement" }
 prepare_cached = { kind = "receiver", base = "rusqlite::Statement" }
+transaction = { kind = "receiver", base = "rusqlite::Transaction" }
+unchecked_transaction = { kind = "receiver", base = "rusqlite::Transaction" }
+
+[[class_hierarchy_receivers]]
+bases = ["rusqlite::Transaction", "Transaction"]
+provider = "rusqlite"
+members = ["execute", "execute_batch", "prepare", "prepare_cached", "query_row", "query_row_and_then", "commit", "rollback", "is_autocommit"]
+[class_hierarchy_receivers.returns]
+prepare = { kind = "receiver", base = "rusqlite::Statement" }
+prepare_cached = { kind = "receiver", base = "rusqlite::Statement" }
 
 [[class_hierarchy_receivers]]
 bases = ["rusqlite::Statement", "Statement"]
@@ -24,11 +34,23 @@ members = [
     "execute", "query", "query_map", "query_row", "query_and_then",
     "raw_bind_parameter", "parameter_count", "column_count", "column_names"
 ]
+[class_hierarchy_receivers.returns]
+query = { kind = "receiver", base = "rusqlite::Rows" }
+
+[[class_hierarchy_receivers]]
+bases = ["rusqlite::Rows", "Rows"]
+provider = "rusqlite"
+members = ["next"]
+[class_hierarchy_receivers.returns]
+next = { kind = "receiver", base = "rusqlite::Row" }
 
 [[class_hierarchy_receivers]]
 bases = ["rusqlite::Row", "Row"]
 provider = "rusqlite"
 members = ["get", "get_ref", "get_unwrap"]
+[class_hierarchy_receivers.returns]
+get = { kind = "receiver", base = "Result" }
+get_ref = { kind = "receiver", base = "Result" }
 
 # tree-sitter
 [[class_hierarchy_receivers]]
@@ -55,10 +77,13 @@ members = [
     "child", "child_count", "named_child", "named_child_count",
     "child_by_field_name", "child_by_field_id",
     "parent", "next_sibling", "prev_sibling", "next_named_sibling", "prev_named_sibling",
-    "utf8_text", "walk"
+    "utf8_text", "walk", "children", "named_children"
 ]
 [class_hierarchy_receivers.returns]
 child = { kind = "receiver", base = "tree_sitter::Node" }
+named_child = { kind = "receiver", base = "tree_sitter::Node" }
+children = { kind = "receiver", base = "tree_sitter::Node" }
+named_children = { kind = "receiver", base = "tree_sitter::Node" }
 child_by_field_name = { kind = "receiver", base = "tree_sitter::Node" }
 parent = { kind = "receiver", base = "tree_sitter::Node" }
 next_sibling = { kind = "receiver", base = "tree_sitter::Node" }
@@ -96,6 +121,21 @@ members = [
     "as_f64", "as_str", "as_array", "as_array_mut", "as_object", "as_object_mut",
     "to_string"
 ]
+[class_hierarchy_receivers.returns]
+get = { kind = "self" }
+as_str = { kind = "receiver", base = "str" }
+as_array = { kind = "receiver", base = "Vec" }
+
+# tokio
+[[class_hierarchy_receivers]]
+bases = ["serde_json"]
+provider = "serde_json"
+members = ["from_str", "from_slice", "from_reader", "from_value"]
+[class_hierarchy_receivers.returns]
+from_str = { kind = "receiver", base = "Result" }
+from_slice = { kind = "receiver", base = "Result" }
+from_reader = { kind = "receiver", base = "Result" }
+from_value = { kind = "receiver", base = "Result" }
 
 # tokio
 [[class_hierarchy_receivers]]
@@ -183,13 +223,20 @@ members = ["metadata", "fields", "parent"]
 
 # rayon
 [[class_hierarchy_receivers]]
+bases = ["Vec", "Slice"]
+provider = "rayon"
+members = ["par_iter", "par_iter_mut", "into_par_iter"]
+returns = { "par_iter" = { kind = "receiver", base = "rayon::iter::ParallelIterator" }, "par_iter_mut" = { kind = "receiver", base = "rayon::iter::ParallelIterator" }, "into_par_iter" = { kind = "receiver", base = "rayon::iter::ParallelIterator" } }
+
+[[class_hierarchy_receivers]]
 bases = ["rayon::iter::ParallelIterator", "ParallelIterator"]
 provider = "rayon"
 members = [
-    "par_iter", "par_iter_mut", "into_par_iter", "for_each", "map", "filter",
+    "for_each", "map", "filter",
     "filter_map", "flat_map", "collect", "reduce", "sum", "count", "find_any",
     "any", "all"
 ]
+returns = { "map" = { kind = "self" }, "filter" = { kind = "self" }, "filter_map" = { kind = "self" }, "flat_map" = { kind = "self" } }
 
 [[class_hierarchy_receivers]]
 bases = ["rayon::ThreadPool", "ThreadPool"]
@@ -207,6 +254,7 @@ members = [
 [class_hierarchy_receivers.returns]
 new = { kind = "self" }
 new_in = { kind = "self" }
+path = { kind = "receiver", base = "std::path::Path" }
 
 [[class_hierarchy_receivers]]
 bases = ["tempfile::TempDir", "TempDir"]
@@ -215,11 +263,20 @@ members = ["new", "new_in", "path", "into_path", "close"]
 [class_hierarchy_receivers.returns]
 new = { kind = "self" }
 new_in = { kind = "self" }
+path = { kind = "receiver", base = "std::path::Path" }
 
 [[class_hierarchy_receivers]]
 bases = ["tempfile::Builder", "Builder"]
 provider = "tempfile"
 members = ["new", "prefix", "suffix", "rand_bytes", "tempfile", "tempfile_in", "tempdir", "tempdir_in"]
+[class_hierarchy_receivers.returns]
+new = { kind = "self" }
+prefix = { kind = "self" }
+suffix = { kind = "self" }
+tempdir = { kind = "receiver", base = "tempfile::TempDir" }
+tempdir_in = { kind = "receiver", base = "tempfile::TempDir" }
+tempfile = { kind = "receiver", base = "tempfile::NamedTempFile" }
+tempfile_in = { kind = "receiver", base = "tempfile::NamedTempFile" }
 
 # regex
 [[class_hierarchy_receivers]]
@@ -303,11 +360,19 @@ provider = "walkdir"
 members = ["new", "into_iter", "min_depth", "max_depth", "follow_links", "filter_entry", "sort_by", "sort_by_file_name"]
 [class_hierarchy_receivers.returns]
 new = { kind = "self" }
+into_iter = { kind = "receiver", base = "walkdir::DirEntry" }
+min_depth = { kind = "self" }
+max_depth = { kind = "self" }
+follow_links = { kind = "self" }
 
 [[class_hierarchy_receivers]]
 bases = ["walkdir::DirEntry", "DirEntry"]
 provider = "walkdir"
 members = ["path", "file_name", "depth", "file_type", "metadata"]
+[class_hierarchy_receivers.returns]
+path = { kind = "receiver", base = "std::path::Path" }
+file_name = { kind = "receiver", base = "std::ffi::OsStr" }
+file_type = { kind = "receiver", base = "std::fs::FileType" }
 
 # ignore
 [[class_hierarchy_receivers]]
@@ -319,6 +384,10 @@ members = ["new", "build", "add", "hidden", "ignore", "git_global", "git_ignore"
 bases = ["ignore::DirEntry", "DirEntry"]
 provider = "ignore"
 members = ["path", "file_name", "depth", "file_type", "metadata"]
+[class_hierarchy_receivers.returns]
+path = { kind = "receiver", base = "std::path::Path" }
+file_name = { kind = "receiver", base = "std::ffi::OsStr" }
+file_type = { kind = "receiver", base = "std::fs::FileType" }
 
 # toml
 [[class_hierarchy_receivers]]
@@ -343,6 +412,8 @@ members = [
 bases = ["chrono::Utc", "Utc"]
 provider = "chrono"
 members = ["now"]
+[class_hierarchy_receivers.returns]
+now = { kind = "receiver", base = "chrono::DateTime" }
 
 # git2
 [[class_hierarchy_receivers]]
@@ -351,13 +422,44 @@ provider = "git2"
 members = [
     "open", "init", "discover", "head", "find_commit", "find_reference",
     "find_tree", "status", "statuses", "diff_tree_to_tree", "diff_tree_to_workdir",
-    "worktrees", "find_worktree"
+    "worktrees", "find_worktree", "index"
 ]
+[class_hierarchy_receivers.returns]
+open = { kind = "self" }
+init = { kind = "self" }
+discover = { kind = "self" }
+head = { kind = "receiver", base = "git2::Reference" }
+find_reference = { kind = "receiver", base = "git2::Reference" }
+find_commit = { kind = "receiver", base = "git2::Commit" }
+find_tree = { kind = "receiver", base = "git2::Tree" }
+index = { kind = "receiver", base = "git2::Index" }
 
 [[class_hierarchy_receivers]]
 bases = ["git2::Commit", "Commit"]
 provider = "git2"
 members = ["id", "message", "author", "committer", "time", "tree", "parent", "parent_count", "parents"]
+[class_hierarchy_receivers.returns]
+tree = { kind = "receiver", base = "git2::Tree" }
+parent = { kind = "self" }
+
+[[class_hierarchy_receivers]]
+bases = ["git2::Tree", "Tree"]
+provider = "git2"
+members = ["id", "len", "is_empty", "get", "get_name", "get_path", "iter", "walk"]
+
+[[class_hierarchy_receivers]]
+bases = ["git2::Index", "Index"]
+provider = "git2"
+members = ["read", "write", "write_tree", "add_path", "add_all", "remove_path", "clear", "len", "is_empty", "get_path", "iter"]
+
+[[class_hierarchy_receivers]]
+bases = ["git2::Reference", "Reference"]
+provider = "git2"
+members = ["name", "shorthand", "target", "symbolic_target", "resolve", "peel_to_commit", "peel_to_tree", "is_branch", "is_tag", "delete"]
+[class_hierarchy_receivers.returns]
+resolve = { kind = "self" }
+peel_to_commit = { kind = "receiver", base = "git2::Commit" }
+peel_to_tree = { kind = "receiver", base = "git2::Tree" }
 
 # sha2
 [[class_hierarchy_receivers]]
@@ -442,6 +544,15 @@ members = ["new", "new_ext", "into_offset_iter"]
 
 # serde_yaml
 [[class_hierarchy_receivers]]
+bases = ["serde_yaml"]
+provider = "serde_yaml"
+members = ["from_str", "from_slice", "from_reader"]
+[class_hierarchy_receivers.returns]
+from_str = { kind = "receiver", base = "Result" }
+from_slice = { kind = "receiver", base = "Result" }
+from_reader = { kind = "receiver", base = "Result" }
+
+[[class_hierarchy_receivers]]
 bases = ["serde_yaml::Value", "Value"]
 provider = "serde_yaml"
 members = [
@@ -449,3 +560,11 @@ members = [
     "is_string", "is_sequence", "is_mapping", "as_bool", "as_i64", "as_u64",
     "as_f64", "as_str", "as_sequence", "as_mapping"
 ]
+
+[[class_hierarchy_receivers]]
+bases = ["hex"]
+provider = "hex"
+members = ["encode", "encode_upper", "decode", "decode_to_slice"]
+[class_hierarchy_receivers.returns]
+encode = { kind = "receiver", base = "String" }
+encode_upper = { kind = "receiver", base = "String" }

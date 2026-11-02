@@ -873,7 +873,7 @@ fn starlette_and_fastapi_pack_relations_are_exact() {
     );
     workspace.write(
         ".forge/frameworks/starlette.toml",
-        include_str!("../../../src/engine/languages/manifests/starlette.toml"),
+        include_str!("../../../crates/forge-index/src/languages/manifests/starlette.toml"),
     );
     workspace.write(
         "models.py",
@@ -1026,7 +1026,7 @@ fn starlette_and_fastapi_pack_relations_are_exact() {
 
     let manifest = ".forge/frameworks/fastapi.toml";
     let mut pack: toml::Value = toml::from_str(include_str!(
-        "../../../src/engine/languages/manifests/fastapi.toml"
+        "../../../crates/forge-index/src/languages/manifests/fastapi.toml"
     ))
     .unwrap();
     pack.as_table_mut()
@@ -1240,7 +1240,7 @@ fn gridviewspec_pack_bindings_follow_unique_targets() {
 
     // A workspace extension adds a project API without replacing the verified catalogue.
     let bundled: toml::Value = toml::from_str(include_str!(
-        "../../../src/engine/languages/manifests/gridviewspec.toml"
+        "../../../crates/forge-index/src/languages/manifests/gridviewspec.toml"
     ))
     .unwrap();
     assert_eq!(
@@ -1287,7 +1287,7 @@ fn gridviewspec_pack_bindings_follow_unique_targets() {
 
     let manifest = ".forge/frameworks/gridviewspec.toml";
     let mut pack: toml::Value = toml::from_str(include_str!(
-        "../../../src/engine/languages/manifests/gridviewspec.toml"
+        "../../../crates/forge-index/src/languages/manifests/gridviewspec.toml"
     ))
     .unwrap();
     pack.as_table_mut()
@@ -1426,7 +1426,7 @@ fn gridviewspec_pack_bindings_follow_unique_targets() {
         scoped.write("consumer.py", &consumer);
         runtime.write("src/consumer.py", &consumer);
         let mut policy: toml::Value = toml::from_str(include_str!(
-            "../../../src/engine/languages/manifests/gridviewspec.toml"
+            "../../../crates/forge-index/src/languages/manifests/gridviewspec.toml"
         ))
         .unwrap();
         for rule in policy["syntax_rules"].as_array_mut().unwrap() {

@@ -198,11 +198,11 @@ fn htmx_and_alpine_relations_follow_exact_targets_and_effective_rules() {
     let packs = [
         (
             "htmx",
-            include_str!("../../../src/engine/languages/manifests/htmx.toml"),
+            include_str!("../../../crates/forge-index/src/languages/manifests/htmx.toml"),
         ),
         (
             "alpinejs",
-            include_str!("../../../src/engine/languages/manifests/alpinejs.toml"),
+            include_str!("../../../crates/forge-index/src/languages/manifests/alpinejs.toml"),
         ),
     ];
     for (name, source) in packs {
@@ -524,7 +524,7 @@ urlpatterns = [
     check_state(&workspace, 2, true);
 
     // HTMX framework pack override with replace=true and empty syntax rules
-    let htmx_pack_src = include_str!("../../../src/engine/languages/manifests/htmx.toml");
+    let htmx_pack_src = include_str!("../../../crates/forge-index/src/languages/manifests/htmx.toml");
     let override_path = ".forge/frameworks/htmx.toml";
     let mut pack: toml::Value = toml::from_str(htmx_pack_src).unwrap();
     pack.as_table_mut().unwrap().insert("replace".into(), true.into());

@@ -77,7 +77,8 @@ where
         } = resolution;
         candidates.sort_by(|a, b| a.id.cmp(&b.id));
         candidates.dedup_by_key(|n| &n.id);
-        crate::engine::linker::traits::filter_stubs_and_overloads(&mut candidates);
+        candidates.retain(|n| n.kind != "impl");
+        crate::linker::traits::filter_stubs_and_overloads(&mut candidates);
         let external = if modules.is_empty() && normalized.as_ref().is_some_and(|n| !n.relative) {
             profile.and_then(|p| {
                 dependency_registry.classification_for_path(
@@ -326,6 +327,29 @@ where
                         .insert(alias, Some(target_ext));
                 }
             }
+            #[cfg(feature = "lang-rust")]
+            if profile.is_some_and(|profile| profile.id() == "rust")
+                && targets.is_empty()
+                && !local_declaration
+                && normalized.is_some_and(|import| import.relative)
+            {
+                if let Some(semantic_context::Imported::External(origin, position, _, _)) = input
+                    .interner
+                    .lookup_symbol(&r.source)
+                    .and_then(|owner| semantic_context.imports.get(&owner))
+                    .and_then(|bindings| {
+                        input
+                            .interner
+                            .lookup_symbol(alias)
+                            .and_then(|name| bindings.get(&name))
+                    })
+                {
+                    external_aliases
+                        .entry(scope)
+                        .or_default()
+                        .insert(alias, Some((origin.replace("::", "."), position.line)));
+                }
+            }
             let alias_taken = aliases
                 .get(scope)
                 .is_some_and(|entries| entries.contains_key(alias));
@@ -520,6 +544,30 @@ where
                     bindings.remove(name);
                 } else {
                     bindings.insert(name, targets.to_vec());
+                }
+            }
+        }
+        let bindings = aliases.entry(module.qualname.as_str()).or_default();
+        if let Some(imports) = input
+            .interner
+            .lookup_symbol(&module.id)
+            .and_then(|id| semantic_context.imports.get(&id))
+        {
+            for imported in imports.values() {
+                if let semantic_context::Imported::External(origin, position, reference, _) =
+                    imported
+                {
+                    if let Some(name) = reference.alias.as_deref() {
+                        if bindings.get(name).is_none_or(Vec::is_empty) {
+                            external_aliases
+                                .entry(module.qualname.as_str())
+                                .or_default()
+                                .entry(name)
+                                .or_insert_with(|| {
+                                    Some((origin.replace("::", "."), position.line))
+                                });
+                        }
+                    }
                 }
             }
         }

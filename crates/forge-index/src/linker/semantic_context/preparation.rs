@@ -120,6 +120,8 @@ impl<'a> Context<'a> {
             python: None,
             #[cfg(feature = "lang-rust")]
             rust: None,
+            #[cfg(feature = "lang-rust")]
+            rust_forwarding,
             #[cfg(feature = "lang-typescript")]
             typescript: None,
         };

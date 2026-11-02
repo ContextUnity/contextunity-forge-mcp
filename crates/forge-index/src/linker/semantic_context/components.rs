@@ -227,7 +227,7 @@ impl<'a> super::Context<'a> {
                             .and_then(|id| self.flows?.get(&id))
                     })
                     .and_then(|state| match state {
-                        crate::core::typed_facts::FlowState::Valid { facts, .. } => {
+                        forge_core::typed_facts::FlowState::Valid { facts, .. } => {
                             Some(facts.component_configurations())
                         }
                         _ => None,

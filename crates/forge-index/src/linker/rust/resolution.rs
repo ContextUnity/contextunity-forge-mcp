@@ -1,9 +1,113 @@
 use super::super::semantic_context::LanguageMemberLookup;
-use crate::core::models::{Node, ReceiverHint, Reference, compact_graph::Graph};
-use crate::engine::languages::LanguageProfile;
+use crate::languages::LanguageProfile;
+use forge_core::models::{compact_graph::Graph, Node, ReceiverHint, Reference};
 use hashbrown::HashMap;
 
 pub use crate::languages::rust::declarative_macro_classification;
+
+pub(in crate::linker) fn dynamic_receiver_member<'a, F>(
+    input: &super::super::resolution::ResolutionInput<'a, F>,
+    path: &str,
+    reference: &Reference,
+    owner: Option<&'a Node>,
+    graph: &mut Graph,
+) -> bool
+where
+    F: AsRef<forge_core::models::Facts> + Sync,
+{
+    use super::super::{semantic_context::Member, value_flow::TypeTarget};
+
+    let Some(owner) = owner.filter(|owner| owner.language == "rust") else {
+        return false;
+    };
+    if reference.kind != "calls" {
+        return false;
+    }
+    let (receiver, member) =
+        if let Some((member, receiver)) = reference.receiver_hint.as_ref().and_then(|hint| {
+            let ReceiverHint::CallResult { member, .. } = hint else { return None; };
+            input.value_flow.computed_receiver(reference)
+                .filter(|receiver| !matches!(receiver, TypeTarget::Unknown))
+                .map(|receiver| (member, receiver))
+        }) {
+            (std::borrow::Cow::Borrowed(receiver), member.as_str())
+        } else {
+            let Some((receiver, member)) = reference.expression.rsplit_once('.') else {
+                return false;
+            };
+            let Some(value) = fallback_receiver_value(receiver, reference.position()) else { return false; };
+            (
+                std::borrow::Cow::Owned(input.value_flow.resolve_value(
+                    owner,
+                    &value,
+                    reference.position(),
+                    input.semantic_context,
+                )),
+                member,
+            )
+        };
+    if matches!(
+        receiver.as_ref(),
+        TypeTarget::Unknown | TypeTarget::Ambiguous | TypeTarget::Candidates { .. }
+    ) {
+        return false;
+    }
+    let result = input
+        .semantic_context
+        .lookup_member(receiver.as_ref(), member, owner);
+    if matches!(result, Member::Unknown) {
+        return false;
+    }
+    if let Member::Local(node) = result {
+        if matches!(
+            node.kind.as_str(),
+            "method" | "function" | "function_item" | "function_signature_item"
+        ) && !input.semantic_context.is_rust_inherent_member(node)
+        {
+            return false;
+        }
+    }
+    super::super::emit_inferred(
+        graph,
+        path,
+        reference,
+        result,
+        Some("Rust standard library"),
+    );
+    true
+}
+
+fn fallback_receiver_value(
+    expression: &str,
+    at: forge_core::semantic::SourcePosition,
+) -> Option<forge_core::semantic::ValueExpr> {
+    use forge_core::semantic::{CallSiteEvidence, ValueExpr};
+    if expression.len() > 512 { return None; }
+    if !expression.contains('.') && !expression.contains("::") && expression.ends_with("()") {
+        return None;
+    }
+    let mut value = None;
+    for (index, segment) in expression.split('.').enumerate() {
+        if index > 6 { return None; }
+        let (segment, try_result) = segment.strip_suffix('?').map_or((segment, false), |s| (s, true));
+        let (name, called) = segment.strip_suffix("()").map_or((segment, false), |s| (s, true));
+        if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_' || (index == 0 && c == ':')) {
+            return None;
+        }
+        let next = match value {
+            None if called => ValueExpr::Call { callee: name.to_owned(), site: None },
+            None => ValueExpr::Alias { name: name.to_owned() },
+            Some(inner) if called && super::value_flow::is_adapter(name) => ValueExpr::Project { value: Box::new(inner), member: name.to_owned() },
+            Some(inner) if called => ValueExpr::Call {
+                callee: name.to_owned(),
+                site: Some(CallSiteEvidence { position: at, receiver: Some(Box::new(inner)), arguments: Vec::new() }),
+            },
+            Some(inner) => ValueExpr::Project { value: Box::new(inner), member: format!("__rust_field:{name}") },
+        };
+        value = Some(if try_result { ValueExpr::Project { value: Box::new(next), member: "?".to_owned() } } else { next });
+    }
+    value
+}
 
 /// Helper to verify registered Cargo ecosystem crates statically from ecosystem list
 pub fn is_registered_cargo_crate(crate_name: &str) -> bool {
@@ -74,14 +178,23 @@ pub(in crate::linker) fn rust_explicit_module_target(
     }
 }
 
-pub(in crate::linker) fn resolve_self_reference(
+pub(in crate::linker) fn resolve_self_reference<'a>(
     profile: Option<&dyn LanguageProfile>,
     reference: &Reference,
-    owner: Option<&Node>,
+    owner: Option<&'a Node>,
     path: &str,
-    member_lookup: &LanguageMemberLookup<'_, '_>,
+    member_lookup: &LanguageMemberLookup<'_, 'a>,
     graph: &mut Graph,
 ) -> bool {
+    if profile.is_some_and(|profile| profile.id() == "rust") && reference.kind == "calls" {
+        if let Some(crate::linker::value_flow::Symbol::Callable(target)) = owner
+            .and_then(|owner| member_lookup.rust_alias_member(owner, reference))
+        {
+            graph.reference_edge(path, reference, target.id.clone(), "calls", "exact");
+            graph.reference_coverage(path, reference, "resolved", format!("Rust type alias associated member: {}", target.qualname).into());
+            return true;
+        }
+    }
     if !profile.is_some_and(|profile| profile.id() == "rust")
         || !(reference.expression == "Self"
             || reference.expression.starts_with("Self::")
@@ -180,7 +293,7 @@ pub(in crate::linker) fn trait_object_call<'a>(
     reference: &Reference,
     owner: Option<&Node>,
     path: &str,
-    value_flow: &crate::engine::linker::value_flow::ValueFlowIndex<'a>,
+    value_flow: &crate::linker::value_flow::ValueFlowIndex<'a>,
     semantic_context: &super::super::semantic_context::Context<'a>,
     graph: &mut Graph,
 ) -> bool {
@@ -217,7 +330,10 @@ pub(in crate::linker) fn trait_object_call<'a>(
                     } else {
                         format!("{scope}.{clean}")
                     };
-                    if let Some(node) = semantic_context.nodes_in_path(&full_name, path).find(|n| n.kind == "macro") {
+                    if let Some(node) = semantic_context
+                        .nodes_in_path(&full_name, path)
+                        .find(|n| n.kind == "macro")
+                    {
                         matched_node = Some(node);
                         break;
                     }
@@ -229,22 +345,45 @@ pub(in crate::linker) fn trait_object_call<'a>(
                         };
                         for mod_node in semantic_context.nodes_in_path(&mod_name, path) {
                             if matches!(mod_node.kind.as_str(), "module" | "module_declaration") {
-                                if let Some(m) = semantic_context.nodes_in_path(&format!("{}.{tail}", mod_node.qualname), path).find(|n| n.kind == "macro") {
+                                if let Some(m) = semantic_context
+                                    .nodes_in_path(&format!("{}.{tail}", mod_node.qualname), path)
+                                    .find(|n| n.kind == "macro")
+                                {
                                     matched_node = Some(m);
                                     break;
                                 }
-                                if let Some(re_imp) = semantic_context.imported_alias(mod_node, tail) {
+                                if let Some(re_imp) =
+                                    semantic_context.imported_alias(mod_node, tail)
+                                {
                                     match re_imp {
-                                        super::super::semantic_context::Imported::Nodes(re_nodes, _, _) => {
-                                            if let Some(m) = re_nodes.iter().copied().find(|n| n.kind == "macro") {
+                                        super::super::semantic_context::Imported::Nodes(
+                                            re_nodes,
+                                            _,
+                                            _,
+                                        ) => {
+                                            if let Some(m) =
+                                                re_nodes.iter().copied().find(|n| n.kind == "macro")
+                                            {
                                                 matched_node = Some(m);
                                                 break;
                                             }
                                         }
-                                        super::super::semantic_context::Imported::External(target_path, _, _, _) => {
-                                            let re_clean = target_path.strip_prefix("crate::").unwrap_or(target_path).replace("::", ".");
-                                            let full_re = format!("{}.{re_clean}", mod_node.qualname);
-                                            if let Some(m) = semantic_context.nodes_in_path(&full_re, path).find(|n| n.kind == "macro") {
+                                        super::super::semantic_context::Imported::External(
+                                            target_path,
+                                            _,
+                                            _,
+                                            _,
+                                        ) => {
+                                            let re_clean = target_path
+                                                .strip_prefix("crate::")
+                                                .unwrap_or(target_path)
+                                                .replace("::", ".");
+                                            let full_re =
+                                                format!("{}.{re_clean}", mod_node.qualname);
+                                            if let Some(m) = semantic_context
+                                                .nodes_in_path(&full_re, path)
+                                                .find(|n| n.kind == "macro")
+                                            {
                                                 matched_node = Some(m);
                                                 break;
                                             }
@@ -280,19 +419,30 @@ pub(in crate::linker) fn trait_object_call<'a>(
                             match imported {
                                 super::super::semantic_context::Imported::Nodes(nodes, _, _) => {
                                     if tail.is_empty() {
-                                        if let Some(m) = nodes.iter().copied().find(|n| n.kind == "macro") {
+                                        if let Some(m) =
+                                            nodes.iter().copied().find(|n| n.kind == "macro")
+                                        {
                                             matched_node = Some(m);
                                             break;
                                         }
                                     } else {
                                         for mod_node in nodes {
-                                            if matches!(mod_node.kind.as_str(), "module" | "module_declaration") {
-                                                let full_tail = format!("{}.{tail}", mod_node.qualname);
-                                                if let Some(m) = semantic_context.nodes_in_path(&full_tail, path).find(|n| n.kind == "macro") {
+                                            if matches!(
+                                                mod_node.kind.as_str(),
+                                                "module" | "module_declaration"
+                                            ) {
+                                                let full_tail =
+                                                    format!("{}.{tail}", mod_node.qualname);
+                                                if let Some(m) = semantic_context
+                                                    .nodes_in_path(&full_tail, path)
+                                                    .find(|n| n.kind == "macro")
+                                                {
                                                     matched_node = Some(m);
                                                     break;
                                                 }
-                                                if let Some(re_imp) = semantic_context.imported_alias(mod_node, tail) {
+                                                if let Some(re_imp) =
+                                                    semantic_context.imported_alias(mod_node, tail)
+                                                {
                                                     match re_imp {
                                                         super::super::semantic_context::Imported::Nodes(re_nodes, _, _) => {
                                                             if let Some(m) = re_nodes.iter().copied().find(|n| n.kind == "macro") {
@@ -318,8 +468,16 @@ pub(in crate::linker) fn trait_object_call<'a>(
                                         }
                                     }
                                 }
-                                super::super::semantic_context::Imported::External(target_path, _, _, _) => {
-                                    let target_clean = target_path.strip_prefix("crate::").unwrap_or(target_path).replace("::", ".");
+                                super::super::semantic_context::Imported::External(
+                                    target_path,
+                                    _,
+                                    _,
+                                    _,
+                                ) => {
+                                    let target_clean = target_path
+                                        .strip_prefix("crate::")
+                                        .unwrap_or(target_path)
+                                        .replace("::", ".");
                                     for scope in &scopes {
                                         let full_target = if scope.is_empty() {
                                             target_clean.clone()
@@ -327,20 +485,30 @@ pub(in crate::linker) fn trait_object_call<'a>(
                                             format!("{scope}.{target_clean}")
                                         };
                                         if tail.is_empty() {
-                                            if let Some(m) = semantic_context.nodes_in_path(&full_target, path).find(|n| n.kind == "macro") {
+                                            if let Some(m) = semantic_context
+                                                .nodes_in_path(&full_target, path)
+                                                .find(|n| n.kind == "macro")
+                                            {
                                                 matched_node = Some(m);
                                                 break;
                                             }
                                         } else {
                                             // target_clean is a module (e.g. `local`), check member `tail`
                                             let mod_tail = format!("{full_target}.{tail}");
-                                            if let Some(m) = semantic_context.nodes_in_path(&mod_tail, path).find(|n| n.kind == "macro") {
+                                            if let Some(m) = semantic_context
+                                                .nodes_in_path(&mod_tail, path)
+                                                .find(|n| n.kind == "macro")
+                                            {
                                                 matched_node = Some(m);
                                                 break;
                                             }
                                             // Or re-export inside that module
-                                            for mod_node in semantic_context.nodes_in_path(&full_target, path) {
-                                                if let Some(re_imp) = semantic_context.imported_alias(mod_node, tail) {
+                                            for mod_node in
+                                                semantic_context.nodes_in_path(&full_target, path)
+                                            {
+                                                if let Some(re_imp) =
+                                                    semantic_context.imported_alias(mod_node, tail)
+                                                {
                                                     match re_imp {
                                                         super::super::semantic_context::Imported::Nodes(re_nodes, _, _) => {
                                                             if let Some(m) = re_nodes.iter().copied().find(|n| n.kind == "macro") {
@@ -387,17 +555,24 @@ pub(in crate::linker) fn trait_object_call<'a>(
                     path,
                     reference,
                     "resolved",
-                    "1 lexically justified candidates; implementor resolved=true, heuristic=false".into(),
+                    "1 lexically justified candidates; implementor resolved=true, heuristic=false"
+                        .into(),
                 );
+                macro_analysis_gap(profile, reference, &[target], path, graph);
                 return true;
             }
 
-            if let Some((provider, pack)) = declarative_macro_classification(&reference.expression) {
+            if let Some((provider, pack)) = declarative_macro_classification(&reference.expression)
+            {
                 graph.reference_coverage(
                     path,
                     reference,
                     "external",
-                    format!("{pack}: declarative macro {provider}::{}", reference.expression).into(),
+                    format!(
+                        "{pack}: declarative macro {provider}::{}",
+                        reference.expression
+                    )
+                    .into(),
                 );
                 return true;
             }

@@ -1,5 +1,5 @@
 use super::*;
-use crate::engine::ast::{relations, routes};
+use crate::ast::{relations, routes};
 
 /// Only summary-dependent, necessary candidates from the existing main walk.
 pub(crate) struct DeferredEvent<'tree> {
@@ -84,7 +84,7 @@ pub(crate) fn finish_deferred_event(
     rules: &LanguageContext,
     rule_ir: &manifests::RuleIRHandle,
     lexical: &routes::RouteContext,
-    projections: &mut HashMap<String, crate::core::semantic::ValueFlowFacts>,
+    projections: &mut HashMap<String, forge_core::semantic::ValueFlowFacts>,
 ) {
     if ctx.node.kind() == "class_definition" {
         syntax_operations::extract_default_table(ctx, facts, rules, lexical);
@@ -722,7 +722,7 @@ impl LanguageProfile for Python {
             if is_type_only {
                 if let Some(reference) = facts.references.last_mut() {
                     reference.receiver_hint =
-                        Some(crate::core::models::ReceiverHint::TypeOnlyImport);
+                        Some(forge_core::models::ReceiverHint::TypeOnlyImport);
                 }
             }
         };
@@ -997,7 +997,7 @@ impl LanguageProfile for Python {
     fn receiver(&self, name: &str, owner: &Node) -> bool {
         matches!(name, "self" | "cls") && owner.details["receiver_name"] == name
     }
-    fn value_flow(&self, node: Syntax<'_>, source: &str) -> crate::core::semantic::ValueFlowFacts {
+    fn value_flow(&self, node: Syntax<'_>, source: &str) -> forge_core::semantic::ValueFlowFacts {
         value_flow::extract(node, source)
     }
     fn value_flow_with_context(
@@ -1005,7 +1005,7 @@ impl LanguageProfile for Python {
         node: Syntax<'_>,
         source: &str,
         _file: &FileContext,
-    ) -> crate::core::semantic::ValueFlowFacts {
+    ) -> forge_core::semantic::ValueFlowFacts {
         value_flow::extract(node, source)
     }
     fn metadata(
@@ -1122,7 +1122,7 @@ impl LanguageProfile for Python {
         path: &str,
         _file: &FileContext,
     ) -> Option<&'static str> {
-        if !crate::core::models::is_test(path)
+        if !forge_core::models::is_test(path)
             || !matches!(node.kind(), "function_definition" | "lambda")
         {
             return None;
@@ -1257,7 +1257,7 @@ impl LanguageProfile for Python {
         facts: &mut Facts,
         symbols: &HashMap<usize, String>,
         rules: &super::LanguageContext,
-        route_context: &crate::engine::ast::routes::RouteContext,
+        route_context: &crate::ast::routes::RouteContext,
     ) {
         self.extract_routes_with_rule_ir(ctx, facts, symbols, rules, &rules.rule_ir, route_context);
     }
@@ -1268,7 +1268,7 @@ impl LanguageProfile for Python {
         symbols: &HashMap<usize, String>,
         rules: &super::LanguageContext,
         rule_ir: &super::manifests::RuleIRHandle,
-        route_context: &crate::engine::ast::routes::RouteContext,
+        route_context: &crate::ast::routes::RouteContext,
     ) {
         let mut projections = HashMap::new();
         self.extract_routes_with_typed_projections(
@@ -1292,8 +1292,8 @@ impl LanguageProfile for Python {
         symbols: &HashMap<usize, String>,
         rules: &super::LanguageContext,
         rule_ir: &super::manifests::RuleIRHandle,
-        route_context: &crate::engine::ast::routes::RouteContext,
-        projections: &mut HashMap<String, crate::core::semantic::ValueFlowFacts>,
+        route_context: &crate::ast::routes::RouteContext,
+        projections: &mut HashMap<String, forge_core::semantic::ValueFlowFacts>,
     ) {
         if ctx.node.kind() == "class_definition" && !route_context.defer_python_orm() {
             syntax_operations::extract_default_table(ctx, facts, rules, route_context);
@@ -1366,7 +1366,7 @@ impl LanguageProfile for Python {
 
 pub(crate) fn finish_class_method_registrations(
     facts: &mut Facts,
-    lexical: &crate::engine::ast::routes::RouteContext,
+    lexical: &crate::ast::routes::RouteContext,
 ) {
     syntax_operations::extract_class_method_registrations(facts, lexical);
 }

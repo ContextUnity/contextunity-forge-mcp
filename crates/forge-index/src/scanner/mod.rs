@@ -21,7 +21,7 @@ fn error(message: impl Into<String>) -> std::io::Error {
 
 #[path = "adapter.rs"]
 mod adapter;
-pub(crate) mod discovery;
+pub mod discovery;
 pub use crate::core::config::*;
 pub use crate::core::config::{ENGINE_SCHEMA_VERSION, INDEX_SEMANTICS_VERSION};
 pub use crate::core::models::FileEntry;
@@ -43,7 +43,7 @@ pub struct ScanReport {
 
 /// Source metadata captured by the cold-build walk before opening file content.
 #[derive(Debug, Clone)]
-pub(crate) struct BuildCandidate {
+pub struct BuildCandidate {
     pub path: String,
     pub bytes: u64,
     pub mtime_ns: u128,
@@ -53,7 +53,7 @@ pub(crate) struct BuildCandidate {
 }
 
 impl BuildCandidate {
-    pub(crate) fn matches_metadata(&self, metadata: &fs::Metadata) -> bool {
+    pub fn matches_metadata(&self, metadata: &fs::Metadata) -> bool {
         !metadata.file_type().is_symlink()
             && metadata.is_file()
             && self.bytes == metadata.len()
@@ -61,7 +61,7 @@ impl BuildCandidate {
             && self.identity == metadata_identity(metadata)
     }
 
-    pub(crate) fn into_entry(self, digest: String) -> FileEntry {
+    pub fn into_entry(self, digest: String) -> FileEntry {
         FileEntry {
             path: self.path,
             digest,
@@ -75,7 +75,8 @@ impl BuildCandidate {
 }
 
 /// Summary for the cold-build walk that sends candidates to a live consumer.
-pub(crate) struct BuildStreamReport {
+#[derive(Debug, Clone)]
+pub struct BuildStreamReport {
     pub files: usize,
     pub bytes: u64,
 }
@@ -373,7 +374,7 @@ pub fn scan_reusing(
 }
 
 /// Streams metadata-only cold-build candidates to the pipeline as the walker discovers them.
-pub(crate) fn stream_for_build(
+pub fn stream_for_build(
     root: &Path,
     adapter: &Adapter,
     mut visit: impl FnMut(BuildCandidate) -> std::io::Result<()>,
@@ -421,7 +422,7 @@ pub(crate) fn stream_for_build(
 }
 
 /// Discovers dependency manifests without retaining the cold-build candidate list.
-pub(crate) fn dependency_manifests_for_build(
+pub fn dependency_manifests_for_build(
     root: &Path,
     adapter: &Adapter,
 ) -> std::io::Result<Vec<PathBuf>> {

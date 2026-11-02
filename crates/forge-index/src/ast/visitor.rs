@@ -90,7 +90,7 @@ impl<'source, 'tree> ScopeAnalysis<'source, 'tree> {
     fn module_exports(
         &self,
         bindings: &ScopeBindings,
-    ) -> Option<(Vec<crate::core::semantic::ExportBinding>, serde_json::Value)> {
+    ) -> Option<(Vec<forge_core::semantic::ExportBinding>, serde_json::Value)> {
         match self.state.as_ref() {
             #[cfg(feature = "lang-python")]
             Some(LanguageAnalysis::Python(state)) => state
@@ -129,7 +129,7 @@ impl<'source, 'tree> ScopeAnalysis<'source, 'tree> {
         self,
         collect_module_aliases: bool,
     ) -> (
-        crate::core::semantic::ValueFlowFacts,
+        forge_core::semantic::ValueFlowFacts,
         Option<HashSet<String>>,
     ) {
         match self.state {
@@ -582,7 +582,7 @@ struct VisitState<'a, 'flow> {
     root_summary: Option<ScopeBindings>,
     prepared_root_bindings: Option<ScopeBindings>,
     prepared_scope_bindings: HashMap<usize, ScopeBindings>,
-    projections: HashMap<String, crate::core::semantic::ValueFlowFacts>,
+    projections: HashMap<String, forge_core::semantic::ValueFlowFacts>,
 }
 struct ScopeTraversal<'scope, 'source, 'tree> {
     frames: Vec<ScopeFrame<'source, 'tree>>,
@@ -925,7 +925,7 @@ impl SinglePassExtractor<'_> {
                 #[cfg(feature = "lang-python")]
                 if language == "python" {
                     let factories =
-                        crate::engine::languages::python::logging_factories(node, source, offset);
+                        crate::languages::python::logging_factories(node, source, offset);
                     if factories
                         .as_array()
                         .is_some_and(|entries| !entries.is_empty())
@@ -936,7 +936,7 @@ impl SinglePassExtractor<'_> {
                 #[cfg(feature = "lang-typescript")]
                 if matches!(language, "javascript" | "typescript" | "vue") {
                     module.details["commonjs_bindings"] =
-                        json!(crate::engine::languages::typescript::commonjs_bindings(
+                        json!(crate::languages::typescript::commonjs_bindings(
                             node,
                             source,
                             offset,
@@ -1119,7 +1119,7 @@ impl SinglePassExtractor<'_> {
                 if state.flows.is_some() {
                     details.insert("param_types".into(), serde_json::Value::Null);
                     Some(Box::new(
-                        crate::core::typed_facts::NodeSemanticEntry::with_parameters(
+                        forge_core::typed_facts::NodeSemanticEntry::with_parameters(
                             std::mem::take(&mut metadata.param_types),
                         ),
                     ))
@@ -1221,7 +1221,7 @@ impl SinglePassExtractor<'_> {
             .as_ref()
             .is_some_and(|_| syntax_kind.is_some_and(|kind| kind.is_member_access()))
         {
-            facts.references.push(crate::core::models::Reference {
+            facts.references.push(forge_core::models::Reference {
                 source: node_owner.to_owned(),
                 expression: text(node, source).into(),
                 kind: "reads".into(),
@@ -1387,12 +1387,12 @@ struct ScopeFrame<'source, 'tree> {
     owner: String,
     node_index: Option<usize>,
     name: Option<String>,
-    metadata_return: Option<crate::core::semantic::TypeExpr>,
-    metadata_ownership: Option<crate::core::semantic::ObjectOwnershipFact>,
+    metadata_return: Option<forge_core::semantic::TypeExpr>,
+    metadata_ownership: Option<forge_core::semantic::ObjectOwnershipFact>,
     bindings: Option<BindingCollector<'source, 'tree>>,
     prepared_bindings: Option<ScopeBindings>,
     analysis: Option<ScopeAnalysis<'source, 'tree>>,
-    legacy_flow: Option<crate::core::semantic::ValueFlowFacts>,
+    legacy_flow: Option<forge_core::semantic::ValueFlowFacts>,
     reserved_flow_slot: bool,
     suspended_at: Option<usize>,
 }
@@ -1560,9 +1560,9 @@ struct ScopePublication<'tree> {
     node_index: Option<usize>,
     name: Option<String>,
     reserved_flow_slot: bool,
-    flow: Option<Box<crate::core::semantic::ValueFlowFacts>>,
+    flow: Option<Box<forge_core::semantic::ValueFlowFacts>>,
     bindings: ScopeBindings,
-    module_outputs: Option<(Vec<crate::core::semantic::ExportBinding>, serde_json::Value)>,
+    module_outputs: Option<(Vec<forge_core::semantic::ExportBinding>, serde_json::Value)>,
 }
 
 impl ScopePublication<'_> {
@@ -1573,7 +1573,7 @@ impl ScopePublication<'_> {
         facts: &mut Facts,
     ) {
         let mut prepared_flow = self.flow;
-        let mut empty_flow = crate::core::semantic::ValueFlowFacts::default();
+        let mut empty_flow = forge_core::semantic::ValueFlowFacts::default();
         let flow = prepared_flow.as_deref_mut().unwrap_or(&mut empty_flow);
         let mut bindings = self.bindings;
         let module_outputs = self.module_outputs;
@@ -1594,10 +1594,10 @@ impl ScopePublication<'_> {
                 projections.facts.retain(|fact| {
                     matches!(
                         fact,
-                        crate::core::semantic::FrameworkFact::ComponentConfiguration(_)
-                            | crate::core::semantic::FrameworkFact::SymbolAttachment(_)
-                            | crate::core::semantic::FrameworkFact::NamedBinding(_)
-                            | crate::core::semantic::FrameworkFact::EndpointRequest(_)
+                        forge_core::semantic::FrameworkFact::ComponentConfiguration(_)
+                            | forge_core::semantic::FrameworkFact::SymbolAttachment(_)
+                            | forge_core::semantic::FrameworkFact::NamedBinding(_)
+                            | forge_core::semantic::FrameworkFact::EndpointRequest(_)
                     )
                 });
                 if !projections.facts.is_empty() {
@@ -1617,10 +1617,10 @@ impl ScopePublication<'_> {
                     .retain(|fact| {
                         !matches!(
                             fact,
-                            crate::core::semantic::FrameworkFact::ComponentConfiguration(_)
+                            forge_core::semantic::FrameworkFact::ComponentConfiguration(_)
                         )
                     });
-                let configurations: Vec<crate::core::semantic::ComponentConfigurationFact> =
+                let configurations: Vec<forge_core::semantic::ComponentConfigurationFact> =
                     serde_json::from_value(configurations.clone())
                         .expect("parser-owned typed component configurations");
                 for fact in configurations {
@@ -1634,10 +1634,10 @@ impl ScopePublication<'_> {
                     .retain(|fact| {
                         !matches!(
                             fact,
-                            crate::core::semantic::FrameworkFact::SymbolAttachment(_)
+                            forge_core::semantic::FrameworkFact::SymbolAttachment(_)
                         )
                     });
-                let attachments: Vec<crate::core::semantic::SymbolAttachmentFact> =
+                let attachments: Vec<forge_core::semantic::SymbolAttachmentFact> =
                     serde_json::from_value(value.clone()).expect("parser-owned symbol attachments");
                 for fact in attachments {
                     flow.push_symbol_attachment(fact);
@@ -1648,9 +1648,9 @@ impl ScopePublication<'_> {
                     .get_or_insert_with(Default::default)
                     .facts
                     .retain(|fact| {
-                        !matches!(fact, crate::core::semantic::FrameworkFact::NamedBinding(_))
+                        !matches!(fact, forge_core::semantic::FrameworkFact::NamedBinding(_))
                     });
-                let bindings: Vec<crate::core::semantic::NamedBindingFact> =
+                let bindings: Vec<forge_core::semantic::NamedBindingFact> =
                     serde_json::from_value(value.clone()).expect("parser-owned named bindings");
                 for fact in bindings {
                     flow.push_named_binding(fact);
@@ -1663,10 +1663,10 @@ impl ScopePublication<'_> {
                     .retain(|fact| {
                         !matches!(
                             fact,
-                            crate::core::semantic::FrameworkFact::EndpointRequest(_)
+                            forge_core::semantic::FrameworkFact::EndpointRequest(_)
                         )
                     });
-                let requests: Vec<crate::core::semantic::EndpointRequestFact> =
+                let requests: Vec<forge_core::semantic::EndpointRequestFact> =
                     serde_json::from_value(value.clone()).expect("parser-owned endpoint requests");
                 for fact in requests {
                     flow.push_endpoint_request(fact);
@@ -1737,7 +1737,7 @@ impl ScopePublication<'_> {
                 let previous = if let Some(flows) = state.flows.as_mut() {
                     if matches!(
                         flows.state(node),
-                        Some(crate::core::typed_facts::FlowState::Invalid(_))
+                        Some(forge_core::typed_facts::FlowState::Invalid(_))
                     ) {
                         preserve_invalid = true;
                         None
@@ -1749,13 +1749,13 @@ impl ScopePublication<'_> {
                     if raw.is_null() {
                         None
                     } else if raw["fact_limit_exceeded"] == true
-                        || crate::core::typed_facts::encoded_scope_fact_count(raw)
-                            > crate::core::semantic::DEFAULT_FACTS_PER_SCOPE
+                        || forge_core::typed_facts::encoded_scope_fact_count(raw)
+                            > forge_core::semantic::DEFAULT_FACTS_PER_SCOPE
                     {
                         preserve_invalid = true;
                         None
                     } else {
-                        match crate::core::semantic::ValueFlowFacts::deserialize(raw) {
+                        match forge_core::semantic::ValueFlowFacts::deserialize(raw) {
                             Ok(previous) => Some(previous),
                             Err(_) => {
                                 preserve_invalid = true;
@@ -1770,10 +1770,10 @@ impl ScopePublication<'_> {
                             projections.facts.retain(|fact| {
                                 matches!(
                                     fact,
-                                    crate::core::semantic::FrameworkFact::ComponentConfiguration(_)
-                                        | crate::core::semantic::FrameworkFact::SymbolAttachment(_)
-                                        | crate::core::semantic::FrameworkFact::NamedBinding(_)
-                                        | crate::core::semantic::FrameworkFact::EndpointRequest(_)
+                                    forge_core::semantic::FrameworkFact::ComponentConfiguration(_)
+                                        | forge_core::semantic::FrameworkFact::SymbolAttachment(_)
+                                        | forge_core::semantic::FrameworkFact::NamedBinding(_)
+                                        | forge_core::semantic::FrameworkFact::EndpointRequest(_)
                                 )
                             });
                             if !projections.facts.is_empty() {
@@ -1798,7 +1798,7 @@ impl ScopePublication<'_> {
             }
         }
         if state.flows.is_some() {
-            crate::core::typed_facts::NodeSemanticEntry::set_bindings(
+            forge_core::typed_facts::NodeSemanticEntry::set_bindings(
                 node,
                 bindings.all,
                 bindings.rebindings,
@@ -1919,7 +1919,7 @@ fn syntax_doc(context: &VisitContext<'_>, node: Syntax<'_>) -> String {
 #[cfg(all(test, feature = "lang-python"))]
 mod legacy_hook_tests {
     use super::*;
-    use crate::core::{
+    use forge_core::{
         semantic::{BindingFact, SourcePosition, TypeExpr, ValueExpr, ValueFlowFacts},
         typed_facts::TypedFacts,
     };
@@ -1973,7 +1973,7 @@ mod legacy_hook_tests {
                 },
                 {
                     ValueFlowFacts {
-                        framework: Some(Box::new(crate::core::semantic::FrameworkScopeFacts {
+                        framework: Some(Box::new(forge_core::semantic::FrameworkScopeFacts {
                             alias_type: Some(TypeExpr::Named {
                                 name: "Alias".into(),
                             }),

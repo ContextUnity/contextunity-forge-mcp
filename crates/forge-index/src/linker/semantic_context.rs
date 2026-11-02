@@ -7,11 +7,11 @@
 use super::interner::{PathId, SymbolId};
 use super::traits::{ImportContext, ModulesByNamespace, PackageExports, import_provider_modules};
 use super::value_flow::{SemanticResolver, Symbol, SymbolRole, TypeTarget};
-use crate::core::{
+use crate::languages::{self, ImportPath};
+use forge_core::{
     models::{Facts, Node, ReceiverHint, Reference},
     semantic::SourcePosition,
 };
-use crate::engine::languages::{self, ImportPath};
 use hashbrown::{HashMap, HashSet};
 use std::collections::BTreeMap;
 
@@ -109,8 +109,8 @@ type FactoryImport<'a> = Option<(&'a Node, SymbolId, SourcePosition)>;
 
 #[derive(Clone, Copy)]
 enum FactoryBinding<'a> {
-    Declaration(&'a crate::core::semantic::BindingFact),
-    Initializer(&'a crate::core::semantic::BindingFact),
+    Declaration(&'a forge_core::semantic::BindingFact),
+    Initializer(&'a forge_core::semantic::BindingFact),
     Invalid,
 }
 
@@ -126,7 +126,7 @@ pub(super) struct Context<'a> {
     interner: &'a super::interner::LinkerInterner<'a>,
     dependencies: &'a languages::dependency_registry::DependencyRegistry,
     named: super::named_bindings::NamedBindings<'a>,
-    flows: Option<&'a HashMap<SymbolId, &'a crate::core::typed_facts::FlowState>>,
+    flows: Option<&'a HashMap<SymbolId, &'a forge_core::typed_facts::FlowState>>,
     by_qual: &'a HashMap<&'a str, Vec<&'a Node>>,
     by_id: &'a HashMap<SymbolId, &'a Node>,
     node_bindings: &'a super::NodeBindingIndex,
@@ -153,6 +153,8 @@ pub(super) struct Context<'a> {
     python: Option<&'a super::receivers::PythonReceivers<'a>>,
     #[cfg(feature = "lang-rust")]
     rust: Option<&'a languages::rust::linker::RustMembers<'a>>,
+    #[cfg(feature = "lang-rust")]
+    rust_forwarding: &'a languages::rust::linker::RustForwarding<'a>,
     #[cfg(feature = "lang-typescript")]
     typescript: Option<&'a languages::typescript::linker::TypeScriptMembers<'a>>,
 }
@@ -225,6 +227,42 @@ impl<'ctx, 'a> LanguageMemberLookup<'ctx, 'a> {
 }
 
 impl<'a> Context<'a> {
+    #[cfg(feature = "lang-rust")]
+    fn rayon_extension_base(&self, receiver: &TypeTarget<'_>, member: &str, caller: &Node) -> Option<&'static str> {
+        let receiver = super::rust::semantic_context::reference_target(receiver).unwrap_or(receiver);
+        let base = match receiver {
+            TypeTarget::RustCollection { .. } => "Vec",
+            TypeTarget::RustSlice { .. } => "Slice",
+            TypeTarget::Builtin(name) if name == "Vec" => "Vec",
+            _ => return None,
+        };
+        if !self.dependencies.declares_for_path(languages::LanguageFamily("rust"), &caller.path, "rayon") {
+            return None;
+        }
+        let mut scope = caller.qualname.as_str();
+        let mut imported = false;
+        loop {
+            let module_boundary = self.nodes_in_path(scope, &caller.path)
+                .any(|owner| matches!(owner.kind.as_str(), "module" | "module_declaration"));
+            imported |= self.nodes_in_path(scope, &caller.path).any(|owner| {
+                self.symbol_id(&owner.id).and_then(|id| self.imports.get(&id)).is_some_and(|aliases| {
+                    aliases.values().any(|import| matches!(import, Imported::External(origin, _, reference, _)
+                        if reference.alias.as_deref() == Some("*") && origin.trim_end_matches("::*") == "rayon::prelude"))
+                })
+            });
+            if imported || module_boundary { break; }
+            let Some((parent, _)) = scope.rsplit_once('.') else { break; };
+            scope = parent;
+        }
+        if !imported { return None; }
+        let (_, rule) = self.dependencies.class_hierarchy_authority_for_path(&caller.path, base, Some("rust-cargo"))?;
+        (rule.provider == "rayon" && rule.members.iter().any(|allowed| allowed == member)).then_some(base)
+    }
+
+    pub(in crate::linker) fn symbol_name(&self, symbol: SymbolId) -> &str {
+        self.interner.resolve_symbol(symbol)
+    }
+
     fn path_id(&self, path: &str) -> Option<PathId> {
         self.interner.lookup_path(path)
     }
@@ -661,9 +699,9 @@ impl<'a> Context<'a> {
     }
     pub(super) fn with_flows<F: AsRef<Facts>>(
         mut self,
-        flows: Option<&'a HashMap<SymbolId, &'a crate::core::typed_facts::FlowState>>,
+        flows: Option<&'a HashMap<SymbolId, &'a forge_core::typed_facts::FlowState>>,
         uncertainties: Option<
-            &'a HashMap<SymbolId, &'a [crate::core::semantic::NamedDefinitionUncertainty]>,
+            &'a HashMap<SymbolId, &'a [forge_core::semantic::NamedDefinitionUncertainty]>,
         >,
         faults: Option<&HashSet<SymbolId>>,
         all: &'a BTreeMap<String, F>,
@@ -707,9 +745,9 @@ impl<'a> Context<'a> {
         owner: &'a Node,
         domain: &str,
         key: &str,
-        origin: Option<&crate::core::semantic::ExtractionRuleOrigin>,
+        origin: Option<&forge_core::semantic::ExtractionRuleOrigin>,
     ) -> Symbol<'a> {
-        use crate::core::semantic::{NamedBindingRole, NamedTargetKind, SymbolOperand};
+        use forge_core::semantic::{NamedBindingRole, NamedTargetKind, SymbolOperand};
         let scope = super::named_bindings::project(&owner.path, self.dependencies);
         let Some(scope_id) = self.interner.lookup_path(scope) else {
             return Symbol::Unknown;
@@ -799,7 +837,7 @@ impl<'a> Context<'a> {
         key: &str,
         kind: &str,
     ) -> Option<Symbol<'a>> {
-        use crate::core::semantic::StaticString;
+        use forge_core::semantic::StaticString;
         if kind != "filter" {
             return None;
         }
@@ -851,7 +889,7 @@ impl<'a> Context<'a> {
     }
 
     fn prepare_registry_bindings(&mut self) {
-        use crate::core::semantic::{NamedBindingRole, SymbolOperand, TypeExpr};
+        use forge_core::semantic::{NamedBindingRole, SymbolOperand, TypeExpr};
         let prepared: Vec<_> = self
             .named
             .registries
@@ -983,7 +1021,7 @@ impl<'a> Context<'a> {
         name: &str,
         at: SourcePosition,
     ) -> Option<Symbol<'a>> {
-        use crate::core::semantic::{NamedBindingRole, StaticString, ValueExpr};
+        use forge_core::semantic::{NamedBindingRole, StaticString, ValueExpr};
         use languages::manifests::{projections::NamedBindingForm, syntax::SyntaxOperation};
         let (root, _) = name.split_once('.')?;
         let rules = self.dependencies.language_context_for_path(&owner.path);
@@ -1101,7 +1139,7 @@ impl<'a> Context<'a> {
                 ),
             })
             .collect();
-        crate::engine::linker::traits::filter_stubs_and_overloads(&mut candidates);
+        crate::linker::traits::filter_stubs_and_overloads(&mut candidates);
         if candidates.is_empty() {
             return Symbol::Unknown;
         }
@@ -1217,6 +1255,20 @@ impl<'a> Context<'a> {
         caller: &'a Node,
     ) -> Member<'s> {
         match receiver {
+            #[cfg(feature = "lang-rust")]
+            TypeTarget::Local(class) if class.language == "rust" => {
+                let mut key = String::new();
+                let mut fields = self.by_qual.get(super::qualified(&mut key, &class.qualname, member))
+                    .into_iter().flatten().copied()
+                    .filter(|field| field.kind == "field" && field.details["rust_declared_field"] == true && field.path == class.path
+                        && languages::rust::linker::field_visible(field, class, &caller.qualname));
+                match (fields.next(), fields.next()) {
+                    (Some(field), None) => Member::Local(field),
+                    (Some(_), Some(_)) => Member::Ambiguous,
+                    _ => Member::Unknown,
+                }
+            }
+            TypeTarget::RustReference { target, .. } | TypeTarget::RustDeref { target, .. } => self.lookup_property(target, member, caller),
             TypeTarget::ConfiguredReceiver {
                 authority,
                 origin,
@@ -1246,6 +1298,8 @@ impl<'a> Context<'a> {
             {
                 Member::Builtin
             }
+            TypeTarget::External { .. } if caller.language == "rust"
+                && self.resolve_member_result(receiver, member, caller, super::value_flow::node_position(caller)).is_some() => self.lookup_member(receiver, member, caller),
             TypeTarget::Local(_) => self.lookup_component_template_field(receiver, member),
             _ => Member::Unknown,
         }
@@ -1258,6 +1312,16 @@ impl<'a> Context<'a> {
         member: &'s str,
     ) -> Option<(&'a Node, &'s [&'a Node])> {
         self.rust?.dynamic_dispatch(receiver, member)
+    }
+
+    #[cfg(feature = "lang-rust")]
+    pub(in crate::linker) fn is_rust_inherent_member(&self, method: &Node) -> bool {
+        self.rust.is_some_and(|rust| rust.is_inherent_member(method))
+    }
+
+    #[cfg(not(feature = "lang-rust"))]
+    pub(in crate::linker) fn is_rust_inherent_member(&self, _method: &Node) -> bool {
+        false
     }
 
     pub(super) fn lookup_member_mode<'s>(
@@ -1321,6 +1385,9 @@ impl<'a> Context<'a> {
             }
             #[cfg(feature = "lang-rust")]
             TypeTarget::RustCollection { .. } if caller.language == "rust" => {
+                if !associated && self.rayon_extension_base(receiver, member, caller).is_some() {
+                    return Member::External("rayon", 0, None);
+                }
                 if !associated
                     && languages::by_id("rust")
                         .is_some_and(|profile| profile.builtin_member("Vec", member))
@@ -1331,15 +1398,11 @@ impl<'a> Context<'a> {
                 }
             }
             #[cfg(feature = "lang-rust")]
-            TypeTarget::RustIterator { item } if caller.language == "rust" => {
+            TypeTarget::RustIterator { .. } if caller.language == "rust" => {
                 let standard = !associated
                     && languages::by_id("rust")
                         .is_some_and(|profile| profile.builtin_member("Iterator", member));
-                let has_reference_item = matches!(
-                    item.as_ref(),
-                    TypeTarget::RustReference { mutable: false, .. }
-                );
-                if standard && (member == "next" || has_reference_item) {
+                if standard {
                     Member::Builtin
                 } else {
                     Member::Unknown
@@ -1347,6 +1410,9 @@ impl<'a> Context<'a> {
             }
             #[cfg(feature = "lang-rust")]
             TypeTarget::RustSlice { .. } if caller.language == "rust" => {
+                if !associated && self.rayon_extension_base(receiver, member, caller).is_some() {
+                    return Member::External("rayon", 0, None);
+                }
                 if !associated
                     && languages::by_id("rust")
                         .is_some_and(|profile| profile.builtin_member("Slice", member))
@@ -1486,14 +1552,20 @@ impl<'a> Context<'a> {
                     Member::External(module, *import_line, None)
                 }
             }
-            TypeTarget::Builtin(receiver) => {
+            TypeTarget::Builtin(name) => {
+                #[cfg(feature = "lang-rust")]
+                if caller.language == "rust" && !associated
+                    && self.rayon_extension_base(receiver, member, caller).is_some()
+                {
+                    return Member::External("rayon", 0, None);
+                }
                 if self
-                    .receiver_type(&caller.path, receiver)
+                    .receiver_type(&caller.path, name)
                     .is_some_and(|receiver| {
                         receiver.members.iter().any(|allowed| allowed == member)
                     })
                     || languages::by_id(&caller.language)
-                        .is_some_and(|profile| profile.builtin_member(receiver, member))
+                        .is_some_and(|profile| profile.builtin_member(name, member))
                 {
                     Member::Builtin
                 } else {

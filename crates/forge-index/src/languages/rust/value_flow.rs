@@ -1,9 +1,7 @@
-use crate::core::semantic::{
+use crate::ast::{relations, text};
+use forge_core::models::Facts;
+use forge_core::semantic::{
     BindingFact, FieldFact, SourcePosition, TypeExpr, ValueExpr, ValueFlowFacts,
-};
-use crate::{
-    core::models::Facts,
-    engine::ast::{relations, text},
 };
 use std::{
     borrow::Cow,
@@ -22,7 +20,7 @@ fn type_expr_inner(
     generic_names: &HashSet<&str>,
     depth: usize,
 ) -> TypeExpr {
-    if depth >= crate::engine::languages::MAX_VALUE_FLOW_TYPE_DEPTH {
+    if depth >= crate::languages::MAX_VALUE_FLOW_TYPE_DEPTH {
         return TypeExpr::Unknown;
     }
     if node.kind() == "reference_type" {
@@ -210,12 +208,12 @@ pub(super) fn callee_name<'a>(mut node: Node<'_>, source: &'a str) -> Option<Cow
                 "identifier" | "type_identifier" | "self" | "super" | "crate" => {
                     self.push("", text(node, source))
                 }
-                "scoped_identifier" => {
+                "scoped_identifier" | "scoped_type_identifier" => {
                     if let Some(path) = node.child_by_field_name("path") {
                         self.collect(path, source, depth + 1)?;
                     }
                     let name = node.child_by_field_name("name")?;
-                    if !matches!(name.kind(), "identifier" | "super") {
+                    if !matches!(name.kind(), "identifier" | "type_identifier" | "super") {
                         return None;
                     }
                     self.push("::", text(name, source))
@@ -293,6 +291,44 @@ fn value_depth(
         return ValueExpr::Unknown;
     }
     match node.kind() {
+        "array_expression" | "tuple_expression" => {
+            if node.named_child_count() == 0 || node.named_child_count() > 8 {
+                return ValueExpr::Unknown;
+            }
+            let mut cursor = node.walk();
+            ValueExpr::Project {
+                value: Box::new(ValueExpr::BranchJoin {
+                    alternatives: node
+                        .named_children(&mut cursor)
+                        .map(|child| value_depth(child, source, depth + 1, shadowed_macros))
+                        .collect(),
+                }),
+                member: if node.kind() == "array_expression" {
+                    "__rust_array"
+                } else {
+                    "__rust_tuple"
+                }
+                .to_owned(),
+            }
+        }
+        "reference_expression" => {
+            node.child_by_field_name("value")
+                .map_or(ValueExpr::Unknown, |inner| ValueExpr::Project {
+                    value: Box::new(value_depth(inner, source, depth + 1, shadowed_macros)),
+                    member: if text(node, source).trim_start().starts_with("&mut ") {
+                        "__rust_ref_mut"
+                    } else {
+                        "__rust_ref"
+                    }
+                    .to_owned(),
+                })
+        }
+        "closure_expression" => ValueExpr::Construct { callee: "__rust_closure!".to_owned() },
+        "string_literal" | "raw_string_literal" => ValueExpr::Annotated {
+            type_expr: TypeExpr::Named {
+                name: "str".to_owned(),
+            },
+        },
         "try_expression" => {
             node.named_child(0)
                 .map_or(ValueExpr::Unknown, |inner| ValueExpr::Project {
@@ -300,9 +336,9 @@ fn value_depth(
                     member: "?".to_owned(),
                 })
         }
-        "parenthesized_expression" => node
-            .named_child(0)
-            .map_or(ValueExpr::Unknown, |inner| value_depth(inner, source, depth, shadowed_macros)),
+        "parenthesized_expression" => node.named_child(0).map_or(ValueExpr::Unknown, |inner| {
+            value_depth(inner, source, depth, shadowed_macros)
+        }),
         "struct_expression" => node
             .child_by_field_name("name")
             .and_then(|name| static_name(name, source))
@@ -337,7 +373,18 @@ fn value_depth(
             let Some(mut function) = node.child_by_field_name("function") else {
                 return ValueExpr::Unknown;
             };
+            let mut generic_result = None;
             if function.kind() == "generic_function" {
+                generic_result = function.child_by_field_name("type_arguments")
+                    .filter(|arguments| (1..=4).contains(&arguments.named_child_count()))
+                    .map(|arguments| {
+                        let mut cursor = arguments.walk();
+                        TypeExpr::Applied {
+                            base: "__rust_call_arguments".to_owned(),
+                            args: arguments.named_children(&mut cursor)
+                                .map(|argument| type_expr(argument, source)).collect(),
+                        }
+                    });
                 let Some(inner) = function.child_by_field_name("function") else {
                     return ValueExpr::Unknown;
                 };
@@ -349,6 +396,70 @@ fn value_depth(
                     function.child_by_field_name("field"),
                 ) {
                     let member_name = text(member, source);
+                    let member_name = if member_name == "and_then" {
+                        let identity = node
+                            .child_by_field_name("arguments")
+                            .filter(|args| args.named_child_count() == 1)
+                            .and_then(|args| args.named_child(0))
+                            .filter(|closure| closure.kind() == "closure_expression")
+                            .and_then(|closure| {
+                                let params = closure.child_by_field_name("parameters")?;
+                                let parameter = params
+                                    .named_child(0)
+                                    .filter(|_| params.named_child_count() == 1)?;
+                                if parameter.kind() != "identifier" {
+                                    return None;
+                                }
+                                let body = closure.child_by_field_name("body")?;
+                                let function = body.child_by_field_name("function")?;
+                                let args = body.child_by_field_name("arguments")?;
+                                let value = args
+                                    .named_child(0)
+                                    .filter(|_| args.named_child_count() == 1)?;
+                                (body.kind() == "call_expression"
+                                    && text(function, source) == "Some"
+                                    && value.kind() == "identifier"
+                                    && text(value, source) == text(parameter, source))
+                                .then_some(())
+                            })
+                            .is_some();
+                        if identity {
+                            "__rust_identity_some"
+                        } else {
+                            "and_then"
+                        }
+                    } else if member_name == "filter_map" {
+                        let result_ok = node
+                            .child_by_field_name("arguments")
+                            .filter(|args| args.named_child_count() == 1)
+                            .and_then(|args| args.named_child(0))
+                            .filter(|closure| closure.kind() == "closure_expression")
+                            .and_then(|closure| {
+                                let params = closure.child_by_field_name("parameters")?;
+                                let parameter = params
+                                    .named_child(0)
+                                    .filter(|_| params.named_child_count() == 1)?;
+                                let body = closure.child_by_field_name("body")?;
+                                let function = body.child_by_field_name("function")?;
+                                let args = body.child_by_field_name("arguments")?;
+                                let receiver = function.child_by_field_name("value")?;
+                                let field = function.child_by_field_name("field")?;
+                                (parameter.kind() == "identifier"
+                                    && receiver.kind() == "identifier"
+                                    && text(parameter, source) == text(receiver, source)
+                                    && text(field, source) == "ok"
+                                    && args.named_child_count() == 0)
+                                    .then_some(())
+                            })
+                            .is_some();
+                        if result_ok {
+                            "__rust_filter_map_ok"
+                        } else {
+                            member_name
+                        }
+                    } else {
+                        member_name
+                    };
                     if matches!(
                         member_name,
                         "unwrap"
@@ -360,15 +471,85 @@ fn value_depth(
                             | "cloned"
                             | "copied"
                             | "iter"
+                            | "iter_mut"
                             | "into_iter"
+                            | "par_iter"
+                            | "par_iter_mut"
+                            | "into_par_iter"
                             | "next"
                             | "map"
+                            | "filter_map"
+                            | "__rust_filter_map_ok"
+                            | "flat_map"
+                            | "inspect"
+                            | "fuse"
+                            | "as_slice"
+                            | "query_row"
                             | "enumerate"
                             | "filter"
                             | "take"
                             | "skip"
                             | "step_by"
                             | "collect"
+                            | "trim"
+                            | "trim_start"
+                            | "trim_end"
+                            | "args"
+                            | "to_owned"
+                            | "file_type"
+                            | "elapsed"
+                            | "prefix"
+                            | "suffix"
+                            | "tempdir"
+                            | "tempdir_in"
+                            | "tempfile"
+                            | "tempfile_in"
+                            | "head"
+                            | "peel_to_commit"
+                            | "peel_to_tree"
+                            | "tree"
+                            | "index"
+                            | "path"
+                            | "depth"
+                            | "timestamp"
+                            | "into"
+                            | "as_bytes"
+                            | "lines"
+                            | "split"
+                            | "chars"
+                            | "bytes"
+                            | "join"
+                            | "to_str"
+                            | "to_string_lossy"
+                            | "to_path_buf"
+                            | "canonicalize"
+                            | "file_name"
+                            | "extension"
+                            | "current_dir"
+                            | "output"
+                            | "status"
+                            | "get"
+                            | "as_str"
+                            | "as_array"
+                            | "arg"
+                            | "and_then"
+                            | "__rust_identity_some"
+                            | "get_ref"
+                            | "prepare"
+                            | "prepare_cached"
+                            | "query"
+                            | "parse"
+                            | "parse_with"
+                            | "child"
+                            | "named_child"
+                            | "child_by_field_name"
+                            | "parent"
+                            | "next_sibling"
+                            | "prev_sibling"
+                            | "next_named_sibling"
+                            | "prev_named_sibling"
+                            | "children"
+                            | "named_children"
                     ) {
                         let inner = value_depth(receiver, source, depth + 1, shadowed_macros);
                         if matches!(inner, ValueExpr::Unknown) {
@@ -381,12 +562,46 @@ fn value_depth(
                     }
                 }
             }
-            callee_name(function, source).map_or(ValueExpr::Unknown, |callee| ValueExpr::Call {
-                callee: callee.into_owned(),
-                site: None,
+            callee_name(function, source).map_or(ValueExpr::Unknown, |callee| {
+                let call = ValueExpr::Call { callee: callee.to_string(), site: None };
+                let is_deserializer = callee.ends_with("from_str")
+                    || callee.ends_with("from_slice")
+                    || callee.ends_with("from_reader")
+                    || callee.ends_with("from_value")
+                    || callee.contains("yaml")
+                    || callee.contains("json")
+                    || callee.contains("serde");
+                match generic_result {
+                    Some(type_expr) if is_deserializer => ValueExpr::Project {
+                        value: Box::new(ValueExpr::BranchJoin {
+                            alternatives: vec![call, ValueExpr::Annotated { type_expr }],
+                        }),
+                        member: "__rust_generic_call".to_owned(),
+                    },
+                    _ => call,
+                }
             })
         }
-        "identifier" | "scoped_identifier" => ValueExpr::Alias {
+        "index_expression" => {
+            let base = node.child_by_field_name("value").or_else(|| node.named_child(0));
+            base.map_or(ValueExpr::Unknown, |base| ValueExpr::Project {
+                value: Box::new(value_depth(base, source, depth + 1, shadowed_macros)),
+                member: "__rust_index".to_owned(),
+            })
+        }
+        "field_expression" => {
+            let Some(receiver) = node.child_by_field_name("value") else {
+                return ValueExpr::Unknown;
+            };
+            let Some(member) = node.child_by_field_name("field") else {
+                return ValueExpr::Unknown;
+            };
+            ValueExpr::Project {
+                value: Box::new(value_depth(receiver, source, depth + 1, shadowed_macros)),
+                member: format!("__rust_field:{}", text(member, source)),
+            }
+        }
+        "identifier" | "scoped_identifier" | "self" => ValueExpr::Alias {
             name: text(node, source).to_owned(),
         },
         "match_expression" => {
@@ -525,6 +740,24 @@ impl<'source, 'tree> Collector<'source, 'tree> {
             if let Some(parameters) = node.child_by_field_name("parameters") {
                 let mut cursor = parameters.walk();
                 for parameter in parameters.named_children(&mut cursor) {
+                    if parameter.kind() == "self_parameter" {
+                        let syntax = text(parameter, source).trim();
+                        let mut type_expr = TypeExpr::Named { name: "Self".to_owned() };
+                        if syntax.starts_with('&') {
+                            type_expr = TypeExpr::Applied {
+                                base: if syntax.split_whitespace().any(|part| matches!(part, "mut" | "&mut")) { "&mut" } else { "&" }.to_owned(),
+                                args: vec![type_expr],
+                            };
+                        }
+                        let position = parameter.end_position();
+                        facts.bindings.push(BindingFact {
+                            name: "self".to_owned(),
+                            position: SourcePosition { line: position.row + 1, column: position.column },
+                            value: ValueExpr::Annotated { type_expr },
+                            conditional: false,
+                        });
+                        continue;
+                    }
                     let (Some(pattern), Some(annotation)) = (
                         parameter.child_by_field_name("pattern"),
                         parameter.child_by_field_name("type"),
@@ -547,14 +780,9 @@ impl<'source, 'tree> Collector<'source, 'tree> {
                         TypeExpr::Named { .. } => {}
                         TypeExpr::Unknown => continue,
                     }
-                    let pattern = if pattern.kind() == "mut_pattern" {
-                        pattern.named_child(0).unwrap_or(pattern)
-                    } else {
-                        pattern
-                    };
-                    if pattern.kind() != "identifier" {
+                    let Some(pattern) = pattern_identifier(pattern) else {
                         continue;
-                    }
+                    };
                     let position = parameter.end_position();
                     facts.bindings.push(BindingFact {
                         name: text(pattern, source).to_owned(),
@@ -654,17 +882,13 @@ impl<'source, 'tree> Collector<'source, 'tree> {
             || (parent_active
                 && !matches!(
                     current.kind(),
-                    "function_item"
-                        | "impl_item"
-                        | "trait_item"
-                        | "mod_item"
+                    "function_item" | "impl_item" | "trait_item" | "mod_item"
                 ));
         let conditional = inherited
             || (body != Some(current)
                 && matches!(
                     current.kind(),
-                    "block"
-                        | "if_expression"
+                    "if_expression"
                         | "match_expression"
                         | "while_expression"
                         | "for_expression"
@@ -697,6 +921,44 @@ impl<'source, 'tree> Collector<'source, 'tree> {
                 }
             }
         }
+        if current.kind() == "for_expression" {
+            if let (Some(pattern), Some(iterable), Some(body)) = (
+                current.child_by_field_name("pattern"),
+                current.child_by_field_name("value"),
+                current.child_by_field_name("body"),
+            ) {
+                if let Some(pattern) = pattern_identifier(pattern) {
+                    let start = body.start_position();
+                    let end = body.end_position();
+                    self.facts.bindings.push(BindingFact {
+                        name: text(pattern, source).to_owned(),
+                        position: SourcePosition {
+                            line: start.row + 1,
+                            column: start.column,
+                        },
+                        value: ValueExpr::Scoped {
+                            value: Box::new(ValueExpr::Project {
+                                value: Box::new(ValueExpr::Project {
+                                    value: Box::new(value_depth(
+                                        iterable,
+                                        source,
+                                        0,
+                                        &self.current_shadows(),
+                                    )),
+                                    member: "into_iter".to_owned(),
+                                }),
+                                member: "__rust_iter_item".to_owned(),
+                            }),
+                            body_end: SourcePosition {
+                                line: end.row + 1,
+                                column: end.column,
+                            },
+                        },
+                        conditional: false,
+                    });
+                }
+            }
+        }
         if current.kind() == "closure_expression" {
             let body_end_pos = current.end_position();
             let body_end = SourcePosition {
@@ -711,6 +973,11 @@ impl<'source, 'tree> Collector<'source, 'tree> {
                     if let Some(call) = parent.parent() {
                         if call.kind() == "call_expression" {
                             if let Some(func) = call.child_by_field_name("function") {
+                                let func = if func.kind() == "generic_function" {
+                                    func.child_by_field_name("function").unwrap_or(func)
+                                } else {
+                                    func
+                                };
                                 if func.kind() == "field_expression" {
                                     let recv_opt = func.child_by_field_name("value");
                                     if let Some(field) = func.child_by_field_name("field") {
@@ -724,12 +991,16 @@ impl<'source, 'tree> Collector<'source, 'tree> {
                                         ) {
                                             if let Some(recv) = recv_opt {
                                                 let shadows = self.current_shadows();
-                                                let recv_val = value_depth(recv, source, 0, &shadows);
+                                                let recv_val =
+                                                    value_depth(recv, source, 0, &shadows);
                                                 if !matches!(recv_val, ValueExpr::Unknown) {
-                                                    inferred_param_values.push(Some(ValueExpr::Project {
-                                                        value: Box::new(recv_val),
-                                                        member: "__rust_closure_row".to_string(),
-                                                    }));
+                                                    inferred_param_values.push(Some(
+                                                        ValueExpr::Project {
+                                                            value: Box::new(recv_val),
+                                                            member: "__rust_closure_row"
+                                                                .to_string(),
+                                                        },
+                                                    ));
                                                 }
                                             }
                                         } else if matches!(
@@ -742,20 +1013,26 @@ impl<'source, 'tree> Collector<'source, 'tree> {
                                                 | "for_each"
                                                 | "flat_map"
                                                 | "filter_map"
+                                                | "inspect"
                                         ) {
                                             if let Some(recv) = recv_opt {
                                                 let shadows = self.current_shadows();
-                                                let recv_val = value_depth(recv, source, 0, &shadows);
+                                                let recv_val =
+                                                    value_depth(recv, source, 0, &shadows);
                                                 if !matches!(recv_val, ValueExpr::Unknown) {
-                                                    inferred_param_values.push(Some(ValueExpr::Project {
-                                                        value: Box::new(recv_val),
-                                                        member: "__rust_iter_item".to_string(),
-                                                    }));
+                                                    inferred_param_values.push(Some(
+                                                        ValueExpr::Project {
+                                                            value: Box::new(recv_val),
+                                                            member: "__rust_iter_item".to_string(),
+                                                        },
+                                                    ));
                                                 }
                                             }
                                         }
                                     }
-                                } else if func.kind() == "identifier" || func.kind() == "scoped_identifier" {
+                                } else if func.kind() == "identifier"
+                                    || func.kind() == "scoped_identifier"
+                                {
                                     let callee = text(func, source);
                                     if callee.ends_with("walk") || callee.ends_with("visit") {
                                         inferred_param_types.push(Some(TypeExpr::Named {
@@ -789,7 +1066,9 @@ impl<'source, 'tree> Collector<'source, 'tree> {
                         (Some(param), None)
                     };
 
-                    let Some(param_node) = param_node else { continue; };
+                    let Some(param_node) = param_node else {
+                        continue;
+                    };
                     if let Some(id_node) = pattern_identifier(param_node) {
                         let name = text(id_node, source);
                         let pos = param.end_position();
@@ -833,13 +1112,35 @@ impl<'source, 'tree> Collector<'source, 'tree> {
             current.kind(),
             "let_declaration" | "assignment_expression" | "compound_assignment_expr"
         ) {
+            let declaration = current.kind() == "let_declaration";
+            let lexical_end = if declaration {
+                let mut parent = current.parent();
+                let mut end = None;
+                while let Some(node) = parent {
+                    if node.kind() == "block" {
+                        if Some(node) != self.body {
+                            let position = node.end_position();
+                            end = Some(SourcePosition {
+                                line: position.row + 1,
+                                column: position.column,
+                            });
+                        }
+                        break;
+                    }
+                    parent = node.parent();
+                }
+                end
+            } else {
+                None
+            };
             let pattern = current
                 .child_by_field_name("pattern")
                 .or_else(|| current.child_by_field_name("left"));
             if let Some(pattern) = pattern {
                 if current.kind() == "let_declaration" && pattern.kind() == "tuple_pattern" {
                     let mut pat_cursor = pattern.walk();
-                    let pat_elements: Vec<Node<'_>> = pattern.named_children(&mut pat_cursor).collect();
+                    let pat_elements: Vec<Node<'_>> =
+                        pattern.named_children(&mut pat_cursor).collect();
 
                     let val_opt = current.child_by_field_name("value");
                     let val_elements: Option<Vec<Node<'_>>> = val_opt.and_then(|v| {
@@ -866,7 +1167,12 @@ impl<'source, 'tree> Collector<'source, 'tree> {
                             if val_node.kind() == "call_expression" {
                                 if let Some(func_node) = val_node.child_by_field_name("function") {
                                     let fn_name = text(func_node, source).trim();
-                                    if let Some(types) = resolve_function_return_tuple(current, fn_name, source, &self.facts.bindings) {
+                                    if let Some(types) = resolve_function_return_tuple(
+                                        current,
+                                        fn_name,
+                                        source,
+                                        &self.facts.bindings,
+                                    ) {
                                         type_elements = Some(types);
                                     }
                                 }
@@ -874,15 +1180,17 @@ impl<'source, 'tree> Collector<'source, 'tree> {
                         }
                     }
 
-                    let rest_idx = pat_elements
-                        .iter()
-                        .position(|p| p.kind() == "rest_pattern" || text(*p, source).trim() == "..");
+                    let rest_idx = pat_elements.iter().position(|p| {
+                        p.kind() == "rest_pattern" || text(*p, source).trim() == ".."
+                    });
 
                     let shadows = self.current_shadows();
                     let position = current.end_position();
 
                     for (i, pat_node) in pat_elements.iter().enumerate() {
-                        if pat_node.kind() == "rest_pattern" || text(*pat_node, source).trim() == ".." {
+                        if pat_node.kind() == "rest_pattern"
+                            || text(*pat_node, source).trim() == ".."
+                        {
                             continue;
                         }
                         if let Some(id_node) = pattern_identifier(*pat_node) {
@@ -908,8 +1216,9 @@ impl<'source, 'tree> Collector<'source, 'tree> {
                                             type_expr: type_expr_inner(
                                                 ty_node,
                                                 source,
-                                                self.generic_names
-                                                    .get_or_insert_with(|| generic_names(self.root, source)),
+                                                self.generic_names.get_or_insert_with(|| {
+                                                    generic_names(self.root, source)
+                                                }),
                                                 0,
                                             ),
                                         }
@@ -951,7 +1260,7 @@ impl<'source, 'tree> Collector<'source, 'tree> {
                                     } else {
                                         ValueExpr::Project {
                                             value: Box::new(base_val),
-                                            member: i.to_string(),
+                                            member: format!("__rust_field:{i}"),
                                         }
                                     }
                                 } else {
@@ -967,7 +1276,14 @@ impl<'source, 'tree> Collector<'source, 'tree> {
                                     line: position.row + 1,
                                     column: position.column,
                                 },
-                                value: inferred,
+                                value: if let Some(body_end) = lexical_end {
+                                    ValueExpr::Scoped {
+                                        value: Box::new(inferred),
+                                        body_end,
+                                    }
+                                } else {
+                                    inferred
+                                },
                                 conditional,
                             });
                         }
@@ -988,15 +1304,18 @@ impl<'source, 'tree> Collector<'source, 'tree> {
                                     type_expr: type_expr_inner(
                                         ty,
                                         source,
-                                        self.generic_names
-                                            .get_or_insert_with(|| generic_names(self.root, source)),
+                                        self.generic_names.get_or_insert_with(|| {
+                                            generic_names(self.root, source)
+                                        }),
                                         0,
                                     ),
                                 })
                                 .unwrap_or_else(|| {
                                     let shadows = self.current_shadows();
                                     value_depth(
-                                        current.child_by_field_name("value").expect("value checked"),
+                                        current
+                                            .child_by_field_name("value")
+                                            .expect("value checked"),
                                         source,
                                         0,
                                         &shadows,
@@ -1006,12 +1325,22 @@ impl<'source, 'tree> Collector<'source, 'tree> {
                             ValueExpr::Unknown
                         };
                         self.facts.bindings.push(BindingFact {
-                            name: text(pattern, source).to_owned(),
+                            name: pattern_identifier(pattern).map_or_else(
+                                || text(pattern, source).to_owned(),
+                                |identifier| text(identifier, source).to_owned(),
+                            ),
                             position: SourcePosition {
                                 line: position.row + 1,
                                 column: position.column,
                             },
-                            value: inferred,
+                            value: if let Some(body_end) = lexical_end {
+                                ValueExpr::Scoped {
+                                    value: Box::new(inferred),
+                                    body_end,
+                                }
+                            } else {
+                                inferred
+                            },
                             conditional,
                         });
                     };
@@ -1167,7 +1496,7 @@ impl<'source, 'tree> Collector<'source, 'tree> {
 
 pub(super) fn extract(node: Node<'_>, source: &str) -> ValueFlowFacts {
     let mut collector = Collector::new(node, source);
-    crate::engine::ast::visitor::walk(node, &mut |node, entering| {
+    crate::ast::visitor::walk(node, &mut |node, entering| {
         if entering {
             collector.enter(node);
         } else {
@@ -1500,7 +1829,8 @@ fn is_imported_target_macro(
     if clean.starts_with("std::") || clean.starts_with("core::") || clean.starts_with("alloc::") {
         return false;
     }
-    if let Some((target_body, target_name)) = resolve_module_path(context, path, source, file_root) {
+    if let Some((target_body, target_name)) = resolve_module_path(context, path, source, file_root)
+    {
         let mut visited = HashSet::new();
         let res = module_has_macro(target_body, target_name, source, file_root, &mut visited, 0);
         return matches!(
@@ -1541,7 +1871,11 @@ fn build_file_macro_facts(root: Node<'_>, source: &str) -> FileMacroFacts {
                                 && !path.starts_with("alloc::")
                                 && is_imported_target_macro(file_root, &path, source, file_root)
                             {
-                                facts.root_macro_imports.insert(if alias == "vec" { "vec" } else { "format" });
+                                facts.root_macro_imports.insert(if alias == "vec" {
+                                    "vec"
+                                } else {
+                                    "format"
+                                });
                             }
                         }
                     }
@@ -1573,7 +1907,11 @@ fn build_file_macro_facts(root: Node<'_>, source: &str) -> FileMacroFacts {
                                 && !path.starts_with("alloc::")
                                 && is_imported_target_macro(node, &path, source, file_root)
                             {
-                                mod_facts.imports.insert(if alias == "vec" { "vec" } else { "format" });
+                                mod_facts.imports.insert(if alias == "vec" {
+                                    "vec"
+                                } else {
+                                    "format"
+                                });
                             }
                         }
                     }
@@ -1606,7 +1944,11 @@ fn build_file_macro_facts(root: Node<'_>, source: &str) -> FileMacroFacts {
                                 && !path.starts_with("alloc::")
                                 && is_imported_target_macro(node, &path, source, file_root)
                             {
-                                block_facts.imports.insert(if alias == "vec" { "vec" } else { "format" });
+                                block_facts.imports.insert(if alias == "vec" {
+                                    "vec"
+                                } else {
+                                    "format"
+                                });
                             }
                         }
                     }

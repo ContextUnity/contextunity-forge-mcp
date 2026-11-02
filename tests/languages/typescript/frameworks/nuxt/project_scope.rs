@@ -133,7 +133,7 @@ fn ignored_root_ancestor_and_linked_manifests_do_not_activate_nuxt() {
                 manifest,
                 &format!(
                     "enabled = false\n{}",
-                    include_str!("../../../../../src/engine/languages/manifests/nuxt.toml")
+                    include_str!("../../../../../crates/forge-index/src/languages/manifests/nuxt.toml")
                 ),
             );
         } else if workspace.join(manifest).exists() {

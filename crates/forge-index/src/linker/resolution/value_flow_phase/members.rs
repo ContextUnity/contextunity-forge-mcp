@@ -63,6 +63,13 @@ where
                 } else {
                     result
                 };
+                if owner.language == "rust" {
+                    if let semantic_context::Member::Local(node) = &result {
+                        if !input.semantic_context.is_rust_inherent_member(node) {
+                            return false;
+                        }
+                    }
+                }
                 let result = match result {
                     semantic_context::Member::Local(node)
                         if !super::super::super::typescript::semantic_context::prototype_visible_at(

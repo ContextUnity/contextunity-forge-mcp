@@ -52,7 +52,7 @@ impl Component {
 }
 
 /// Discovers manifest-backed components from the scanner's admitted manifest walk.
-pub(crate) fn manifest_components(
+pub fn manifest_components(
     root: &Path,
     adapter: &Adapter,
     page: &QueryOptions,

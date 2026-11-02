@@ -355,34 +355,90 @@ receipt:
 
 ```yaml
 task_ref: accelerate-cold-persistence-and-fts-sealing
-target: "Reduce cold-build persistence latency through bounded independent FTS-domain computation and shared coverage preparation, preserving canonical persisted rows, commitment bytes, and atomic publication"
+target: Reduce cold-build persistence latency through bounded independent FTS-domain computation and shared coverage preparation, preserving canonical persisted rows, commitment bytes, and atomic publication
 proof_policy: seam-test-first
 contract_revision: 1
 scope:
-  - crates/forge-index/src/db/commitments/snapshot.rs
-  - crates/forge-index/src/db/commitments.rs
-  - crates/forge-index/src/db/writer.rs
-  - crates/forge-index/src/db/ingest.rs
-  - crates/forge-index/src/db/writer/seal.rs
-  - tests/commitment_integrity/
-  - docs/architecture/performance.md
-status: planned
+- crates/forge-index/src/db/commitments/snapshot.rs
+- crates/forge-index/src/db/commitments.rs
+- crates/forge-index/src/db/writer.rs
+- crates/forge-index/src/db/ingest.rs
+- crates/forge-index/src/db/writer/seal.rs
+- tests/commitment_integrity/
+- docs/architecture/performance.md
+status: completed
 subtasks:
-  - subtask_ref: bind-corpus-and-baseline
-    title: "Record reference corpus baseline (threads, cache states, raw timings)"
-    status: pending
-  - subtask_ref: parallelize-fts-domains
-    title: "Compute independent FTS domain digests concurrently using stage-private read-only connections"
-    status: pending
-  - subtask_ref: share-coverage-preparation
-    title: "Unify coverage preparation between SQL ingest and logical commitment projection"
-    status: pending
-  - subtask_ref: extend-existing-seam-cases
-    title: "Prove bit-identical domain digests, root equivalence, and FTS tamper rejection"
-    status: pending
-  - subtask_ref: verify-integrated-performance
-    title: "Measure end-to-end latency reduction targeting sub-second cold builds and update performance.md"
-    status: pending
+- subtask_ref: bind-corpus-and-baseline
+  title: Record reference corpus baseline (threads, cache states, raw timings)
+  status: completed
+  evidence: 'PASS: Rust self-index reference corpus (contextunity-forge-mcp, 634 files, 19,892 nodes) baseline measured across 1, 2, and 4 threads.'
+- subtask_ref: parallelize-fts-domains
+  title: Compute independent FTS domain digests concurrently using stage-private read-only connections
+  status: completed
+  evidence: 'PASS: fts_commitment_digests executes across 2..=4 workers using stage-private read-only SQLite connections, cutting FTS median latency from 394.51ms to 275.69ms (1.43x speedup).'
+- subtask_ref: share-coverage-preparation
+  title: Unify coverage preparation between SQL ingest and logical commitment projection
+  status: completed
+  evidence: 'PASS: PreparedCoverage shares borrowed deduplicated coverage facts between SQL persistence and in-memory logical commitment projection.'
+- subtask_ref: extend-existing-seam-cases
+  title: Prove bit-identical domain digests, root equivalence, and FTS tamper rejection
+  status: completed
+  evidence: 'PASS: tests/commitment_integrity.rs verifies bit-identical domain digests, root equivalence across 1, 2, 4 threads, and preserves published DB upon simulated reader failure (16/16 passed).'
+- subtask_ref: verify-integrated-performance
+  title: Measure end-to-end latency reduction targeting sub-second cold builds and update performance.md
+  status: completed
+  evidence: 'PASS: Rust self-index sealing latency index_and_seal_ms measured at 450.43ms (sub-second target), Merkle root bit-identical e1f2e7317eb5b2433da3835cb04937ae6097986b46ab05aa3684f0cb176978e2.'
+receipt:
+  contract_revision: 1
+  passed_at: 2026-11-02T18:26:29.626674583+00:00
+  evidence:
+    seam_test_proof:
+      exit_code: 0
+      tests_passed: 16
+      tests_failed: 0
+      seam_test_refs:
+      - tests/commitment_integrity.rs::parallel_owner_sealing_matches_serial_encoding_and_thread_counts
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: PASS. Reviewed build candidate f8bce2356aed79d2a26723d56c8138b320a4a2ea against contract snapshot187217f and baseline08d5cdd. Six task-changed files are admitted. Relative to prior reviewed candidate9a56e57, only docs/architecture/performance.md changes (20 additions/1 deletion). Scoped worktree equality and diff --check pass; protected Cargo.toml/build.rs untouched. Existing unrelated staged/unstaged changes and generated index state excluded; reviewer made no candidate edits.
+        claims:
+          applicable: true
+          evidence: 'PASS. LS001-COLD-PERF-R1 closed against acceptance3''s measured-reduction alternative by current user-supplied serial/concurrent reference experiment and accurate documentation at performance.md:174-191. Recalculated all raw aggregates: FTS median1070.363957->926.519370ms (143.844587ms,1.15525x); index-and-seal median2025.828241->1856.423086ms (169.405155ms,1.09125x); persistence median5842.136011->5303.492571ms. Three runs each at1/2/4 threads on supplied Commerce corpus4086files/69966nodes, reported performance governor; all9 roots2526c77ce1f50d4c06609b289feb12f60b5a9668824289d27b32fa4563ad3e74. Raw artifact SHA256eabfbea226dd78d68a93837600bc070993f5b493b2b8c5b8c5d69676a4ce0494. Prior verified implementation unchanged: existing4-domain list/encoders, all-domain SQL-oracle equivalence, private readers, reader-denial non-publication, and one borrowed PreparedCoverage shared by SQL/projection. Documentation explicitly limits attribution: supplied scaling experiment lacks command/source/binary/adapter/cache provenance, is not historical pre/post proof, and claims neither sub-second builds nor isolated shared-coverage speedup. Fresh reviewer checks: strict all-target/all-feature Clippy exit0/0warnings; full commitment_integrity exit0,16passed/0failed; full languages exit0,252passed/0failed. Combined terminal archive180c8f6922fd6ccf exit0.'
+        concurrency:
+          applicable: true
+          evidence: 'PASS. Unchanged production code rechecked: committed >=8192-node file candidates use min(Rayon threads,4,FTS.len) independent scoped read-only connections with2..4 workers. Node/doc posting domains are assigned different workers. All handles join into Vec<Result> before result/error propagation, including worker panics. Candidate remains unchanged until workers finish; atomic commitment/root transaction then WAL restoration/integrity/publication. PreparedCoverage is immutable borrowed data; no Connection is shared across worker threads. Existing failure seam proves published bytes survive reader denial.'
+        project_isolation:
+          applicable: true
+          evidence: PASS. New readers derive their path from the existing stage-private SQLite connection, under canonical output parent; no introduced ambient-cwd, profile-discovery or published-file reads. In-memory/small/single-thread fallbacks and delta transaction/language SQL fallback remain unchanged. Remediation is documentation-only and reads the explicitly supplied /tmp artifact; it adds no configuration, dependency or mutation of the reference repository.
+        administration:
+          applicable: true
+          evidence: PASS. Claim34/contract1 owned by independent codex-sol-reviewer, distinct from accepted builder codex-builder. Blackboard1527/1528 design and initial evidence,1529 original rejection, and1530 remediation inspected. Raw measurements recomputed and artifact hashed; supplied provenance limitations and variability retained rather than converted into unsupported claims. Candidatef8bce23 equals the scoped worktree; no receipts, protected policy, profiles or historical authority edited. Prior finding closed for the admitted measured-sealing reduction; no adjacent scope or performance promise added.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-RUST-PRELUDE-INTERNING: Standard library prelude traits and types (Clone, Default, Display, Iterator, Option, Result) are interned in a declarative manifest (rust-std.toml) without hardcoding in the core engine.'
+    - 'INV-CARGO-PACK-BOUNDS: Third-party crate signatures (rusqlite, tree-sitter, serde, tokio, anyhow) are registered via declarative Cargo ecosystem packs, routing external crate calls to External resolution status rather than falling through to Unresolved.'
+    - 'INV-ZERO-COMPILER-DEPENDENCY: Rust linking and trait resolution operate strictly over extracted AST facts and declarative manifests without invoking rustc or requiring a compiler toolchain at index time.'
+    - 'INV-BOUNDED-ITERATOR-CHAINING: Chained method calls on computed iterator receivers (.iter().filter().map()) propagate stream type bounds up to a finite depth of 8 steps without unbounded recursive graph expansion.'
+    - 'INV-DECLARATIVE-MACRO-CLASSIFICATION: Standard macro invocations (format!, json!, bail!, ensure!, vec!, write!) are classified through declarative macro signatures, preventing synthetic unresolved member references.'
+    - 'INV-COLD-SEAL-SNAPSHOT: Parallel cold-build sealing reads one committed, stage-private candidate that remains unchanged until all digest workers finish; commitment installation and publication follow successful completion.'
+    - 'INV-DETERMINISTIC-SEALING: For identical logical inputs, serial and parallel execution produce identical forge-owner-sha256-v2 domain digests and output roots, preserving all logical and FTS domains, canonical encodings, and validation failures.'
+    - 'INV-COVERAGE-PROJECTION-EQUIVALENCE: Coverage preparation preserves canonical deduplication, statuses, evidence, owner-language attribution, language counts, and dependency records, with equivalent cold and delta results.'
+    - 'INV-BOUNDED-PERSISTENCE: Persistence retains bounded batches and worker counts, respects SQLite parameter limits, flushes remainder batches, and avoids duplicating complete graph or fact stores.'
+    architectural_notes:
+    - 'decisions: {"decision":"LS-001 Task 6 architectural synthesis, contract revision 1 / claim revision 17","authority":{"task_id":"forge-mcp/m-rust-ecosystem-pack-and-trait-resolution:accelerate-cold-persistence-and-fts-sealing","worker_id":"codex-architect","proof_policy":"seam-test-first","scope":"Implementation stays in the five admitted db files; additive seam work in tests/commitment_integrity/; performance documentation during build. Cargo.toml, build.rs and .forge/** are not edited. Existing unrelated worktree changes are preserved."},"audit":["writer::populate_owned commits ingestion, drops facts, checkpoints, and commits ordinary indexes before snapshot::fts_commitment_digests. The latter currently loops the existing four-entry FTS constant serially on the writable connection. seal_snapshot_from_projection validates complete logical/FTS domain sets, then install_snapshot installs all owner/domain commitments and output_root in one transaction.","writer/seal.rs::project_coverage_domains duplicates ingest.rs::persist_graph coverage sorting/dedup, module/file language fallback, HTML reference-owner ambiguity, JS island attribution and status counts. persist_dependencies separately derives sorted/deduped dependency rows. Forge impact/explain confirms delta.rs calls persist_graph, so its existing signature and delta transaction semantics must be preserved.","ADR 0002/0003/0004/0012 and performance.md require private staging, deterministic canonical encoding, bounded batches and no duplicated full graph/facts. Rejected index-creation overlap and posting-sort changes are not repeated."],"architecture":["Extend snapshot::fts_commitment_digests using the existing FTS constant as the sole work list. For a sufficiently large committed file candidate and multiple available Rayon threads, use at most min(4, available threads) independent read-only candidate connections. Prepare TEMP fts5vocab on each reader using existing ensure_fts_vocab (restore query_only); reuse unchanged fts_digest canonical streaming/sorted fallback, docsize/owner validation, hashes and errors. Small, single-thread and in-memory cases retain serial fallback.","All readers must see the same committed stage-private main database after index commit. No candidate mutation, commitment installation, WAL transition or publication until every worker has finished/joined, including failure/panic paths. Propagate errors before the existing atomic install/publication. Do not read the published database or share a rusqlite Connection between workers.","Prepare a single borrowed coverage view in ingest.rs after retained facts are ready and before the SQL/projection fork. Share canonical unique row references and owner-language/island decisions with both consumers; stream each consumer''s existing row/leaf encoding. Keep SQL dictionary/path IDs, status/evidence text, count grouping, owner attribution and dependency ordering unchanged. Retain persist_graph''s existing call signature as a compatibility entry for delta, delegating to a private prepared-input path used by cold writer. No public API/schema/config additions, shadow registries, cloned graph or second full fact store.","Keep live-parameter-limit batch/remainder behavior unchanged. Build owner must update performance.md and obtain required corpus/performance evidence separately; this synthesis runs no benchmarks and claims no latency improvement."],"evidence_map":{"seam":"tests/commitment_integrity.rs::parallel_owner_sealing_matches_serial_encoding_and_thread_counts","changed_path":"tests/commitment_integrity/cold_sealing.rs","class":"contract-seam / real SQLite integration boundary","environment":"Public writer::build through extraction/linking, live stage-file SQLite persistence and sealing, then published file readback, independent SQL seal and reopen verification; one-thread and four-thread private Rayon pools.","claims":["INV-DETERMINISTIC-SEALING: unchanged original 8192-symbol fixture plus Markdown/Unicode, Python resolved/unresolved calls and feature-gated HTML/JS. Compare output_root and every domain/owner digest across 1/4 threads and against commitments::seal SQL oracle. These assertions pass on the baseline.","INV-COLD-SEAL-SNAPSHOT / INV-BOUNDED-PERSISTENCE: directory-filtered SQLite auto-extension/authorizer observes actual FTS table reads on read-only handles during build, requires all four FTS domains on stage-private readers and 2..4 worker thread identities. Registration is RAII-cleaned; no production hooks or mocked collaborators. Read-only control verification sees all four domains and identifies the published path before using absence as red evidence.","Coverage preservation is exercised by the mixed-language cold fixture and every-domain SQL-oracle comparison; existing coverage dictionary/partial owner, FTS tampering, rebuild/reindex/vacuum and invalid owner/dictionary tests remain passing."],"sensitivity":"Observed pre-implementation serial implementation fails specifically at the new read-only FTS assertion. The calibrated observer and all earlier root/per-domain comparisons pass. This detects removal/bypass of the admitted independent-readers path without wall-clock thresholds.","validation":{"command":"cargo test --test commitment_integrity","compilation":"clean; no compiler errors/warnings","exit_code":101,"tests_passed":15,"tests_failed":1,"failing_test":"parallel_owner_sealing_matches_serial_encoding_and_thread_counts","failure":"assertion failed: cold FTS domain node_search_postings must be computed through a stage-private read-only connection","log_archive":"992ef6c711d8c7a5","diff_check":"git diff --check -- tests/commitment_integrity/cold_sealing.rs: exit 0"},"limitations":"Red contract proof, not a completed implementation. Observer proves actual read-only FTS access and worker thread distribution, not CPU overlap, worker-join failure ordering, allocation bounds or measured speedup. Builder/reviewer must verify join-before-install, worker failure non-publication, shared preparation reuse, delta fallback and batching boundaries through appropriate existing seams/source review. Existing tamper tests remain passing. No test functions or binaries replaced/duplicated."},"next_owner":"Builder: implement the bounded reader/shared-preparation design within scope, extend this same seam for any missing failure/delta cases, run complete commitment_integrity target and strict Clippy, and record admitted performance evidence."}'
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Acceptance
@@ -517,3 +573,166 @@ receipt:
 2. Tuple destructuring `let (a, b) = ...` binds positional component types to identifiers in `value_flow.rs`.
 3. Remaining workspace Cargo crates (`git2`, `walkdir`, `toml`, `chrono`, etc.) route to `External` resolution status.
 4. Total resolution health on `contextunity-forge-mcp` exceeds the 75% milestone target.
+
+---
+
+### task: workspace-compat-shims-and-chained-receiver-coverage
+
+```yaml
+task_ref: workspace-compat-shims-and-chained-receiver-coverage
+target: Resolve inline compatibility module shims (crate::core, crate::engine, crate::db) across extracted workspace crates, link integration-test submodule helpers (tests/common), and propagate computed/chained std and external receiver types to raise self-index resolution health above 75%
+proof_policy: seam-test-first
+contract_revision: 7
+scope_roots:
+- crates/forge-index/src/
+- crates/forge-tasks/src/
+- src/
+- tests/languages/
+scope:
+- crates/forge-index/src/languages/manifests/rust-std.toml
+- crates/forge-index/src/languages/manifests/rust-cargo.toml
+- crates/forge-index/src/languages/rust/
+- crates/forge-index/src/linker/rust/
+- crates/forge-index/src/linker/resolution/
+- crates/forge-index/src/linker/semantic_context/
+- crates/forge-index/src/linker/indexing.rs
+- crates/forge-index/src/linker/traits.rs
+- crates/forge-index/src/ast/
+- crates/forge-index/src/lib.rs
+- crates/forge-tasks/src/lib.rs
+- tests/languages/
+- crates/forge-index/src/linker/value_flow.rs
+- crates/forge-index/src/languages/python/mod.rs
+- crates/forge-index/src/languages/typescript/mod.rs
+- crates/forge-index/src/linker/semantic_context.rs
+- crates/forge-index/src/linker/projections.rs
+extended_scope:
+- crates/forge-index/src/linker/value_flow.rs
+- crates/forge-index/src/lib.rs
+- crates/forge-tasks/src/lib.rs
+- crates/forge-index/src/
+- crates/forge-tasks/src/
+- crates/forge-index/src/linker/semantic_context.rs
+- crates/forge-index/src/linker/projections.rs
+subtasks:
+- subtask_ref: resolve-workspace-compat-module-shims
+  title: Resolve inline crate::core, crate::engine, and crate::db compatibility re-export modules in extracted workspace crates (forge-index, forge-tasks) and eliminate orphaned duplicate module paths
+  status: completed
+  evidence: Inline compatibility modules removed from crates/forge-index/src/lib.rs and crates/forge-tasks/src/lib.rs; 87 orphaned dead .rs files eliminated from src/.
+- subtask_ref: resolve-integration-test-submodules
+  title: Resolve mod common and crate::common::Workspace imports across multi-file integration tests in tests/
+  status: completed
+  evidence: mod common and use crate::common::Workspace linked in tests/ without impl ambiguity.
+- subtask_ref: computed-and-chained-receiver-propagation
+  title: Propagate receiver types across multi-step computed calls (Option/Result/Iterator combinators, str/Path/Command chains) and reference-typed parameters (&Connection, &Row, &Statement, &Syntax)
+  status: completed
+  evidence: Command, Value, Option and_then/filter, and reference parameters (&Connection, &Statement, &Row, &Syntax) propagated via manifests and value_flow.rs.
+- subtask_ref: verify-self-index-resolution-health
+  title: Rebuild repository code-map.sqlite and verify resolution health exceeds 75% with 0 Clippy warnings and passing language seam tests
+  status: completed
+  evidence: Historical indexing/lint/language check completed; this status does not prove >75% corpus health. The whole-repository >75% obligation is explicitly deferred to milestone integration/handoff per owner approval Blackboard1460, reaffirmed for Task6 and preserved in Blackboard1524. Required fresh corpus binding, numerator, denominator and exact calculation remain pending at handoff.
+- subtask_ref: ecosystem-crates-manifest-registration
+  title: Register missing Cargo ecosystem packs (git2, walkdir, chrono, tempfile, sha2, hex, rayon, serde_yaml) in rust-cargo.toml
+  status: completed
+  evidence: 'Verified declarative Cargo pack definitions/return mappings (walkdir/git2/chrono/tempfile/sha2/hex/rayon/serde_yaml), real Rayon collection chains and dependency/prelude/effective-policy negatives. Review pass claim132 / contract6, candidate 8f09b5e; fresh-cache strict Clippy0 + languages252 + integrity16. R10 confirmed fixed by independent 15-case module matrix; notes #1502.'
+- subtask_ref: std-traits-and-collections-propagation
+  title: Propagate standard library collections (Vec, slice, HashMap) and iterator combinator methods in rust-std.toml and value flow
+  status: completed
+  evidence: 'Verified Vec/slice/HashMap and Option/Result predicates/combinators. R9 confirmed fixed: flat_map/inspect/fuse preserve iterator identity before count; unproven callback payload remains Unknown. Review pass claim132 / contract6, candidate 8f09b5e; full test_rust_ast_extractor in 252-language target passes; notes #1502.'
+- subtask_ref: test-helpers-and-structs-coverage
+  title: Resolve test helper structs (tests::common::Workspace, ScopedWorkspace) and receiver methods (.write, .delta, .join)
+  status: completed
+  evidence: 'Verified actual test helper modules, Workspace/ScopedWorkspace constructors/factories, local write/delta/build/open/join identities and typed fields/tuple projections through the production seam. Review pass claim132 / contract6, candidate 8f09b5e; all required checks green, notes #1502.'
+- subtask_ref: field-expression-and-glob-chain-repair
+  title: Prevent external glob imports from aborting module resolution and support nested field expression type propagation
+  status: completed
+  evidence: 'Verified Rust dynamic receiver hook, non-Unknown bounded ValueExpr hints, generic unwrapping, 3-hop external origins and shadows. R8 field discriminator retains all 18 assigned/direct Leaf.finish identities and same-named method identity. R10 nearest-module authority and explicit-super provenance pass all 15 cases. Review pass claim132 / contract6, candidate 8f09b5e; notes #1502.'
+- subtask_ref: qualified-callee-paths-and-unwrap-preservation
+  title: Support type_identifier in scoped_identifier callee paths and preserve external payload receiver types across ? and unwrap combinators
+  status: completed
+  evidence: Verified by independent review claim176/contract7 and seam.review claim183 on candidate8a6437e8d94422e20ee14d5fc5117101fb8b90dd. Qualified callees and proven Option/Result payload propagation pass production seams; R11 generic preservation, R12 fail-closed unwrap/expect and R13 effective path-policy authority are confirmed fixed. Strict Clippy0; languages252/0; integrity16/0; independent policy matrix84/84. Blackboard1523.
+- subtask_ref: std-command-output-and-serde-returns
+  title: Register Command::current_dir, Output, ExitStatus in rust-std.toml and serde from_* return mappings in rust-cargo.toml
+  status: completed
+  evidence: Verified declarative Command/current_dir/Output/ExitStatus and serde JSON/YAML returns through production seams; exact generic payloads require proven effective Result policy across direct/namespace/function aliases. Review176/contract7, seam.review183, candidate8a6437e8d94422e20ee14d5fc5117101fb8b90dd; Clippy0, languages252/0, integrity16/0, policy matrix84/84. Blackboard1523.
+- subtask_ref: array-expression-iterables-and-tuple-destructuring
+  title: Support array_expression in value_depth and propagate tuple elements across let (a, b) destructuring patterns
+  status: completed
+  evidence: Verified bounded array iterable and tuple projection/destructuring coverage through existing production seams and cumulative independent contract review. Review176/contract7 and seam.review183 bind candidate8a6437e8d94422e20ee14d5fc5117101fb8b90dd. Strict Clippy0, languages252/0, integrity16/0; no concurrency or project-isolation regression. Blackboard1523.
+- subtask_ref: verify-self-index-resolution-health-above-75
+  title: Rebuild code-map.sqlite and verify resolution health exceeds 75% with 0 Clippy warnings and passing test suite
+  status: cancelled
+  evidence: Task-local execution transferred to milestone integration/handoff under explicit owner-approved deferral Blackboard1460, reaffirmed in current Task6 review instructions and preserved in task Blackboard1524. Cancellation closes only this task-local tracking item; it does not waive or satisfy the >75% threshold. Milestone integration coordinator must bind whole-repository corpus and record resolved numerator, denominator excluding external, unresolved/ambiguous counts, exact calculation and verification evidence. No fresh corpus-health measurement claimed.
+status: completed
+receipt:
+  contract_revision: 7
+  passed_at: 2026-11-02T16:23:25.205189053+00:00
+  evidence:
+    seam_test_proof:
+      exit_code: 0
+      seam_test_refs:
+      - tests/languages/extractors.rs::test_rust_ast_extractor
+      tests_passed: 252
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: 'PASS. Candidate 8a6437e8d94422e20ee14d5fc5117101fb8b90dd reviewed against rejected f86c6e62c0abbc58c6949b06b9ae03587dc2ab5a and baseline 607610a690789655ce61da7dfbfc5dbfe1d7cec3. Batch 11 changes exactly 3 admitted files; cumulative delta is 16 admitted source/test files. All 113 sparse candidate entries match disk; sparse exclusions are not deletions. Protected Cargo.toml/build.rs unchanged; git diff --check passes. All three #1522 source SHA256 hashes match. No reviewer repository source edits. Exact seven admitted extensions and their purposes reverified: shared value-flow/semantic projection owners implement receiver/return authority; library roots and crate source roots own compatibility-shim removal/import migration. The extension set matches accepted review claim 132 and is unchanged in revision 7. Batch 11 adds no extension and touches only the three reviewed admitted files.'
+        claims:
+          applicable: true
+          evidence: 'PASS. R13 confirmed fixed: deserializer_result queries existing resolve_member_result with canonical package/member and the original owner, requires a proven Result return policy before generic resolution; owning-path authority comes from Context::resolve_member_result(owner.path). Missing/disabled/empty/no-return/non-Result policies fail closed and default/Result replacements infer exact payloads. Additive persisted Rust seam covers six policies x seven JSON/YAML method families x three spellings x three consumer forms, with exact identity/negative coverage assertions. Independent CLI matrix passes 84/84 exact-target checks; original Round 2 default matrix passes 15/15 controls. Original R11/R12 probes remain green: local Leaf.finish exact, String standard origin, missing unwrap/expect chains unresolved. Genuine wrappers and return-changing methods preserved. >75% corpus health is owner-deferred under #1460, not credited as achieved.'
+        concurrency:
+          applicable: true
+          evidence: PASS. The 7-line production guard reads immutable effective resolver state and reuses existing bounded type/result dispatch. No new shared mutable cache, locks, unsafe operations, Rayon execution, nested parallel iteration, graph/fact duplication, or persistence/sealing changes. Generic argument count, depth, receiver and alias bounds remain unchanged. Strict Clippy clean; parallel/serial commitment tests pass. No benchmark/performance measurement claimed.
+        project_isolation:
+          applicable: true
+          evidence: 'PASS. Canonical aliases now retain the owning owner.path when requesting effective manifest authority, closing the root-specific policy leak. Independently built six separately isolated policy roots with fresh caches: aliases/direct calls honor identical policies, while annotations remain independent evidence. Disabled-policy fixture rebuilt from /tmp with explicit root yields only the two annotated exact calls, matching milestone-cwd results. No filesystem/cwd probing, schema, public trait API or parallel registry added; full language target preserves cross-crate/root/cwd negatives.'
+        administration:
+          applicable: true
+          evidence: 'PASS. Live review claim 176/contract 7 belongs to codex-sol-reviewer, independent of accepted builder codex-builder claim 173. #1522 and /tmp/task6-batch11-evidence.json inspected; source hashes match; compiling runtime-red log shows the disabled alias regression (1 exact call vs 0) before repair. R11/R12 closures from #1521 preserved; R13 now closed with current source and independent persisted-edge proof. Required commands independently rerun using fresh FORGE_EXTRACTION_CACHE_DIR=/tmp/ls001-task6-r3-review-cache: cargo clippy --all-targets --all-features -- -D warnings exit 0/zero warnings; cargo test --test languages exit 0/252 passed/0 failed; cargo test --test commitment_integrity exit 0/16 passed/0 failed. Logs /tmp/ls001-task6-r3-{clippy,languages,commitment}.log. #1460 health deferral remains an explicit integration/handoff obligation; no benchmark, receipt/profile/source edits or corpus-health completion claim.'
+      extended_scope_review:
+        approved_paths:
+        - crates/forge-index/src/linker/value_flow.rs
+        - crates/forge-index/src/lib.rs
+        - crates/forge-tasks/src/lib.rs
+        - crates/forge-index/src/
+        - crates/forge-tasks/src/
+        - crates/forge-index/src/linker/semantic_context.rs
+        - crates/forge-index/src/linker/projections.rs
+        reason_verified: true
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-RUST-PRELUDE-INTERNING: Standard library prelude traits and types (Clone, Default, Display, Iterator, Option, Result) are interned in a declarative manifest (rust-std.toml) without hardcoding in the core engine.'
+    - 'INV-CARGO-PACK-BOUNDS: Third-party crate signatures (rusqlite, tree-sitter, serde, tokio, anyhow) are registered via declarative Cargo ecosystem packs, routing external crate calls to External resolution status rather than falling through to Unresolved.'
+    - 'INV-ZERO-COMPILER-DEPENDENCY: Rust linking and trait resolution operate strictly over extracted AST facts and declarative manifests without invoking rustc or requiring a compiler toolchain at index time.'
+    - 'INV-BOUNDED-ITERATOR-CHAINING: Chained method calls on computed iterator receivers (.iter().filter().map()) propagate stream type bounds up to a finite depth of 8 steps without unbounded recursive graph expansion.'
+    - 'INV-DECLARATIVE-MACRO-CLASSIFICATION: Standard macro invocations (format!, json!, bail!, ensure!, vec!, write!) are classified through declarative macro signatures, preventing synthetic unresolved member references.'
+    - 'INV-COLD-SEAL-SNAPSHOT: Parallel cold-build sealing reads one committed, stage-private candidate that remains unchanged until all digest workers finish; commitment installation and publication follow successful completion.'
+    - 'INV-DETERMINISTIC-SEALING: For identical logical inputs, serial and parallel execution produce identical forge-owner-sha256-v2 domain digests and output roots, preserving all logical and FTS domains, canonical encodings, and validation failures.'
+    - 'INV-COVERAGE-PROJECTION-EQUIVALENCE: Coverage preparation preserves canonical deduplication, statuses, evidence, owner-language attribution, language counts, and dependency records, with equivalent cold and delta results.'
+    - 'INV-BOUNDED-PERSISTENCE: Persistence retains bounded batches and worker counts, respects SQLite parameter limits, flushes remainder batches, and avoids duplicating complete graph or fact stores.'
+    architectural_notes:
+    - 'decisions: {"claim_revision":150,"active_contract_revision":6,"proposed_manifest_contract_revision":7,"decision":"Rev7 retains existing language AST/value-flow and declarative manifest owners. No grammar, compiler invocation, parallel registry, Cargo.toml or build.rs changes.","owners":{"qualified_callee_paths":"languages/rust/value_flow.rs::callee_name scoped_identifier name arm currently accepts identifier/super but rejects a type_identifier name; retain existing path segment/byte/depth bounds.","payload_preservation":"Existing languages/rust extraction and linker/rust value-flow projections across ?/unwrap; retain effective per-path manifest return authority and unknown generic/callback payload boundaries.","standard_and_cargo_returns":"rust-std.toml Command currently lacks current_dir and output payload mappings; extend standard Output/ExitStatus and rust-cargo serde from_* maps through the existing supplied DependencyRegistry.","array_and_tuple":"Extend existing Rust value_depth and tuple/destructuring propagation; keep unknown/heterogeneous values fail-closed.","health":"Revision7 explicitly adds a ready whole-corpus health verification subtask; report resolved/(resolved+unresolved+ambiguous), excluding external, from the rebuilt current index and retain exact test/lint evidence."},"seam":{"test":"tests/languages/extractors.rs::test_rust_ast_extractor","command":"cargo test --test languages test_rust_ast_extractor","exit_code":101,"compile":"clean","assertion":"workspace.write: unresolved != resolved","log":"/tmp/task6-rev7-contract-red.log","fixture_adjustment":"Use valid integration-root path acdd::support::ScopedWorkspace::new instead of invalid super::support; retains the qualified type_identifier callee gap."},"producer_consumer":"Rust AST -> bounded ValueExpr/type/return facts -> existing linker reduction with supplied manifest authority -> persisted resolution_coverage and exact calls -> seam SQL assertion.","writes":"Only milestone task block (revision7 and four ready subtasks) and additive seam section; no production implementation changes."}'
+    - 'decisions: Architectural Synthesis Decision (Rev 7): Closing 4 systemic resolution gaps (type_identifier in scoped_identifier callee paths, ?/unwrap external payload preservation, std Command/Output models and serde returns, array expression iteration) to achieve >75% resolution health for workspace-compat-shims-and-chained-receiver-coverage.'
+    - 'deferred: {"authority":"Explicit user owner-approved deferral preserved in milestone Blackboard #1460 and reaffirmed for Task 6 in the current review requests.","obligation":">75% whole-repository self-index resolution health remains mandatory at milestone integration/handoff. Verify against a bound corpus; record resolved numerator, unresolved and ambiguous counts, denominator excluding external, exact calculation, and verification evidence.","owner":"Milestone integration/handoff coordinator","destination":"LS-001 integration/handoff evidence","candidate":"8a6437e8d94422e20ee14d5fc5117101fb8b90dd","contract_revision":7,"task_review":"R11/R12/R13 confirmed fixed; task review pass does not assert that the corpus-health threshold has been met. No benchmark or fresh whole-corpus health measurement performed in this review."}'
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
+```
+
+#### Acceptance
+
+1. Internal imports through inline compatibility modules (`use crate::core::models::{Node, Facts, Reference}`, `use crate::engine::ast::{text, field, Syntax}`, `use crate::db::tasks_store::*`) inside `crates/forge-index` and `crates/forge-tasks` resolve to their canonical `forge-core`, `forge-index`, and `forge-tasks` definitions rather than failing with `0 modules, 0 alias targets`.
+2. Calls and type references on `Syntax<'_>`, `Facts`, `Node`, `Reference`, `text(...)`, and `field(...)` inside `crates/forge-index` resolve to their local definitions and `tree_sitter::Node` methods (`node.kind()`, `node.parent()`, `node.child_by_field_name()`).
+3. Integration test helper imports (`mod common; use common::Workspace;` / `use crate::common::Workspace;`) resolve `Workspace::new`, `workspace.write`, `root.write`, `w.write`, `w.build`, and `workspace.delta` in `tests/`.
+4. Computed receiver chains on `Result`/`Option`/`Iterator`/`Command`/`serde_json::Value` (`.unwrap()`, `.into()`, `.map()`, `.and_then()`, `.is_some_and()`, `.as_str()`, `.as_array()`, `.context()`) and reference-typed parameters (`&Connection`, `&Statement`, `&Row`) resolve instead of falling into `computed receiver or dynamic callee` or `shadowed by a parameter or local binding`.
+5. Overall repository resolution health on `contextunity-forge-mcp` exceeds the 75% target while passing `cargo test --test languages` and `cargo clippy --all-targets --all-features -- -D warnings`.

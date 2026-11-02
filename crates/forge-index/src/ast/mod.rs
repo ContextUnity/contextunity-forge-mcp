@@ -16,10 +16,10 @@ pub mod relations;
 pub mod route_includes;
 pub mod routes;
 pub mod search;
-use crate::core::models::*;
-use crate::core::typed_facts::{FlowStore, TypedFacts};
-use crate::engine::languages::{self, FileContext, LanguageProfile, SyntaxContext};
+use crate::languages::{self, FileContext, LanguageProfile, SyntaxContext};
 use anyhow::Result;
+use forge_core::models::*;
+use forge_core::typed_facts::{FlowStore, TypedFacts};
 pub use search::{
     pattern_symbol_name, search, search_page, PatternErrorSpan, PatternSearchDiagnostic,
     SearchPage, SEARCH_MATCH_HORIZON,
@@ -31,7 +31,7 @@ use tree_sitter::{Node as Syntax, Parser};
 
 #[cfg(feature = "lang-typescript")]
 fn commonjs_default_callable(node: tree_sitter::Node<'_>, source: &str) -> bool {
-    crate::engine::languages::typescript::commonjs_default_callable(node, source)
+    crate::languages::typescript::commonjs_default_callable(node, source)
 }
 
 #[cfg(not(feature = "lang-typescript"))]
@@ -114,7 +114,12 @@ fn declaration_signature(node: Syntax<'_>, source: &str) -> String {
         .take(512)
         .collect()
 }
-fn declaration_signature_is_informative(node: Syntax<'_>) -> bool {
+fn declaration_signature_is_informative(node: Syntax<'_>, source: &str) -> bool {
+    if node.named_children(&mut node.walk()).any(|child| {
+        child.kind() == "visibility_modifier" && text(child, source).starts_with("pub(")
+    }) {
+        return true;
+    }
     let parameters = node
         .child_by_field_name("parameters")
         .or_else(|| node.child_by_field_name("formal_parameters"));
@@ -143,7 +148,7 @@ fn declaration_signature_is_informative(node: Syntax<'_>) -> bool {
     has_body
 }
 fn declaration_signature_if_informative(node: Syntax<'_>, source: &str) -> Option<String> {
-    declaration_signature_is_informative(node).then(|| declaration_signature(node, source))
+    declaration_signature_is_informative(node, source).then(|| declaration_signature(node, source))
 }
 /// Produces a length-bounded string expression representation.
 pub fn bounded_expression(value: &str) -> String {
@@ -153,7 +158,7 @@ pub fn bounded_expression(value: &str) -> String {
     format!(
         "{}… [sha256:{}]",
         value.chars().take(256).collect::<String>(),
-        crate::core::commitments::hash(value.as_bytes())
+        crate::db::commitments::hash(value.as_bytes())
     )
 }
 /// Extracts symbol name from a syntax node.
@@ -260,29 +265,52 @@ fn manifest_entrypoint_candidates(
         let relative = if entry.scope.is_empty() {
             Some(path)
         } else {
-            path.strip_prefix(&entry.scope).and_then(|rest| rest.strip_prefix('/'))
+            path.strip_prefix(&entry.scope)
+                .and_then(|rest| rest.strip_prefix('/'))
         };
         let Some(relative) = relative else { continue };
         let callable = if entry.python && language == "python" {
-            let Some((module, callable)) = entry.target.split_once(':') else { continue };
-            if module.is_empty() || callable.is_empty()
-                || !module.split('.').all(|part| !part.is_empty() && part.chars().all(|c| c.is_alphanumeric() || c == '_'))
+            let Some((module, callable)) = entry.target.split_once(':') else {
+                continue;
+            };
+            if module.is_empty()
+                || callable.is_empty()
+                || !module.split('.').all(|part| {
+                    !part.is_empty() && part.chars().all(|c| c.is_alphanumeric() || c == '_')
+                })
                 || !callable.chars().all(|c| c.is_alphanumeric() || c == '_')
-            { continue; }
+            {
+                continue;
+            }
             let module_path = module.replace('.', "/");
             let source_path = relative.strip_prefix("src/").unwrap_or(relative);
-            if source_path != format!("{module_path}.py") && source_path != format!("{module_path}/__init__.py") { continue; }
+            if source_path != format!("{module_path}.py")
+                && source_path != format!("{module_path}/__init__.py")
+            {
+                continue;
+            }
             Some(callable)
         } else if !entry.python && matches!(language, "typescript" | "javascript") {
             let target = entry.target.strip_prefix("./").unwrap_or(&entry.target);
-            if target != relative || target.split('/').any(|part| part == "..") { continue; }
+            if target != relative || target.split('/').any(|part| part == "..") {
+                continue;
+            }
             None
-        } else { continue };
+        } else {
+            continue;
+        };
         let direct_module = callable.is_some_and(|callable| {
-            let Some(module) = facts.nodes.iter().find(|node| node.kind == "module") else { return false };
+            let Some(module) = facts.nodes.iter().find(|node| node.kind == "module") else {
+                return false;
+            };
             let qualified = format!("{}.{}", module.qualname, callable);
-            let mut targets = facts.nodes.iter().filter(|node| node.kind == "function" && node.qualname == qualified);
-            let Some(target) = targets.next() else { return false };
+            let mut targets = facts
+                .nodes
+                .iter()
+                .filter(|node| node.kind == "function" && node.qualname == qualified);
+            let Some(target) = targets.next() else {
+                return false;
+            };
             target.details["entrypoint_direct_module"] == true && targets.next().is_none()
         });
         let id = format!("main-registration:{}:{}:{}", entry.origin, entry.name, path);
@@ -294,7 +322,9 @@ fn manifest_entrypoint_candidates(
             details: serde_json::json!({"manifest_origin": entry.origin, "manifest_name": entry.name, "callable": callable, "direct_module": direct_module}),
         });
     }
-    if language == "python" { clear_direct_module_markers(facts); }
+    if language == "python" {
+        clear_direct_module_markers(facts);
+    }
 }
 
 fn clear_direct_module_markers(facts: &mut Facts) {
@@ -397,7 +427,7 @@ pub fn extract_typed_with_registry(
         }
     }
     for node in &mut typed.facts.nodes {
-        crate::core::typed_facts::NodeSemanticEntry::ingest(node);
+        forge_core::typed_facts::NodeSemanticEntry::ingest(node);
     }
     typed.facts.semantic.mark_complete();
     compact_node_details(&mut typed.facts, path);
@@ -425,7 +455,9 @@ pub(crate) fn extract_tree(
         None,
         &language_context,
     );
-    if profile.id() == "python" { clear_direct_module_markers(facts); }
+    if profile.id() == "python" {
+        clear_direct_module_markers(facts);
+    }
     facts.semantic.mark_complete();
     compact_node_details(facts, path);
 }

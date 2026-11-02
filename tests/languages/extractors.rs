@@ -124,6 +124,163 @@ mod scope_allocations {
 #[cfg(feature = "lang-rust")]
 #[test]
 fn test_rust_ast_extractor() {
+    {
+        let member_rules = |returns: Option<&str>| {
+            let mut manifest = String::from("enabled = true\nreplace = true\n");
+            for package in ["serde_json", "serde_yaml"] {
+                manifest.push_str(&format!("[[class_hierarchy_receivers]]\nbases = ['{package}']\nprovider = '{package}'\nmembers = ['from_str', 'from_slice', 'from_reader', 'from_value']\n"));
+                if let Some(base) = returns {
+                    manifest.push_str("[class_hierarchy_receivers.returns]\n");
+                    for member in ["from_str", "from_slice", "from_reader", "from_value"] {
+                        manifest.push_str(&format!("{member} = {{ kind = 'receiver', base = '{base}' }}\n"));
+                    }
+                }
+            }
+            manifest
+        };
+        for (policy, manifest, inferred) in [
+            ("enabled", None, true),
+            ("disabled", Some("enabled = false\n".to_owned()), false),
+            ("replace-empty", Some("enabled = true\nreplace = true\n".to_owned()), false),
+            ("replace-no-returns", Some(member_rules(None)), false),
+            ("replace-result", Some(member_rules(Some("Result"))), true),
+            ("replace-non-result", Some(member_rules(Some("String"))), false),
+        ] {
+            let workspace = super::support::Workspace::new();
+            workspace.write("Cargo.toml", "[package]\nname='batch11-probe'\nversion='0.1.0'\n[dependencies]\nserde_json='1'\nserde_yaml='0.9'\nserde={version='1',features=['derive']}\n");
+            if let Some(manifest) = manifest { workspace.write(".forge/frameworks/rust-cargo.toml", &manifest); }
+            let mut source = String::from("#[derive(serde::Deserialize)] struct LeafBatch11 {} impl LeafBatch11 { fn finish(&self) {} }\n");
+            let mut functions = Vec::new();
+            for (package, alias, methods) in [
+                ("serde_json", "json", &["from_str", "from_slice", "from_reader", "from_value"][..]),
+                ("serde_yaml", "yaml", &["from_str", "from_slice", "from_reader"][..]),
+            ] {
+                source.push_str(&format!("use {package} as {alias};\n"));
+                for method in methods {
+                    source.push_str(&format!("use {package}::{method} as {alias}_{method};\n"));
+                    let reader = if *method == "from_reader" { "_, " } else { "" };
+                    let input = match *method {
+                        "from_slice" => "b\"{}\"",
+                        "from_reader" => "\"{}\".as_bytes()",
+                        "from_value" => "serde_json::Value::Null",
+                        _ => "\"{}\"",
+                    };
+                    for (spelling, callee) in [
+                        ("direct", format!("{package}::{method}")),
+                        ("namespace", format!("{alias}::{method}")),
+                        ("function", format!("{alias}_{method}")),
+                    ] {
+                        let function = format!("probe_{alias}_{method}_{spelling}");
+                        source.push_str(&format!("fn {function}() {{ {callee}::<{reader}LeafBatch11>({input}).unwrap().finish(); }}\n"));
+                        source.push_str(&format!("fn {function}_assigned() {{ let parsed = {callee}::<{reader}LeafBatch11>({input}).expect(\"valid\"); parsed.finish(); }}\n"));
+                        source.push_str(&format!("fn {function}_annotated() {{ let parsed: Result<LeafBatch11, {package}::Error> = {callee}({input}); parsed.unwrap().finish(); }}\n"));
+                        functions.push(function);
+                    }
+                }
+            }
+            workspace.write("src/lib.rs", &source);
+            let db = workspace.build();
+            for function in functions {
+                for (suffix, expected) in [("", inferred), ("_assigned", inferred), ("_annotated", true)] {
+                    let function = format!("{function}{suffix}");
+                    let edges: i64 = db.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name=?1 AND d.qualname LIKE '%LeafBatch11.finish' AND e.kind='calls'", [&function], |row| row.get(0)).unwrap();
+                    assert_eq!(edges, i64::from(expected), "{policy}: {function}: effective signature authority");
+                    if !expected {
+                        let resolved: i64 = db.query_row("SELECT count(*) FROM resolution_coverage c JOIN coverage_expressions x USING(expression_id) JOIN nodes n ON n.path_id=c.path_id AND c.line BETWEEN n.line AND n.end_line WHERE n.name=?1 AND x.expression LIKE '%finish' AND c.status!='unresolved'", [&function], |row| row.get(0)).unwrap();
+                        assert_eq!(resolved, 0, "{policy}: {function}: unknown inferred payload must fail closed");
+                    }
+                }
+            }
+        }
+    }
+    {
+        let workspace = super::support::Workspace::new();
+        workspace.write("Cargo.toml", "[package]\nname='batch10-probe'\nversion='0.1.0'\n[dependencies]\nserde_json='1'\nserde_yaml='0.9'\nserde={version='1',features=['derive']}\n");
+        let mut source = String::from(r#"
+#[derive(serde::Deserialize)] struct LeafBatch10 {}
+impl LeafBatch10 { fn finish(&self) {} }
+struct HubBatch10 {}
+impl HubBatch10 { fn leaf(&self) -> LeafBatch10 { LeafBatch10 {} } }
+struct ChangingBatch10 {}
+impl ChangingBatch10 {
+    fn unwrap(self) -> LeafBatch10 { LeafBatch10 {} }
+    fn expect(self, _: &str) -> LeafBatch10 { LeafBatch10 {} }
+}
+fn missing_unwrap(h: HubBatch10) { h.unwrap().leaf(); }
+fn missing_expect(h: HubBatch10) { h.expect("missing").leaf(); }
+fn missing_try(h: HubBatch10) -> Result<(), ()> { h?.leaf(); Ok(()) }
+fn assigned_missing(h: HubBatch10) { let changed = h.unwrap(); changed.leaf(); }
+fn declared_unwrap(h: ChangingBatch10) { h.unwrap().finish(); }
+fn declared_expect(h: ChangingBatch10) { h.expect("valid").finish(); }
+fn known_option(opt: Option<LeafBatch10>) { opt.unwrap().finish(); }
+fn known_result(res: Result<LeafBatch10, ()>) { res.expect("valid").finish(); }
+fn missing_external(path: std::path::PathBuf) { path.unwrap().exists(); path.expect("missing").exists(); }
+use serde_json as json_alias;
+use serde_yaml::from_str as read_yaml;
+fn json_alias_payload() { json_alias::from_str::<LeafBatch10>("{}").unwrap().finish(); }
+fn yaml_import_payload() { read_yaml::<LeafBatch10>("{}").unwrap().finish(); }
+fn annotated_json_payload() {
+    let result: Result<LeafBatch10, serde_json::Error> = serde_json::from_str("{}");
+    result.unwrap().finish();
+}
+"#);
+        let mut cases = Vec::new();
+        for (package, methods) in [
+            ("serde_json", &["from_str", "from_slice", "from_reader", "from_value"][..]),
+            ("serde_yaml", &["from_str", "from_slice", "from_reader"][..]),
+        ] {
+            for method in methods {
+                let function = format!("{package}_{method}");
+                let reader_type = if *method == "from_reader" { "_, " } else { "" };
+                let input = match *method {
+                    "from_slice" => "b\"{}\"",
+                    "from_reader" => "\"{}\".as_bytes()",
+                    "from_value" => "serde_json::Value::Null",
+                    _ => "\"{}\"",
+                };
+                source.push_str(&format!("fn {function}() {{ let custom = {package}::{method}::<{reader_type}LeafBatch10>({input}).unwrap(); custom.finish(); let text = {package}::{method}::<{reader_type}String>({input}).unwrap(); text.len(); let value = {package}::{method}::<{reader_type}{package}::Value>({input}).unwrap(); value.is_null(); }}\n"));
+                source.push_str(&format!("fn {function}_unknown<T: serde::de::DeserializeOwned>() {{ let unknown = {package}::{method}::<{reader_type}T>({input}).unwrap(); unknown.finish(); let untyped = {package}::{method}({input}).unwrap(); untyped.finish(); }}\n"));
+                source.push_str(&format!("fn {function}_direct() {{ {package}::{method}::<{reader_type}LeafBatch10>({input}).unwrap().finish(); }}\n"));
+                cases.push(function);
+            }
+        }
+        workspace.write("src/lib.rs", &source);
+        let db = workspace.build();
+        for function in &cases {
+            let exact: i64 = db.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name=?1 AND d.name='finish' AND d.qualname LIKE '%LeafBatch10.finish' AND e.kind='calls'", [function], |row| row.get(0)).unwrap();
+            assert_eq!(exact, 1, "{function}: explicit generic must retain the exact Leaf target");
+            let direct: i64 = db.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name=?1 AND d.name='finish' AND d.qualname LIKE '%LeafBatch10.finish' AND e.kind='calls'", [format!("{function}_direct")], |row| row.get(0)).unwrap();
+            assert_eq!(direct, 1, "{function}: direct generic chain must retain Leaf identity");
+            for (expression, origin) in [("text.len", "Rust standard library"), ("value.is_null", "Value")] {
+                let (status, evidence): (String, String) = db.query_row("SELECT c.status, v.evidence FROM resolution_coverage c JOIN coverage_expressions x USING(expression_id) JOIN coverage_evidence v USING(evidence_id) JOIN nodes n ON n.path_id=c.path_id AND c.line BETWEEN n.line AND n.end_line WHERE n.name=?1 AND x.expression=?2", [function.as_str(), expression], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+                assert_eq!(status, "external", "{function}: {expression}: {evidence}");
+                assert!(evidence.contains(origin), "{function}: {expression}: expected {origin}, got {evidence}");
+            }
+            let unknown_edges: i64 = db.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name=?1 AND d.name='finish' AND e.kind='calls'", [format!("{function}_unknown")], |row| row.get(0)).unwrap();
+            assert_eq!(unknown_edges, 0, "unknown generic/untyped results must not invent Leaf identity");
+            for expression in ["unknown.finish", "untyped.finish"] {
+                let status: String = db.query_row("SELECT c.status FROM resolution_coverage c JOIN coverage_expressions x USING(expression_id) JOIN nodes n ON n.path_id=c.path_id AND c.line BETWEEN n.line AND n.end_line WHERE n.name=?1 AND x.expression=?2", [format!("{function}_unknown").as_str(), expression], |row| row.get(0)).unwrap();
+                assert_eq!(status, "unresolved", "{function}: {expression} must not manufacture Value identity");
+            }
+        }
+        for (function, expression) in [
+            ("missing_unwrap", "h.unwrap().leaf"), ("missing_expect", "h.expect(\"missing\").leaf"),
+            ("missing_try", "h?.leaf"), ("assigned_missing", "changed.leaf"),
+        ] {
+            let exact: i64 = db.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name=?1 AND d.name='leaf' AND e.kind='calls'", [function], |row| row.get(0)).unwrap();
+            assert_eq!(exact, 0, "{function}: unknown projection must not revive Hub identity");
+            let status: String = db.query_row("SELECT c.status FROM resolution_coverage c JOIN coverage_expressions x USING(expression_id) JOIN nodes n ON n.path_id=c.path_id AND c.line BETWEEN n.line AND n.end_line WHERE n.name=?1 AND x.expression=?2", [function, expression], |row| row.get(0)).unwrap();
+            assert_eq!(status, "unresolved", "{function}: {expression}");
+        }
+        for function in ["declared_unwrap", "declared_expect", "known_option", "known_result", "json_alias_payload", "yaml_import_payload", "annotated_json_payload"] {
+            let exact: i64 = db.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name=?1 AND d.name='finish' AND e.kind='calls'", [function], |row| row.get(0)).unwrap();
+            assert_eq!(exact, 1, "{function}: proven payload must retain Leaf identity");
+        }
+        for expression in ["path.unwrap().exists", "path.expect(\"missing\").exists"] {
+            let status: String = db.query_row("SELECT c.status FROM resolution_coverage c JOIN coverage_expressions x USING(expression_id) WHERE x.expression=?1", [expression], |row| row.get(0)).unwrap();
+            assert_eq!(status, "unresolved", "unwrapped external non-wrapper: {expression}");
+        }
+    }
     let empty_catalog = std::collections::BTreeMap::new();
     let seam_resolver = SeamValueFlowResolver;
     let _seam_index =
@@ -148,6 +305,137 @@ impl Config {
 }
 "#;
     let facts = ast::extract("test.rs", "rust", source).expect("rust extraction failed");
+    {
+        use forge_index::linker::value_flow::{SemanticResolver, Symbol, SymbolRole, TypeTarget};
+        use contextunity_forge_mcp::core::{models::Node, semantic::{SourcePosition, TypeExpr, ValueExpr, ValueFlowFacts}};
+        struct DotConstructorResolver<'a> { class: &'a Node, constructor: &'a Node, flow: &'a ValueFlowFacts }
+        impl<'a> SemanticResolver<'a> for DotConstructorResolver<'a> {
+            fn resolve_symbol(&self, _: &'a Node, name: &str, _: SourcePosition, role: SymbolRole) -> Symbol<'a> {
+                match (name, role) {
+                    ("Config", SymbolRole::Type) => Symbol::Type(TypeTarget::Local(self.class)),
+                    _ => Symbol::Unknown,
+                }
+            }
+            fn resolve_member(&self, receiver: &TypeTarget<'a>, member: &str, _: &'a Node, _: SourcePosition) -> Symbol<'a> {
+                if matches!(receiver, TypeTarget::Local(node) if node.id == self.class.id) && member == "new" {
+                    Symbol::Callable(self.constructor)
+                } else { Symbol::Unknown }
+            }
+            fn value_flow(&self, node: &'a Node) -> Option<&'a ValueFlowFacts> {
+                (node.id == self.constructor.id).then_some(self.flow)
+            }
+        }
+        let class = facts.nodes.iter().find(|node| node.kind == "struct" && node.name == "Config").unwrap();
+        let constructor = facts.nodes.iter().find(|node| node.kind == "method" && node.name == "new").unwrap();
+        let flow = ValueFlowFacts { return_type: Some(TypeExpr::Named { name: "Self".to_owned() }), ..Default::default() };
+        let resolver = DotConstructorResolver { class, constructor, flow: &flow };
+        let index = ValueFlowIndex::build(&empty_catalog, &resolver);
+        for callee in ["Config::new", "Config.new", "Config::create"] {
+            let result = index.resolve_value(class, &ValueExpr::Call { callee: callee.to_owned(), site: None }, SourcePosition { line: 20, column: 0 }, &resolver);
+            if callee == "Config::create" {
+                assert!(matches!(result, TypeTarget::Unknown), "missing constructors must stay unknown: {result:?}");
+            } else {
+                assert!(matches!(result, TypeTarget::Local(node) if node.id == class.id), "constructor spelling must normalize: {callee}: {result:?}");
+            }
+        }
+    }
+    {
+        let source = r#"
+struct LeafBatch9 {}
+impl LeafBatch9 { fn finish(&self) {} }
+struct HubBatch9 {}
+impl HubBatch9 { fn leaf(&self) -> LeafBatch9 { LeafBatch9 {} } }
+fn probe(name: &str, path: &std::path::PathBuf, hub: HubBatch9, items: Vec<LeafBatch9>) {
+    name.trim().is_empty();
+    path.parent().unwrap().exists();
+    hub.leaf().finish();
+    hub.missing().finish();
+    hub.leaf(unknown).finish();
+    for mut item in items { item.finish(); }
+    let mut bound = LeafBatch9 {}; bound.finish();
+}
+"#;
+        let mut facts = ast::extract("batch9.rs", "rust", source).unwrap();
+        for reference in &mut facts.references { reference.receiver_hint = None; }
+        let graph = linker::link(&std::collections::BTreeMap::from([("batch9.rs".into(), facts)]));
+        for (expression, expected) in [
+            ("name.trim().is_empty", true), ("path.parent().unwrap().exists", true),
+            ("hub.leaf().finish", true), ("hub.missing().finish", false),
+            ("hub.leaf(unknown).finish", false), ("item.finish", true), ("bound.finish", true),
+        ] {
+            let row = graph.coverage.iter().find(|row| row.expression == expression).unwrap();
+            assert_eq!(matches!(row.status.as_str(), "resolved" | "external"), expected, "{expression}: {row:?}");
+        }
+    }
+    {
+        use forge_index::linker::value_flow::{ConfiguredReceiverAuthority, SemanticResolver, Symbol, SymbolRole, TypeTarget};
+        use contextunity_forge_mcp::core::{models::Node, semantic::{SourcePosition, TypeExpr, ValueExpr}};
+        use forge_index::languages::manifests::{ClassHierarchyReceiverRule, ReturnPolicy};
+        fn configured(base: &str, member: &str, returns: bool) -> TypeTarget<'static> {
+            TypeTarget::ConfiguredReceiver {
+                authority: std::sync::Arc::new(ConfiguredReceiverAuthority::Hierarchy {
+                    pack: "supplied-rust-policy".to_owned(),
+                    rule: std::sync::Arc::new(ClassHierarchyReceiverRule {
+                        bases: vec![base.to_owned()], provider: "supplied".to_owned(),
+                        members: vec![member.to_owned()],
+                        returns: if returns {
+                            std::collections::BTreeMap::from([(member.to_owned(), ReturnPolicy::Receiver { base: "Replacement".to_owned() })])
+                        } else { Default::default() },
+                    }),
+                }),
+                origin: Box::new(TypeTarget::External { module: base.to_owned(), import_line: 1 }),
+                fallback: None, evidence: "supplied-policy".to_owned(),
+            }
+        }
+        struct SuppliedResolver { receiver: TypeTarget<'static>, result: Option<TypeTarget<'static>> }
+        impl<'a> SemanticResolver<'a> for SuppliedResolver {
+            fn resolve_symbol(&self, _: &'a Node, name: &str, _: SourcePosition, _: SymbolRole) -> Symbol<'a> {
+                if name == "Supplied" { Symbol::Type(self.receiver.clone()) } else { Symbol::Unknown }
+            }
+            fn resolve_member_result(&self, receiver: &TypeTarget<'a>, member: &str, _: &'a Node, _: SourcePosition) -> Option<TypeTarget<'a>> {
+                let TypeTarget::ConfiguredReceiver { authority, .. } = receiver else { return None; };
+                let ConfiguredReceiverAuthority::Hierarchy { rule, .. } = authority.as_ref() else { return None; };
+                rule.returns.get(member)?;
+                self.result.clone()
+            }
+        }
+        let owner = facts.nodes.iter().find(|node| node.kind == "method").unwrap();
+        let at = SourcePosition { line: owner.line + 1, column: 0 };
+        for (base, member, wrappers) in [
+            ("rusqlite::Rows", "next", 2),
+            ("rusqlite::Row", "get", 1),
+            ("std::process::Command", "output", 1),
+            ("walkdir::WalkDir", "into_iter", 1),
+        ] {
+            let expression = ValueExpr::Project {
+                value: Box::new(ValueExpr::Annotated { type_expr: TypeExpr::Named { name: "Supplied".to_owned() } }),
+                member: member.to_owned(),
+            };
+            for returns in [true, false] {
+                let resolver = SuppliedResolver { receiver: configured(base, member, returns), result: Some(TypeTarget::Builtin("Replacement".to_owned())) };
+                let index = ValueFlowIndex::build(&empty_catalog, &resolver);
+                let mut result = index.resolve_value(owner, &expression, at, &resolver);
+                if !returns { assert!(matches!(result, TypeTarget::Unknown), "{base}.{member}: {result:?}"); continue; }
+                if member == "into_iter" {
+                    let TypeTarget::RustIterator { item } = result else { panic!("{base}.{member}: {result:?}"); };
+                    result = *item;
+                }
+                for depth in 0..wrappers {
+                    let TypeTarget::RustWrapper { wrapper, ok, .. } = result else { panic!("{base}.{member}: {result:?}"); };
+                    assert_eq!(wrapper, if depth == 1 { forge_index::linker::value_flow::RustWrapperKind::Option } else { forge_index::linker::value_flow::RustWrapperKind::Result });
+                    result = *ok;
+                }
+                assert!(matches!(result, TypeTarget::Builtin(name) if name == "Replacement"), "{base}.{member}");
+            }
+        }
+        let resolver = SuppliedResolver { receiver: configured("rusqlite::Row", "get", true), result: Some(configured("std::result::Result", "unwrap", false)) };
+        let index = ValueFlowIndex::build(&empty_catalog, &resolver);
+        let projected = index.resolve_value(owner, &ValueExpr::Project {
+            value: Box::new(ValueExpr::Annotated { type_expr: TypeExpr::Named { name: "Supplied".to_owned() } }),
+            member: "get".to_owned(),
+        }, at, &resolver);
+        assert!(matches!(projected, TypeTarget::RustWrapper { ok, .. } if matches!(*ok, TypeTarget::Unknown)));
+    }
     assert!(facts
         .nodes
         .iter()
@@ -176,7 +464,11 @@ impl Config {
         let _ = rust::language();
         let _ = is_registered_cargo_crate("rusqlite");
     }
+}
 
+#[cfg(feature = "lang-rust")]
+#[test]
+fn test_rust_std_prelude_and_trait_manifest() {
     // Contract baseline for LS-001: Rust std prelude trait resolution and declarative manifests.
     // Standard prelude traits (Clone, Default, Iterator) must resolve or classify as external via rust-std.toml.
     let std_source = r#"
@@ -249,7 +541,11 @@ fn run() {
         iter_coverage.status, "external",
         "numbers.iter must resolve to external: {iter_coverage:#?}"
     );
+}
 
+#[cfg(feature = "lang-rust")]
+#[test]
+fn test_rust_cargo_ecosystem_manifest_and_external_routing() {
     // Verify Cargo third-party ecosystem crate routing (Task 2 contract)
     let cargo_source = r#"
 use rusqlite::Connection;
@@ -343,6 +639,13 @@ fn run_cargo_crates() {
             true,
         ),
         (
+            "clap-command-missing-unwrap",
+            "use clap::Command;",
+            "Command::new(\"app\")",
+            "get_matches",
+            false,
+        ),
+        (
             "regex-match",
             "use regex::Regex;",
             "Regex::new(\"pattern\")",
@@ -350,8 +653,9 @@ fn run_cargo_crates() {
             true,
         ),
     ] {
+        let projection = if label == "clap-command" { "" } else { ".unwrap()" };
         let source =
-            format!("{import}\nfn run() {{ let conn = {constructor}.unwrap(); conn.{member}(); }}");
+            format!("{import}\nfn run() {{ let conn = {constructor}{projection}; conn.{member}(); }}");
         for path in ["identity.rs", "src/identity.rs"] {
             let facts = ast::extract(path, "rust", &source).unwrap();
             let graph = linker::link(&std::collections::BTreeMap::from([(path.into(), facts)]));
@@ -514,7 +818,11 @@ fn check_string_trait_isolation() {
             "{adapter}: {coverage:#?}"
         );
     }
+}
 
+#[cfg(feature = "lang-rust")]
+#[test]
+fn test_rust_declarative_macros_and_receiver_repair() {
     // Task 3 Contract: Declarative macro classification and bounded receiver repair (LS-001)
     // 1. Declarative standard and Cargo macro classification: format!, json!, bail!, ensure!, vec!, write!
     let macro_contract_source = r#"
@@ -912,7 +1220,11 @@ fn run_std_fn_calls() {
         let row = graph.coverage.iter().find(|r| r.expression == "item.len").unwrap();
         assert_eq!(row.status, "external", "{label}: proven std macro output suppressed: {row:?}");
     }
+}
 
+#[cfg(feature = "lang-rust")]
+#[test]
+fn test_rust_closure_inference_and_tuple_destructuring() {
     // Seam Contract: closure-inference-and-tuple-destructuring (LS-001 Task 5)
     // 1. Tuple destructuring: let (file, code) = (NamedTempFile::new().unwrap(), 42); file.path();
     // 2. Additional workspace Cargo crates: WalkDir::new(".").into_iter();
@@ -999,8 +1311,15 @@ fn run_std_fn_calls() {
     );
 
     // Proven manifest-bound root crate normalization
-    let temp_root =
-        std::env::temp_dir().join(format!("forge_test_root_crate_{}", std::process::id()));
+    let unique_id = format!(
+        "forge_test_root_crate_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let temp_root = std::env::temp_dir().join(unique_id);
     let _ = std::fs::remove_dir_all(&temp_root);
     std::fs::create_dir_all(&temp_root).unwrap();
     std::fs::write(
@@ -1488,7 +1807,8 @@ edition = "2021"
 
     // Contract revision 2: effective class hierarchy return policy preservation (LS001-T5-R3)
     {
-        let root = std::env::temp_dir().join(format!("seam-contract-r2-{}", std::process::id()));
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let root = std::env::temp_dir().join(format!("seam-contract-r2-{}-{}", std::process::id(), nonce));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join(".forge/frameworks")).unwrap();
         std::fs::write(
@@ -1524,6 +1844,545 @@ members = ['get']
             "effective return policy for prepare_cached -> Row must resolve on value.get: {row:#?}"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(feature = "lang-rust")]
+#[test]
+fn test_rust_chained_computed_receivers_and_compat() {
+    // Task 6 Seam Contract: Chained computed receiver and workspace compat resolution
+    {
+        for (owner, target, import) in [
+            (
+                "crates/ordinary/src/probe.rs",
+                "crates/ordinary/src/core.rs",
+                "crate::core::work",
+            ),
+            (
+                "crates/ordinary/src/probe.rs",
+                "crates/ordinary/src/engine.rs",
+                "crate::engine::work",
+            ),
+            ("examples/probe.rs", "examples/core.rs", "crate::core::work"),
+            (
+                "crates/forge-index/src/probe.rs",
+                "crates/forge-core/src/models.rs",
+                "forge_core::models::work",
+            ),
+            (
+                "crates/forge-index/src/probe.rs",
+                "crates/forge-index/src/ast.rs",
+                "crate::ast::work",
+            ),
+            (
+                "crates/forge-tasks/src/probe.rs",
+                "crates/forge-tasks/src/store.rs",
+                "crate::store::work",
+            ),
+            (
+                "crates/ordinary/src/probe.rs",
+                "crates/ordinary/src/db/tasks_store.rs",
+                "crate::db::tasks_store::work",
+            ),
+        ] {
+            let source = format!("use {import};\nfn probe() {{ work(); }}\n");
+            let workspace = super::support::Workspace::new();
+            workspace.write(owner, &source);
+            workspace.write(target, "pub fn work() {}\n");
+            let files = std::collections::BTreeMap::from([
+                (owner.into(), ast::extract(owner, "rust", &source).unwrap()),
+                (
+                    target.into(),
+                    ast::extract(target, "rust", "pub fn work() {}\n").unwrap(),
+                ),
+            ]);
+            let graph = linker::link_with_root(&files, None, Some(&workspace.0));
+            let caller = files[owner]
+                .nodes
+                .iter()
+                .find(|node| node.name == "probe")
+                .unwrap();
+            let callee = files[target]
+                .nodes
+                .iter()
+                .find(|node| node.name == "work")
+                .unwrap();
+            assert!(
+                graph.edges.iter().any(|edge| edge.kind == "calls"
+                    && edge.src == caller.id
+                    && edge.dst == callee.id),
+                "{owner}: {import}: {:#?}",
+                graph.coverage
+            );
+        }
+        let source = r#"
+            use std::process::Command;
+            use serde_json::Value;
+            use rusqlite::{Connection, Statement, Row};
+            type Syntax<'a> = tree_sitter::Node<'a>;
+            fn probe_chained(opt: Option<&str>) {
+                let s = opt.unwrap();
+                let is_emp = s.trim().is_empty();
+                opt.and_then(|s| Some(s)).unwrap().trim().is_empty();
+            }
+            fn probe_external(cmd: &mut Command, json: &Value) {
+                cmd.args(["x"]).output();
+                cmd.arg("x").output();
+                json.get("key").unwrap().as_str().unwrap().trim().is_empty();
+                json.as_array().unwrap().is_empty();
+            }
+            fn probe_references(conn: &Connection, stmt: &Statement, row: &Row, node: &Syntax<'_>) {
+                conn.execute("", []); stmt.column_count(); row.get(0); node.kind();
+            }
+        "#;
+        let facts = ast::extract("src/probe_task6_chain.rs", "rust", source).unwrap();
+        let graph = linker::link(&std::collections::BTreeMap::from([(
+            "src/probe_task6_chain.rs".into(),
+            facts,
+        )]));
+        let is_empty_ref = graph
+            .coverage
+            .iter()
+            .find(|c| c.expression.ends_with("is_empty"))
+            .expect("is_empty coverage entry");
+        assert_eq!(
+            is_empty_ref.status, "external",
+            "Task 6 Seam Contract: chained s.trim().is_empty() must classify as external Rust standard library built-in: {is_empty_ref:#?}"
+        );
+        assert!(
+            is_empty_ref.evidence.contains("Rust standard library"),
+            "evidence must confirm Rust standard library built-in: {is_empty_ref:#?}"
+        );
+        for expression in [
+            "opt.and_then(|s| Some(s)).unwrap().trim().is_empty",
+            "cmd.args([\"x\"]).output",
+            "cmd.arg(\"x\").output",
+            "json.get(\"key\").unwrap().as_str().unwrap().trim().is_empty",
+            "json.as_array().unwrap().is_empty",
+            "conn.execute",
+            "stmt.column_count",
+            "row.get",
+            "node.kind",
+        ] {
+            let entry = graph
+                .coverage
+                .iter()
+                .find(|c| c.expression == expression)
+                .unwrap_or_else(|| panic!("missing {expression}: {:#?}", graph.coverage));
+            assert_eq!(entry.status, "external", "{entry:#?}");
+        }
+        let files = [
+            (
+                "crates/ordinary/src/lib.rs",
+                "mod inner; pub(crate) use crate::inner::work;",
+            ),
+            (
+                "crates/ordinary/src/inner.rs",
+                "pub(crate) fn work() {}",
+            ),
+            (
+                "crates/ordinary/src/probe.rs",
+                "use crate::work; fn root_probe() { work(); }",
+            ),
+            (
+                "tests/probe.rs",
+                "mod common; use crate::common::Workspace; fn probe() { let w = Workspace::new(); w.write(); }",
+            ),
+            (
+                "tests/common/mod.rs",
+                "mod workspace;\npub use workspace::Workspace;\n",
+            ),
+            (
+                "tests/common/workspace.rs",
+                "pub struct Workspace;\nimpl Workspace {\n pub fn new() -> Self { Self }\n pub fn write(&self) {}\n}\n",
+            ),
+            (
+                "src/lang/mod.rs",
+                "pub use tree_sitter::Node as Syntax;\npub fn helper() {}\nmod sub;\n",
+            ),
+            (
+                "src/lang/sub/mod.rs",
+                "use super::*;\nmod leaf;\n",
+            ),
+            (
+                "src/lang/sub/leaf.rs",
+                "use super::*;\nfn run(s: &Syntax) { s.kind(); helper(); }\n",
+            ),
+            (
+                "src/parallel/mod.rs",
+                "use rayon::prelude::*;\npub fn par_work() {}\nmod child;\n",
+            ),
+            (
+                "src/parallel/child.rs",
+                "use super::*;\nfn check() { par_work(); }\n",
+            ),
+            (
+                "src/chains.rs",
+                "use rusqlite::Connection;\nfn test_db(conn: &Connection) {\n    let mut stmt = conn.prepare(\"SELECT 1\").unwrap();\n    let mut rows = stmt.query([]).unwrap();\n    let row = rows.next().unwrap().unwrap();\n    let _val: i64 = row.get(0).unwrap();\n}\nfn test_syntax(node: &tree_sitter::Node<'_>) {\n    let child = node.child_by_field_name(\"test\").unwrap();\n    let named = child.named_child(0).unwrap();\n    let _ = named.kind();\n}\n",
+            ),
+            (
+                "src/fields.rs",
+                "struct Store { conn: rusqlite::Connection } impl Store { fn run(&self) { let stmt = self.conn.prepare_cached(\"SELECT 1\").unwrap(); stmt.column_count(); } } fn siblings(node: &tree_sitter::Node<'_>) { node.parent().unwrap().kind(); node.next_sibling().unwrap().kind(); node.prev_sibling().unwrap().kind(); node.next_named_sibling().unwrap().kind(); node.prev_named_sibling().unwrap().kind(); let mut cursor = node.walk(); node.children(&mut cursor).next().unwrap().kind(); node.named_children(&mut cursor).next().unwrap().kind(); }",
+            ),
+            (
+                "crates/left/src/lib.rs",
+                "mod inner;\npub(crate) use inner::work;\n",
+            ),
+            (
+                "crates/left/src/inner.rs",
+                "pub fn work() {}\n",
+            ),
+            (
+                "crates/right/src/lib.rs",
+                "use left::work;\nfn probe() { work(); }\n",
+            ),
+            (
+                "src/opt_and_then.rs",
+                "struct A;\nimpl A { fn finish(&self) {} }\nstruct B;\nimpl B { fn finish(&self) {} }\nfn probe(opt: Option<A>) { let result = opt.and_then(|_| Some(B)).unwrap(); result.finish(); }\n",
+            ),
+        ];
+        let workspace = super::support::Workspace::new();
+        for (path, source) in &files {
+            workspace.write(path, source);
+        }
+        let graph = linker::link_with_root(
+            &files
+                .into_iter()
+                .map(|(path, source)| (path.into(), ast::extract(path, "rust", source).unwrap()))
+                .collect(),
+            None,
+            Some(&workspace.0),
+        );
+        for expression in ["Workspace::new", "w.write", "helper", "par_work", "work"] {
+            let entry = graph
+                .coverage
+                .iter()
+                .find(|c| c.expression == expression)
+                .unwrap_or_else(|| panic!("missing {expression}: {:#?}", graph.coverage));
+            assert_eq!(
+                entry.status, "resolved",
+                "{entry:#?}; {:#?}",
+                graph.coverage
+            );
+        }
+        for expression in [
+            "s.kind",
+            "conn.prepare(\"SELECT 1\").unwrap",
+            "stmt.query([]).unwrap",
+            "rows.next().unwrap().unwrap",
+            "row.get(0).unwrap",
+            "node.child_by_field_name(\"test\").unwrap",
+            "child.named_child(0).unwrap",
+            "named.kind",
+            "self.conn.prepare_cached(\"SELECT 1\").unwrap",
+            "stmt.column_count",
+            "node.parent().unwrap().kind",
+            "node.next_sibling().unwrap().kind",
+            "node.prev_sibling().unwrap().kind",
+            "node.next_named_sibling().unwrap().kind",
+            "node.prev_named_sibling().unwrap().kind",
+            "node.children(&mut cursor).next().unwrap().kind",
+            "node.named_children(&mut cursor).next().unwrap().kind",
+        ] {
+            let entry = graph
+                .coverage
+                .iter()
+                .find(|c| c.expression == expression)
+                .unwrap_or_else(|| panic!("missing {expression}: {:#?}", graph.coverage));
+            assert_eq!(entry.status, "external", "{entry:#?}");
+        }
+        let cross_crate_work = graph
+            .coverage
+            .iter()
+            .find(|c| c.path == "crates/right/src/lib.rs" && c.expression == "work")
+            .expect("right crate work call");
+        assert_ne!(
+            cross_crate_work.status, "resolved",
+            "pub(crate) re-export in left crate must not resolve in right crate: {cross_crate_work:#?}"
+        );
+        let and_then_finish = graph
+            .coverage
+            .iter()
+            .find(|c| c.path == "src/opt_and_then.rs" && c.expression == "result.finish")
+            .expect("and_then finish call");
+        assert_ne!(
+            and_then_finish.status, "resolved",
+            "type-changing and_then must not resolve to input type method: {and_then_finish:#?}"
+        );
+        for (label, expression, resolved) in [
+            (
+                "identity",
+                "opt.and_then(|value| Some(value)).unwrap()",
+                true,
+            ),
+            ("changed", "opt.and_then(|_| Some(B)).unwrap()", false),
+            ("unknown", "opt.and_then(|_| opaque()).unwrap()", false),
+            ("callback", "opt.and_then(callback).unwrap()", false),
+            (
+                "reassigned",
+                "{ let mut value = opt.and_then(|v| Some(v)).unwrap(); value = opaque(); value }",
+                false,
+            ),
+        ] {
+            let source = format!("struct A; impl A {{ fn finish(&self) {{}} }} struct B; impl B {{ fn finish(&self) {{}} }} fn probe(opt: Option<A>) {{ let result = {expression}; result.finish(); }}");
+            let facts = ast::extract("callbacks.rs", "rust", &source).unwrap();
+            let caller = facts
+                .nodes
+                .iter()
+                .find(|node| node.name == "probe")
+                .unwrap();
+            let target = facts
+                .nodes
+                .iter()
+                .find(|node| node.qualname.ends_with(".A.finish"))
+                .unwrap();
+            let graph = linker::link(&std::collections::BTreeMap::from([(
+                "callbacks.rs".into(),
+                facts.clone(),
+            )]));
+            let calls: Vec<_> = graph
+                .edges
+                .iter()
+                .filter(|edge| {
+                    edge.kind == "calls" && edge.src == caller.id && edge.dst == target.id
+                })
+                .collect();
+            assert_eq!(
+                calls.len(),
+                usize::from(resolved),
+                "{label}: {:#?}",
+                graph.coverage
+            );
+        }
+
+        for (policy, manifest, expected) in [
+            ("default", None, Some("rusqlite::Row")),
+            ("disabled", Some("enabled = false\n".to_owned()), None),
+            ("no-return", Some("enabled = true\nreplace = true\n[[class_hierarchy_receivers]]\nbases = ['rusqlite::Rows']\nprovider = 'rusqlite'\nmembers = ['next']\n".to_owned()), None),
+            ("remapped", Some("enabled = true\nreplace = true\n[[class_hierarchy_receivers]]\nbases = ['rusqlite::Rows']\nprovider = 'rusqlite'\nmembers = ['next']\n[class_hierarchy_receivers.returns]\nnext = { kind = 'receiver', base = 'tree_sitter::Node' }\n[[class_hierarchy_receivers]]\nbases = ['tree_sitter::Node']\nprovider = 'tree-sitter'\nmembers = ['kind']\n".to_owned()), Some("tree_sitter::Node")),
+        ] {
+            let workspace = super::support::Workspace::new();
+            workspace.write("Cargo.toml", "[package]\nname='row-policy'\nversion='0.1.0'\n[dependencies]\nrusqlite='0.31'\ntree-sitter='0.22'\n");
+            if let Some(manifest) = manifest { workspace.write(".forge/frameworks/rust-cargo.toml", &manifest); }
+            workspace.write("src/lib.rs", "use rusqlite::{Rows, Row};\nfn assigned(rows: &mut Rows<'_>) { let row = rows.next().unwrap().unwrap(); row.get(0); row.kind(); }\nfn computed(rows: &mut Rows<'_>) { rows.next().unwrap().unwrap().get(0); rows.next().unwrap().unwrap().kind(); }\nfn generic(row: &Row) { let value = row.get(0).unwrap(); value.kind(); }\n");
+            let db = workspace.build();
+            for expression in ["row.get", "rows.next().unwrap().unwrap().get"] {
+                let evidence: String = db.query_row("SELECT v.evidence FROM resolution_coverage c JOIN coverage_expressions x ON x.expression_id=c.expression_id JOIN coverage_evidence v ON v.evidence_id=c.evidence_id WHERE x.expression=?1", [expression], |row| row.get(0)).unwrap();
+                assert_eq!(evidence.contains("rusqlite::Row"), expected == Some("rusqlite::Row"), "{policy}: {expression}: {evidence}");
+            }
+            if expected == Some("tree_sitter::Node") {
+                let status: String = db.query_row("SELECT c.status FROM resolution_coverage c JOIN coverage_expressions x ON x.expression_id=c.expression_id WHERE x.expression='row.kind'", [], |row| row.get(0)).unwrap();
+                assert_eq!(status, "external", "{policy}");
+            }
+            let status: String = db.query_row("SELECT c.status FROM resolution_coverage c JOIN coverage_expressions x ON x.expression_id=c.expression_id WHERE x.expression='value.kind'", [], |row| row.get(0)).unwrap();
+            assert_eq!(status, "unresolved", "{policy}: generic Row.get payload must remain unknown");
+        }
+        for (visibility, outer_allowed, root_allowed, external_allowed) in [
+            ("pub", true, true, true),
+            ("pub(crate)", true, true, false),
+            ("pub(super)", true, false, false),
+            ("pub(in crate::outer)", true, false, false),
+            ("pub(self)", false, false, false),
+        ] {
+            let workspace = super::support::Workspace::new();
+            workspace.write(
+                "Cargo.toml",
+                "[workspace]\nmembers=['crates/left','crates/right']\n",
+            );
+            workspace.write(
+                "crates/left/Cargo.toml",
+                "[package]\nname='left'\nversion='0.1.0'\n",
+            );
+            workspace.write(
+                "crates/right/Cargo.toml",
+                "[package]\nname='right'\nversion='0.1.0'\n[dependencies]\nleft={path='../left'}\n",
+            );
+            workspace.write(
+                "crates/left/src/lib.rs",
+                "pub mod outer;\nuse crate::outer::api::work;\nfn root_probe(){ work(); }\n",
+            );
+            workspace.write(
+                "crates/left/src/outer/mod.rs",
+                "pub mod api;\npub mod inner;\nuse self::api::work;\nfn allowed(){ work(); }\n",
+            );
+            workspace.write("crates/left/src/outer/inner.rs", "pub fn work() {}\n");
+            workspace.write(
+                "crates/left/src/outer/api.rs",
+                &format!("{visibility} use crate::outer::inner::work;\nmod leaf;\n"),
+            );
+            workspace.write(
+                "crates/left/src/outer/api/leaf.rs",
+                "use super::work;\nfn nested(){ work(); }\n",
+            );
+            workspace.write(
+                "crates/right/src/lib.rs",
+                "use left::outer::api::work;\nfn foreign(){ work(); }\n",
+            );
+            let db = workspace.build();
+            for (caller, allowed) in [
+                ("allowed", outer_allowed),
+                ("root_probe", root_allowed),
+                ("foreign", external_allowed),
+                ("nested", true),
+            ] {
+                let count: i64 = db.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE e.kind='calls' AND s.name=?1 AND d.name='work'", [caller], |row| row.get(0)).unwrap();
+                assert_eq!(count, i64::from(allowed), "{visibility}: {caller}");
+            }
+        }
+        for visibility in ["pub", "pub(crate)"] {
+            for (case, declarations, providers, foreign_import, foreign_call) in [
+                (
+                    "file-item",
+                    "VIS mod inner;",
+                    vec![("inner.rs", "pub fn work() {}")],
+                    "use left::inner::work;",
+                    "work()",
+                ),
+                (
+                    "file-module",
+                    "VIS mod inner;",
+                    vec![("inner.rs", "pub fn work() {}")],
+                    "use left::inner;",
+                    "inner::work()",
+                ),
+                (
+                    "inline-item",
+                    "VIS mod inner { pub fn work() {} }",
+                    vec![],
+                    "use left::inner::work;",
+                    "work()",
+                ),
+                (
+                    "inline-module",
+                    "VIS mod inner { pub fn work() {} }",
+                    vec![],
+                    "use left::inner;",
+                    "inner::work()",
+                ),
+                (
+                    "file-reexport",
+                    "pub mod inner; VIS mod api;",
+                    vec![
+                        ("inner.rs", "pub fn work() {}"),
+                        ("api.rs", "pub use crate::inner::work;"),
+                    ],
+                    "use left::api::work;",
+                    "work()",
+                ),
+                (
+                    "ancestor-module",
+                    "VIS mod outer;",
+                    vec![
+                        ("outer.rs", "pub mod inner;"),
+                        ("outer/inner.rs", "pub fn work() {}"),
+                    ],
+                    "use left::outer::inner::work;",
+                    "work()",
+                ),
+                (
+                    "public-facade",
+                    "VIS mod inner; pub use crate::inner::work;",
+                    vec![("inner.rs", "pub fn work() {}")],
+                    "use left::work;",
+                    "work()",
+                ),
+            ] {
+                let workspace = super::support::Workspace::new();
+                workspace.write(
+                    "Cargo.toml",
+                    "[workspace]\nmembers=['crates/left','crates/right']\n",
+                );
+                workspace.write(
+                    "crates/left/Cargo.toml",
+                    "[package]\nname='left'\nversion='0.1.0'\n",
+                );
+                workspace.write("crates/right/Cargo.toml", "[package]\nname='right'\nversion='0.1.0'\n[dependencies]\nleft={path='../left'}\n");
+                let local_call = match case {
+                    "file-reexport" => "api::work()",
+                    "ancestor-module" => "work()",
+                    "public-facade" => "work()",
+                    _ => "inner::work()",
+                };
+                workspace.write(
+                    "crates/left/src/lib.rs",
+                    &format!(
+                        "{}\nfn local() {{ {local_call}; }}\n",
+                        declarations.replace("VIS", visibility)
+                            + if case == "ancestor-module" {
+                                " use crate::outer::inner::work;"
+                            } else {
+                                ""
+                            }
+                    ),
+                );
+                for (path, source) in providers {
+                    workspace.write(format!("crates/left/src/{path}"), source);
+                }
+                workspace.write(
+                    "crates/right/src/lib.rs",
+                    &format!("{foreign_import}\nfn foreign() {{ {foreign_call}; }}\n"),
+                );
+                let db = workspace.build();
+                for (caller, expected) in [
+                    ("local", true),
+                    ("foreign", visibility == "pub" || case == "public-facade"),
+                ] {
+                    let count: i64 = db.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE e.kind='calls' AND s.name=?1 AND d.name='work'", [caller], |row| row.get(0)).unwrap();
+                    assert_eq!(count, i64::from(expected), "{visibility} {case}: {caller}");
+                }
+            }
+        }
+        {
+            let workspace = super::support::Workspace::new();
+            let unrelated = super::support::Workspace::new();
+            workspace.write(
+                "Cargo.toml",
+                "[workspace]\nmembers=['crates/left','crates/right']\n",
+            );
+            workspace.write(
+                "crates/left/Cargo.toml",
+                "[package]\nname='left'\nversion='0.1.0'\n",
+            );
+            workspace.write(
+                "crates/right/Cargo.toml",
+                "[package]\nname='right'\nversion='0.1.0'\n[dependencies]\nleft={path='../left'}\n",
+            );
+            workspace.write("crates/left/src/lib.rs", "pub mod models; pub use models::*; pub fn work() {}\n");
+            workspace.write("crates/left/src/models.rs", "pub struct Node { pub visible: String, pub(crate) internal: String, private: String } impl Node { pub fn new() -> Self { Self { visible: String::new(), internal: String::new(), private: String::new() } } pub fn finish(&self) {} }\n");
+            workspace.write(
+                "crates/right/src/lib.rs",
+                "use left::*;\nfn probe(){ work(); let node = Node::new(); node.finish(); }\nfn borrowed(node: &Node) { node.finish(); let _ = &node.visible; let _ = &node.internal; let _ = &node.private; }\n",
+            );
+            for (index, cwd) in [&workspace.0, &unrelated.0].into_iter().enumerate() {
+                let db_path = workspace.0.join(format!(".forge/cwd-{index}.sqlite"));
+                let output =
+                    std::process::Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+                        .arg("--root")
+                        .arg(&workspace.0)
+                        .arg("--db")
+                        .arg(&db_path)
+                        .args(["--format", "json", "build"])
+                        .current_dir(cwd)
+                        .output()
+                        .unwrap();
+                assert!(
+                    output.status.success(),
+                    "cwd {cwd:?}: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                let db = rusqlite::Connection::open(db_path).unwrap();
+                let calls: i64 = db.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE e.kind='calls' AND s.name='probe' AND d.name='work'", [], |row| row.get(0)).unwrap();
+                assert_eq!(calls, 1, "explicit-root import resolution at cwd {cwd:?}");
+                let methods: i64 = db.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE e.kind='calls' AND s.name='probe' AND d.name='finish'", [], |row| row.get(0)).unwrap();
+                assert_eq!(methods, 1, "cross-crate imported Node receiver at cwd {cwd:?}");
+                let borrowed: i64 = db.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE e.kind='calls' AND s.name='borrowed' AND d.name='finish'", [], |row| row.get(0)).unwrap();
+                assert_eq!(borrowed, 1, "cross-crate glob parameter identity at cwd {cwd:?}");
+                for expression in ["node.visible", "node.internal", "node.private"] {
+                    let reads: i64 = db.query_row("SELECT count(*) FROM resolution_coverage c JOIN coverage_expressions x USING(expression_id) JOIN path_dictionary p USING(path_id) WHERE p.path='crates/right/src/lib.rs' AND x.expression=?1", [expression], |row| row.get(0)).unwrap();
+                    assert_eq!(reads, 0, "ordinary field reads must not expand reference inventory at cwd {cwd:?}: {expression}");
+                }
+            }
+        }
     }
 
     assert!(ast::parser("sql", "schema.sql").is_err());
@@ -1963,6 +2822,820 @@ fn prose() { let _ = "information was updated and transformed"; }"##,
         assert_eq!(
             inactive, 0,
             "undeclared SQLAlchemy must not activate its model rule"
+        );
+    }
+
+    {
+        let source = r#"
+struct Item;
+impl Item { fn finish(&self) {} }
+struct Inner { nodes: Vec<Item> }
+struct Facts { inner: Inner }
+struct Root(std::path::PathBuf);
+fn fields(facts: &Facts, root: &Root) {
+    for node in facts.inner.nodes.as_slice().iter() { node.finish(); }
+    let nodes = facts.inner.nodes.iter().filter(|_| true).collect();
+    for collected in nodes { collected.finish(); }
+    root.0.join("child");
+}
+"#;
+        let facts = ast::extract("nested_fields.rs", "rust", source).unwrap();
+        let graph = linker::link(&std::collections::BTreeMap::from([(
+            "nested_fields.rs".into(),
+            facts,
+        )]));
+        for (expression, expected) in [
+            ("node.finish", "resolved"),
+            ("collected.finish", "resolved"),
+            ("root.0.join", "external"),
+        ] {
+            let coverage = graph
+                .coverage
+                .iter()
+                .find(|row| row.expression == expression)
+                .unwrap();
+            assert_eq!(coverage.status, expected, "{coverage:#?}");
+        }
+    }
+    {
+        let workspace = super::support::Workspace::new();
+        workspace.write(
+            "tests/common/mod.rs",
+            "#[path = \"workspace.rs\"] mod workspace; pub use workspace::Workspace;",
+        );
+        workspace.write(
+            "tests/common/workspace.rs",
+            include_str!("../common/workspace.rs"),
+        );
+        workspace.write("tests/acdd/mod.rs", "pub(crate) mod support;");
+        workspace.write("tests/acdd/support.rs", include_str!("../acdd/support.rs"));
+        workspace.write("tests/helpers.rs", "mod common; mod acdd; use common::Workspace; use acdd::support::ScopedWorkspace; fn probe() { let workspace = Workspace::new(); workspace.write(\"a.rs\", \"\"); workspace.delta(&[\"a.rs\"]); workspace.build(); workspace.open(); let scoped = ScopedWorkspace::new(\"probe\"); scoped.write(\"a.rs\", \"\"); scoped.0.join(\"child\"); }");
+        let db = workspace.build();
+        for member in ["write", "delta", "build", "open"] {
+            let expression = format!("workspace.{member}");
+            let status: String = db.query_row("SELECT c.status FROM resolution_coverage c JOIN coverage_expressions x USING(expression_id) JOIN path_dictionary p USING(path_id) WHERE p.path='tests/helpers.rs' AND x.expression=?1", [&expression], |row| row.get(0)).unwrap();
+            assert_eq!(status, "resolved", "cross-file Self return: {expression}");
+        }
+        for (expression, expected) in [("scoped.write", "resolved"), ("scoped.0.join", "external")]
+        {
+            let status: String = db.query_row("SELECT c.status FROM resolution_coverage c JOIN coverage_expressions x USING(expression_id) JOIN path_dictionary p USING(path_id) WHERE p.path='tests/helpers.rs' AND x.expression=?1", [expression], |row| row.get(0)).unwrap();
+            assert_eq!(status, expected, "ScopedWorkspace: {expression}");
+        }
+    }
+
+    {
+        let members = [
+            ("filter", "|_| true"),
+            ("map", "|item| item"),
+            ("filter_map", "|item| Some(item)"),
+            ("flat_map", "|item| Some(item)"),
+            ("inspect", "|_| {}"),
+            ("fuse", ""),
+            ("collect", ""),
+            ("enumerate", ""),
+            ("take", "1"),
+            ("skip", "1"),
+            ("for_each", "|_| {}"),
+        ];
+        let mut source = String::from("struct Item;\n");
+        for (index, (member, arguments)) in members.iter().enumerate() {
+            source.push_str(&format!("fn probe_{index}(items: Vec<Item>) {{ let stream = items.into_iter(); stream.{member}({arguments}); }}\n"));
+        }
+        source.push_str("fn guards(option: Option<Item>, result: Result<Item, ()>, items: Vec<Item>) { option.is_some_and(|_| true); option.is_none_or(|_| true); result.is_ok_and(|_| true); result.is_err_and(|_| true); let slice = items.as_slice(); slice.len(); slice.is_empty(); let stream = items.into_iter(); stream.made_up(); }\n");
+        let facts = ast::extract("owned_iterators.rs", "rust", &source).unwrap();
+        let graph = linker::link(&std::collections::BTreeMap::from([(
+            "owned_iterators.rs".into(),
+            facts,
+        )]));
+        for expression in members
+            .iter()
+            .map(|(member, _)| format!("stream.{member}"))
+            .chain([
+                "option.is_some_and".into(),
+                "option.is_none_or".into(),
+                "result.is_ok_and".into(),
+                "result.is_err_and".into(),
+                "slice.len".into(),
+                "slice.is_empty".into(),
+            ])
+        {
+            let coverage = graph
+                .coverage
+                .iter()
+                .find(|row| row.expression == expression)
+                .unwrap();
+            assert_eq!(coverage.status, "external", "{coverage:#?}");
+        }
+        let unknown = graph
+            .coverage
+            .iter()
+            .find(|row| row.expression == "stream.made_up")
+            .unwrap();
+        assert_eq!(unknown.status, "unresolved", "{unknown:#?}");
+    }
+
+    {
+        let workspace = super::support::Workspace::new();
+        workspace.write(
+            "src/lib.rs",
+            "use tree_sitter::Node as Syntax; mod a; pub mod support; mod consumer; mod shadow;\n",
+        );
+        workspace.write("src/a/mod.rs", "use super::Syntax as Tree; mod b;\n");
+        workspace.write(
+            "src/a/b/mod.rs",
+            "use super::Tree as Syntax; mod named; mod glob; mod shadow;\n",
+        );
+        for (file, import) in [("named", "use super::{Syntax};"), ("glob", "use super::*;")] {
+            workspace.write(format!("src/a/b/{file}.rs"), &format!("{import} fn probe(node: Syntax<'_>) {{ node.kind(); node.child_by_field_name(\"body\"); node.walk(); }}"));
+        }
+        workspace.write(
+            "src/a/b/shadow.rs",
+            "use super::*; struct Syntax; fn probe(node: Syntax) { node.kind(); }",
+        );
+        workspace.write("src/support.rs", "pub struct Root(pub std::path::PathBuf); impl Root { pub fn write(&self) {} } pub struct Store; impl Store { pub fn sync(&mut self) {} } pub struct Milestone; impl Milestone { pub fn task_id(&self) {} } pub fn fixture() -> (Root, Store, Milestone) { panic!() }");
+        workspace.write("src/consumer.rs", "use crate::support::fixture as setup; fn probe() { let (root, mut store, milestone) = setup(); root.write(); root.0.join(\"child\"); store.sync(); milestone.task_id(); }");
+        workspace.write("src/shadow.rs", "use crate::support::fixture; fn negative() { let fixture = || ((), (), ()); let (root, store, milestone) = fixture(); root.write(); store.sync(); milestone.task_id(); }");
+        let db = workspace.build();
+        for (path, expression, expected) in [
+            ("src/a/b/named.rs", "node.kind", "external"),
+            ("src/a/b/named.rs", "node.child_by_field_name", "external"),
+            ("src/a/b/named.rs", "node.walk", "external"),
+            ("src/a/b/glob.rs", "node.kind", "external"),
+            ("src/a/b/glob.rs", "node.walk", "external"),
+            ("src/a/b/shadow.rs", "node.kind", "unresolved"),
+            ("src/consumer.rs", "root.write", "resolved"),
+            ("src/consumer.rs", "root.0.join", "external"),
+            ("src/consumer.rs", "store.sync", "resolved"),
+            ("src/consumer.rs", "milestone.task_id", "resolved"),
+            ("src/shadow.rs", "root.write", "unresolved"),
+        ] {
+            let status: String = db.query_row("SELECT c.status FROM resolution_coverage c JOIN coverage_expressions x USING(expression_id) JOIN path_dictionary p USING(path_id) WHERE p.path=?1 AND x.expression=?2", [path, expression], |row| row.get(0)).unwrap();
+            assert_eq!(status, expected, "{path}: {expression}");
+        }
+        for method in ["write", "sync", "task_id"] {
+            let calls: i64 = db.query_row("SELECT count(*) FROM edge_occurrences e JOIN nodes n ON n.node_hash=e.dst_hash JOIN path_dictionary owner ON owner.path_id=e.owner_id JOIN path_dictionary target ON target.path_id=n.path_id WHERE owner.path='src/consumer.rs' AND target.path='src/support.rs' AND e.kind='calls' AND n.name=?1", [method], |row| row.get(0)).unwrap();
+            assert_eq!(
+                calls, 1,
+                "imported tuple field must call canonical {method}"
+            );
+        }
+        let shadow_calls: i64 = db.query_row("SELECT count(*) FROM edge_occurrences e JOIN nodes n ON n.node_hash=e.dst_hash JOIN path_dictionary owner ON owner.path_id=e.owner_id JOIN path_dictionary target ON target.path_id=n.path_id WHERE owner.path='src/shadow.rs' AND target.path='src/support.rs' AND e.kind='calls'", [], |row| row.get(0)).unwrap();
+        assert_eq!(
+            shadow_calls, 0,
+            "shadowed factory must not acquire tuple payloads"
+        );
+    }
+    {
+        let source = "use rusqlite::{Connection, Statement}; struct Fake; impl Fake { fn query_row<F>(&self, callback: F) {} } fn probe(conn: &Connection, statement: &mut Statement, fake: Fake) { conn.query_row(\"sql\", [], |row| row.get(0)); conn.query_row::<String, _, _>(\"sql\", [], |typed| typed.get(0)); statement.query_map([], |r| r.get(0)); fake.query_row(|unproven| unproven.get(0)); }";
+        let facts = ast::extract("query_callbacks.rs", "rust", source).unwrap();
+        let graph = linker::link(&std::collections::BTreeMap::from([(
+            "query_callbacks.rs".into(),
+            facts,
+        )]));
+        for (expression, expected) in [
+            ("row.get", "external"),
+            ("typed.get", "external"),
+            ("r.get", "external"),
+            ("unproven.get", "unresolved"),
+        ] {
+            let coverage = graph
+                .coverage
+                .iter()
+                .find(|row| row.expression == expression)
+                .unwrap();
+            assert_eq!(coverage.status, expected, "{coverage:#?}");
+        }
+    }
+}
+
+#[cfg(feature = "lang-rust")]
+#[test]
+fn test_rust_dynamic_receiver_hints_and_field_adapters() {
+    {
+        let source = r#"
+struct Service;
+impl Service { fn finish(&self) {} fn len(&self) {} }
+struct Opaque;
+fn build() -> Service { Service }
+fn unknown() -> Opaque { Opaque }
+fn proven() { build().finish(); build().len(); }
+fn unproven(workspace: Opaque, root: Opaque, conn: Opaque, row: Opaque, client: Opaque, profile: Opaque, m: Opaque) {
+    workspace.write(); root.join(); conn.query_row(); row.get(); client.call(); profile.id(); m.unwrap(); unknown().unwrap();
+}
+"#;
+        let facts = ast::extract("dynamic_receivers.rs", "rust", source).unwrap();
+        let targets: Vec<String> = facts
+            .nodes
+            .iter()
+            .filter(|node| node.kind == "method" && matches!(node.name.as_str(), "finish" | "len"))
+            .map(|node| node.id.clone())
+            .collect();
+        assert_eq!(targets.len(), 2);
+        for expression in ["build().finish", "build().len"] {
+            let reference = facts
+                .references
+                .iter()
+                .find(|r| r.expression == expression)
+                .unwrap();
+            assert!(reference.receiver_hint.is_some(), "{reference:#?}");
+        }
+        let graph = linker::link(&std::collections::BTreeMap::from([(
+            "dynamic_receivers.rs".into(),
+            facts,
+        )]));
+        for expression in ["build().finish", "build().len"] {
+            let coverage = graph
+                .coverage
+                .iter()
+                .find(|row| row.expression == expression)
+                .unwrap();
+            assert_eq!(coverage.status, "resolved", "{coverage:#?}");
+        }
+        for expression in [
+            "workspace.write",
+            "root.join",
+            "conn.query_row",
+            "row.get",
+            "client.call",
+            "profile.id",
+            "m.unwrap",
+            "unknown().unwrap",
+        ] {
+            let coverage = graph
+                .coverage
+                .iter()
+                .find(|row| row.expression == expression)
+                .unwrap();
+            assert_eq!(coverage.status, "unresolved", "{coverage:#?}");
+        }
+        for target in targets {
+            assert_eq!(
+                graph
+                    .edges
+                    .iter()
+                    .filter(|edge| edge.kind == "calls" && edge.dst == target)
+                    .count(),
+                1
+            );
+        }
+    }
+
+    {
+        let fields = [
+            "ordinary",
+            "iter",
+            "next",
+            "get",
+            "unwrap",
+            "arg",
+            "query_row",
+            "filter_map",
+            "as_slice",
+        ];
+        let mut source = String::from("#[derive(Clone, Copy)] struct Leaf; impl Leaf { fn finish(&self) {} } struct Other; impl Other { fn stop(&self) {} } struct Holder {");
+        for field in fields {
+            source.push_str(&format!("{field}: Leaf,"));
+        }
+        source.push_str(
+            "} impl Holder { fn iter(&self) -> Other { Other } } fn probe(holder: Holder) {\n",
+        );
+        for field in fields {
+            source.push_str(&format!("holder.{field}.finish(); let assigned_{field} = holder.{field}; assigned_{field}.finish();\n"));
+        }
+        source.push_str("holder.iter().stop(); }");
+        let facts = ast::extract("field_adapter_names.rs", "rust", &source).unwrap();
+        let finish = facts
+            .nodes
+            .iter()
+            .find(|node| node.name == "finish")
+            .unwrap()
+            .id
+            .clone();
+        let stop = facts
+            .nodes
+            .iter()
+            .find(|node| node.name == "stop")
+            .unwrap()
+            .id
+            .clone();
+        let graph = linker::link(&std::collections::BTreeMap::from([(
+            "field_adapter_names.rs".into(),
+            facts,
+        )]));
+        for field in fields {
+            for expression in [
+                format!("holder.{field}.finish"),
+                format!("assigned_{field}.finish"),
+            ] {
+                let row = graph
+                    .coverage
+                    .iter()
+                    .find(|row| row.expression == expression)
+                    .unwrap();
+                assert_eq!(row.status, "resolved", "{row:#?}");
+            }
+        }
+        assert_eq!(
+            graph
+                .edges
+                .iter()
+                .filter(|edge| edge.kind == "calls" && edge.dst == finish)
+                .count(),
+            fields.len() * 2
+        );
+        assert_eq!(
+            graph
+                .edges
+                .iter()
+                .filter(|edge| edge.kind == "calls" && edge.dst == stop)
+                .count(),
+            1,
+            "method application must retain its own return type"
+        );
+    }
+    {
+        let source = "struct Item; impl Item { fn finish(&self) {} } fn probe(items: Vec<Item>) { items.iter().flat_map(|item| [item]).count(); items.iter().inspect(|_| {}).count(); items.iter().fuse().count(); let changed = items.iter().flat_map(|_| [1]).collect(); for item in changed { item.finish(); } }";
+        let facts = ast::extract("iterator_results.rs", "rust", source).unwrap();
+        let graph = linker::link(&std::collections::BTreeMap::from([(
+            "iterator_results.rs".into(),
+            facts,
+        )]));
+        let counts: Vec<_> = graph
+            .coverage
+            .iter()
+            .filter(|row| row.expression.ends_with(".count"))
+            .collect();
+        assert_eq!(counts.len(), 3);
+        for row in counts {
+            assert_eq!(row.status, "external", "{row:#?}");
+        }
+        let changed = graph
+            .coverage
+            .iter()
+            .find(|row| row.expression == "item.finish")
+            .unwrap();
+        assert_eq!(
+            changed.status, "unresolved",
+            "callback output must remain unknown: {changed:#?}"
+        );
+    }
+}
+
+#[cfg(feature = "lang-rust")]
+#[test]
+fn test_rust_rayon_manifest_authority_and_scoping() {
+    {
+        for (case, dependency, prelude, manifest, resolved) in [
+            ("enabled", true, true, None, true),
+            ("absent-dependency", false, true, None, false),
+            ("absent-prelude", true, false, None, false),
+            ("disabled", true, true, Some("enabled = false\n"), false),
+            ("replaced", true, true, Some("enabled = true\nreplace = true\n"), false),
+            ("no-return", true, true, Some("enabled = true\nreplace = true\n[[class_hierarchy_receivers]]\nbases = ['Vec', 'Slice']\nprovider = 'rayon'\nmembers = ['par_iter', 'par_iter_mut', 'into_par_iter']\n"), false),
+        ] {
+            let workspace = super::support::Workspace::new();
+            workspace.write("Cargo.toml", if dependency { "[package]\nname = 'rayon-probe'\nversion = '0.1.0'\n[dependencies]\nrayon = '1'\n" } else { "[package]\nname = 'rayon-probe'\nversion = '0.1.0'\n" });
+            if let Some(manifest) = manifest { workspace.write(".forge/frameworks/rust-cargo.toml", manifest); }
+            let import = if prelude { "use rayon::prelude::*;" } else { "" };
+            workspace.write("src/lib.rs", &format!("{import} struct Item; impl Item {{ fn finish(&self) {{}} }} struct Fake; impl Fake {{ fn par_iter(&self) -> Fake {{ Fake }} }} fn probe(mut items: Vec<Item>, slice: &[Item], fake: Fake) {{ let constructed = Vec::from([1]); constructed.par_iter().count(); let stream = items.par_iter(); stream.map(|item| item).count(); items.par_iter_mut().filter(|_| true).count(); items.into_par_iter().map(|_| 1).count(); slice.par_iter().map(|item| item).count(); fake.par_iter().count(); let changed = slice.par_iter().map(|_| 1).collect(); for item in changed {{ item.finish(); }} }}"));
+            let db = workspace.build();
+            let statuses: Vec<(String, String)> = db.prepare("SELECT x.expression,c.status FROM resolution_coverage c JOIN coverage_expressions x USING(expression_id) JOIN path_dictionary p USING(path_id) WHERE p.path='src/lib.rs' AND x.expression LIKE '%.count'").unwrap().query_map([], |row| Ok((row.get(0)?, row.get(1)?))).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+            let entry: String = db.query_row("SELECT c.status FROM resolution_coverage c JOIN coverage_expressions x USING(expression_id) WHERE x.expression='items.par_iter'", [], |row| row.get(0)).unwrap();
+            assert_eq!(entry, if resolved || case == "no-return" { "external" } else { "unresolved" }, "{case}: extension entry authority");
+            assert_eq!(statuses.len(), 6, "{case}: {statuses:?}");
+            for (expression, status) in statuses {
+                let expected = if resolved && !expression.starts_with("fake.") { "external" } else { "unresolved" };
+                assert_eq!(status, expected, "{case}: {expression}");
+            }
+            let payload: String = db.query_row("SELECT c.status FROM resolution_coverage c JOIN coverage_expressions x USING(expression_id) WHERE x.expression='item.finish'", [], |row| row.get(0)).unwrap();
+            assert_eq!(payload, "unresolved", "{case}: unproven parallel callback result");
+        }
+    }
+
+    {
+        for (case, import, expected) in [
+            ("outer-only", "", "unresolved"),
+            ("explicit-child", "use rayon::prelude::*;", "external"),
+            ("use-super", "use super::*;", "external"),
+        ] {
+            for layout in ["inline", "file", "nested", "nested-bridge", "nested-lib"] {
+                let separate_file = layout == "file";
+                let workspace = super::support::Workspace::new();
+                workspace.write("Cargo.toml", "[package]\nname = 'rayon-scope-probe'\nversion = '0.1.0'\n[dependencies]\nrayon = '1'\n");
+                let child = format!("{import} pub fn probe(items: Vec<i32>, slice: &[i32]) {{ items.par_iter().count(); slice.par_iter().count(); }}");
+                if separate_file {
+                    workspace.write("src/lib.rs", "use rayon::prelude::*; mod child;");
+                    workspace.write("src/child.rs", &child);
+                } else {
+                    let child = if layout.starts_with("nested") {
+                        let bridge = if layout == "nested-bridge" {
+                            "use super::*;"
+                        } else {
+                            ""
+                        };
+                        let name = if layout == "nested-lib" {
+                            "lib"
+                        } else {
+                            "child"
+                        };
+                        format!("mod middle {{ {bridge} mod {name} {{ {child} }} }}")
+                    } else {
+                        format!("mod child {{ {child} }}")
+                    };
+                    workspace.write("src/lib.rs", &format!("use rayon::prelude::*; {child}"));
+                }
+                let db = workspace.build();
+                let statuses: Vec<(String, String)> = db.prepare("SELECT x.expression,c.status FROM resolution_coverage c JOIN coverage_expressions x USING(expression_id) WHERE x.expression LIKE '%.par_iter' OR x.expression LIKE '%.count'").unwrap().query_map([], |row| Ok((row.get(0)?, row.get(1)?))).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+                assert_eq!(
+                    statuses.len(),
+                    4,
+                    "{case}, file={separate_file}: {statuses:?}"
+                );
+                for (expression, status) in statuses {
+                    let expected =
+                        if matches!(layout, "nested" | "nested-lib") && case == "use-super" {
+                            "unresolved"
+                        } else {
+                            expected
+                        };
+                    assert_eq!(status, expected, "{case}, layout={layout}: {expression}");
+                }
+            }
+        }
+    }
+}
+
+#[cfg(feature = "lang-rust")]
+#[test]
+fn test_rust_ecosystem_packs_resolution() {
+    // Task 6 contract_revision: 6 Seam Proof (Ecosystem Crates & Wildcard Resilience)
+    {
+        let eco_source = r#"
+use git2::Repository;
+use walkdir::WalkDir;
+use chrono::Utc;
+
+fn test_ecosystem_packs() {
+    let repo = Repository::open(".").unwrap();
+    let _head = repo.head();
+    let head = repo.head().unwrap();
+    let commit = head.peel_to_commit().unwrap();
+    let tree = commit.tree().unwrap();
+    let index = repo.index().unwrap();
+    tree.len();
+    index.len();
+    let now = Utc::now();
+    now.timestamp();
+    for entry in WalkDir::new(".").into_iter().filter_map(|e| e.ok()) {
+        let _p = entry.path();
+        entry.file_name();
+        entry.file_type();
+        entry.depth();
+    }
+}
+"#;
+        let eco_facts =
+            ast::extract("ecosystem_test.rs", "rust", eco_source).expect("eco extraction failed");
+        let eco_graph = linker::link(&std::collections::BTreeMap::from([(
+            "ecosystem_test.rs".to_owned(),
+            eco_facts,
+        )]));
+        let head_cov = eco_graph
+            .coverage
+            .iter()
+            .find(|c| c.expression == "repo.head")
+            .expect("missing coverage for repo.head");
+        assert_eq!(
+            head_cov.status, "external",
+            "repo.head must resolve to external via git2 ecosystem pack: {head_cov:#?}"
+        );
+        let entry_cov = eco_graph
+            .coverage
+            .iter()
+            .find(|c| c.expression == "entry.path")
+            .expect("missing coverage for entry.path");
+        assert_eq!(
+            entry_cov.status, "external",
+            "entry.path must resolve to external via walkdir DirEntry: {entry_cov:#?}"
+        );
+        for expression in [
+            "head.peel_to_commit",
+            "commit.tree",
+            "tree.len",
+            "index.len",
+            "now.timestamp",
+            "entry.file_name",
+            "entry.file_type",
+            "entry.depth",
+        ] {
+            let coverage = eco_graph
+                .coverage
+                .iter()
+                .find(|row| row.expression == expression)
+                .unwrap();
+            assert_eq!(coverage.status, "external", "{coverage:#?}");
+        }
+    }
+}
+
+#[cfg(feature = "lang-rust")]
+#[test]
+fn test_rust_workspace_compat_shims_and_gap_probe() {
+    {
+        let workspace = super::support::Workspace::new();
+        workspace.write(
+            "tests/common/mod.rs",
+            "#[path = \"workspace.rs\"] mod workspace; pub use workspace::Workspace;",
+        );
+        workspace.write(
+            "tests/common/workspace.rs",
+            include_str!("../common/workspace.rs"),
+        );
+        workspace.write("tests/acdd/mod.rs", "pub(crate) mod support;");
+        workspace.write("tests/acdd/support.rs", include_str!("../acdd/support.rs"));
+        workspace.write("Cargo.toml", "[package]\nname = 'rev7-gap-probe'\nversion = '0.1.0'\n[dependencies]\nserde_json = '1'\nserde_yaml = '0.9'\nrusqlite = '0.32'\ntempfile = '3'\n");
+        workspace.write(
+            "tests/rev7_gap_probe.rs",
+            r#"
+mod common;
+mod acdd;
+mod rev7_client;
+use rev7_client::StdioClientRev7;
+use acdd::support::ScopedWorkspace;
+use common::Workspace;
+
+fn probe_rev7_gaps() {
+    let workspace = acdd::support::ScopedWorkspace::new("probe");
+    workspace.write("a.rs", "");
+    workspace.0.join("child");
+    workspace.1.write("wrapped.rs", "");
+
+    let b = Workspace::new();
+    let r = Workspace::new();
+    for w in [&b, &r] {
+        w.write("loop.rs", "");
+    }
+    let pair = (&b, &r);
+    let (first, second) = pair;
+    first.write("first.rs", "");
+    second.write("second.rs", "");
+
+    let mut cmd = std::process::Command::new("git");
+    let output = cmd.current_dir(".").output().unwrap();
+    output.status.success();
+    output.stdout.len();
+    let json = serde_json::from_str::<serde_json::Value>("{}").unwrap();
+    json.as_object();
+    let yaml = serde_yaml::from_str::<serde_yaml::Value>("{}").unwrap();
+    yaml.as_mapping();
+}
+fn unknown_array(factory: impl Fn() -> Workspace) {
+    let known = Workspace::new();
+    for unknown in [&known, &factory()] {
+        unknown.write("unknown.rs", "");
+    }
+}
+fn database(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
+    let mut statement = conn.prepare("SELECT 1")?;
+    statement.query([])?;
+    let mut unwrapped = conn.prepare("SELECT 1").unwrap();
+    unwrapped.query([]).unwrap();
+    Ok(())
+}
+fn transaction(tx: &rusqlite::Transaction<'_>) {
+    tx.query_row("SELECT 1", [], |transaction_row| transaction_row.get::<_, i64>(0));
+}
+struct Outer {}
+impl Outer { fn outer(&self) {} }
+struct Inner {}
+impl Inner { fn inner(&self) {} }
+fn lexical(flag: bool) {
+    let value = Outer {};
+    if flag {
+        let value = Inner {};
+        value.inner();
+        let (tuple_local, _) = (Outer {}, ());
+        tuple_local.outer();
+    }
+    value.outer();
+    for _ in [1] {
+        let nested = Outer {};
+        nested.outer();
+    }
+    let owned = "known".to_owned();
+    "known".len();
+    owned.len();
+    std::path::Path::new(".").join("child").exists();
+    String::from_utf8_lossy(&[]).len();
+    u32::try_from(1u64);
+}
+struct GenericHolder<'a> { leaf: LeafRev7, label: &'a str }
+struct LeafRev7 {}
+impl LeafRev7 { fn finish(&self) {} }
+impl<'a> GenericHolder<'a> { fn run(&self) { self.leaf.finish(); } }
+type ClientRev7 = StdioClientRev7;
+type ChainedClientRev7 = ClientRev7;
+type CycleARev7 = CycleBRev7;
+type CycleBRev7 = CycleARev7;
+fn next_gaps(response: serde_json::Value, metadata: std::fs::Metadata, unrelated: UnknownRev7) {
+    let client = ChainedClientRev7::new();
+    client.payload();
+    response["result"]["tools"].as_array();
+    let indexed = response["result"]["tools"];
+    indexed.as_array();
+    unrelated["result"].as_array();
+    CycleARev7::new();
+    metadata.file_type().is_file();
+    std::time::Instant::now().elapsed().as_millis();
+    tempfile::Builder::new().prefix("probe").tempdir().unwrap().path();
+}
+struct BatchFacts<'a> { nodes: Vec<LeafRev7>, leaf: &'a LeafRev7 }
+impl<'a> BatchFacts<'a> {
+    fn shared(&self) {
+        let this = self;
+        this.leaf.finish();
+        self.nodes.iter().next().unwrap().finish();
+    }
+    fn mutable(&mut self) {
+        let that = self;
+        that.nodes.iter_mut().next().unwrap().finish();
+    }
+}
+fn batch_parameters<'a>(plain: &LeafRev7, mutable: &mut LeafRev7, named: &'a LeafRev7,
+    anonymous: &'_ LeafRev7, facts: &BatchFacts<'a>, path: &'a std::path::Path,
+    nodes: &[LeafRev7], optional: &Option<Vec<LeafRev7>>, result: &Result<LeafRev7, ()>) {
+    plain.finish(); mutable.finish(); named.finish(); anonymous.finish();
+    facts.leaf.finish();
+    facts.nodes.iter().next().unwrap().finish();
+    nodes.into_iter().next().unwrap().finish();
+    optional.as_deref().unwrap().iter().next().unwrap().finish();
+    result.as_ref().unwrap().finish();
+    path.join("child").exists();
+    let collection: Vec<LeafRev7> = Vec::new();
+    collection.as_ref().iter().next().unwrap().finish();
+}
+fn batch_unknown<T>(unknown: &T) { unknown.finish(); }
+struct BatchMaker {}
+impl BatchMaker {
+    fn current() -> Self { Self {} }
+    fn ready(&self) {}
+    fn new() -> LeafRev7 { LeafRev7 {} }
+}
+fn batch_tuple() -> (LeafRev7, Outer) { (LeafRev7 {}, Outer {}) }
+struct MissingConstructor {}
+impl MissingConstructor { fn finish(&self) {} }
+struct __rust_closure {}
+fn batch_six() {
+    let maker = BatchMaker::current(); maker.ready();
+    let changed = BatchMaker::new(); changed.finish();
+    let (tuple_leaf, mut tuple_outer) = batch_tuple();
+    tuple_leaf.finish(); tuple_outer.outer();
+    let git = |args: &[&str]| {};
+    git(&["status"]);
+    let invoke = || LeafRev7 {};
+    let again = invoke;
+    invoke(); again();
+    let unproven_result = invoke(); unproven_result.finish();
+    unproven_result();
+    let missing = MissingConstructor::new(); missing.finish();
+    let fake = __rust_closure {}; fake();
+    let number = 1; number();
+}
+struct BatchHub {}
+impl BatchHub { fn leaf(&self) -> LeafRev7 { LeafRev7 {} } }
+fn make_hub() -> BatchHub { BatchHub {} }
+fn result_hub() -> Result<BatchHub, ()> { Ok(BatchHub {}) }
+struct Collision { finish: LeafRev7 }
+impl Collision { fn finish(&self) {} fn inspect(&self) { let _ = &self.finish; self.finish(); } }
+fn batch_seven<'a>(facts: &BatchFacts<'a>, collision: &Collision, name: &str, target: &std::path::PathBuf) -> Result<(), ()> {
+    let _ = &facts.nodes;
+    let _ = &facts.leaf;
+    let _ = &collision.finish;
+    collision.finish();
+    facts.leaf();
+    make_hub().leaf().finish();
+    result_hub()?.leaf().finish();
+    name.trim().is_empty();
+    target.parent().unwrap().exists();
+    std::env::temp_dir().join("child").exists();
+    Ok(())
+}
+"#,
+        );
+        workspace.write("tests/rev7_client.rs", "pub struct StdioClientRev7 {} impl StdioClientRev7 { pub fn new() -> Self { Self {} } pub fn payload(&self) {} }");
+        workspace.write(
+            "tests/acdd/mod.rs",
+            "pub(crate) mod support; mod tuple_probe;",
+        );
+        workspace.write("tests/acdd/tuple_probe.rs", "use super::support::*; fn probe() { let (root, _, _) = fixture(); root.write(\"tuple.rs\", \"\"); root.0.join(\"child\"); }");
+        let db = workspace.build();
+        let write_status: String = db.query_row(
+            "SELECT c.status FROM resolution_coverage c JOIN coverage_expressions x USING(expression_id) JOIN path_dictionary p USING(path_id) WHERE p.path='tests/rev7_gap_probe.rs' AND x.expression='workspace.write'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        let debug: Vec<(String,String,String)> = db.prepare("SELECT x.expression,c.status,e.evidence FROM resolution_coverage c JOIN coverage_evidence e USING(evidence_id) JOIN coverage_expressions x USING(expression_id) JOIN path_dictionary p USING(path_id) WHERE p.path='tests/rev7_gap_probe.rs'").unwrap().query_map([], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+        assert_eq!(write_status, "resolved", "acdd::support::ScopedWorkspace::new must propagate receiver to workspace.write: {debug:#?}");
+        for expression in [
+            "workspace.0.join",
+            "workspace.1.write",
+            "w.write",
+            "first.write",
+            "second.write",
+            "cmd.current_dir",
+            "output.status.success",
+            "output.stdout.len",
+            "json.as_object",
+            "yaml.as_mapping",
+            "value.inner",
+            "value.outer",
+            "tuple_local.outer",
+            "nested.outer",
+            "transaction_row.get",
+            "owned.len",
+            "\"known\".len",
+            "std::path::Path::new(\".\").join(\"child\").exists",
+            "String::from_utf8_lossy(&[]).len",
+            "u32::try_from",
+            "self.leaf.finish",
+            "ChainedClientRev7::new",
+            "client.payload",
+            "response[\"result\"][\"tools\"].as_array",
+            "indexed.as_array",
+            "metadata.file_type().is_file",
+            "std::time::Instant::now().elapsed().as_millis",
+            "tempfile::Builder::new().prefix(\"probe\").tempdir().unwrap().path",
+            "this.leaf.finish",
+            "self.nodes.iter().next().unwrap().finish",
+            "that.nodes.iter_mut().next().unwrap().finish",
+            "plain.finish",
+            "mutable.finish",
+            "named.finish",
+            "anonymous.finish",
+            "facts.leaf.finish",
+            "facts.nodes.iter().next().unwrap().finish",
+            "nodes.into_iter().next().unwrap().finish",
+            "optional.as_deref().unwrap().iter().next().unwrap().finish",
+            "result.as_ref().unwrap().finish",
+            "path.join(\"child\").exists",
+            "collection.as_ref().iter().next().unwrap().finish",
+            "maker.ready",
+            "changed.finish",
+            "tuple_leaf.finish",
+            "tuple_outer.outer",
+            "git",
+            "invoke",
+            "again",
+            "self.nodes",
+            "self.leaf",
+            "collision.finish",
+            "make_hub().leaf().finish",
+            "result_hub()?.leaf().finish",
+            "name.trim().is_empty",
+            "target.parent().unwrap().exists",
+            "std::env::temp_dir().join(\"child\").exists",
+        ] {
+            let (_, status, _) = debug
+                .iter()
+                .find(|(expr, _, _)| expr == expression)
+                .unwrap_or_else(|| panic!("missing {expression}: {debug:#?}"));
+            assert!(
+                matches!(status.as_str(), "resolved" | "external"),
+                "{expression}: {debug:#?}"
+            );
+        }
+        for expression in ["unrelated[\"result\"].as_array", "CycleARev7::new", "unknown.finish", "unproven_result.finish", "unproven_result", "missing.finish", "fake", "number"] {
+            let (_, status, _) = debug.iter().find(|(expr, _, _)| expr == expression).unwrap();
+            assert_eq!(status, "unresolved", "{expression}: {debug:#?}");
+        }
+        let field_reads: i64 = db.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name='inspect' AND e.kind='references' AND d.kind='field' AND d.name='finish'", [], |row| row.get(0)).unwrap();
+        assert_eq!(field_reads, 1, "field reads must prefer the declared field over a same-name method");
+        let field_calls: i64 = db.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name='batch_seven' AND e.kind='calls' AND d.kind='field'", [], |row| row.get(0)).unwrap();
+        assert_eq!(field_calls, 0, "a field read must not manufacture a callable edge");
+        for expression in ["statement.query", "unwrapped.query"] {
+            assert_eq!(
+                debug
+                    .iter()
+                    .find(|(expr, _, _)| expr == expression)
+                    .unwrap()
+                    .1,
+                "external",
+                "{debug:#?}"
+            );
+        }
+        assert_eq!(
+            debug
+                .iter()
+                .find(|(expr, _, _)| expr == "unknown.write")
+                .unwrap()
+                .1,
+            "unresolved",
+            "unknown array elements must not be discarded: {debug:#?}"
+        );
+        let tuple_status: String = db.query_row("SELECT c.status FROM resolution_coverage c JOIN coverage_expressions x USING(expression_id) JOIN path_dictionary p USING(path_id) WHERE p.path='tests/acdd/tuple_probe.rs' AND x.expression='root.write'", [], |row| row.get(0)).unwrap();
+        assert_eq!(
+            tuple_status, "resolved",
+            "imported tuple-returning fixture must retain each proven element"
         );
     }
 }

@@ -172,9 +172,10 @@ pub(super) fn observe_command(
     };
     if !output.status.success() {
         bail!(
-            "HANDOFF_VERIFICATION_FAILED: selected command '{}' exited {}: {}",
+            "HANDOFF_VERIFICATION_FAILED: selected command '{}' exited {}:\n--- STDOUT ---\n{}\n--- STDERR ---\n{}",
             selection,
             observation.exit_code,
+            String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
     }

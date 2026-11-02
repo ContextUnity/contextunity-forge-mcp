@@ -762,9 +762,13 @@ fn is_admitted_milestone_adjustment(path: &str, milestone_path: &str) -> bool {
         || path.starts_with("src/engine/tasks/")
         || path.starts_with("src/engine/milestones/")
         || path.starts_with("src/core/tasks/")
+        || path.starts_with("src/db/tasks_store/")
+        || path.starts_with("crates/forge-tasks/src/tasks/")
+        || path.starts_with("crates/forge-tasks/src/milestones/")
         || path.starts_with("tests/acdd/")
         || path == "AGENTS.md"
         || path == "docs/AGENTS.md"
+        || path.ends_with("/AGENTS.md")
         || path == "docs/roadmap.md"
         || path == "Cargo.toml"
         || path == "Cargo.lock"

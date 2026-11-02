@@ -1,5 +1,5 @@
 use super::interner::{LinkerInterner, SymbolId};
-use crate::core::{
+use forge_core::{
     models::{Facts, Node, ReceiverHint, Reference},
     semantic::{SourcePosition, TypeExpr, ValueExpr, ValueFlowFacts},
 };
@@ -30,7 +30,7 @@ pub struct ConfiguredCallResult {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConfiguredNominalReceiver {
     /// Validated effective nominal rule, visible only to the canonical shared consumer.
-    pub(crate) rule: crate::engine::languages::manifests::syntax::ReceiverTypeRule,
+    pub(crate) rule: crate::languages::manifests::syntax::ReceiverTypeRule,
 }
 
 /// Effective finite receiver authority, retaining the originating manifest row.
@@ -41,7 +41,7 @@ pub enum ConfiguredReceiverAuthority {
         /// Originating effective framework pack.
         pack: String,
         /// Exact surviving ordered-base hierarchy row.
-        rule: Arc<crate::engine::languages::manifests::ClassHierarchyReceiverRule>,
+        rule: Arc<crate::languages::manifests::ClassHierarchyReceiverRule>,
     },
     /// Exact nominal receiver operation.
     Nominal {
@@ -160,6 +160,8 @@ pub enum TypeTarget<'a> {
         /// Element type.
         item: Box<TypeTarget<'a>>,
     },
+    /// Rust tuple retaining the independently resolved type of each field.
+    RustTuple(Vec<TypeTarget<'a>>),
     /// Represents the builtin case.
     Builtin(String),
     /// Represents the object case.
@@ -245,7 +247,7 @@ pub trait SemanticResolver<'a> {
         &self,
         _scope: &'a Node,
         _callee: &str,
-        _site: Option<&crate::core::semantic::CallSiteEvidence>,
+        _site: Option<&forge_core::semantic::CallSiteEvidence>,
         _at: SourcePosition,
         _fallback: Option<TypeTarget<'a>>,
     ) -> Option<TypeTarget<'a>> {
@@ -355,7 +357,7 @@ pub struct SemanticLimits {
 impl Default for SemanticLimits {
     fn default() -> Self {
         Self {
-            facts_per_scope: crate::core::semantic::DEFAULT_FACTS_PER_SCOPE,
+            facts_per_scope: forge_core::semantic::DEFAULT_FACTS_PER_SCOPE,
             name_bytes: 4_096,
             alias_depth: 64,
         }
@@ -539,8 +541,8 @@ fn initialize_scope<'a>(
     let encoded = &node.details["value_flow"];
     let typed = resolver.value_flow(node);
     let oversized = typed.is_some_and(|facts| {
-        crate::core::typed_facts::scope_fact_count(facts) > limits.facts_per_scope
-    }) || crate::core::typed_facts::encoded_scope_fact_count(encoded)
+        forge_core::typed_facts::scope_fact_count(facts) > limits.facts_per_scope
+    }) || forge_core::typed_facts::encoded_scope_fact_count(encoded)
         > limits.facts_per_scope;
     let decoded = if oversized {
         Ok(ScopeFacts::Borrowed(&EMPTY_SCOPE_FACTS))
@@ -826,7 +828,7 @@ impl<'a> ValueFlowIndex<'a> {
         self.return_type_tracked(callable, None)
     }
 
-    fn return_type_tracked(
+    pub(in crate::linker) fn return_type_tracked(
         &self,
         callable: &Node,
         trace: Option<&ReadTrace<'a, '_>>,
@@ -1113,6 +1115,9 @@ impl<'a> ValueFlowIndex<'a> {
                 resolve_type(owner, type_expr, at, resolver, self.limits)
             }
             ValueExpr::Construct { callee } => {
+                if owner.language == "rust" && callee == "__rust_closure!" {
+                    return TypeTarget::Builtin("__rust_closure".to_owned());
+                }
                 if let Some(target) = super::python::value_flow::literal_type(owner, callee) {
                     return target;
                 }
@@ -1211,6 +1216,11 @@ impl<'a> ValueFlowIndex<'a> {
                 }
             }
             ValueExpr::Call { callee, site } => {
+                if owner.language == "rust"
+                    && matches!(self.lookup_tracked(owner, callee, at, trace), Some(TypeTarget::Builtin(name)) if name == "__rust_closure")
+                {
+                    return TypeTarget::Unknown;
+                }
                 let at = site.as_ref().map_or(at, |site| site.position);
                 if let Some(receiver) = site.as_ref().and_then(|site| site.receiver.as_deref()) {
                     let receiver =
@@ -1218,12 +1228,16 @@ impl<'a> ValueFlowIndex<'a> {
                     if let Symbol::Callable(callable) =
                         resolver.resolve_member(&receiver, callee, owner, at)
                     {
-                        if let Some(result) = self.return_type(callable) {
+                        if let Some(result) = self.return_type_tracked(callable, trace) {
                             return result.clone();
                         }
                     }
                     if let Some(target) =
-                        resolver.resolve_member_result(&receiver, callee, owner, at)
+                        if owner.language == "rust" {
+                            super::rust::value_flow::declared_adapter_result(&receiver, callee, owner, at, resolver)
+                        } else {
+                            resolver.resolve_member_result(&receiver, callee, owner, at)
+                        }
                     {
                         return target;
                     }
@@ -1288,6 +1302,17 @@ impl<'a> ValueFlowIndex<'a> {
                     .unwrap_or(TypeTarget::Unknown)
             }
             ValueExpr::Field { receiver, member } => {
+                if owner.language == "rust"
+                    && receiver == "self"
+                    && owner.details["receiver_name"].as_str() == Some("self")
+                {
+                    let target =
+                        symbol_type(resolver.resolve_symbol(owner, "Self", at, SymbolRole::Type));
+                    return super::rust::value_flow::local_class(&target)
+                        .and_then(|class| self.field_type_tracked(class, member, trace))
+                        .cloned()
+                        .unwrap_or(TypeTarget::Unknown);
+                }
                 let binding = self.lookup_tracked(owner, receiver, at, trace);
                 let receiver_type = binding.cloned().unwrap_or_else(|| {
                     symbol_type(resolver.resolve_symbol(owner, receiver, at, SymbolRole::Type))
@@ -1324,6 +1349,110 @@ impl<'a> ValueFlowIndex<'a> {
                 }
             }
             ValueExpr::Project { value, member } => {
+                if owner.language == "rust" {
+                    if member == "__rust_generic_call" {
+                        let ValueExpr::BranchJoin { alternatives } = value.as_ref() else {
+                            return TypeTarget::Unknown;
+                        };
+                        let [call @ ValueExpr::Call { callee, .. }, ValueExpr::Annotated { type_expr }] = alternatives.as_slice() else {
+                            return TypeTarget::Unknown;
+                        };
+                        return super::rust::value_flow::deserializer_result(
+                            owner, callee, type_expr, at, resolver, self.limits,
+                        ).unwrap_or_else(|| self.evaluate_tracked(owner, call, at, resolver, definitions, trace));
+                    }
+                    if matches!(member.as_str(), "__rust_array" | "__rust_tuple") {
+                        let ValueExpr::BranchJoin { alternatives } = value.as_ref() else {
+                            return TypeTarget::Unknown;
+                        };
+                        if member == "__rust_tuple" {
+                            return TypeTarget::RustTuple(
+                                alternatives
+                                    .iter()
+                                    .map(|item| {
+                                        self.evaluate_tracked(
+                                            owner,
+                                            item,
+                                            at,
+                                            resolver,
+                                            definitions,
+                                            trace,
+                                        )
+                                    })
+                                    .collect(),
+                            );
+                        }
+                        let mut items = alternatives.iter().map(|item| {
+                            self.evaluate_tracked(owner, item, at, resolver, definitions, trace)
+                        });
+                        let item = items.next().unwrap_or(TypeTarget::Unknown);
+                        let item = if items.all(|other| same_target(&item, &other)) {
+                            item
+                        } else {
+                            TypeTarget::Unknown
+                        };
+                        return TypeTarget::RustCollection {
+                            item: Box::new(item),
+                        };
+                    }
+                    if matches!(member.as_str(), "__rust_ref" | "__rust_ref_mut") {
+                        return TypeTarget::RustReference {
+                            target: Box::new(self.evaluate_tracked(
+                                owner,
+                                value,
+                                at,
+                                resolver,
+                                definitions,
+                                trace,
+                            )),
+                            mutable: member == "__rust_ref_mut",
+                        };
+                    }
+                    if member == "__rust_index" {
+                        let receiver = self.evaluate_tracked(owner, value, at, resolver, definitions, trace);
+                        return match &receiver {
+                            TypeTarget::External { module, .. }
+                                if module.replace("::", ".") == "serde_json.Value" => receiver,
+                            _ => TypeTarget::Unknown,
+                        };
+                    }
+                    if let Some(field) = member.strip_prefix("__rust_field:") {
+                        let source = if matches!(value.as_ref(), ValueExpr::Alias { name } if name == "self")
+                            && owner.details["receiver_name"].as_str() == Some("self")
+                        {
+                            symbol_type(resolver.resolve_symbol(
+                                owner,
+                                "Self",
+                                at,
+                                SymbolRole::Type,
+                            ))
+                        } else {
+                            self.evaluate_tracked(owner, value, at, resolver, definitions, trace)
+                        };
+                        if let TypeTarget::RustTuple(items) = &source {
+                            return field
+                                .parse::<usize>()
+                                .ok()
+                                .and_then(|index| items.get(index))
+                                .cloned()
+                                .unwrap_or(TypeTarget::Unknown);
+                        }
+                        return super::rust::value_flow::local_class(&source)
+                            .and_then(|class| self.field_type_tracked(class, field, trace))
+                            .cloned()
+                            .or_else(|| {
+                                if matches!(
+                                    &source,
+                                    TypeTarget::External { .. } | TypeTarget::Builtin(_)
+                                ) {
+                                    resolver.resolve_member_result(&source, field, owner, at)
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or(TypeTarget::Unknown);
+                    }
+                }
                 if owner.language == "rust" && super::rust::value_flow::is_adapter(member) {
                     let receiver =
                         self.evaluate_tracked(owner, value, at, resolver, definitions, trace);
@@ -1359,6 +1488,11 @@ impl<'a> ValueFlowIndex<'a> {
                                 .unwrap_or(TypeTarget::Unknown);
                         }
                     }
+                    if let Some(result) = super::rust::value_flow::declared_adapter_result(
+                        &receiver, member, owner, at, resolver,
+                    ) {
+                        return result;
+                    }
                     if matches!(member.as_str(), "?" | "unwrap" | "expect")
                         && (matches!(&receiver, TypeTarget::Unknown)
                             || matches!(&receiver, TypeTarget::Builtin(name)
@@ -1368,7 +1502,29 @@ impl<'a> ValueFlowIndex<'a> {
                     }
                     return TypeTarget::Unknown;
                 }
-                let source = self.evaluate_tracked(owner, value, at, resolver, definitions, trace);
+                let source = if owner.language == "rust"
+                    && matches!(value.as_ref(), ValueExpr::Alias { name } if name == "self")
+                    && owner.details["receiver_name"].as_str() == Some("self")
+                {
+                    symbol_type(resolver.resolve_symbol(owner, "Self", at, SymbolRole::Type))
+                } else {
+                    self.evaluate_tracked(owner, value, at, resolver, definitions, trace)
+                };
+                if owner.language == "rust" {
+                    if let TypeTarget::RustTuple(items) = &source {
+                        return member
+                            .parse::<usize>()
+                            .ok()
+                            .and_then(|index| items.get(index))
+                            .cloned()
+                            .unwrap_or(TypeTarget::Unknown);
+                    }
+                    if let Some(target) = super::rust::value_flow::local_class(&source)
+                        .and_then(|class| self.field_type_tracked(class, member, trace))
+                    {
+                        return target.clone();
+                    }
+                }
                 match source {
                     TypeTarget::Builtin(ref name)
                         if matches!(owner.language.as_str(), "javascript" | "typescript") =>
@@ -1581,6 +1737,11 @@ impl<'a> ValueFlowIndex<'a> {
             {
                 let receiver = self.evaluate_tracked(owner, value, at, resolver, None, trace);
                 let projected = super::rust::value_flow::project(&receiver, member, resolver)
+                    .or_else(|| {
+                        super::rust::value_flow::declared_adapter_result(
+                            &receiver, member, owner, at, resolver,
+                        )
+                    })
                     .unwrap_or(TypeTarget::Unknown);
                 super::rust::value_flow::unwrap_payload(&projected).unwrap_or(projected)
             }
@@ -1696,6 +1857,23 @@ pub(super) fn resolve_type<'a>(
 
 fn stored_type_expr(annotation: &str, language: &str) -> TypeExpr {
     let annotation = annotation.trim();
+    if language == "rust" {
+        if let Some(rest) = annotation.strip_prefix('&') {
+            let mut rest = rest.trim_start();
+            if rest.starts_with('\'') {
+                let Some((_, target)) = rest.split_once(char::is_whitespace) else {
+                    return TypeExpr::Unknown;
+                };
+                rest = target.trim_start();
+            }
+            let mutable = rest.starts_with("mut ");
+            rest = rest.strip_prefix("mut ").unwrap_or(rest).trim_start();
+            return TypeExpr::Applied {
+                base: if mutable { "&mut" } else { "&" }.to_owned(),
+                args: vec![stored_type_expr(rest, language)],
+            };
+        }
+    }
     if language == "python" {
         if let Some(expression) = super::python::value_flow::nullable_type_expr(annotation) {
             return expression;
@@ -1755,7 +1933,8 @@ fn field_owner<'a>(
         parent = parent.rsplit_once('.').map_or("", |(parent, _)| parent);
     }
     owner.details["receiver_type"].as_str().and_then(|name| {
-        match resolver.resolve_symbol(owner, name, node_position(owner), SymbolRole::Type) {
+        let clean = super::receiver_type_name(name).unwrap_or(Cow::Borrowed(name));
+        match resolver.resolve_symbol(owner, clean.as_ref(), node_position(owner), SymbolRole::Type) {
             Symbol::Type(TypeTarget::Local(node)) => Some(node),
             _ => None,
         }
@@ -1885,6 +2064,9 @@ fn same_target(left: &TypeTarget<'_>, right: &TypeTarget<'_>) -> bool {
             },
         ) => a == b && x == y,
         (TypeTarget::Builtin(a), TypeTarget::Builtin(b)) => a == b,
+        (TypeTarget::RustTuple(a), TypeTarget::RustTuple(b)) => {
+            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| same_target(a, b))
+        }
         (
             TypeTarget::RustDeref {
                 wrapper: aw,
@@ -2111,7 +2293,7 @@ pub(crate) fn valid_scope_facts(
         && (node.kind != "module"
             || !facts
                 .component_macros()
-                .any(|fact| fact.role == crate::core::semantic::ComponentMacroRole::Slots))
+                .any(|fact| fact.role == forge_core::semantic::ComponentMacroRole::Slots))
     {
         return false;
     }
@@ -2126,7 +2308,7 @@ pub(crate) fn valid_scope_facts(
         return false;
     }
     node.parameter_count()
-        .saturating_add(crate::core::typed_facts::scope_fact_count(facts))
+        .saturating_add(forge_core::typed_facts::scope_fact_count(facts))
         <= limits.facts_per_scope
         && node
             .parameter_types()

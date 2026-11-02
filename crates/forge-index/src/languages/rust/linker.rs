@@ -1,14 +1,178 @@
-use crate::core::models::{Facts, Node};
-use crate::engine::languages::{self, ImportPath, LanguageFamily, LanguageProfile};
-use crate::engine::linker::interner::{LinkerInterner, SymbolId};
-use crate::engine::linker::traits::{
-    ImportContext, ImportResolution, LanguageLinker, ModulesByNamespace, PackageExports,
-    insert_package_export, package_export, resolve_default_import,
+use crate::languages::{self, ImportPath, LanguageFamily, LanguageProfile};
+use crate::linker::interner::{LinkerInterner, SymbolId};
+use crate::linker::traits::{
+    insert_package_export, package_export, resolve_default_import, ImportContext, ImportResolution,
+    LanguageLinker, ModulesByNamespace, PackageExports,
 };
+use forge_core::models::{Facts, Node};
 use hashbrown::{HashMap, HashSet};
 use std::collections::BTreeMap;
 
 const RUST_ALIAS_DEPTH: usize = 64;
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub(super) struct RestrictedExport {
+    pub name: String,
+    pub module: Option<String>,
+    pub scope: String,
+}
+
+fn module_namespace(name: &str) -> &str {
+    name.strip_suffix(".lib")
+        .or_else(|| name.strip_suffix(".main"))
+        .unwrap_or(name)
+}
+
+fn crate_namespace(path: &str) -> String {
+    let (workspace, local) = languages::workspace_path(path);
+    let namespace = if let Some((prefix, _)) = local.split_once("/src/") {
+        format!("{}.src", prefix.replace('/', "."))
+    } else {
+        local.split('/').next().unwrap_or(local).to_owned()
+    };
+    if workspace.is_empty() {
+        namespace
+    } else {
+        format!("{workspace}.{namespace}")
+    }
+}
+
+fn within(requester: &str, scope: &str) -> bool {
+    let requester = module_namespace(requester);
+    requester == scope
+        || requester
+            .strip_prefix(scope)
+            .is_some_and(|tail| tail.starts_with('.'))
+}
+
+pub(super) fn restricted_scope(signature: &str, module: &str, path: &str) -> Option<String> {
+    let restriction = signature.strip_prefix("pub(")?.split_once(')')?.0.trim();
+    let module = module_namespace(module);
+    let crate_root = crate_namespace(path);
+    let scope = match restriction {
+        "crate" => crate_root,
+        "self" => module.to_owned(),
+        "super" => module.rsplit_once('.')?.0.to_owned(),
+        restriction => {
+            let path = restriction.strip_prefix("in ")?.trim();
+            if let Some(tail) = path.strip_prefix("crate::") {
+                format!("{crate_root}.{}", tail.replace("::", "."))
+            } else if path == "crate" {
+                crate_root
+            } else if path == "self" {
+                module.to_owned()
+            } else {
+                return None;
+            }
+        }
+    };
+    (within(module, &scope) && within(&scope, &crate_namespace(path))).then_some(scope)
+}
+
+fn restricted_exports(module: &Node) -> Vec<RestrictedExport> {
+    module
+        .details
+        .get("rust_restricted_exports")
+        .and_then(|value| serde_json::from_value(value.clone()).ok())
+        .unwrap_or_default()
+}
+
+fn canonical_namespace<'n>(name: &'n str, crate_root: &str) -> std::borrow::Cow<'n, str> {
+    if let Some(tail) = name.strip_prefix(crate_root) {
+        for entry in [".lib", ".main"] {
+            if let Some(tail) = tail.strip_prefix(entry) {
+                if tail.is_empty() || tail.starts_with('.') {
+                    return format!("{crate_root}{tail}").into();
+                }
+            }
+        }
+    }
+    name.into()
+}
+
+struct ModuleDomain {
+    scope: String,
+    crate_root: String,
+}
+
+#[derive(Default)]
+struct ModuleVisibility {
+    domains: HashMap<String, ModuleDomain>,
+}
+
+impl ModuleVisibility {
+    fn build<F: AsRef<Facts>>(all: &BTreeMap<String, F>) -> Self {
+        let mut domains = HashMap::new();
+        for declaration in all
+            .values()
+            .flat_map(|facts| &facts.as_ref().nodes)
+            .filter(|node| {
+                node.language == "rust"
+                    && node.kind == "module_declaration"
+                    && node.details["is_public"] != true
+            })
+        {
+            let Some((owner, _)) = declaration.qualname.rsplit_once('.') else {
+                continue;
+            };
+            let crate_root = crate_namespace(&declaration.path);
+            let owner = canonical_namespace(owner, &crate_root);
+            let scope = declaration.details["signature"]
+                .as_str()
+                .and_then(|signature| restricted_scope(signature, &owner, &declaration.path))
+                .unwrap_or_else(|| owner.into_owned());
+            for namespace in [
+                declaration.qualname.as_str().into(),
+                canonical_namespace(&declaration.qualname, &crate_root),
+            ] {
+                domains.insert(
+                    namespace.into_owned(),
+                    ModuleDomain {
+                        scope: scope.clone(),
+                        crate_root: crate_root.clone(),
+                    },
+                );
+            }
+        }
+        Self { domains }
+    }
+
+    fn domains<'s>(&'s self, namespace: &'s str) -> impl Iterator<Item = &'s ModuleDomain> {
+        std::iter::successors(Some(namespace), |namespace| {
+            namespace.rsplit_once('.').map(|(parent, _)| parent)
+        })
+        .filter_map(|namespace| self.domains.get(namespace))
+    }
+
+    fn visible(&self, namespace: &str, requester: &str) -> bool {
+        self.domains(namespace).all(|domain| {
+            within(
+                &canonical_namespace(requester, &domain.crate_root),
+                &domain.scope,
+            )
+        })
+    }
+}
+
+#[derive(Clone)]
+struct AliasTargets<'a> {
+    nodes: Vec<&'a Node>,
+    scope: Option<String>,
+}
+
+impl<'a> AliasTargets<'a> {
+    fn restrict(&mut self, scope: Option<&str>) {
+        let Some(scope) = scope else {
+            return;
+        };
+        match self.scope.as_deref() {
+            None => self.scope = Some(scope.to_owned()),
+            Some(existing) if within(scope, existing) => self.scope = Some(scope.to_owned()),
+            Some(existing) if within(existing, scope) => {}
+            Some(_) => self.nodes.clear(),
+        }
+    }
+}
 
 fn direct_members<'a, F: AsRef<Facts>>(
     all: &'a BTreeMap<String, F>,
@@ -19,7 +183,9 @@ fn direct_members<'a, F: AsRef<Facts>>(
     all.get(module.path.as_str())
         .into_iter()
         .flat_map(|facts| facts.as_ref().nodes.iter())
-        .filter(|node| node.qualname == qualified && node.kind != "module")
+        .filter(|node| {
+            node.qualname == qualified && !matches!(node.kind.as_str(), "module" | "impl")
+        })
         .collect()
 }
 
@@ -44,7 +210,11 @@ pub(crate) fn modules_at_import<'a>(
     family: LanguageFamily,
     normalized: &ImportPath,
     workspace: &str,
+    visible: impl FnOnce(&str) -> bool,
 ) -> Vec<(&'a Node, String)> {
+    if !visible(&normalized.namespace) {
+        return Vec::new();
+    }
     let mut namespace = normalized.namespace.as_str();
     loop {
         let modules: Vec<_> = modules_by_namespace
@@ -53,7 +223,19 @@ pub(crate) fn modules_at_import<'a>(
             .into_iter()
             .flatten()
             .copied()
-            .filter(|module| languages::workspace_path(&module.path).0 == workspace)
+            .filter(|module| {
+                let target_workspace = languages::workspace_path(&module.path).0;
+                if target_workspace == workspace {
+                    return true;
+                }
+                if target_workspace.is_empty() {
+                    return false;
+                }
+                let target_root = format!("{}.src", target_workspace.replace('/', "."));
+                normalized.namespace == target_root
+                    || normalized.namespace.strip_prefix(&target_root)
+                        .is_some_and(|tail| tail.starts_with('.'))
+            })
             .collect();
         if !modules.is_empty() {
             let tail = normalized
@@ -80,17 +262,48 @@ pub(crate) fn modules_at_import<'a>(
 type AliasKey<'a> = (&'a str, String, bool);
 
 fn is_descendant_module(requester: &str, owner: &Node) -> bool {
+    let namespace = owner
+        .qualname
+        .strip_suffix(".lib")
+        .or_else(|| owner.qualname.strip_suffix(".main"))
+        .unwrap_or(&owner.qualname);
     requester
-        .strip_prefix(owner.qualname.as_str())
+        .strip_prefix(namespace)
         .is_some_and(|suffix| suffix.starts_with('.'))
+}
+
+pub(crate) fn field_visible(field: &Node, receiver: &Node, requester: &str) -> bool {
+    let module = receiver.qualname.rsplit_once('.').map_or("", |(module, _)| module);
+    within(requester, module)
+        || field.details["is_public"] == true
+        || field.details["signature"].as_str()
+            .and_then(|signature| restricted_scope(signature, module, &field.path))
+            .is_some_and(|scope| within(requester, &scope))
+}
+
+fn is_crate_visible(node: &Node, requester: &str) -> bool {
+    node.details["is_public"] == true
+        || node.details["signature"]
+            .as_str()
+            .and_then(|signature| {
+                restricted_scope(
+                    signature,
+                    node.qualname
+                        .rsplit_once('.')
+                        .map_or("", |(module, _)| module),
+                    &node.path,
+                )
+            })
+            .is_some_and(|scope| within(requester, &scope))
 }
 
 struct AliasResolver<'a, 'lookup, F: AsRef<Facts>> {
     all: &'a BTreeMap<String, F>,
     modules_by_namespace: &'lookup ModulesByNamespace<'a>,
     normalized_imports: &'lookup HashMap<(&'a str, &'a str), Option<ImportPath>>,
-    memo: HashMap<(AliasKey<'a>, usize), Vec<&'a Node>>,
+    memo: HashMap<(AliasKey<'a>, usize), AliasTargets<'a>>,
     visiting: HashSet<AliasKey<'a>>,
+    module_visibility: &'lookup ModuleVisibility,
 }
 
 impl<'a, 'lookup, F: AsRef<Facts>> AliasResolver<'a, 'lookup, F> {
@@ -100,7 +313,7 @@ impl<'a, 'lookup, F: AsRef<Facts>> AliasResolver<'a, 'lookup, F> {
         name: &str,
         public_only: bool,
         depth: usize,
-    ) -> Option<Vec<&'a Node>> {
+    ) -> Option<AliasTargets<'a>> {
         if depth >= RUST_ALIAS_DEPTH {
             return None;
         }
@@ -109,9 +322,24 @@ impl<'a, 'lookup, F: AsRef<Facts>> AliasResolver<'a, 'lookup, F> {
         direct.retain(|node| node.kind != "module_declaration");
         if !direct.is_empty() {
             if public_only {
-                direct.retain(|node| node.details["is_public"] == true);
+                direct.retain(|node| is_crate_visible(node, &module.qualname));
             }
-            return Some(direct);
+            let mut result = AliasTargets {
+                nodes: direct,
+                scope: None,
+            };
+            for node in result.nodes.clone() {
+                if node.details["is_public"] != true {
+                    let scope = node.details["signature"]
+                        .as_str()
+                        .and_then(|signature| {
+                            restricted_scope(signature, &module.qualname, &node.path)
+                        })
+                        .unwrap_or_else(|| module_namespace(&module.qualname).to_owned());
+                    result.restrict(Some(&scope));
+                }
+            }
+            return Some(result);
         }
         let facts = self.all.get(module.path.as_str())?.as_ref();
         let named = facts.references.iter().any(|reference| {
@@ -122,8 +350,16 @@ impl<'a, 'lookup, F: AsRef<Facts>> AliasResolver<'a, 'lookup, F> {
         if module_declaration && !named {
             return None;
         }
-        if public_only && named && !is_public_export(module, name) {
-            return Some(Vec::new());
+        let restricted = restricted_exports(module);
+        let named_scope = restricted
+            .iter()
+            .find(|export| export.name == name && export.module.is_none())
+            .map(|export| export.scope.as_str());
+        if public_only && named && !is_public_export(module, name) && named_scope.is_none() {
+            return Some(AliasTargets {
+                nodes: Vec::new(),
+                scope: None,
+            });
         }
         let memo_key = ((module.path.as_str(), name.to_owned(), public_only), depth);
         if let Some(candidates) = self.memo.get(&memo_key) {
@@ -134,6 +370,7 @@ impl<'a, 'lookup, F: AsRef<Facts>> AliasResolver<'a, 'lookup, F> {
             return None;
         }
         let mut candidates = Vec::new();
+        let mut scope: Option<String> = None;
         let mut complete = true;
         {
             for reference in facts.references.iter().filter(|reference| {
@@ -145,7 +382,10 @@ impl<'a, 'lookup, F: AsRef<Facts>> AliasResolver<'a, 'lookup, F> {
                         || is_public_glob(
                             module,
                             reference.module.as_deref().unwrap_or(&reference.expression),
-                        ))
+                        )
+                        || restricted
+                            .iter()
+                            .any(|export| export.module.as_deref() == reference.module.as_deref()))
             }) {
                 let glob = reference.alias.as_deref() == Some("*");
                 let raw = reference.module.as_deref().unwrap_or(&reference.expression);
@@ -154,7 +394,9 @@ impl<'a, 'lookup, F: AsRef<Facts>> AliasResolver<'a, 'lookup, F> {
                     .get(&(module.path.as_str(), raw))
                     .and_then(Option::as_ref)
                 else {
-                    complete = false;
+                    if !glob {
+                        complete = false;
+                    }
                     continue;
                 };
                 let workspace = languages::workspace_path(&module.path).0;
@@ -163,7 +405,11 @@ impl<'a, 'lookup, F: AsRef<Facts>> AliasResolver<'a, 'lookup, F> {
                     LanguageFamily("rust"),
                     normalized,
                     workspace,
+                    |namespace| self.module_visibility.visible(namespace, &module.qualname),
                 );
+                if glob && modules.is_empty() && !normalized.relative {
+                    continue;
+                }
                 if modules.is_empty() || (glob && modules.len() != 1) {
                     complete = false;
                     continue;
@@ -177,20 +423,56 @@ impl<'a, 'lookup, F: AsRef<Facts>> AliasResolver<'a, 'lookup, F> {
                             complete = false;
                             continue;
                         }
+                        if !public_only
+                            && is_descendant_module(&module.qualname, target_module)
+                            && self.visiting.iter().any(|(path, alias, _)| {
+                                *path == target_module.path && alias == name
+                            })
+                        {
+                            continue;
+                        }
                         match self.resolve(target_module, name, require_public, depth + 1) {
-                            Some(targets) => candidates.extend(targets),
+                            Some(mut targets) => {
+                                if targets
+                                    .scope
+                                    .as_deref()
+                                    .is_none_or(|scope| within(&module.qualname, scope))
+                                {
+                                    let export_scope = restricted
+                                        .iter()
+                                        .find(|export| export.module.as_deref() == Some(raw))
+                                        .map(|export| export.scope.as_str());
+                                    targets.restrict(export_scope);
+                                    let mut combined = AliasTargets {
+                                        nodes: targets.nodes,
+                                        scope: scope.clone(),
+                                    };
+                                    combined.restrict(targets.scope.as_deref());
+                                    scope = combined.scope;
+                                    candidates.extend(combined.nodes);
+                                }
+                            }
                             None => complete = false,
                         }
                         continue;
                     }
                     if tail.is_empty() {
                         candidates.push(target_module);
+                        let mut targets = AliasTargets {
+                            nodes: candidates,
+                            scope,
+                        };
+                        for domain in self.module_visibility.domains(&target_module.qualname) {
+                            targets.restrict(Some(&domain.scope));
+                        }
+                        candidates = targets.nodes;
+                        scope = targets.scope;
                         continue;
                     }
                     if tail.contains('.') {
                         let mut direct = direct_members(self.all, target_module, &tail);
                         if require_public {
-                            direct.retain(|node| node.details["is_public"] == true);
+                            direct.retain(|node| is_crate_visible(node, &module.qualname));
                         }
                         if direct.is_empty() {
                             complete = false;
@@ -198,7 +480,22 @@ impl<'a, 'lookup, F: AsRef<Facts>> AliasResolver<'a, 'lookup, F> {
                         candidates.extend(direct);
                     } else {
                         match self.resolve(target_module, &tail, require_public, depth + 1) {
-                            Some(targets) if !targets.is_empty() => candidates.extend(targets),
+                            Some(mut targets) if !targets.nodes.is_empty() => {
+                                if targets
+                                    .scope
+                                    .as_deref()
+                                    .is_none_or(|scope| within(&module.qualname, scope))
+                                {
+                                    targets.restrict(named_scope);
+                                    let mut combined = AliasTargets {
+                                        nodes: targets.nodes,
+                                        scope: scope.clone(),
+                                    };
+                                    combined.restrict(targets.scope.as_deref());
+                                    scope = combined.scope;
+                                    candidates.extend(combined.nodes);
+                                }
+                            }
                             _ => complete = false,
                         }
                     }
@@ -214,15 +511,24 @@ impl<'a, 'lookup, F: AsRef<Facts>> AliasResolver<'a, 'lookup, F> {
         if public_only && !candidates.is_empty() {
             match self.resolve(module, name, false, depth) {
                 Some(local)
-                    if local.len() == candidates.len()
-                        && candidates
-                            .iter()
-                            .all(|candidate| local.iter().any(|node| node.id == candidate.id)) => {}
+                    if local.nodes.len() == candidates.len()
+                        && candidates.iter().all(|candidate| {
+                            local.nodes.iter().any(|node| node.id == candidate.id)
+                        }) => {}
                 _ => return None,
             }
         }
-        self.memo.insert((key, depth), candidates.clone());
-        Some(candidates)
+        let mut result = AliasTargets {
+            nodes: candidates,
+            scope,
+        };
+        if named && !is_public_export(module, name) {
+            result.restrict(Some(
+                named_scope.unwrap_or_else(|| module_namespace(&module.qualname)),
+            ));
+        }
+        self.memo.insert((key, depth), result.clone());
+        Some(result)
     }
 }
 
@@ -233,7 +539,9 @@ impl<'a, 'lookup, F: AsRef<Facts>> AliasResolver<'a, 'lookup, F> {
 pub(crate) struct RustForwarding<'a> {
     private: HashMap<&'a str, HashMap<&'a str, Vec<&'a Node>>>,
     public: HashMap<&'a str, HashMap<&'a str, Vec<&'a Node>>>,
+    restricted: HashMap<&'a str, HashMap<&'a str, AliasTargets<'a>>>,
     exports: PackageExports<'a>,
+    module_visibility: ModuleVisibility,
 }
 
 impl<'a> RustForwarding<'a> {
@@ -243,24 +551,27 @@ impl<'a> RustForwarding<'a> {
         normalized_imports: &HashMap<(&'a str, &'a str), Option<ImportPath>>,
         interner: &mut LinkerInterner<'a>,
     ) -> Self {
+        let module_visibility = ModuleVisibility::build(all);
         let mut resolver = AliasResolver {
             all,
             modules_by_namespace,
             normalized_imports,
             memo: HashMap::new(),
             visiting: HashSet::new(),
+            module_visibility: &module_visibility,
         };
         let mut private: HashMap<&'a str, HashMap<&'a str, Vec<&'a Node>>> = HashMap::new();
         let mut public: HashMap<&'a str, HashMap<&'a str, Vec<&'a Node>>> = HashMap::new();
         let mut exports = PackageExports::new();
+        let mut restricted_bindings: HashMap<&str, HashMap<&str, AliasTargets<'a>>> =
+            HashMap::new();
         let modules: Vec<_> = all
             .values()
             .flat_map(|facts| {
-                facts
-                    .as_ref()
-                    .nodes
-                    .iter()
-                    .filter(|node| matches!(node.kind.as_str(), "module" | "module_declaration") && node.language == "rust")
+                facts.as_ref().nodes.iter().filter(|node| {
+                    matches!(node.kind.as_str(), "module" | "module_declaration")
+                        && node.language == "rust"
+                })
             })
             .collect();
         let mut names_by_module = HashMap::<&str, HashSet<&str>>::new();
@@ -316,6 +627,7 @@ impl<'a> RustForwarding<'a> {
                         LanguageFamily("rust"),
                         normalized,
                         languages::workspace_path(&module.path).0,
+                        |namespace| module_visibility.visible(namespace, &module.qualname),
                     );
                     if let [(target, tail)] = targets.as_slice() {
                         if matches!(tail.as_str(), "" | "*") {
@@ -355,15 +667,26 @@ impl<'a> RustForwarding<'a> {
                 .copied()
             {
                 let private_result = resolver.resolve(module, name, false, 0);
-                if !matches!(&private_result, Some(targets) if targets.is_empty()) {
-                    private
-                        .entry(module.path.as_str())
-                        .or_default()
-                        .insert(name, private_result.unwrap_or_default());
+                if !matches!(&private_result, Some(targets) if targets.nodes.is_empty()) {
+                    private.entry(module.path.as_str()).or_default().insert(
+                        name,
+                        private_result.map_or_else(Vec::new, |targets| targets.nodes),
+                    );
                 }
                 let public_result = resolver.resolve(module, name, true, 0);
-                if !matches!(&public_result, Some(targets) if targets.is_empty()) {
-                    let public_targets = public_result.unwrap_or_default();
+                if !matches!(&public_result, Some(targets) if targets.nodes.is_empty()) {
+                    if let Some(targets) = public_result
+                        .as_ref()
+                        .filter(|targets| targets.scope.is_some())
+                    {
+                        restricted_bindings
+                            .entry(module.path.as_str())
+                            .or_default()
+                            .insert(name, targets.clone());
+                        continue;
+                    }
+                    let public_targets =
+                        public_result.map_or_else(Vec::new, |targets| targets.nodes);
                     insert_package_export(
                         &mut exports,
                         interner,
@@ -382,12 +705,18 @@ impl<'a> RustForwarding<'a> {
         Self {
             private,
             public,
+            restricted: restricted_bindings,
             exports,
+            module_visibility,
         }
     }
 
     pub(crate) fn package_exports(&self) -> &PackageExports<'a> {
         &self.exports
+    }
+
+    pub(crate) fn module_path_visible(&self, namespace: &str, requester: &str) -> bool {
+        self.module_visibility.visible(namespace, requester)
     }
 
     pub(crate) fn targets<'forwarding>(
@@ -396,6 +725,24 @@ impl<'a> RustForwarding<'a> {
         name: &str,
         requester: &str,
     ) -> &'forwarding [&'a Node] {
+        if !self.module_path_visible(&module.qualname, requester) {
+            return &[];
+        }
+        if let Some(targets) = self
+            .restricted
+            .get(module.path.as_str())
+            .and_then(|bindings| bindings.get(name))
+        {
+            return if targets
+                .scope
+                .as_deref()
+                .is_some_and(|scope| within(requester, scope))
+            {
+                &targets.nodes
+            } else {
+                &[]
+            };
+        }
         if let Some(targets) = self
             .public
             .get(module.path.as_str())
@@ -419,16 +766,36 @@ impl<'a> RustForwarding<'a> {
         module: &Node,
         requester: &str,
     ) -> impl Iterator<Item = (&'a str, &'s [&'a Node])> + 's {
+        let visible = self.module_path_visible(&module.qualname, requester);
         let bindings = if requester == module.qualname || is_descendant_module(requester, module) {
             &self.private
         } else {
             &self.public
         };
-        bindings
+        let restricted = self.restricted.get(module.path.as_str());
+        let ordinary = bindings
             .get(module.path.as_str())
             .into_iter()
             .flat_map(|bindings| bindings.iter())
-            .map(|(name, targets)| (*name, targets.as_slice()))
+            .filter(move |(name, _)| {
+                !restricted.is_some_and(|bindings| bindings.contains_key(**name))
+            })
+            .map(|(name, targets)| (*name, targets.as_slice()));
+        let requester = requester.to_owned();
+        ordinary
+            .chain(
+                restricted
+                    .into_iter()
+                    .flat_map(|bindings| bindings.iter())
+                    .filter(move |(_, targets)| {
+                        targets
+                            .scope
+                            .as_deref()
+                            .is_some_and(|scope| within(&requester, scope))
+                    })
+                    .map(|(name, targets)| (*name, targets.nodes.as_slice())),
+            )
+            .filter(move |_| visible)
     }
 }
 
@@ -491,18 +858,51 @@ impl LanguageLinker for RustLinker {
         &self,
         context: &mut ImportContext<'ctx, 'a, 'input>,
     ) -> ImportResolution<'a> {
+        let requester = context
+            .by_module
+            .get(context.path)
+            .into_iter()
+            .flatten()
+            .find(|node| node.id == context.reference.source)
+            .or_else(|| {
+                context
+                    .by_module
+                    .get(context.path)
+                    .into_iter()
+                    .flatten()
+                    .find(|node| node.kind == "module")
+            })
+            .map_or("", |node| node.qualname.as_str());
+        if context.rust_forwarding.is_some_and(|forwarding| {
+            context.normalized.is_some_and(|normalized| {
+                !forwarding.module_path_visible(&normalized.namespace, requester)
+            })
+        }) {
+            context.modules.clear();
+            context.candidates.clear();
+            return ImportResolution::default();
+        }
         let resolution = resolve_default_import(context);
+        context.candidates.retain(|node| {
+            node.kind != "impl"
+                && (node.kind == "module"
+                    && context.rust_forwarding.is_none_or(|forwarding| {
+                        forwarding.module_path_visible(&node.qualname, requester)
+                    })
+                    || is_crate_visible(node, requester)
+                    || node
+                        .qualname
+                        .rsplit_once('.')
+                        .is_some_and(|(scope, _)| within(requester, module_namespace(scope))))
+        });
         if !context.candidates.is_empty() {
             return resolution;
         }
         if let Some(normalized) = context.normalized {
             if let Some(nodes) = context.by_qual.get(normalized.namespace.as_str()) {
-                context.candidates.extend(
-                    nodes
-                        .iter()
-                        .copied()
-                        .filter(|n| n.path == context.path),
-                );
+                context
+                    .candidates
+                    .extend(nodes.iter().copied().filter(|n| n.path == context.path));
                 if !context.candidates.is_empty() {
                     return resolution;
                 }
@@ -520,12 +920,9 @@ impl LanguageLinker for RustLinker {
                     context.reference.expression.replace("::", ".")
                 );
                 if let Some(nodes) = context.by_qual.get(owner_qual.as_str()) {
-                    context.candidates.extend(
-                        nodes
-                            .iter()
-                            .copied()
-                            .filter(|n| n.path == context.path),
-                    );
+                    context
+                        .candidates
+                        .extend(nodes.iter().copied().filter(|n| n.path == context.path));
                     if !context.candidates.is_empty() {
                         if context.modules.is_empty() {
                             context.modules.push(owner);
@@ -603,13 +1000,16 @@ impl LanguageLinker for RustLinker {
         if let [single] = items.as_slice() {
             return vec![single];
         }
-        items.into_iter().filter(|node| node.name == member).collect()
+        items
+            .into_iter()
+            .filter(|node| node.name == member)
+            .collect()
     }
 
     fn package_exports<'a>(
         &self,
         interner: &mut LinkerInterner<'a>,
-        _node_rebindings: &crate::engine::linker::NodeBindingIndex,
+        _node_rebindings: &crate::linker::NodeBindingIndex,
         all: &'a BTreeMap<String, Facts>,
         _modules_by_namespace: &ModulesByNamespace<'a>,
         _by_module: &HashMap<&'a str, Vec<&'a Node>>,
@@ -621,7 +1021,7 @@ impl LanguageLinker for RustLinker {
     fn package_exports_borrowed<'a>(
         &self,
         interner: &mut LinkerInterner<'a>,
-        _node_rebindings: &crate::engine::linker::NodeBindingIndex,
+        _node_rebindings: &crate::linker::NodeBindingIndex,
         all: &BTreeMap<&'a str, &'a Facts>,
         _modules_by_namespace: &ModulesByNamespace<'a>,
         _by_module: &HashMap<&'a str, Vec<&'a Node>>,
@@ -799,7 +1199,7 @@ impl<'a> RustMembers<'a> {
     pub(crate) fn build<F: AsRef<Facts>>(
         all: &'a BTreeMap<String, F>,
         interner: &LinkerInterner<'a>,
-        flows: Option<&HashMap<SymbolId, &crate::core::typed_facts::FlowState>>,
+        flows: Option<&HashMap<SymbolId, &forge_core::typed_facts::FlowState>>,
         forwarding: &RustForwarding<'a>,
     ) -> Self {
         let mut by_qual = HashMap::<&str, Vec<&Node>>::new();
@@ -944,13 +1344,13 @@ impl<'a> RustMembers<'a> {
                                 .lookup_symbol(&target.id)
                                 .and_then(|target_id| flows.get(&target_id).copied());
                             match state {
-                                Some(crate::core::typed_facts::FlowState::Valid {
+                                Some(forge_core::typed_facts::FlowState::Valid {
                                     facts, ..
                                 }) => facts.alias_type.clone(),
                                 _ => None,
                             }
                         } else {
-                            crate::core::semantic::ValueFlowFacts::deserialize_for_scope(
+                            forge_core::semantic::ValueFlowFacts::deserialize_for_scope(
                                 &target.details["value_flow"],
                                 false,
                             )
@@ -958,7 +1358,7 @@ impl<'a> RustMembers<'a> {
                             .and_then(|facts| facts.alias_type.clone())
                         };
                         match alias {
-                            Some(crate::core::semantic::TypeExpr::Named { name }) => {
+                            Some(forge_core::semantic::TypeExpr::Named { name }) => {
                                 resolve_type(facts, target, &name, &by_qual).filter(|node| {
                                     node.kind == "struct" && node.details["deref_unproven"] != true
                                 })
@@ -1226,7 +1626,7 @@ impl<'a> RustMembers<'a> {
         for methods in index.dynamic_implementors.values_mut() {
             methods.sort_by_key(|method| &method.id);
             methods.dedup_by_key(|method| method.id.as_str());
-            if methods.len() > crate::engine::linker::value_flow::MAX_CANDIDATE_BRANCH_JOINS {
+            if methods.len() > crate::linker::value_flow::MAX_CANDIDATE_BRANCH_JOINS {
                 methods.clear();
             }
         }
@@ -1273,6 +1673,12 @@ impl<'a> RustMembers<'a> {
 
     pub(crate) fn receiver_for(&self, method: &Node) -> Option<&'a Node> {
         self.receivers_by_method.get(method.id.as_str()).copied()
+    }
+
+    pub(crate) fn is_inherent_member(&self, method: &Node) -> bool {
+        self.inherent
+            .values()
+            .any(|methods| methods.iter().any(|m| m.id == method.id))
     }
     pub(crate) fn dynamic_dispatch<'s>(
         &'s self,

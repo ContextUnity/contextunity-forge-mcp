@@ -6,4 +6,4 @@ pub use forge_index::db::*;
 pub mod writer;
 
 /// Implements tasks store support.
-pub mod tasks_store;
+pub use forge_tasks::store as tasks_store;

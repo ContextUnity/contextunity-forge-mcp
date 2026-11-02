@@ -24,7 +24,10 @@ Use Forge MCP tools or the `contextunity-forge-mcp` CLI on the surface that prov
 The embedded ACDD profile registers `rust-check-and-test` as strict Clippy followed by tests. Use its `workflow_guidance.scoped_commands` entry for an affected test target and submit the task-bound `expected_evidence_template` with completed proof fields.
 
 <!-- acdd-forge:agents-verification:start -->
-When authoring contracts for existing capabilities, strengthen existing seam tests (in `tests/`) with additive parameterized cases rather than creating duplicate standalone test functions. Ensure tests compile cleanly and produce runtime assertion failures (exit code 101) for `contract` gate proof.
+When authoring contracts or testing capabilities:
+- **Additive parameterized cases**: Extend existing table-driven test cases (`for case in cases`) ONLY when testing the same unit or input variation.
+- **Dedicated domain tests**: NEVER append distinct sub-scenarios, multi-step workflows, or new feature requirements into an existing test function. Create a separate, descriptively-named `#[test]` function in the appropriate domain module to preserve parallel test execution and isolated failure diagnostics.
+- **Runtime-red contract proof**: Contract tests must compile cleanly and produce runtime assertion failures (exit code 101) for `contract` gate proof.
 <!-- acdd-forge:agents-verification:end -->
 
 <!-- acdd-forge:contract-synthesis:start -->

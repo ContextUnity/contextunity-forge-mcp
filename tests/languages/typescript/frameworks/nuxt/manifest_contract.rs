@@ -13,11 +13,11 @@ fn nuxt_vue_pinia_manifest_contract_reaches_persisted_graph() {
     let packs = [
         (
             "nuxt",
-            include_str!("../../../../../src/engine/languages/manifests/nuxt.toml"),
+            include_str!("../../../../../crates/forge-index/src/languages/manifests/nuxt.toml"),
         ),
         (
             "vue-runtime",
-            include_str!("../../../../../src/engine/languages/manifests/vue-runtime.toml"),
+            include_str!("../../../../../crates/forge-index/src/languages/manifests/vue-runtime.toml"),
         ),
     ];
     let cases: [(&str, &[(&str, &str)]); 4] = [

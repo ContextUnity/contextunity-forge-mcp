@@ -1,5 +1,15 @@
 use super::*;
 
+impl<'a> LanguageMemberLookup<'_, 'a> {
+    pub(in crate::linker) fn rust_alias_member(&self, owner: &'a Node, reference: &Reference) -> Option<Symbol<'a>> {
+        let (base, member) = reference.expression.rsplit_once("::")?;
+        let TypeTarget::Local(target) = self.context.rust_alias_target(owner, base, reference.position())? else {
+            return None;
+        };
+        Some(self.context.member(target, member, true, owner))
+    }
+}
+
 impl<'a> SemanticResolver<'a> for Context<'a> {
     fn configured_result_member(
         &self,
@@ -19,6 +29,17 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
     ) -> Option<TypeTarget<'a>> {
         use super::super::value_flow::ConfiguredReceiverAuthority as Authority;
         use languages::manifests::ReturnPolicy;
+        #[cfg(feature = "lang-rust")]
+        let extension = (owner.language == "rust")
+            .then(|| self.rayon_extension_base(receiver, member, owner))
+            .flatten();
+        #[cfg(not(feature = "lang-rust"))]
+        let extension: Option<&str> = None;
+        let extension_receiver = extension.map(|base| TypeTarget::External {
+            module: base.to_owned(),
+            import_line: 0,
+        });
+        let receiver = extension_receiver.as_ref().unwrap_or(receiver);
         if let TypeTarget::External {
             module,
             import_line,
@@ -29,7 +50,7 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
                 let (pack, rule) = self.dependencies.class_hierarchy_authority_for_path(
                     &owner.path,
                     &base,
-                    None,
+                    extension.map(|_| "rust-cargo"),
                 )?;
                 if !rule.members.iter().any(|allowed| allowed == member) {
                     return None;
@@ -37,6 +58,12 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
                 return match rule.returns.get(member)? {
                     ReturnPolicy::SelfReceiver => Some(receiver.clone()),
                     ReturnPolicy::Receiver { base } => {
+                        if !base.contains([':', '.'])
+                            && languages::by_id("rust")
+                                .is_some_and(|profile| profile.builtin_type(base))
+                        {
+                            return Some(TypeTarget::Builtin(base.clone()));
+                        }
                         self.hierarchy_results
                             .get(&self.path_id(&owner.path)?)?
                             .get(&(self.symbol_id(pack)?, self.symbol_id(base)?))?;
@@ -118,11 +145,18 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
         &self,
         owner: &'a Node,
         callee: &str,
-        site: Option<&crate::core::semantic::CallSiteEvidence>,
+        site: Option<&forge_core::semantic::CallSiteEvidence>,
         at: SourcePosition,
         fallback: Option<TypeTarget<'a>>,
     ) -> Option<TypeTarget<'a>> {
-        use crate::core::semantic::StaticArgument;
+        use forge_core::semantic::StaticArgument;
+        if owner.language == "rust" && callee == "__rust_identity_some" {
+            return Some(if self.unshadowed_global(owner, "Some", at) {
+                fallback.unwrap_or(TypeTarget::Unknown)
+            } else {
+                TypeTarget::Unknown
+            });
+        }
         if !matches!(owner.language.as_str(), "javascript" | "typescript") {
             return None;
         }
@@ -201,10 +235,10 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
                 .is_some_and(|state| {
                     matches!(
                         state,
-                        crate::core::typed_facts::FlowState::Valid { facts, .. }
+                        forge_core::typed_facts::FlowState::Valid { facts, .. }
                             if facts.component_macros().any(|fact| {
                                 fact.callee == callee
-                                    && fact.role == crate::core::semantic::ComponentMacroRole::Props
+                                    && fact.role == forge_core::semantic::ComponentMacroRole::Props
                                     && fact.position <= at
                             })
                     )
@@ -308,11 +342,11 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
         None
     }
 
-    fn value_flow(&self, node: &'a Node) -> Option<&'a crate::core::semantic::ValueFlowFacts> {
+    fn value_flow(&self, node: &'a Node) -> Option<&'a forge_core::semantic::ValueFlowFacts> {
         let node_id = self.symbol_id(&node.id)?;
         match self.flows?.get(&node_id).copied()? {
-            crate::core::typed_facts::FlowState::Valid { facts, .. } => Some(facts),
-            crate::core::typed_facts::FlowState::Invalid(_) => None,
+            forge_core::typed_facts::FlowState::Valid { facts, .. } => Some(facts),
+            forge_core::typed_facts::FlowState::Invalid(_) => None,
         }
     }
 
@@ -321,7 +355,7 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
             self.flows.is_some_and(|flows| {
                 matches!(
                     flows.get(&node_id),
-                    Some(crate::core::typed_facts::FlowState::Invalid(_))
+                    Some(forge_core::typed_facts::FlowState::Invalid(_))
                 )
             })
         })
@@ -334,15 +368,15 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
     fn raw_value_flow(&self, node: &'a Node) -> Option<&'a serde_json::Value> {
         let node_id = self.symbol_id(&node.id)?;
         match self.flows?.get(&node_id).copied()? {
-            crate::core::typed_facts::FlowState::Invalid(value) => Some(value),
-            crate::core::typed_facts::FlowState::Valid { .. } => None,
+            forge_core::typed_facts::FlowState::Invalid(value) => Some(value),
+            forge_core::typed_facts::FlowState::Valid { .. } => None,
         }
     }
     fn resolve_applied(
         &self,
         owner: &'a Node,
         base: &str,
-        args: &[crate::core::semantic::TypeExpr],
+        args: &[forge_core::semantic::TypeExpr],
         at: SourcePosition,
     ) -> TypeTarget<'a> {
         let clean_base = base.rsplit_once('.').map_or(base, |(_, name)| name);
@@ -414,10 +448,10 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
     fn resolve_payload(
         &self,
         owner: &'a Node,
-        expression: &crate::core::semantic::TypeExpr,
+        expression: &forge_core::semantic::TypeExpr,
         at: SourcePosition,
     ) -> TypeTarget<'a> {
-        let crate::core::semantic::TypeExpr::Applied { base, args } = expression else {
+        let forge_core::semantic::TypeExpr::Applied { base, args } = expression else {
             return TypeTarget::Unknown;
         };
         if args.is_empty() {
@@ -497,6 +531,95 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
         }
     }
     fn resolve_symbol(
+        &self,
+        owner: &'a Node,
+        name: &str,
+        at: SourcePosition,
+        role: SymbolRole,
+    ) -> Symbol<'a> {
+        if owner.language == "rust" {
+            if let Some((base, member)) = name.rsplit_once("::").or_else(|| name.rsplit_once('.')) {
+                if let Some(target) = self.rust_alias_target(owner, base, at) {
+                    return match target {
+                        TypeTarget::Local(node) => self.member(node, member, true, owner),
+                        _ => Symbol::Unknown,
+                    };
+                }
+            }
+            if matches!(role, SymbolRole::Type | SymbolRole::Constructor) {
+                if let Some(target) = self.rust_alias_target(owner, name, at) {
+                    return Symbol::Type(target);
+                }
+            }
+        }
+        self.resolve_symbol_raw(owner, name, at, role)
+    }
+    fn resolve_import_module(
+        &self,
+        owner: &'a Node,
+        name: &str,
+        at: SourcePosition,
+    ) -> Option<&'a Node> {
+        let (head, _) = name.split_once('.').unwrap_or((name, ""));
+        let mut scope = owner.qualname.as_str();
+        loop {
+            for node in self.nodes_in_path(scope, &owner.path) {
+                if let Some(Imported::Nodes(targets, position, _)) = self
+                    .symbol_id(&node.id)
+                    .and_then(|node_id| self.imports.get(&node_id))
+                    .and_then(|aliases| self.symbol_id(head).and_then(|head| aliases.get(&head)))
+                {
+                    if *position <= at
+                        || super::super::vue::semantic_context::template_import_visible(owner)
+                    {
+                        if let [target] = targets.as_slice() {
+                            if target.kind == "module" {
+                                return Some(*target);
+                            }
+                        }
+                    }
+                }
+            }
+            match scope.rsplit_once('.') {
+                Some((parent, _)) => scope = parent,
+                None => break,
+            }
+        }
+        None
+    }
+}
+
+impl<'a> Context<'a> {
+    fn rust_alias_target(
+        &self,
+        owner: &'a Node,
+        name: &str,
+        at: SourcePosition,
+    ) -> Option<TypeTarget<'a>> {
+        let mut symbol = self.resolve_symbol_raw(owner, name, at, SymbolRole::Type);
+        let mut visited = Vec::new();
+        for _ in 0..16 {
+            match symbol {
+                Symbol::Type(TypeTarget::Local(alias)) if alias.language == "rust" && alias.kind == "type" => {
+                    if alias.details["deref_unproven"] == true {
+                        return None;
+                    }
+                    if visited.contains(&alias.id.as_str()) {
+                        return Some(TypeTarget::Unknown);
+                    }
+                    let Some(target) = alias.details["alias_target"].as_str() else {
+                        return Some(TypeTarget::Unknown);
+                    };
+                    visited.push(alias.id.as_str());
+                    symbol = self.resolve_symbol_raw(alias, target, super::super::value_flow::node_position(alias), SymbolRole::Type);
+                }
+                Symbol::Type(target) if !visited.is_empty() => return Some(target),
+                _ => return (!visited.is_empty()).then_some(TypeTarget::Unknown),
+            }
+        }
+        Some(TypeTarget::Unknown)
+    }
+    fn resolve_symbol_raw(
         &self,
         owner: &'a Node,
         name: &str,
@@ -622,6 +745,37 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
                                 if member.is_empty() {
                                     self.classify(targets.iter().copied(), role)
                                 } else {
+                                    #[cfg(feature = "lang-rust")]
+                                    if owner.language == "rust" {
+                                        let mut current = targets.clone();
+                                        for (index, segment) in member.split('.').enumerate() {
+                                            if index >= 64 { return Symbol::Unknown; }
+                                            let mut next = Vec::new();
+                                            for target in &current {
+                                                if target.kind == "module" {
+                                                    if let Some(Imported::Nodes(imported, _, _)) = self.imported_alias(target, segment) {
+                                                        if imported.iter().all(|node| node.kind == "module") {
+                                                            next.extend(imported.iter().copied().filter(|node| self.rust_forwarding.module_path_visible(&node.qualname, &owner.qualname)));
+                                                            continue;
+                                                        }
+                                                    }
+                                                    let visible = self.rust_forwarding.targets(target, segment, &owner.qualname);
+                                                    if visible.is_empty() { continue; }
+                                                    if let Some(Imported::Nodes(imported, _, _)) = self.imported_alias(target, segment) {
+                                                        next.extend(imported.iter().copied());
+                                                    } else {
+                                                        next.extend_from_slice(visible);
+                                                    }
+                                                } else if member.split('.').count() == index + 1 && matches!(role, SymbolRole::Callable) {
+                                                    if let Symbol::Callable(method) = self.member(target, segment, true, owner) { next.push(method); }
+                                                }
+                                            }
+                                            next.sort_by_key(|node| node.id.as_str());
+                                            next.dedup_by_key(|node| node.id.as_str());
+                                            current = next;
+                                        }
+                                        return self.classify(current.into_iter(), role);
+                                    }
                                     if matches!(role, SymbolRole::Callable) {
                                         if let [target] = targets.as_slice() {
                                             if matches!(
@@ -779,6 +933,26 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
             };
             scope = parent;
         }
+        if owner.language == "rust" {
+            let canonical = name.replace('.', "::");
+            let crate_name = canonical.split("::").next().unwrap_or("");
+            if ((canonical.contains("::") && matches!(crate_name, "std" | "core" | "alloc"))
+                || self.dependencies.declares_for_path(
+                    languages::LanguageFamily("rust"),
+                    &owner.path,
+                    crate_name,
+                ))
+                && self
+                    .dependencies
+                    .class_hierarchy_authority_for_path(&owner.path, &canonical, None)
+                    .is_some()
+            {
+                return Symbol::Type(TypeTarget::External {
+                    module: canonical,
+                    import_line: 0,
+                });
+            }
+        }
         let builtin = languages::by_id(&owner.language).is_some_and(|profile| {
             profile.builtin_type(&name)
                 || super::super::typescript::semantic_context::is_builtin_promise_type(
@@ -796,37 +970,4 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
         }
     }
 
-    fn resolve_import_module(
-        &self,
-        owner: &'a Node,
-        name: &str,
-        at: SourcePosition,
-    ) -> Option<&'a Node> {
-        let (head, _) = name.split_once('.').unwrap_or((name, ""));
-        let mut scope = owner.qualname.as_str();
-        loop {
-            for node in self.nodes_in_path(scope, &owner.path) {
-                if let Some(Imported::Nodes(targets, position, _)) = self
-                    .symbol_id(&node.id)
-                    .and_then(|node_id| self.imports.get(&node_id))
-                    .and_then(|aliases| self.symbol_id(head).and_then(|head| aliases.get(&head)))
-                {
-                    if *position <= at
-                        || super::super::vue::semantic_context::template_import_visible(owner)
-                    {
-                        if let [target] = targets.as_slice() {
-                            if target.kind == "module" {
-                                return Some(*target);
-                            }
-                        }
-                    }
-                }
-            }
-            match scope.rsplit_once('.') {
-                Some((parent, _)) => scope = parent,
-                None => break,
-            }
-        }
-        None
-    }
 }

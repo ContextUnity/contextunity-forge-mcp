@@ -1,12 +1,12 @@
 //! Language-owned import and receiver resolution used by the shared linker.
 
+use forge_core::models::{Facts, Node, Reference};
 use crate::{
-    core::models::{Facts, Node, Reference},
-    engine::languages::{
+    languages::{
         ImportPath, LanguageFamily, LanguageProfile, dependency_registry::DependencyRegistry,
         manifests::FrameworkManifest,
     },
-    engine::linker::interner::{LinkerInterner, PathId, SymbolId},
+    linker::interner::{LinkerInterner, PathId, SymbolId},
 };
 use super::NodeBindingIndex;
 use hashbrown::HashMap;
@@ -53,7 +53,7 @@ pub(crate) fn import_provider_modules<'a, 'n>(
     family: LanguageFamily,
     modules_by_namespace: &ModulesByNamespace<'a>,
 ) -> (Vec<&'a Node>, &'n str) {
-    let workspace = crate::engine::languages::workspace_path(path).0;
+    let workspace = crate::languages::workspace_path(path).0;
     let mut providers = Vec::new();
     let mut selected_namespace = "";
     for local in [true, false] {
@@ -70,7 +70,7 @@ pub(crate) fn import_provider_modules<'a, 'n>(
                     .flatten()
                     .copied()
                     .filter(|node| {
-                        (crate::engine::languages::workspace_path(&node.path).0 == workspace)
+                        (crate::languages::workspace_path(&node.path).0 == workspace)
                             == local
                     })
                     .collect();
@@ -132,7 +132,7 @@ pub struct ImportContext<'ctx, 'a, 'input> {
     /// Rust's bounded canonical named-forwarding index, when Rust is enabled.
     #[cfg(feature = "lang-rust")]
     pub(crate) rust_forwarding:
-        Option<&'ctx crate::engine::languages::rust::linker::RustForwarding<'a>>,
+        Option<&'ctx crate::languages::rust::linker::RustForwarding<'a>>,
     /// Normalized import path from the language profile.
     pub normalized: Option<&'input ImportPath>,
     /// Namespace prefix that selected the indexed module.
@@ -356,7 +356,7 @@ pub(crate) fn resolve_default_import<'ctx, 'a, 'input>(
 #[cfg(test)]
 mod tests {
     use super::filter_stubs_and_overloads;
-    use crate::core::models::Node;
+    use forge_core::models::Node;
 
     fn node(id: &str, is_stub: bool, is_overload: bool) -> Node {
         Node {

@@ -1,16 +1,16 @@
 /// Implements ast support.
-pub mod ast;
+pub use forge_index::ast;
 /// Implements docs support.
-pub mod docs;
+pub use forge_index::docs;
 /// Implements languages support.
-pub mod languages;
+pub use forge_index::languages;
 /// Implements linker support.
-pub mod linker;
+pub use forge_index::linker;
 /// Implements milestone lifecycle support.
-pub mod milestones;
+pub use forge_tasks::milestones;
 /// Indexing pipeline orchestration.
 pub mod pipeline;
 /// Implements scanner support.
-pub mod scanner;
+pub use forge_index::scanner;
 /// Implements tasks support.
 pub mod tasks;

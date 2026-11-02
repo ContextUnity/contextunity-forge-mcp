@@ -21,7 +21,7 @@ struct ActiveLink {
 }
 
 /// Source-derived metadata retained on the generic document node.
-pub(crate) fn extract_with_details(
+pub fn extract_with_details(
     path: &str,
     source: &str,
     mtime: f64,

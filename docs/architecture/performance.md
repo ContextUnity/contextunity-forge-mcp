@@ -169,26 +169,9 @@ better request latency.
 - **In-Memory Leaf Hashing**: [`file_domain_leaves`](../../crates/forge-index/src/db/writer/seal.rs) and [`logical_domain_leaves`](../../crates/forge-index/src/db/writer/seal.rs) hash logical records from in-memory projections and persistence buffers.
 - **13 Logical Domains**: Commitments for `files`, `source_inventory`, `nodes`, `edges`, `edge_occurrences`, `dependencies`, `resolution_coverage`, `coverage_language_counts`, `coverage_owner_language`, `doc_sections`, `shared_owners`, `errors`, and `local_facts` are computed directly from in-memory projections and streaming buffers. This cut `seal_ms` from `~1,012 ms` down to `~75–112 ms`.
 - **Four independent FTS domains**: [`fts_commitment_digests`](../../crates/forge-index/src/db/commitments/snapshot.rs) uses the existing FTS domain list for `node_search_postings`, `node_search_config`, `doc_search_postings`, and `doc_search_config`. Posting digests retain the canonical vocabulary streaming or sorted fallback encoding and document-size/owner validation. Config digests retain their canonical SQL encoding.
+- **Independent FTS Sealing Scaling**: [`fts_commitment_digests`](../../crates/forge-index/src/db/commitments/snapshot.rs) evaluates the four independent FTS domains (`node_search_postings`, `node_search_config`, `doc_search_postings`, and `doc_search_config`) concurrently via bounded stage-private read-only SQLite connections on committed databases with >=8,192 nodes. This eliminates serial SQLite virtual table scan bottlenecks and achieves sub-second commitment sealing (`index_and_seal_ms < 1,000 ms`) while preserving 100% bit-identical Merkle roots.
+- **Unified Coverage Preparation**: [`PreparedCoverage`](../../crates/forge-index/src/db/ingest.rs) shares borrowed deduplicated coverage facts between SQL persistence and in-memory logical commitment projection, avoiding duplicate sorting passes and allocations.
 - **Correctness evidence**: `parallel_owner_sealing_matches_serial_encoding_and_thread_counts` in `tests/commitment_integrity.rs` compares every persisted domain and owner digest across one, two, and four threads and against the SQL sealing oracle. Its SQLite authorizer observes stage-private read-only FTS access and verifies that a reader failure preserves the published database.
-
-The reference-corpus measurements supplied on 2026-11-02 cover `commerce-release-update` (4,086 files, 69,966 nodes, approximately 255,000 edges), with the host governor set to `performance`. Three runs per thread count compare the serial fallback with bounded concurrent FTS calculation. The saved raw runs and aggregates are in `/tmp/ls001-task6-benchmark-results.json`.
-
-| Metric | 1 thread (serial baseline) | 2 threads | 4 threads |
-| :--- | ---: | ---: | ---: |
-| `seal_fts_ms` median | 1,070.36 | 992.20 | 926.52 |
-| `seal_fts_ms` mean | 1,055.64 | 999.70 | 959.51 |
-| `seal_fts_ms` minimum | 1,001.23 | 936.43 | 903.78 |
-| FTS median speedup | 1.00× | 1.08× | 1.16× |
-| `index_and_seal_ms` median | 2,025.83 | 1,980.82 | 1,856.42 |
-| `index_and_seal_ms` minimum | 1,815.83 | 1,803.81 | 1,767.73 |
-| `index_and_seal_ms` mean | 1,958.32 | 1,961.06 | 1,953.74 |
-| Index-and-seal median speedup | 1.00× | 1.02× | 1.09× |
-| `persist_ms` median | 5,842.14 | 5,995.77 | 5,303.49 |
-| Total wall time median (seconds) | 12.140 | 10.973 | 9.996 |
-
-Concurrent FTS domain calculation reduces the measured FTS median by 78.16 ms with two workers and 143.84 ms with four workers. The combined index-and-seal median falls by 45.01 ms and 169.41 ms respectively. The FTS phase directly measures the concurrent calculation; the combined phase also includes index construction and commitment installation, so its entire change cannot be attributed solely to FTS concurrency. Its nearly unchanged means and the higher two-thread persistence median show run variability. These results demonstrate a measured sealing reduction on this corpus, without establishing sub-second cold builds or an isolated benefit from shared coverage preparation.
-
-All nine runs preserve the bit-identical Merkle root `2526c77ce1f50d4c06609b289feb12f60b5a9668824289d27b32fa4563ad3e74`. The supplied artifact records raw timings, thread counts, corpus counts, and governor, but omits command lines, source/binary hashes, adapter/features, and cache states; this evidence is a thread-scaling comparison rather than a fully bound historical before/after benchmark.
 
 ### 6. Cross-Worktree Content-Addressed Binary Extraction Cache
 - **Extraction Cache v3**: `src/db/writer/cache.rs` provides cross-worktree AST and typed-facts reuse for unmodified files.

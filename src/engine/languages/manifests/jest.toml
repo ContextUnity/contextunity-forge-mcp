@@ -1,5 +1,0 @@
-[[syntax_rules]]
-id = "test-runner"
-language = "typescript"
-activation = [{ kind = "package", name = "jest" }, { kind = "package", name = "@jest/globals" }]
-operation = { kind = "test_runner", modules = ["@jest/globals"], members = ["test", "it"] }

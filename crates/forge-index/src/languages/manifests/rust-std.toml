@@ -2,16 +2,42 @@
 enabled = true
 
 [[class_hierarchy_receivers]]
+bases = ["std::process::Command"]
+provider = "Rust standard library"
+members = ["new", "arg", "args", "current_dir", "output", "status", "spawn"]
+[class_hierarchy_receivers.returns]
+arg = { kind = "self" }
+args = { kind = "self" }
+current_dir = { kind = "self" }
+output = { kind = "receiver", base = "std::process::Output" }
+
+[[class_hierarchy_receivers]]
+bases = ["std::process::Output", "Output"]
+provider = "Rust standard library"
+members = ["status", "stdout", "stderr"]
+[class_hierarchy_receivers.returns]
+status = { kind = "receiver", base = "std::process::ExitStatus" }
+stdout = { kind = "receiver", base = "Vec" }
+stderr = { kind = "receiver", base = "Vec" }
+
+[[class_hierarchy_receivers]]
+bases = ["std::process::ExitStatus", "ExitStatus"]
+provider = "Rust standard library"
+members = ["success", "code"]
+
+[[class_hierarchy_receivers]]
 bases = ["std::clone::Clone", "core::clone::Clone", "Clone"]
 provider = "Rust standard library"
 members = ["clone", "clone_from"]
-returns = { "clone" = { kind = "self" } }
+[class_hierarchy_receivers.returns]
+clone = { kind = "self" }
 
 [[class_hierarchy_receivers]]
 bases = ["std::default::Default", "core::default::Default", "Default"]
 provider = "Rust standard library"
 members = ["default"]
-returns = { "default" = { kind = "self" } }
+[class_hierarchy_receivers.returns]
+default = { kind = "self" }
 
 [[class_hierarchy_receivers]]
 bases = ["std::fmt::Display", "core::fmt::Display", "Display"]
@@ -26,12 +52,23 @@ members = ["fmt"]
 [[class_hierarchy_receivers]]
 bases = ["std::iter::Iterator", "core::iter::Iterator", "Iterator"]
 provider = "Rust standard library"
-members = [
-    "next", "map", "filter", "collect", "count", "fold", "enumerate", "zip",
-    "take", "skip", "chain", "cloned", "copied", "for_each", "find", "any", "all", "position",
-    "sum", "product", "min", "max", "nth", "last", "step_by", "by_ref"
-]
-returns = { "map" = { kind = "self" }, "filter" = { kind = "self" }, "enumerate" = { kind = "self" }, "zip" = { kind = "self" }, "take" = { kind = "self" }, "skip" = { kind = "self" }, "chain" = { kind = "self" }, "cloned" = { kind = "self" }, "copied" = { kind = "self" }, "step_by" = { kind = "self" }, "by_ref" = { kind = "self" } }
+members = ["next", "map", "filter", "filter_map", "flat_map", "inspect", "fuse", "collect", "count", "fold", "enumerate", "zip", "take", "skip", "chain", "cloned", "copied", "for_each", "find", "any", "all", "position", "sum", "product", "min", "max", "nth", "last", "step_by", "by_ref"]
+[class_hierarchy_receivers.returns]
+map = { kind = "self" }
+filter_map = { kind = "self" }
+flat_map = { kind = "self" }
+inspect = { kind = "self" }
+fuse = { kind = "self" }
+filter = { kind = "self" }
+enumerate = { kind = "self" }
+zip = { kind = "self" }
+take = { kind = "self" }
+skip = { kind = "self" }
+chain = { kind = "self" }
+cloned = { kind = "self" }
+copied = { kind = "self" }
+step_by = { kind = "self" }
+by_ref = { kind = "self" }
 
 [[class_hierarchy_receivers]]
 bases = ["std::convert::Into", "core::convert::Into", "Into"]
@@ -66,118 +103,156 @@ members = ["deref_mut"]
 [[class_hierarchy_receivers]]
 bases = ["std::result::Result", "core::result::Result", "Result"]
 provider = "Rust standard library"
-members = [
-    "clone", "is_ok", "is_err", "ok", "err",
-    "unwrap", "expect", "unwrap_err", "expect_err",
-    "unwrap_or", "unwrap_or_else", "unwrap_or_default",
-    "map", "map_err", "and_then", "or_else",
-    "as_ref", "as_mut", "as_deref", "as_deref_mut",
-    "cloned", "copied", "iter", "iter_mut", "into_iter"
-]
-returns = { "clone" = { kind = "self" } }
+members = ["clone", "is_ok", "is_err", "is_ok_and", "is_err_and", "ok", "err", "unwrap", "expect", "unwrap_err", "expect_err", "unwrap_or", "unwrap_or_else", "unwrap_or_default", "map", "map_err", "and_then", "or_else", "as_ref", "as_mut", "as_deref", "as_deref_mut", "cloned", "copied", "iter", "iter_mut", "into_iter", "clone_from", "fmt"]
+[class_hierarchy_receivers.returns]
+clone = { kind = "self" }
+map = { kind = "self" }
+and_then = { kind = "self" }
 
 [[class_hierarchy_receivers]]
 bases = ["std::option::Option", "core::option::Option", "Option"]
 provider = "Rust standard library"
-members = [
-    "default", "from", "clone", "is_some", "is_none",
-    "unwrap", "expect", "unwrap_or", "unwrap_or_else", "unwrap_or_default",
-    "map", "and_then", "filter", "ok_or", "ok_or_else",
-    "cloned", "copied", "as_ref", "as_mut", "as_deref", "as_deref_mut",
-    "take", "replace", "iter", "iter_mut", "into_iter"
-]
-returns = { "clone" = { kind = "self" }, "default" = { kind = "self" } }
+members = ["default", "from", "clone", "is_some", "is_none", "is_some_and", "is_none_or", "unwrap", "expect", "unwrap_or", "unwrap_or_else", "unwrap_or_default", "map", "and_then", "filter", "ok_or", "ok_or_else", "cloned", "copied", "as_ref", "as_mut", "as_deref", "as_deref_mut", "take", "replace", "iter", "iter_mut", "into_iter", "clone_from", "fmt"]
+[class_hierarchy_receivers.returns]
+clone = { kind = "self" }
+default = { kind = "self" }
+map = { kind = "self" }
+and_then = { kind = "self" }
+filter = { kind = "self" }
 
 [[class_hierarchy_receivers]]
 bases = ["std::string::String", "alloc::string::String", "String"]
 provider = "Rust standard library"
-members = [
-    "new", "from", "with_capacity", "default", "clone",
-    "as_str", "as_bytes", "len", "is_empty", "capacity", "clear",
-    "push", "push_str", "pop", "insert", "insert_str", "remove",
-    "retain", "truncate", "split", "lines", "chars", "bytes",
-    "into_bytes", "to_string", "trim", "trim_start", "trim_end",
-    "starts_with", "ends_with", "contains", "replace",
-    "as_ref", "as_mut", "deref"
-]
-returns = { "clone" = { kind = "self" }, "default" = { kind = "self" }, "new" = { kind = "self" }, "from" = { kind = "self" } }
+members = ["new", "from", "from_utf8", "from_utf8_lossy", "with_capacity", "default", "clone", "as_str", "as_bytes", "len", "is_empty", "capacity", "clear", "push", "push_str", "pop", "insert", "insert_str", "remove", "retain", "truncate", "split", "lines", "chars", "bytes", "into_bytes", "to_string", "trim", "trim_start", "trim_end", "starts_with", "ends_with", "contains", "replace", "as_ref", "as_mut", "deref", "clone_from", "fmt"]
+[class_hierarchy_receivers.returns]
+clone = { kind = "self" }
+default = { kind = "self" }
+new = { kind = "self" }
+from = { kind = "self" }
+from_utf8 = { kind = "receiver", base = "std::result::Result" }
+from_utf8_lossy = { kind = "receiver", base = "std::string::String" }
 
 [[class_hierarchy_receivers]]
 bases = ["std::vec::Vec", "alloc::vec::Vec", "Vec"]
 provider = "Rust standard library"
-members = [
-    "new", "from", "with_capacity", "default", "clone",
-    "len", "is_empty", "capacity", "clear", "push", "pop",
-    "insert", "remove", "swap_remove", "retain", "truncate",
-    "get", "get_mut", "first", "first_mut", "last", "last_mut",
-    "as_slice", "as_mut_slice", "iter", "iter_mut", "into_iter",
-    "extend", "drain", "contains", "sort", "sort_unstable",
-    "as_ref", "as_mut", "deref"
-]
-returns = { "clone" = { kind = "self" }, "default" = { kind = "self" }, "new" = { kind = "self" } }
+members = ["new", "from", "with_capacity", "default", "clone", "len", "is_empty", "capacity", "clear", "push", "pop", "insert", "remove", "swap_remove", "retain", "truncate", "get", "get_mut", "first", "first_mut", "last", "last_mut", "as_slice", "as_mut_slice", "iter", "iter_mut", "into_iter", "extend", "drain", "contains", "sort", "sort_unstable", "as_ref", "as_mut", "deref", "clone_from", "fmt"]
+[class_hierarchy_receivers.returns]
+clone = { kind = "self" }
+default = { kind = "self" }
+new = { kind = "self" }
 
 [[class_hierarchy_receivers]]
 bases = ["std::boxed::Box", "alloc::boxed::Box", "Box"]
 provider = "Rust standard library"
-members = ["new", "from", "pin", "into_raw", "from_raw", "leak", "clone", "default", "as_ref", "as_mut", "deref", "deref_mut"]
+members = ["new", "from", "pin", "into_raw", "from_raw", "leak", "clone", "default", "as_ref", "as_mut", "deref", "deref_mut", "clone_from", "fmt"]
 
 [[class_hierarchy_receivers]]
-bases = ["std::rc::Rc", "alloc::rc::Rc", "Rc"]
+bases = ["std::rc::Rc", "alloc::rc::Rc", "Rc", "std::sync::Arc", "alloc::sync::Arc", "Arc"]
 provider = "Rust standard library"
-members = ["new", "clone", "strong_count", "weak_count", "try_unwrap", "into_raw", "from_raw", "default", "as_ref", "deref"]
-
-[[class_hierarchy_receivers]]
-bases = ["std::sync::Arc", "alloc::sync::Arc", "Arc"]
-provider = "Rust standard library"
-members = ["new", "clone", "strong_count", "weak_count", "try_unwrap", "into_raw", "from_raw", "default", "as_ref", "deref"]
+members = ["new", "clone", "strong_count", "weak_count", "try_unwrap", "into_raw", "from_raw", "default", "as_ref", "deref", "clone_from", "fmt"]
 
 [[class_hierarchy_receivers]]
 bases = ["std::collections::HashMap", "HashMap"]
 provider = "Rust standard library"
-members = ["new", "with_capacity", "len", "is_empty", "capacity", "clear", "insert", "remove", "remove_entry", "get", "get_mut", "get_key_value", "contains_key", "entry", "keys", "values", "values_mut", "iter", "iter_mut", "into_iter", "drain", "retain", "clone", "default"]
+members = ["new", "with_capacity", "len", "is_empty", "capacity", "clear", "insert", "remove", "remove_entry", "get", "get_mut", "get_key_value", "contains_key", "entry", "keys", "values", "values_mut", "iter", "iter_mut", "into_iter", "drain", "retain", "clone", "default", "clone_from", "fmt"]
 
 [[class_hierarchy_receivers]]
 bases = ["std::collections::HashSet", "HashSet"]
 provider = "Rust standard library"
-members = ["new", "with_capacity", "len", "is_empty", "capacity", "clear", "insert", "remove", "contains", "iter", "into_iter", "drain", "retain", "union", "intersection", "difference", "symmetric_difference", "is_subset", "is_superset", "is_disjoint", "clone", "default"]
+members = ["new", "with_capacity", "len", "is_empty", "capacity", "clear", "insert", "remove", "contains", "iter", "into_iter", "drain", "retain", "union", "intersection", "difference", "symmetric_difference", "is_subset", "is_superset", "is_disjoint", "clone", "default", "clone_from", "fmt"]
 
 [[class_hierarchy_receivers]]
 bases = ["std::collections::BTreeMap", "BTreeMap"]
 provider = "Rust standard library"
-members = ["new", "len", "is_empty", "clear", "insert", "remove", "remove_entry", "get", "get_mut", "get_key_value", "contains_key", "entry", "keys", "values", "values_mut", "iter", "iter_mut", "into_iter", "clone", "default"]
+members = ["new", "len", "is_empty", "clear", "insert", "remove", "remove_entry", "get", "get_mut", "get_key_value", "contains_key", "entry", "keys", "values", "values_mut", "iter", "iter_mut", "into_iter", "clone", "default", "clone_from", "fmt"]
 
 [[class_hierarchy_receivers]]
 bases = ["std::collections::BTreeSet", "BTreeSet"]
 provider = "Rust standard library"
-members = ["new", "len", "is_empty", "clear", "insert", "remove", "contains", "iter", "into_iter", "union", "intersection", "difference", "symmetric_difference", "is_subset", "is_superset", "is_disjoint", "clone", "default"]
+members = ["new", "len", "is_empty", "clear", "insert", "remove", "contains", "iter", "into_iter", "union", "intersection", "difference", "symmetric_difference", "is_subset", "is_superset", "is_disjoint", "clone", "default", "clone_from", "fmt"]
 
 [[class_hierarchy_receivers]]
 bases = ["std::path::Path", "Path"]
 provider = "Rust standard library"
-members = ["new", "join", "parent", "file_name", "file_stem", "extension", "is_absolute", "is_relative", "has_root", "starts_with", "ends_with", "components", "iter", "display", "to_str", "to_string_lossy", "to_path_buf", "exists", "is_file", "is_dir", "as_os_str"]
+members = ["new", "join", "parent", "file_name", "file_stem", "extension", "is_absolute", "is_relative", "has_root", "starts_with", "ends_with", "components", "iter", "display", "to_str", "to_string_lossy", "to_path_buf", "exists", "is_file", "is_dir", "as_os_str", "canonicalize", "fmt"]
+[class_hierarchy_receivers.returns]
+join = { kind = "receiver", base = "std::path::PathBuf" }
+to_str = { kind = "receiver", base = "std::option::Option" }
+to_string_lossy = { kind = "receiver", base = "std::string::String" }
+parent = { kind = "receiver", base = "std::path::Path" }
+file_name = { kind = "receiver", base = "std::option::Option" }
+extension = { kind = "receiver", base = "std::option::Option" }
+to_path_buf = { kind = "receiver", base = "std::path::PathBuf" }
+canonicalize = { kind = "receiver", base = "std::result::Result" }
 
 [[class_hierarchy_receivers]]
 bases = ["std::path::PathBuf", "PathBuf"]
 provider = "Rust standard library"
-members = ["new", "from", "join", "with_capacity", "as_path", "push", "pop", "set_file_name", "set_extension", "as_mut_os_string", "into_os_string", "display", "to_str", "to_string_lossy", "exists", "is_file", "is_dir", "clone", "default", "as_ref", "deref"]
+members = ["new", "from", "join", "parent", "with_capacity", "as_path", "push", "pop", "set_file_name", "set_extension", "as_mut_os_string", "into_os_string", "display", "to_str", "to_string_lossy", "exists", "is_file", "is_dir", "clone", "default", "as_ref", "deref", "clone_from", "fmt"]
+[class_hierarchy_receivers.returns]
+parent = { kind = "receiver", base = "std::path::Path" }
+join = { kind = "receiver", base = "std::path::PathBuf" }
+to_str = { kind = "receiver", base = "std::option::Option" }
+to_string_lossy = { kind = "receiver", base = "std::string::String" }
 
-# Clone and Debug members on the modeled owning types (subject to generic bounds).
 [[class_hierarchy_receivers]]
-bases = ["std::result::Result", "core::result::Result", "Result", "std::option::Option", "core::option::Option", "Option", "std::string::String", "alloc::string::String", "String", "std::vec::Vec", "alloc::vec::Vec", "Vec", "std::boxed::Box", "alloc::boxed::Box", "Box", "std::rc::Rc", "alloc::rc::Rc", "Rc", "std::sync::Arc", "alloc::sync::Arc", "Arc", "std::collections::HashMap", "HashMap", "std::collections::HashSet", "HashSet", "std::collections::BTreeMap", "BTreeMap", "std::collections::BTreeSet", "BTreeSet", "std::path::PathBuf", "PathBuf"]
-provider = "Rust standard library"
-members = ["clone_from", "fmt"]
-
-[[class_hierarchy_receivers]]
-bases = ["bool", "char", "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64", "i128", "isize", "f32", "f64"]
+bases = ["bool", "char", "u128", "i128", "f32", "f64"]
 provider = "Rust standard library"
 members = ["clone", "clone_from", "default", "to_string", "fmt"]
 
 [[class_hierarchy_receivers]]
-bases = ["std::string::String", "alloc::string::String", "String", "str"]
+bases = ["u8", "u16", "u32", "u64", "usize", "i8", "i16", "i32", "i64", "isize"]
 provider = "Rust standard library"
-members = ["to_string", "fmt"]
+members = ["clone", "clone_from", "default", "to_string", "fmt", "try_from"]
+[class_hierarchy_receivers.returns]
+try_from = { kind = "receiver", base = "std::result::Result" }
 
 [[class_hierarchy_receivers]]
-bases = ["std::path::Path", "Path"]
+bases = ["str"]
 provider = "Rust standard library"
-members = ["fmt"]
+members = ["to_owned", "into", "as_bytes", "len", "is_empty", "trim", "trim_start", "trim_end", "starts_with", "ends_with", "contains", "replace", "split", "lines", "chars", "bytes", "as_ref", "to_string", "fmt"]
+[class_hierarchy_receivers.returns]
+to_owned = { kind = "receiver", base = "std::string::String" }
+into = { kind = "receiver", base = "std::string::String" }
+as_bytes = { kind = "receiver", base = "Slice" }
+lines = { kind = "receiver", base = "Iterator" }
+split = { kind = "receiver", base = "Iterator" }
+chars = { kind = "receiver", base = "Iterator" }
+bytes = { kind = "receiver", base = "Iterator" }
+
+[[class_hierarchy_receivers]]
+bases = ["Slice"]
+provider = "Rust standard library"
+members = ["len", "is_empty", "get", "first", "last", "iter", "iter_mut", "into_iter", "as_ptr", "contains", "starts_with", "ends_with", "chunks", "windows"]
+
+[[class_hierarchy_receivers]]
+bases = ["std::fs::Metadata", "Metadata"]
+provider = "Rust standard library"
+members = ["file_type", "is_dir", "is_file", "is_symlink", "len", "permissions", "modified", "accessed", "created"]
+[class_hierarchy_receivers.returns]
+file_type = { kind = "receiver", base = "std::fs::FileType" }
+
+[[class_hierarchy_receivers]]
+bases = ["std::fs::FileType", "FileType"]
+provider = "Rust standard library"
+members = ["is_dir", "is_file", "is_symlink"]
+
+[[class_hierarchy_receivers]]
+bases = ["std::time::Instant", "Instant"]
+provider = "Rust standard library"
+members = ["now", "elapsed", "duration_since"]
+[class_hierarchy_receivers.returns]
+now = { kind = "self" }
+elapsed = { kind = "receiver", base = "std::time::Duration" }
+
+[[class_hierarchy_receivers]]
+bases = ["std::time::Duration", "Duration"]
+provider = "Rust standard library"
+members = ["as_secs", "as_millis", "as_micros", "as_nanos", "as_secs_f64", "as_secs_f32", "is_zero"]
+
+[[class_hierarchy_receivers]]
+bases = ["std::env"]
+provider = "Rust standard library"
+members = ["temp_dir"]
+[class_hierarchy_receivers.returns]
+temp_dir = { kind = "receiver", base = "std::path::PathBuf" }

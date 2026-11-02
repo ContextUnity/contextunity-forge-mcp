@@ -66,7 +66,7 @@ fn bundled_framework_packs_activate_only_in_their_workspace() {
     let inventory_registry =
         DependencyRegistry::collect_with_scan_config(&inventory_workspace.0, None);
     let directory =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/engine/languages/manifests");
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/forge-index/src/languages/manifests");
     let mut inventory = fs::read_dir(directory)
         .unwrap()
         .map(Result::unwrap)
@@ -207,7 +207,7 @@ fn bundled_framework_packs_activate_only_in_their_workspace() {
         writer::build(&workspace.0, &workspace.db(), None).unwrap();
         observe(&workspace, case, true);
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join(format!("src/engine/languages/manifests/{}.toml", case.pack));
+            .join(format!("crates/forge-index/src/languages/manifests/{}.toml", case.pack));
         let mut pack: toml::Value = toml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
         pack.as_table_mut()
             .unwrap()

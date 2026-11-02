@@ -1,5 +1,0 @@
-[[syntax_rules]]
-id = "command"
-language = "python"
-activation = [{ kind = "package", name = "click" }]
-operation = { kind = "decorated_registration", modules = ["click"], constructor = "command", member = "command", name_keyword = "name", provider = "click", imported_decorator = true, category = "cli_command" }

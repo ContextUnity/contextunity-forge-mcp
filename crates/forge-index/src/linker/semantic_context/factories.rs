@@ -5,7 +5,7 @@ impl<'a> Context<'a> {
         &mut self,
         all: &'a BTreeMap<String, F>,
     ) {
-        use crate::core::semantic::ValueExpr;
+        use forge_core::semantic::ValueExpr;
         for owner in all
             .values()
             .flat_map(|facts| &facts.as_ref().nodes)
@@ -117,10 +117,10 @@ impl<'a> Context<'a> {
                         return false;
                     }
                     return match &binding.value {
-                        crate::core::semantic::ValueExpr::Call { callee, .. } => {
+                        forge_core::semantic::ValueExpr::Call { callee, .. } => {
                             self.factory_callee(lexical, callee, binding.position)
                         }
-                        crate::core::semantic::ValueExpr::Alias { name } => {
+                        forge_core::semantic::ValueExpr::Alias { name } => {
                             self.factory_receiver(lexical, name, binding.position, depth + 1)
                         }
                         _ => false,

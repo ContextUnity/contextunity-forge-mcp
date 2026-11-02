@@ -1,5 +1,5 @@
 use super::text;
-use crate::engine::languages::{self, AstSearchCapabilities, LanguageProfile};
+use crate::languages::{self, AstSearchCapabilities, LanguageProfile};
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
 use serde_json::json;

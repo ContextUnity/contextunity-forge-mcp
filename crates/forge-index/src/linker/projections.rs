@@ -2,14 +2,14 @@ use super::{
     named_bindings, semantic_context,
     value_flow::{SemanticResolver, Symbol, SymbolRole, TypeTarget},
 };
-use crate::core::{
+use forge_core::{
     models::{
         Node,
         compact_graph::Graph,
     },
     semantic::{NamedBindingRole, StaticString, SymbolOperand, ValueFlowFacts},
 };
-use crate::engine::languages::dependency_registry::DependencyRegistry;
+use crate::languages::dependency_registry::DependencyRegistry;
 use hashbrown::HashMap;
 
 fn declaration(symbol: Symbol<'_>) -> Result<Option<&Node>, ()> {
@@ -23,7 +23,7 @@ fn declaration(symbol: Symbol<'_>) -> Result<Option<&Node>, ()> {
 fn operand<'a>(
     owner: &'a Node,
     value: &SymbolOperand,
-    at: crate::core::semantic::SourcePosition,
+    at: forge_core::semantic::SourcePosition,
     role: SymbolRole,
     context: &semantic_context::Context<'a>,
     nodes: &HashMap<super::interner::SymbolId, &'a Node>,
@@ -113,8 +113,8 @@ pub(super) fn compose<'a>(
             _ => "configured attachment".into(),
         };
         let kind = match fact.relation {
-            crate::core::semantic::AttachmentRelation::UsesModel => "uses_model",
-            crate::core::semantic::AttachmentRelation::References => "references",
+            forge_core::semantic::AttachmentRelation::UsesModel => "uses_model",
+            forge_core::semantic::AttachmentRelation::References => "references",
         };
         match (source, target) {
             (Ok(Some(source)), target) => {
@@ -133,7 +133,7 @@ pub(super) fn compose<'a>(
             continue;
         }
         let rules = dependencies.language_context_for_path(&owner.path);
-        if rules.syntax_rules.iter().any(|rule| rule.pack == fact.origin.pack && rule.id == fact.origin.rule && matches!(&rule.operation, crate::engine::languages::manifests::syntax::SyntaxOperation::NamedBinding { binding: crate::engine::languages::manifests::projections::NamedBindingForm::MemberReference { .. }, .. })) { continue; }
+        if rules.syntax_rules.iter().any(|rule| rule.pack == fact.origin.pack && rule.id == fact.origin.rule && matches!(&rule.operation, crate::languages::manifests::syntax::SyntaxOperation::NamedBinding { binding: crate::languages::manifests::projections::NamedBindingForm::MemberReference { .. }, .. })) { continue; }
         let (expression, target) = match &fact.key {
             StaticString::Literal { value } => (
                 value.clone(),

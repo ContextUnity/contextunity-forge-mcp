@@ -1,6 +1,6 @@
 use super::{relations, text, Syntax};
-use crate::core::models::{Edge, Facts, Node, Reference};
-use crate::engine::languages;
+use forge_core::models::{Edge, Facts, Node, Reference};
+use crate::languages;
 use languages::manifests::framework::RoutePrefixRule;
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
@@ -671,7 +671,7 @@ fn route_path_is_allowed(path: &str, allow_relative_path: bool) -> bool {
 }
 
 struct Route<'a> {
-    origins: Vec<crate::core::semantic::ExtractionRuleOrigin>,
+    origins: Vec<forge_core::semantic::ExtractionRuleOrigin>,
     syntax: Syntax<'a>,
     path: &'a str,
     method: String,
@@ -683,14 +683,14 @@ struct Route<'a> {
 }
 
 fn route_origins(
-    origin: Option<crate::core::semantic::ExtractionRuleOrigin>,
+    origin: Option<forge_core::semantic::ExtractionRuleOrigin>,
     guard: Option<&str>,
-) -> Vec<crate::core::semantic::ExtractionRuleOrigin> {
+) -> Vec<forge_core::semantic::ExtractionRuleOrigin> {
     let mut origins: Vec<_> = origin.into_iter().collect();
     if let Some((pack, rule)) =
         guard.and_then(|key| serde_json::from_str::<(String, String)>(key).ok())
     {
-        origins.push(crate::core::semantic::ExtractionRuleOrigin { pack, rule });
+        origins.push(forge_core::semantic::ExtractionRuleOrigin { pack, rule });
     }
     origins
 }
@@ -727,7 +727,7 @@ fn add(route: Route<'_>, owner: &str, facts: &mut Facts, offset: usize) {
         is_test: parent.is_test,
         language: parent.language.clone(),
         generated: false,
-        details: json!({"method":route.method,"route_path":route.path,"handler":route.handler,"handlers":route.handler.into_iter().collect::<Vec<_>>(),"route_name":route.route_name,"include_module":route.include_module,"include_namespace":route.include_namespace,"value_flow":crate::core::semantic::ValueFlowFacts { framework: Some(Box::new(crate::core::semantic::FrameworkScopeFacts { facts: route.origins.into_iter().map(crate::core::semantic::FrameworkFact::RuleOrigin).collect(), ..Default::default() })), ..Default::default() }}),
+        details: json!({"method":route.method,"route_path":route.path,"handler":route.handler,"handlers":route.handler.into_iter().collect::<Vec<_>>(),"route_name":route.route_name,"include_module":route.include_module,"include_namespace":route.include_namespace,"value_flow":forge_core::semantic::ValueFlowFacts { framework: Some(Box::new(forge_core::semantic::FrameworkScopeFacts { facts: route.origins.into_iter().map(forge_core::semantic::FrameworkFact::RuleOrigin).collect(), ..Default::default() })), ..Default::default() }}),
     });
         facts.edges.push(Edge {
             src: format!("module:{}", parent.path),
@@ -1053,7 +1053,7 @@ pub(crate) fn object_registration(
                 add(
                     Route {
                         syntax: node,
-                        origins: vec![crate::core::semantic::ExtractionRuleOrigin {
+                        origins: vec![forge_core::semantic::ExtractionRuleOrigin {
                             pack: rule.pack.clone(),
                             rule: rule.id.clone(),
                         }],
@@ -1151,7 +1151,7 @@ pub(crate) fn dependency_injection(
             receiver_hint: rule
                 .origin
                 .clone()
-                .map(|origin| crate::core::models::ReceiverHint::ConfiguredReference { origin }),
+                .map(|origin| forge_core::models::ReceiverHint::ConfiguredReference { origin }),
         });
     }
 }
@@ -1284,8 +1284,8 @@ pub(crate) fn client_call(
             alias: None,
             module: None,
             dynamic: false,
-            receiver_hint: Some(crate::core::models::ReceiverHint::ConfiguredReference {
-                origin: crate::core::semantic::ExtractionRuleOrigin {
+            receiver_hint: Some(forge_core::models::ReceiverHint::ConfiguredReference {
+                origin: forge_core::semantic::ExtractionRuleOrigin {
                     pack: rule.pack.clone(),
                     rule: rule.id.clone(),
                 },

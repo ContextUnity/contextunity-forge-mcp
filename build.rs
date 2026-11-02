@@ -17,7 +17,7 @@ fn main() {
 
 fn generate_profiles() {
     use sha2::Digest;
-    let directory = std::path::Path::new("src/engine/languages");
+    let directory = std::path::Path::new("crates/forge-index/src/languages");
     let manifest = std::fs::read_to_string("Cargo.toml").expect("read Cargo manifest");
     println!("cargo:rerun-if-changed={}", directory.display());
     let mut profiles = Vec::new();
@@ -168,7 +168,7 @@ fn generate_profiles() {
 }
 
 fn generate_framework_manifests() -> Vec<std::path::PathBuf> {
-    let directory = std::path::Path::new("src/engine/languages/manifests");
+    let directory = std::path::Path::new("crates/forge-index/src/languages/manifests");
     println!("cargo:rerun-if-changed={}", directory.display());
     let mut manifests = Vec::new();
     for entry in std::fs::read_dir(directory).expect("read framework manifest directory") {

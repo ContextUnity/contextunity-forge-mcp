@@ -9,9 +9,13 @@ Use this skill to prove the admitted contract through observable production
 behavior, not to mirror private implementation details. Follow the admitted
 proof policy for test timing and role requirements.
 
-Prove one admitted task through one production seam. A subtask adds a case to
-that seam. It does not add a test function or a test binary. A new test file
-is a new domain boundary, named by the repository's test instructions.
+Prove one admitted task through one production seam. A subtask proves a specific
+behavioral dimension or contract variation. For input permutations of the same
+capability, add a parameterized case (e.g. table row); for distinct capabilities
+or contract boundaries, author a dedicated, descriptively-named test function within
+the appropriate domain test file. Do not accumulate unrelated scenarios into a
+single monolithic test function. A new test file is a new domain boundary, named
+by the repository's test instructions.
 Before adding a helper, factory, or fixture, use the one already in the suite.
 `test-suite-refactor` owns the inventory of factories, fixtures, and duplicate
 helpers. Do not add a second factory for the same production object.

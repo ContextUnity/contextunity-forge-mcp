@@ -111,7 +111,7 @@ where
             && matches!(node.language.as_str(), "javascript" | "typescript" | "vue")
     });
     let configured_component_macro =
-        |name: &str, at: crate::core::semantic::SourcePosition, owner: &str| {
+        |name: &str, at: forge_core::semantic::SourcePosition, owner: &str| {
             let Some((rule, role)) = file_language_context.component_macro(name) else {
                 return false;
             };
@@ -242,7 +242,7 @@ where
             }
         };
         let commonjs_external_admitted =
-            |name: &str, owner: Option<&Node>, at: crate::core::semantic::SourcePosition| {
+            |name: &str, owner: Option<&Node>, at: forge_core::semantic::SourcePosition| {
                 let Some(module) = commonjs_module else {
                     return true;
                 };
@@ -293,7 +293,7 @@ where
         };
         let mut alias_import_positions: HashMap<
             (&str, &str),
-            crate::core::semantic::SourcePosition,
+            forge_core::semantic::SourcePosition,
         > = HashMap::new();
         for reference in references
             .iter()
@@ -422,6 +422,20 @@ where
                     if !type_candidates.is_empty() {
                         break;
                     }
+                    if profile.is_some_and(|profile| profile.id() == "rust")
+                        && lookup(qualified(lookup_key, scope, head))
+                            .iter()
+                            .any(|candidate| {
+                                candidate.path == *path
+                                    && matches!(
+                                        candidate.kind.as_str(),
+                                        "module" | "module_declaration"
+                                    )
+                            })
+                    {
+                        annotation_shadowed = true;
+                        break;
+                    }
                     if by_qual.get(scope).is_some_and(|scope_nodes| {
                         scope_nodes
                             .iter()
@@ -483,7 +497,9 @@ where
                 let receiver = match type_candidates.as_slice() {
                     [target] => ReceiverType::Local(target),
                     [] => {
-                        if imported_type.is_some_and(|targets| targets.is_empty()) {
+                        if annotation_shadowed {
+                            ReceiverType::Unknown
+                        } else if imported_type.is_some_and(|targets| targets.is_empty()) {
                             external_for(head, Some(node), true)
                                 .filter(|(_, import_line)| {
                                     *import_line <= node.line
@@ -778,6 +794,12 @@ where
             #[cfg(not(feature = "lang-typescript"))]
             let static_implicit_reference = false;
             if r.dynamic && !static_implicit_reference {
+                #[cfg(feature = "lang-rust")]
+                if profile.is_some_and(|profile| profile.id() == "rust")
+                    && rust::resolution::dynamic_receiver_member(input, path, r, owner, graph)
+                {
+                    continue;
+                }
                 let mut computed = receivers::Member::Unknown;
                 let mut literal_builtin = false;
                 if profile.is_some_and(|profile| profile.id() == "python") {
@@ -1133,9 +1155,10 @@ where
                 vue::resolution::is_component_template_member(r, owner, tail);
             let typed_member_read = r.kind == "references"
                 && !tail.is_empty()
-                && !known_receiver
+                && (!known_receiver || profile.is_some_and(|profile| profile.id() == "rust"))
                 && profile.is_some_and(|profile| {
                     matches!(profile.family().0, "typescript" | "javascript")
+                        || profile.id() == "rust"
                 });
             if matches!(r.kind.as_str(), "calls" | "handles")
                 || component_template_member
@@ -1193,6 +1216,12 @@ where
                         .filter(|receiver| !matches!(receiver, value_flow::TypeTarget::Unknown))
                     {
                         if tail.is_empty() {
+                            if owner.language == "rust" && r.kind == "calls"
+                                && matches!(receiver, value_flow::TypeTarget::Builtin(name) if name == "__rust_closure")
+                            {
+                                graph.reference_coverage(path, r, "resolved", "invocation of a lexically proven Rust closure".into());
+                                continue;
+                            }
                             if let value_flow::TypeTarget::Callable(callable) = receiver {
                                 emit_inferred(
                                     graph,
@@ -1219,8 +1248,11 @@ where
                                     && fields.is_empty()
                                     && receiver_language_requires_static(owner)
                                     && owner.details["is_static"] == true;
-                                let result = semantic_context
-                                    .lookup_member_mode(receiver, member, owner, associated);
+                                let result = if owner.language == "rust" && r.kind == "references" {
+                                    semantic_context.lookup_property(receiver, member, owner)
+                                } else {
+                                    semantic_context.lookup_member_mode(receiver, member, owner, associated)
+                                };
                                 let result = if r.kind == "references"
                                     && active_profile.is_some_and(|profile| {
                                         matches!(profile.id(), "javascript" | "typescript")
@@ -1273,6 +1305,12 @@ where
                     .is_some_and(|receiver| !matches!(receiver, ReceiverType::Unknown))
                 && matches!(r.kind.as_str(), "calls" | "handles" | "mutates")
             {
+                #[cfg(feature = "lang-rust")]
+                if profile.is_some_and(|profile| profile.id() == "rust")
+                    && rust::resolution::dynamic_receiver_member(input, path, r, owner, graph)
+                {
+                    continue;
+                }
                 graph.reference_coverage(path, r, "unresolved", "callee is shadowed by a parameter or local binding of unknown callable identity"
                         .into());
                 continue;
@@ -1453,7 +1491,16 @@ where
                         )));
                     } else if known_receiver {
                         if let Some(owner) = owner {
-                            let scope = owner.qualname.rsplit_once('.').map_or("", |(p, _)| p);
+                            #[cfg(feature = "lang-rust")]
+                            let receiver_scope = (owner.language == "rust")
+                                .then(|| member_lookup.rust_receiver(owner)).flatten()
+                                .map(|receiver| receiver.qualname.as_str());
+                            #[cfg(not(feature = "lang-rust"))]
+                            let receiver_scope: Option<&str> = None;
+                            let scope = receiver_scope.unwrap_or_else(|| {
+                                let scope = owner.qualname.rsplit_once('.').map_or("", |(p, _)| p);
+                                if owner.language == "rust" { scope.split_once('<').map_or(scope, |(base, _)| base) } else { scope }
+                            });
                             candidates
                                 .extend_from_slice(lookup(qualified(lookup_key, scope, tail)));
                         }
@@ -1560,7 +1607,7 @@ where
             }
             candidates.sort_by(|a, b| a.id.cmp(&b.id));
             candidates.dedup_by_key(|n| &n.id);
-            crate::engine::linker::traits::filter_stubs_and_overloads(&mut candidates);
+            crate::linker::traits::filter_stubs_and_overloads(&mut candidates);
             #[cfg(feature = "lang-rust")]
             super::super::rust::resolution::macro_analysis_gap(
                 profile,

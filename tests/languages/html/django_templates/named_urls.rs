@@ -147,7 +147,7 @@ fn django_named_url_references_resolve_only_to_unique_routes() {
 
     let manifest = ".forge/frameworks/django.toml";
     let mut pack: toml::Value = toml::from_str(include_str!(
-        "../../../../src/engine/languages/manifests/django.toml"
+        "../../../../crates/forge-index/src/languages/manifests/django.toml"
     ))
     .unwrap();
     pack.as_table_mut()

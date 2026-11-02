@@ -1,14 +1,11 @@
 use super::interner::{LinkerInterner, SymbolId};
 use crate::{
-    core::models::{Facts, Node, Reference},
-    engine::{
-        languages::{
-            self, ImportPath, LanguageFamily, LanguageProfile,
-            dependency_registry::DependencyRegistry,
-        },
-        linker::traits::{ImportContext, ModulesByNamespace, PackageExports},
+    languages::{
+        self, dependency_registry::DependencyRegistry, ImportPath, LanguageFamily, LanguageProfile,
     },
+    linker::traits::{ImportContext, ModulesByNamespace, PackageExports},
 };
+use forge_core::models::{Facts, Node, Reference};
 use hashbrown::{HashMap, HashSet};
 use std::{collections::BTreeMap, path::Path};
 
@@ -87,27 +84,82 @@ impl<'a> NamespaceIndexes<'a> {
                     .entry((path.as_str(), module))
                     .or_insert_with(|| {
                         if profile.is_some_and(|profile| profile.id() == "rust") {
-                            if let Some((library, _root_module)) =
-                                rust_library_modules.get(languages::workspace_path(path).0)
-                            {
-                                let (first, tail) = module.split_once("::").unwrap_or((module, ""));
-                                if first == *library {
-                                    if dependency_registry.rust_library_for_path(path)
-                                        != Some(*library)
-                                    {
-                                        return None;
-                                    }
-                                    let namespace = if tail.is_empty() {
-                                        "src".to_owned()
+                            let local_import = module.strip_prefix("self::").unwrap_or(module);
+                            let (first, tail) =
+                                local_import.split_once("::").unwrap_or((local_import, ""));
+                            let declared = facts.references.iter().any(|reference| {
+                                reference.kind == "imports"
+                                    && reference.alias.as_deref() == Some(first)
+                                    && reference.module.as_deref()
+                                        == Some(format!("self::{first}").as_str())
+                            });
+                            if declared {
+                                let (workspace, local) = languages::workspace_path(path);
+                                let source = std::path::Path::new(local);
+                                let parent =
+                                    source.parent().unwrap_or_else(|| std::path::Path::new(""));
+                                let integration_root =
+                                    parent.file_name().is_some_and(|name| name == "tests");
+                                let directory = if integration_root
+                                    || matches!(
+                                        source.file_name().and_then(|name| name.to_str()),
+                                        Some("lib.rs" | "main.rs" | "mod.rs")
+                                    ) {
+                                    parent.to_path_buf()
+                                } else {
+                                    source.with_extension("")
+                                };
+                                for candidate in [
+                                    directory.join(format!("{first}.rs")),
+                                    directory.join(first).join("mod.rs"),
+                                ] {
+                                    let local = candidate.to_string_lossy().replace('\\', "/");
+                                    let indexed = if workspace.is_empty() {
+                                        local.clone()
                                     } else {
-                                        format!("src.{}", tail.replace("::", "."))
+                                        format!("{workspace}/{local}")
                                     };
-                                    return Some(ImportPath {
-                                        namespace,
-                                        relative: true,
-                                        symbol_path: true,
-                                    });
+                                    if profiles
+                                        .get(indexed.as_str())
+                                        .is_some_and(|profile| profile.id() == "rust")
+                                    {
+                                        let mut namespace =
+                                            languages::rust::RUST.module_name(&local);
+                                        if !tail.is_empty() && tail != "*" {
+                                            namespace.push('.');
+                                            namespace.push_str(&tail.replace("::", "."));
+                                        }
+                                        return Some(ImportPath {
+                                            namespace,
+                                            relative: true,
+                                            symbol_path: true,
+                                        });
+                                    }
                                 }
+                            }
+                            let (first, tail) = module.split_once("::").unwrap_or((module, ""));
+                            let mut targets = rust_library_modules.iter()
+                                .filter(|(_, (library, _))| *library == first);
+                            if let Some((target_workspace, (library, _))) = targets.next() {
+                                if targets.next().is_some() {
+                                    return None;
+                                }
+                                if dependency_registry.rust_library_for_path(path) != Some(*library)
+                                    && !dependency_registry.declares_for_path(LanguageFamily("rust"), path, first)
+                                {
+                                    return None;
+                                }
+                                let base_namespace = if target_workspace.is_empty() {
+                                    "src".to_owned()
+                                } else {
+                                    format!("{}.src", target_workspace.replace('/', "."))
+                                };
+                                let namespace = if tail.is_empty() || tail == "*" {
+                                    base_namespace
+                                } else {
+                                    format!("{base_namespace}.{}", tail.replace("::", "."))
+                                };
+                                return Some(ImportPath { namespace, relative: true, symbol_path: true });
                             }
                         }
                         profile.and_then(|profile| {
@@ -152,6 +204,11 @@ impl<'a> NamespaceIndexes<'a> {
                 }
                 if profile.id() == "rust" && local_path == "src/lib.rs" {
                     namespaces.push("src".to_owned());
+                }
+                if profile.id() == "rust" {
+                    if let Some(prefix) = node.path.strip_suffix("/src/lib.rs") {
+                        namespaces.push(format!("{}.src", prefix.replace('/', ".")));
+                    }
                 }
                 if let Some((_, source_relative)) = local_path.split_once("/src/") {
                     let source_module = profile.module_name(source_relative);
@@ -258,7 +315,7 @@ impl<'a> InheritanceIndexes<'a> {
         all: &'a BTreeMap<String, F>,
         interner: &LinkerInterner<'a>,
         #[cfg(feature = "lang-rust")] flows: Option<
-            &'index HashMap<SymbolId, &'a crate::core::typed_facts::FlowState>,
+            &'index HashMap<SymbolId, &'a forge_core::typed_facts::FlowState>,
         >,
         by_id: &'index HashMap<SymbolId, &'a Node>,
         by_qual: &'index HashMap<&'a str, Vec<&'a Node>>,
@@ -320,7 +377,9 @@ impl<'a> InheritanceIndexes<'a> {
                                 && interner
                                     .lookup_symbol(&node.id)
                                     .and_then(|node_id| node_rebindings.get(&node_id))
-                                    .is_some_and(|bindings| bindings.binary_search(&head_id).is_ok())
+                                    .is_some_and(|bindings| {
+                                        bindings.binary_search(&head_id).is_ok()
+                                    })
                         })
                     }) {
                         return super::python::receivers::Base::Unknown;
@@ -456,7 +515,9 @@ impl<'a> InheritanceIndexes<'a> {
                                 && interner
                                     .lookup_symbol(&node.id)
                                     .and_then(|node_id| node_bindings.get(&node_id))
-                                    .is_some_and(|bindings| bindings.binary_search(&head_id).is_ok())
+                                    .is_some_and(|bindings| {
+                                        bindings.binary_search(&head_id).is_ok()
+                                    })
                         })
                     }) {
                         return super::python::receivers::Base::Unknown;

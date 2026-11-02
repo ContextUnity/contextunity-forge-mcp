@@ -64,7 +64,7 @@ pub(super) fn run() {
     };
     check_scope("ambiguous", None);
     let web: Value = toml::from_str::<toml::Value>(include_str!(
-        "../../../src/engine/languages/manifests/web.toml"
+        "../../../crates/forge-index/src/languages/manifests/web.toml"
     ))
     .unwrap()
     .try_into()
