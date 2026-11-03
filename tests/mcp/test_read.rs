@@ -1,6 +1,8 @@
 //! Contract tests for the layered reader.
 
 use forge_core::model::{ReadBounds, ReadMode, ReadResult};
+use crate::common::{mcp_client::StdioClient, Workspace};
+use serde_json::json;
 use forge_core::subsystems::{
     disabled_read_mode_error, disabled_tool_error, filter_subsystem_tools, SubsystemPreset,
     SubsystemRegistry,
@@ -44,4 +46,21 @@ fn structural_reader_modes_require_their_subsystems() {
     registry.enabled.insert("codemap".into());
     assert!(disabled_read_mode_error(ReadMode::Snippet, false, &registry).is_none());
     assert!(disabled_read_mode_error(ReadMode::Outline, false, &registry).is_none());
+}
+
+#[test]
+fn forge_read_serves_text_in_a_minimal_workspace() {
+    let workspace = Workspace::new();
+    workspace.write("forge-mcp.yaml", "profile: minimal\n");
+    workspace.write("notes.txt", "first line\nsecond line\n");
+    let registry = SubsystemRegistry {
+        profile: SubsystemPreset::Minimal,
+        ..Default::default()
+    };
+    let enabled_tools = filter_subsystem_tools(["forge_read"], &registry);
+    assert_eq!(enabled_tools, ["forge_read"]);
+    let mut client = StdioClient::new(&workspace);
+    let (_, response) = client.call("forge_read", json!({"path":"notes.txt", "mode":"lines"}));
+    assert_ne!(response["result"]["isError"], true, "{response}");
+    assert!(response.to_string().contains("first line"), "{response}");
 }
