@@ -15,6 +15,7 @@ use contextunity_forge_mcp::engine::tasks::submit_zero_arg;
 use contextunity_forge_mcp::engine::tasks::telemetry_passport_note;
 use contextunity_forge_mcp::engine::tasks::verify_red_to_green;
 use contextunity_forge_mcp::engine::tasks::Action;
+use forge_tasks::tasks::profile::parse_profile;
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -24,6 +25,23 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+
+#[test]
+fn command_profile_preserves_declarative_output_specification() {
+    let profile = parse_profile(
+        "commands:\n  check:\n    command: pytest\n    output:\n      require_counts: false\n      counts:\n        passed: '(\\d+) passed'\n        failed: '(\\d+) failed'\n      noise: ['^progress']\n      errors: ['^FAIL']\n      seam_ref_pattern: 'test_(\\w+)'\n",
+    )
+    .unwrap();
+    let command = &profile.commands["check"];
+    assert_eq!(command.command(), "pytest");
+    let output = serde_json::to_value(command).unwrap()["output"].clone();
+    assert_eq!(output["require_counts"], false);
+    assert_eq!(output["counts"]["passed"], r"(\d+) passed");
+    assert_eq!(output["counts"]["failed"], r"(\d+) failed");
+    assert_eq!(output["noise"][0], "^progress");
+    assert_eq!(output["errors"][0], "^FAIL");
+    assert_eq!(output["seam_ref_pattern"], r"test_(\w+)");
+}
 
 #[test]
 fn transition_runner_compiles_proofs_and_covers_all_task3_subtasks() {
