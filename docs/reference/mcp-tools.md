@@ -109,7 +109,10 @@ Text collection stops at 48 KiB or the requested line count and reports
 `truncated`; a physical line over 1 MiB returns an error.
 
 Delta returns a unified Git diff against `baseline`, the unique active task's
-candidate baseline, or `HEAD`, in that order. Delta treats the admitted filename
+candidate baseline, or `HEAD`, in that order. Git resolves the revision in the
+admitted physical file's repository, including configured linked workspaces;
+an unavailable revision fails explicitly. Active task baseline lookup remains
+bound to the selected primary workspace. Delta treats the admitted filename
 literally, including wildcard and
 Git pathspec-magic characters; it never expands that name to sibling files.
 `output_file` exports the returned

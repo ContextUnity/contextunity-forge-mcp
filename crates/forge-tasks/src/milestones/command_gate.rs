@@ -141,7 +141,12 @@ pub(crate) fn execute_command_gate_with_timeout(
                     .as_ref()
                     .is_none_or(|signature| output.contains(signature))
         });
-        let succeeded = status == "completed" && (exit_code == Some(0) || expected);
+        let succeeded = status == "completed"
+            && if gate.proof.kind() == Some(crate::tasks::profile::ProofKind::Contract) {
+                expected
+            } else {
+                exit_code == Some(0)
+            };
         let budget = profile.limits.diagnostic_inline_bytes;
         let mut diagnostic = if succeeded {
             format!(
@@ -261,21 +266,20 @@ pub(crate) fn resolve_command_plan(
             }
             Ok(selected)
         }
-        CommandDef::Detailed {
-            command,
-            timeout_seconds,
-            ..
-        } => {
+        CommandDef::Detailed { command, .. } | CommandDef::Script(command) => {
+            let timeout = match commands {
+                CommandDef::Detailed {
+                    timeout_seconds, ..
+                } => timeout_seconds.unwrap_or(300),
+                _ => 300,
+            };
+            let timeout = Duration::from_secs(timeout.max(1));
             let args = paths
                 .iter()
                 .filter_map(|path| profile.scope_args_for_path(path).map(|args| (args, path)))
                 .collect::<std::collections::BTreeMap<_, _>>();
             if args.is_empty() {
-                return Ok(vec![(
-                    registered_name.to_owned(),
-                    command.clone(),
-                    Duration::from_secs(timeout_seconds.unwrap_or(300).max(1)),
-                )]);
+                return Ok(vec![(registered_name.to_owned(), command.clone(), timeout)]);
             }
             Ok(args
                 .into_iter()
@@ -283,16 +287,11 @@ pub(crate) fn resolve_command_plan(
                     (
                         format!("{registered_name}::{path}"),
                         expand_command_args(command, Some(&args)),
-                        Duration::from_secs(timeout_seconds.unwrap_or(300).max(1)),
+                        timeout,
                     )
                 })
                 .collect())
         }
-        CommandDef::Script(command) => Ok(vec![(
-            registered_name.to_owned(),
-            command.clone(),
-            Duration::from_secs(300),
-        )]),
     }
 }
 

@@ -93,12 +93,14 @@ fn successful_gate_execution_does_not_write_a_trace_log() {
     configured
         .commands
         .insert("trace-check".into(), command.clone());
-    configured
+    let gate = configured
         .gates
         .iter_mut()
         .find(|gate| gate.id == "contract")
-        .unwrap()
-        .command = Some("trace-check".into());
+        .unwrap();
+    gate.command = Some("trace-check".into());
+    gate.proof = profile::ProofDef::Kind(profile::ProofKind::Command);
+    gate.expected_failure = None;
     fs::create_dir_all(root.0.join(".forge/acdd")).unwrap();
     let profile_yaml = serde_yaml::to_string(&configured).unwrap();
     let parsed_profile = parse_profile(&profile_yaml).unwrap();
@@ -328,25 +330,68 @@ fn command_profile_output_changes_invalidate_cached_proof_and_timeout_limit() {
 
 #[test]
 fn command_scope_arguments_expand_once_for_directory_scope() {
-    let (root, _, id) = command_fixture("printf '%s\\n'", Some(output_spec(false)));
-    let mut configured = (*profile::load_for_workspace(&root.0).unwrap()).clone();
-    configured
-        .scope_args_by_pattern
-        .insert("src/*.rs".into(), "scoped-token".into());
-    root.write("src/other.rs", "pub fn other() {}\n");
-    root.write(
-        ".forge/acdd/profile.yaml",
-        &serde_yaml::to_string(&configured).unwrap(),
-    );
-    let result = forge_tasks::engine::verify_task(&root.0, &id, None).unwrap();
-    assert_eq!(
-        result["verification"]["diagnostic_mode"], "pass",
-        "{result}"
-    );
-    let store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
-    let traces = store.execution_traces(&id, Some("tasks.contract")).unwrap();
-    assert_eq!(traces.len(), 1);
-    assert_eq!(traces[0].command_str, "printf '%s\\n' scoped-token");
+    for kind in ["script", "detailed", "pattern"] {
+        for placeholder in [false, true] {
+            let command = format!(
+                "printf 'test result: ok. 1 passed; 0 failed\\n'; printf '%s\\n'{}",
+                if placeholder { " {scope_target}" } else { "" }
+            );
+            let (root, store, id) = command_fixture(&command, None);
+            let mut configured = (*profile::load_for_workspace(&root.0).unwrap()).clone();
+            let definition = match kind {
+                "script" => CommandDef::Script(command.clone()),
+                "pattern" => CommandDef::Pattern(PatternCommands {
+                    by_pattern: BTreeMap::from([("src/*.rs".into(), command.clone())]),
+                    description: None,
+                    timeout_seconds: None,
+                    output: None,
+                }),
+                _ => configured.commands["check"].clone(),
+            };
+            configured.commands.insert("check".into(), definition);
+            root.write("src/other.rs", "pub fn other() {}\n");
+            for (attempt, args) in [Some("scoped-token"), Some("changed-token"), None]
+                .into_iter()
+                .enumerate()
+            {
+                configured.scope_args_by_pattern.clear();
+                if let Some(args) = args {
+                    configured
+                        .scope_args_by_pattern
+                        .insert("src/*.rs".into(), args.into());
+                }
+                root.write(
+                    ".forge/acdd/profile.yaml",
+                    &serde_yaml::to_string(&configured).unwrap(),
+                );
+                let result = forge_tasks::engine::verify_task(&root.0, &id, None).unwrap();
+                let context = format!("{kind} placeholder={placeholder} args={args:?}: {result}");
+                assert_eq!(
+                    result["verification"]["diagnostic_mode"], "pass",
+                    "{context}"
+                );
+                assert!(result["evidence"].is_object(), "{context}");
+                let traces = store.execution_traces(&id, Some("tasks.contract")).unwrap();
+                assert_eq!(traces.len(), attempt + 1, "{context}");
+                let expected = match args {
+                    Some(args) if placeholder => command.replace("{scope_target}", args),
+                    Some(args) => format!("{command} {args}"),
+                    None => command.clone(),
+                };
+                assert_eq!(traces.last().unwrap().command_str, expected, "{context}");
+                let cached = forge_tasks::engine::verify_task(&root.0, &id, None).unwrap();
+                assert_eq!(cached["evidence"], result["evidence"], "{context}");
+                assert_eq!(
+                    store
+                        .execution_traces(&id, Some("tasks.contract"))
+                        .unwrap()
+                        .len(),
+                    attempt + 1,
+                    "{context}"
+                );
+            }
+        }
+    }
 }
 
 #[test]
@@ -381,6 +426,129 @@ fn command_contract_proof_recovers_expected_red_and_configured_seam_without_logs
     drop(store);
     assert!(compile_evidence_envelope(&root.0, &id, "contract").is_ok());
     assert!(!root.0.join(".forge/task-traces").exists());
+}
+
+#[test]
+fn command_gate_diagnostics_follow_the_proof_expectation_across_public_callers() {
+    use crate::common::mcp_client::StdioClient;
+
+    for (contract, exit, signature, large, passing) in [
+        (true, 0, false, false, false),
+        (true, 0, true, true, false),
+        (true, 101, false, false, false),
+        (true, 101, false, true, false),
+        (true, 7, true, false, false),
+        (true, 7, true, true, false),
+        (true, 101, true, false, true),
+        (true, 101, true, true, true),
+        (false, 0, false, false, true),
+        (false, 0, false, true, true),
+        (false, 101, true, false, false),
+        (false, 101, true, true, false),
+    ] {
+        for caller in ["engine", "cli", "mcp"] {
+            let diagnostic = format!(
+                "actual-command-output-{}{}",
+                "x".repeat(if large { 10_000 } else { 10 }),
+                if signature {
+                    "assertion failed"
+                } else {
+                    "different failure"
+                }
+            );
+            let mut spec = output_spec(false);
+            spec.seam_ref_pattern = Some(r"seam:(\S+)".into());
+            let command = format!("printf '%s' '{diagnostic}'; exit {exit} # seam:tests/acdd/runner.rs::command_gate_diagnostics_follow_the_proof_expectation_across_public_callers");
+            let (root, store, id) = command_fixture(&command, Some(spec));
+            let mut configured = (*profile::load_for_workspace(&root.0).unwrap()).clone();
+            let gate = configured
+                .gates
+                .iter_mut()
+                .find(|gate| gate.id == "contract")
+                .unwrap();
+            gate.proof = profile::ProofDef::Kind(if contract {
+                profile::ProofKind::Contract
+            } else {
+                profile::ProofKind::Command
+            });
+            gate.expected_failure = Some(ExpectedFailure {
+                exit_codes: vec![101],
+                stderr_contains: Some("assertion failed".into()),
+            });
+            root.write(
+                ".forge/acdd/profile.yaml",
+                &serde_yaml::to_string(&configured).unwrap(),
+            );
+            let result = match caller {
+                "cli" => {
+                    let output = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+                        .args([
+                            "--root",
+                            root.0.to_str().unwrap(),
+                            "--format",
+                            "json",
+                            "task",
+                            "verify",
+                            &id,
+                        ])
+                        .output()
+                        .unwrap();
+                    assert!(
+                        output.status.success(),
+                        "{}",
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                    serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()
+                }
+                "mcp" => {
+                    let mut command = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"));
+                    command.args(["--root", root.0.to_str().unwrap(), "serve"]);
+                    let mut client = StdioClient::with_command(&mut command);
+                    client.payload(
+                        "task_manage",
+                        serde_json::json!({"action":"verify", "task_id":id}),
+                    )
+                }
+                _ => forge_tasks::engine::verify_task(&root.0, &id, None).unwrap(),
+            };
+            let context = format!("{caller} contract={contract} exit={exit} signature={signature} large={large}: {result}");
+            assert_eq!(result["verification"]["exit_code"], exit, "{context}");
+            assert_eq!(result["evidence"].is_object(), passing, "{context}");
+            assert_eq!(result["error"].is_null(), passing, "{context}");
+            let traces = store.execution_traces(&id, Some("tasks.contract")).unwrap();
+            assert_eq!(traces.len(), 1, "{context}");
+            let trace = &traces[0];
+            let snippet = trace.output_snippet.as_deref().unwrap();
+            assert_eq!(snippet.contains("PASS check:"), passing, "{context}");
+            assert_eq!(trace.log_path.is_some(), !passing && large, "{context}");
+            assert_eq!(
+                result["verification"]["diagnostic_mode"],
+                if passing {
+                    "pass"
+                } else if large {
+                    "truncated"
+                } else {
+                    "inline"
+                },
+                "{context}"
+            );
+            if !passing {
+                assert!(snippet.contains("actual-command-output-"), "{context}");
+                if let Some(path) = &trace.log_path {
+                    assert_eq!(
+                        fs::read_to_string(root.0.join(path)).unwrap(),
+                        diagnostic,
+                        "{context}"
+                    );
+                } else {
+                    assert!(snippet.contains(&diagnostic), "{context}");
+                }
+            } else {
+                assert!(!root.0.join(".forge/task-traces").exists(), "{context}");
+            }
+            assert_eq!(store.inspect(&id).unwrap().stage, "contract", "{context}");
+        }
+    }
 }
 
 #[test]

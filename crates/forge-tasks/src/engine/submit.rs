@@ -724,10 +724,8 @@ fn verify_command_identity(
     profile: &crate::tasks::profile::GateProfile,
 ) -> Result<()> {
     let matches = match registered {
-        crate::tasks::profile::CommandDef::Script(command) => {
-            trace.command_id == registered_name && trace.command_str == *command
-        }
-        crate::tasks::profile::CommandDef::Detailed { command, .. } => {
+        crate::tasks::profile::CommandDef::Script(command)
+        | crate::tasks::profile::CommandDef::Detailed { command, .. } => {
             (trace.command_id == registered_name && trace.command_str == *command)
                 || trace
                     .command_id

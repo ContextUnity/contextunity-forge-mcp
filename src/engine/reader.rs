@@ -208,7 +208,7 @@ pub fn forge_read_tool(
         };
         let (content, truncated) = match mode {
             ReadMode::Delta => (
-                compute_file_delta(root, path, request.baseline.as_deref(), task.as_ref())?,
+                compute_file_delta(root, &file, request.baseline.as_deref(), task.as_ref())?,
                 false,
             ),
             ReadMode::Outline => {
@@ -398,10 +398,17 @@ pub fn extract_file_slice(
 /// Compute a path-confined unified diff against HEAD or the task candidate baseline.
 pub fn compute_file_delta(
     root: &Path,
-    path: &str,
+    file: &Path,
     baseline: Option<&str>,
     task: Option<&forge_tasks::store::Task>,
 ) -> Result<String> {
+    // Resolve Git from the admitted physical file, including linked repositories.
+    // Task authority remains bound to the primary workspace below.
+    let git_directory = file.parent().context("delta file has no parent")?;
+    let path = file
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("delta filename is not UTF-8")?;
     let task_baseline = if baseline.is_none() {
         task.map(|task| {
             forge_tasks::engine::store(root).and_then(|store| {
@@ -419,13 +426,13 @@ pub fn compute_file_delta(
         "invalid delta baseline"
     );
     let resolved = forge_core::git::git_command(
-        root,
+        git_directory,
         &["rev-parse", "--verify", &format!("{revision}^{{commit}}")],
     )?;
     ensure!(resolved.status.success(), "delta baseline is not a commit");
     let commit = String::from_utf8(resolved.stdout)?;
     let output = forge_core::git::git_command(
-        root,
+        git_directory,
         &[
             "--no-pager",
             "--literal-pathspecs",

@@ -481,6 +481,10 @@ to execute the current claimed gate's registered command without advancing its
 stage. The result includes compiled evidence and command diagnostics. A later
 submission reuses fresh proof for the same claim and candidate; changes invalidate
 the cached proof. Gates without a configured registered command fail closed.
+Global `scope_args_by_pattern` applies to legacy string commands, detailed
+commands, and pattern commands. Matching arguments replace `{scope_target}` or
+are appended when the placeholder is absent; equivalent expanded commands run
+once. Changes to the configured argument plan invalidate cached proof.
 
 CLI `task verify` and evidence-free `task submit` accept `--timeout SECONDS`;
 the corresponding MCP calls accept `timeout_seconds`. The default comes from
@@ -488,8 +492,10 @@ the corresponding MCP calls accept `timeout_seconds`. The default comes from
 by `limits.max_command_timeout_seconds` (default 1800 seconds). A timeout kills
 the process group and returns `TIMEOUT` with a bounded rerun hint.
 
-Command output uses the profile's [output parsing rules](profiles.md). Passing
-runs and expected contract-red runs return compact summaries without log files.
+Command output uses the profile's [output parsing rules](profiles.md). Command
+gates returning exit 0 and contract gates matching the configured expected failure
+return compact summaries without log files. An unexpected contract exit 0 retains
+its actual diagnostics, like a wrong exit code or missing failure signature.
 Failures fitting `limits.diagnostic_inline_bytes` (default 4096) return inline
 diagnostics. Larger failures retain a bounded excerpt and a `file:///` link to
 the full log under `<claimed-worktree>/.forge/task-traces/`. Durable proof does

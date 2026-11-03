@@ -328,6 +328,120 @@ fn forge_read_delta_never_exposes_sensitive_sibling_through_git_pathspec() {
 }
 
 #[test]
+fn forge_read_delta_uses_the_admitted_linked_git_context() {
+    use crate::common::mcp_client::run_cli_json;
+    let primary = Workspace::new();
+    let linked = Workspace::new();
+    primary.write(
+        "forge-mcp.yaml",
+        &format!("profile: minimal\nsensitive: ['**/secrets/**']\nlinked_workspaces:\n  - name: linked\n    path: {}\n", linked.root().display()),
+    );
+    let paths = ["nested/notes.txt", "nested/:(glob)**"];
+    for path in paths {
+        linked.write(path, "linked-before\n");
+        primary.write(format!("[linked]/{path}"), "decoy-before\n");
+    }
+    linked.write("nested/secrets/token.txt", "secret-before\n");
+    for workspace in [&primary, &linked] {
+        for args in [
+            vec!["init", "-q"],
+            vec!["add", "."],
+            vec![
+                "-c",
+                "user.name=Reader",
+                "-c",
+                "user.email=reader@example.invalid",
+                "commit",
+                "-qm",
+                "baseline",
+            ],
+        ] {
+            assert!(forge_core::git::git_command(workspace.root(), &args)
+                .unwrap()
+                .status
+                .success());
+        }
+    }
+    for (workspace, tag) in [(&primary, "primary-only"), (&linked, "linked-only")] {
+        assert!(
+            forge_core::git::git_command(workspace.root(), &["tag", tag])
+                .unwrap()
+                .status
+                .success()
+        );
+    }
+    for path in paths {
+        linked.write(path, "linked-after\n");
+        primary.write(format!("[linked]/{path}"), "decoy-after\n");
+    }
+    linked.write("nested/secrets/token.txt", "secret-after\n");
+    let mut client = StdioClient::new(&primary);
+    let mut failures = Vec::new();
+    for path in paths {
+        let alias = format!("[linked]/{path}");
+        let raw = client.payload("forge_read", json!({"path":alias,"mode":"raw"}));
+        assert_eq!(raw["content"], "linked-after\n");
+        for baseline in [None, Some("linked-only")] {
+            let mut request = json!({"path":alias,"mode":"delta"});
+            let mut args = vec!["read", "--mode", "delta"];
+            if let Some(baseline) = baseline {
+                request["baseline"] = json!(baseline);
+                args.extend(["--baseline", baseline]);
+            }
+            args.extend(["--", &alias]);
+            let (_, response) = client.call("forge_read", request);
+            let output = run_cli_json(&primary, &args);
+            let cli: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap_or_default();
+            // Exercise both real transports before reporting a runtime-red failure.
+            for (transport, value) in [("MCP", response.to_string()), ("CLI", cli.to_string())] {
+                if !value.contains("-linked-before")
+                    || !value.contains("+linked-after")
+                    || value.contains("decoy-")
+                    || value.contains("secret-")
+                    || value.matches("diff --git ").count() != 1
+                {
+                    failures.push(format!("{transport} {alias} {baseline:?}: {value}"));
+                }
+            }
+            if !output.status.success() {
+                failures.push(format!(
+                    "CLI failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
+        }
+    }
+    for baseline in ["primary-only", "--output=escaped", "missing-revision"] {
+        let (_, response) = client.call(
+            "forge_read",
+            json!({"path":"[linked]/nested/notes.txt","mode":"delta","baseline":baseline}),
+        );
+        let output = run_cli_json(
+            &primary,
+            &[
+                "read",
+                "[linked]/nested/notes.txt",
+                "--mode",
+                "delta",
+                &format!("--baseline={baseline}"),
+            ],
+        );
+        if response["result"]["isError"] != true || output.status.success() {
+            failures.push(format!(
+                "unavailable/unsafe baseline accepted: {baseline}: {response}"
+            ));
+        }
+    }
+    let (_, response) = client.call(
+        "forge_read",
+        json!({"path":"[linked]/nested/secrets/token.txt","mode":"delta"}),
+    );
+    assert_eq!(response["result"]["isError"], true, "{response}");
+    assert!(response.to_string().contains("SENSITIVE_FILE"));
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
 fn forge_read_implementation_hints_select_an_executable_type() {
     use crate::common::mcp_client::run_cli_json;
     let w = Workspace::new();
