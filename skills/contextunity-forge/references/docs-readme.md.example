@@ -30,5 +30,5 @@ does not maintain.
 
 ## Verification
 
-- [Testing guide](testing/README.md)
+- [Verification gates](../TESTS.md)
 ````

@@ -16,7 +16,6 @@ docs:
   - docs/plans
   - docs/reference
   - docs/runbooks
-  - docs/testing
 milestones:
   - docs/milestones
 plans:

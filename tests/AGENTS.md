@@ -59,7 +59,7 @@ This document defines the rules for placing, creating, refactoring, and maintain
 - Domain cohesion: keep coherent test suites unified within their subsystem domain. Split tests strictly along natural architectural sub-boundaries when distinct domains emerge.
 
 ## 3. Suite moves
-- When moving, renaming, splitting, or removing a test suite or test file, update `docs/testing/README.md` and this file in the same `build`.
+- When moving, renaming, splitting, or removing a test suite or test file, update this file and TESTS.md in the same `build`.
 - Keep public value-flow reducer cases in `tests/linker/value_flow.rs`; keep private reducer implementation checks beside their source.
 
 ## 4. Public Seams Over Internal Mocks
