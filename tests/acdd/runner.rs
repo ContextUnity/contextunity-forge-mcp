@@ -84,6 +84,27 @@ fn profile_validation_rejects_invalid_output_patterns() {
 }
 
 #[test]
+fn successful_gate_execution_does_not_write_a_trace_log() {
+    let (root, mut store, milestone) = fixture();
+    root.write(".gitignore", ".forge/\n");
+    let task_id = milestone.task_id(&milestone.tasks[0]);
+    let mut configured = (*profile::compiled()).clone();
+    let command = CommandDef::Script("printf 'test result: ok. 1 passed; 0 failed\\n'".into());
+    configured.commands.insert("trace-check".into(), command.clone());
+    configured.gates.iter_mut().find(|gate| gate.id == "contract").unwrap().command =
+        Some("trace-check".into());
+    fs::create_dir_all(root.0.join(".forge/acdd")).unwrap();
+    let profile_yaml = serde_yaml::to_string(&configured).unwrap();
+    let parsed_profile = parse_profile(&profile_yaml).unwrap();
+    let command = &parsed_profile.commands["trace-check"];
+    fs::write(root.0.join(".forge/acdd/profile.yaml"), profile_yaml).unwrap();
+    store.claim(&task_id, "contract", "trace-author", root.0.to_str().unwrap()).unwrap();
+    let traces = forge_tasks::milestones::execute_command_gate(&root.0, &task_id, "tasks.contract", command, &[]).unwrap();
+    assert_eq!(traces.len(), 1);
+    assert_eq!(traces[0].log_path, None, "successful execution must not create a trace log");
+}
+
+#[test]
 fn transition_runner_compiles_proofs_and_covers_all_task3_subtasks() {
     let (root, mut store, _) = fixture();
     let task_id = "forge-mcp/m-test:first";
