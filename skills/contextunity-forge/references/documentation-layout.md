@@ -11,7 +11,6 @@ Use these page roles in an indexed repository. Create a directory only when it h
 | `docs/adr/` | Accepted decisions |
 | `docs/reference/` | Interfaces, configuration, CLI, tools, schemas |
 | `docs/runbooks/` | Repository commands and operational sequence |
-| `docs/testing/` | Repository verification |
 | `docs/milestones/` | Admitted commitments; `archive/` keeps receipts |
 | `docs/plans/` | Proposals before admission |
 | `docs/archive/` | Retained history outside the documentation index |

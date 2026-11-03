@@ -15,7 +15,7 @@
 - Interfaces: [configuration and tools](docs/reference/README.md), [task operations](docs/reference/tasks.md), [ACDD navigation](docs/reference/acdd.md), and [CLI commands](docs/reference/cli.md).
 - Operations: [runbooks](docs/runbooks/README.md).
 - Planning: [roadmap](docs/roadmap.md), [milestones](docs/milestones/README.md), and [plans](docs/plans/README.md).
-- Verification: [required gates](TESTS.md) and the [testing guide](docs/testing/README.md).
+- Verification: [required gates](TESTS.md) and [test invariants](tests/AGENTS.md).
 - Forge tool discovery and task operations: load the shared `contextunity-forge` skill.
 - Follow the [Blackboard procedure](skills/contextunity-forge/SKILL.md#blackboard) for claim context, progress reports, and gate or agent handoffs.
 
@@ -35,7 +35,7 @@ When authoring contracts or testing capabilities:
 
 The initial gate of the milestone workflow is `contract_synthesis` (role: `architect`).
 Follow `guidance.milestone.synthesis` in `.forge/acdd/profile.yaml` for:
-1. Broad architectural exploration via Forge MCP (`code_map_*`, `ast_grep_search`, `ctx_read`).
+1. Broad architectural exploration via Forge MCP (`code_map_*`, `ast_grep_search`, `forge_read`).
 2. Minimal intervention principle (no duplicate registries or parallel tables).
 3. Scope integrity (protected files `Cargo.toml`, `build.rs` are strictly off-limits).
 4. Recording the architectural decision on `task_blackboard` before submission.

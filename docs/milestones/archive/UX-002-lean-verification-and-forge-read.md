@@ -2,7 +2,7 @@
 id: UX-002-lean-verification-and-forge-read
 title: Autonomous command gates, lean verification diagnostics, profile output schemas, and unified layered forge_read
 doc_type: contract
-status: active
+status: completed
 depends_on: []
 guidance:
   hitl: pro
@@ -32,6 +32,153 @@ required_skills:
 - agent-instructions
 related_plans: []
 started_at: 2026-11-03T08:59:21+00:00
+repository: forge-mcp
+project: forge-mcp
+handoff:
+  completed_at: 2026-11-03T11:56:03.335530439+00:00
+  duration: 2h 56m
+  commit: d7a98fcc8a872aa0b18aaf7722cbb16238a5c447
+  target_base: abe5f090264142cf751f9bd3d3c119af38e403b9
+  integration_evidence:
+    binding:
+      version: 1
+      repository: forge-mcp
+      project: forge-mcp
+      milestone: UX-002-lean-verification-and-forge-read
+      authority_digest: 9329f77e1b868497f42ea6c5dece8c69efdf548eaa3d534da6c010d01375e40a
+      implementation_digest: ed5667204315d73dfc13bdf151525755df98d54227b54ea96bc9180e27f22c8b
+      target_base_digest: 0f65b8c0c3c2844d035bded7197b70ea7650e297d363ec91f42c01d66724dbe0
+      builders:
+      - ux002-builder
+      - ux002-command-builder
+      - ux002-reader-builder
+    target_base: main
+    review:
+      worker_id: ux002-integration-reviewer
+      decision: pass
+      summary: Independent integration review against main passed for the exact content and authority binding; all task receipts and integration findings were verified. Documentation scan and independent review passed. Baseline testing-guide wording is deferred as recorded in milestone blackboard 1587.
+      scope_findings: []
+      contract_findings: []
+    verification:
+      command: 'cargo clippy --all-targets --all-features -- -D warnings && cargo test --test mcp test_read:: && cargo test --test mcp -- task_submit_format_preserves_optional_input_and_evidence_semantics stdio_default_pages_and_stale_continuation_are_explicit && cargo test --test acdd -- acdd::runner:: acdd::mcp::command_ task_store_migrates_the_ac001_gate_persistence_contract stdio_tool_catalog_uses_object_schemas_for_every_property task_stdio_lifecycle_submits_inline_evidence_in_independent_worktrees task_manage_selector_diagnostics_report_fields_before_resolution'
+      exit_code: 0
+      tests_passed: 42
+      tests_failed: 0
+      project_command: check_ux002_focused
+  proof_shas:
+  - 28f9f8903146df9a6b321515b895faef1984074c
+  - 304a425b358ba651d53a566f6caded15e23a0ee0
+  - 36727fea593fdbe6ee2ce1fea50ef096927f53b0
+  - 374397faedea141df2d040a4083b21b41a9babd1
+  - 40ae7f246c6bee7755345797c1c3614eda421820
+  - 43d6fd64420758085696797e070851d6e70f58a1
+  - 479509fc40a8ebee4afb08bd89635edf41334fbb
+  - 56bc21f2fa91dc32b45c8913683e094150f29589
+  - 5a9bde8cfd9e5f779361a4df702243b83b337400
+  - 632d553b75bb641fa2e534059c13339181cd31d6
+  - 8f55d7be9ecf8a58e371197d3e9b30b9b3f6926c
+  - 903b264949755132dbda09b6cca74743887ab24f
+  - 9918384de635e3c807307112b6d3cc6bd0fadfc9
+  - abe5f090264142cf751f9bd3d3c119af38e403b9
+  - b282ecf44f24c353cc32ff6963b8f109c493f2fd
+  - b3cde4cdf8e61b03cf482afaecd35e7bd810cac8
+  - b4249f7f5711b9b0d621c6c20668982414be9245
+  - b816f0c02fc0ed08aac3e303e81d25a6373215a5
+  - c25501615f0b2304b69c6d0f7ee7c806cd6863c3
+  - d2e4d06e06e5baca6723698955fd6aaeeb9c141d
+  - d7a98fcc8a872aa0b18aaf7722cbb16238a5c447
+  - d7e844deaa8bc2a32752b5b8d5d9f2c696cebd34
+  - e82a8049da5b38f92da5ffdfd6fd3d7472c18869
+  passport:
+    version: 1
+    identity: forge-mcp/forge-mcp/UX-002-lean-verification-and-forge-read
+    binding:
+      version: 1
+      repository: forge-mcp
+      project: forge-mcp
+      milestone: UX-002-lean-verification-and-forge-read
+      authority_digest: 9329f77e1b868497f42ea6c5dece8c69efdf548eaa3d534da6c010d01375e40a
+      implementation_digest: ed5667204315d73dfc13bdf151525755df98d54227b54ea96bc9180e27f22c8b
+      target_base_digest: 0f65b8c0c3c2844d035bded7197b70ea7650e297d363ec91f42c01d66724dbe0
+      builders:
+      - ux002-builder
+      - ux002-command-builder
+      - ux002-reader-builder
+    commit: d7a98fcc8a872aa0b18aaf7722cbb16238a5c447
+    target_base: abe5f090264142cf751f9bd3d3c119af38e403b9
+    active_authority_digest: 24da827255eae52d73ac1d52aa56b8bbb3f4ec7a09efc1d28c1ccaab9e7bf6b1
+    started_at: 2026-11-03T08:59:21+00:00
+    completed_at: 2026-11-03T11:56:03.335530439+00:00
+    duration_seconds: 10602
+    tasks_count: 3
+    tasks:
+    - task_id: forge-mcp/UX-002-lean-verification-and-forge-read:autonomous-command-execution-and-trace-diagnostics
+      status: completed
+      first_claimed_at: 1793698340
+      completed_at: 1793701460
+      execution_wall_seconds: 3120
+      review_cycles: 3
+      rejected_reviews: 1
+    - task_id: forge-mcp/UX-002-lean-verification-and-forge-read:contracts-and-shared-types-bootstrap
+      status: completed
+      first_claimed_at: 1793696361
+      completed_at: 1793698280
+      execution_wall_seconds: 1919
+      review_cycles: 2
+      rejected_reviews: 0
+    - task_id: forge-mcp/UX-002-lean-verification-and-forge-read:unified-forge-read-and-subsystem-slices
+      status: completed
+      first_claimed_at: 1793701473
+      completed_at: 1793704447
+      execution_wall_seconds: 2974
+      review_cycles: 3
+      rejected_reviews: 1
+    diff:
+      docs:
+        files: 8
+        added: 550
+        removed: 126
+      other:
+        files: 6
+        added: 50
+        removed: 13
+      src:
+        files: 28
+        added: 2085
+        removed: 238
+      tests:
+        files: 12
+        added: 1629
+        removed: 93
+    ast_symbol_deltas:
+      added: 163
+      removed: 5
+      modified: 75
+    test_suite_results:
+      command: 'cargo clippy --all-targets --all-features -- -D warnings && cargo test --test mcp test_read:: && cargo test --test mcp -- task_submit_format_preserves_optional_input_and_evidence_semantics stdio_default_pages_and_stale_continuation_are_explicit && cargo test --test acdd -- acdd::runner:: acdd::mcp::command_ task_store_migrates_the_ac001_gate_persistence_contract stdio_tool_catalog_uses_object_schemas_for_every_property task_stdio_lifecycle_submits_inline_evidence_in_independent_worktrees task_manage_selector_diagnostics_report_fields_before_resolution'
+      exit_code: 0
+      tests_passed: 42
+      tests_failed: 0
+      project_command: check_ux002_focused
+    automatic_project_verification:
+      selection: check_ux002_focused
+      command: 'cargo clippy --all-targets --all-features -- -D warnings && cargo test --test mcp test_read:: && cargo test --test mcp -- task_submit_format_preserves_optional_input_and_evidence_semantics stdio_default_pages_and_stale_continuation_are_explicit && cargo test --test acdd -- acdd::runner:: acdd::mcp::command_ task_store_migrates_the_ac001_gate_persistence_contract stdio_tool_catalog_uses_object_schemas_for_every_property task_stdio_lifecycle_submits_inline_evidence_in_independent_worktrees task_manage_selector_diagnostics_report_fields_before_resolution'
+      exit_code: 0
+      reused_verification: true
+      implementation_digest: ed5667204315d73dfc13bdf151525755df98d54227b54ea96bc9180e27f22c8b
+    linter:
+      status: unobserved
+    topology:
+      upstream: []
+      downstream:
+      - forge-mcp/forge-mcp/AC-003-headless-orchestrator-and-role-runners
+      unresolved_upstream: []
+    verified_handoff_proof: 4c9f32cc105d0189edd8507ec701d6c70e86a5716d30289e4da40040af3a9396
+  verification:
+    command: 'cargo clippy --all-targets --all-features -- -D warnings && cargo test --test mcp test_read:: && cargo test --test mcp -- task_submit_format_preserves_optional_input_and_evidence_semantics stdio_default_pages_and_stale_continuation_are_explicit && cargo test --test acdd -- acdd::runner:: acdd::mcp::command_ task_store_migrates_the_ac001_gate_persistence_contract stdio_tool_catalog_uses_object_schemas_for_every_property task_stdio_lifecycle_submits_inline_evidence_in_independent_worktrees task_manage_selector_diagnostics_report_fields_before_resolution'
+    status: passed
+    tests_passed: 42
+    tests_failed: 0
 ---
 
 # Autonomous command gates, lean verification diagnostics, profile output schemas, and unified layered `forge_read`
@@ -129,6 +276,7 @@ extended_scope:
 - tests/acdd/tasks/lifecycle.rs
 - crates/forge-core/src/lib.rs
 receipt:
+  commit: e82a8049da5b38f92da5ffdfd6fd3d7472c18869
   contract_revision: 2
   passed_at: 2026-11-03T09:31:20.350863153+00:00
   evidence:
@@ -257,6 +405,7 @@ extended_scope:
 - src/cli/mod.rs
 - tests/acdd/persistence.rs
 receipt:
+  commit: 36727fea593fdbe6ee2ce1fea50ef096927f53b0
   contract_revision: 2
   passed_at: 2026-11-03T10:24:20.619141717+00:00
   evidence:
@@ -403,6 +552,7 @@ subtasks:
 extended_scope:
 - src/cli/mod.rs
 receipt:
+  commit: 56bc21f2fa91dc32b45c8913683e094150f29589
   contract_revision: 5
   passed_at: 2026-11-03T11:14:07.049152629+00:00
   evidence:

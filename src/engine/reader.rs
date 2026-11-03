@@ -146,7 +146,7 @@ pub fn forge_read_tool(
         .as_deref()
         .is_some_and(|p| p.ends_with(".md") || p.ends_with(".markdown"));
     request.requires_index(adapter)?;
-    let task = active_task(root, adapter)?;
+    let task = active_task(root, adapter).ok().flatten();
     let mut value = if mode == ReadMode::Snippet {
         let conn = conn.context("snippet requires the code index")?;
         let selector = request

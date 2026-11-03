@@ -17,7 +17,7 @@ If you are reading or extending the graph, the [MCP tools](reference/mcp-tools.m
 
 If you are installing skills, the [skills index](../skills/README.md) lists `contextunity-forge` and the companion skills, and what to put in `AGENTS.md`.
 
-Operational ceilings, freshness, and what a failed query looks like are in [limits and freshness](runbooks/limits-and-freshness.md). Verification commands are in [TESTS.md](../TESTS.md) and the [testing guide](testing/README.md).
+Operational ceilings, freshness, and what a failed query looks like are in [limits and freshness](runbooks/limits-and-freshness.md). Verification commands are in [TESTS.md](../TESTS.md) and [tests/AGENTS.md](../tests/AGENTS.md).
 
 ## Reference
 

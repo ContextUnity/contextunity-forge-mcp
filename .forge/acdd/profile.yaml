@@ -56,7 +56,7 @@ guidance:
       - "CRATE EXTRACTION CLEANUP: Check git status and module-tree reachability after extraction; delete orphaned source files inside admitted scope."
       - "AST SEARCH LANGUAGE: Always supply language to ast_grep_search when path is omitted or has no file extension, including directory paths."
       - "REVIEW REJECTION BOUNDARY: Reject only for contract failure, scope violation, invariant breach, or a genuine functional or architectural defect. Never reject over doc-comment wording or non-regression stylistic nitpicks."
-      - "ARCHITECTURAL EXTENSION POINTS: Inspect existing parser and linker registries using code_map_* and ctx_read. Identify natural extension seams and data flow. Do NOT invent parallel systems or touch protected files (Cargo.toml, build.rs, .forge/**)."
+      - "ARCHITECTURAL EXTENSION POINTS: Inspect existing parser and linker registries using code_map_* and forge_read. Identify natural extension seams and data flow. Do NOT invent parallel systems or touch protected files (Cargo.toml, build.rs, .forge/**)."
       - "FORMAL ARCHITECTURAL BLUEPRINT: Synthesize an architectural decision covering type invariants, data flow, error states, and impact perimeters."
       - "DOMAIN SEAM TEST: Author a compiling runtime-red seam test in the appropriate domain test module (in tests/) proving the unfulfilled contract. Author dedicated test functions with descriptive names rather than appending to monolithic test functions."
       - "RECORD ARCHITECTURAL DECISION: Before submitting this gate, post an explicit synthesis decision to task_blackboard (topic: decisions) detailing the chosen implementation path."
@@ -78,7 +78,7 @@ guidance:
       - "CRATE EXTRACTION CLEANUP: Check git status and module-tree reachability after extraction; delete orphaned source files inside admitted scope."
       - "AST SEARCH LANGUAGE: Always supply language to ast_grep_search when path is omitted or has no file extension, including directory paths."
       - "REVIEW REJECTION BOUNDARY: Reject only for contract failure, scope violation, invariant breach, or a genuine functional or architectural defect. Never reject over doc-comment wording or non-regression stylistic nitpicks."
-      - "BROAD ARCHITECTURAL EXPLORATION: Never evaluate diffs in isolation. Thoroughly inspect subsystem integration and extension points using Forge MCP (code_map_inspect, code_map_impact, ast_grep_search, code_map_overview) and ctx_read."
+      - "BROAD ARCHITECTURAL EXPLORATION: Never evaluate diffs in isolation. Thoroughly inspect subsystem integration and extension points using Forge MCP (code_map_inspect, code_map_impact, ast_grep_search, code_map_overview, forge_read)."
       - "STRICT REJECTION OF HACKS & HEURISTICS: Actively detect and REJECT superficial workarounds, ad-hoc string heuristics (e.g. path shape guesses, magical substring checks), hardcoded parallel lookup lists, or patches designed merely to turn a test green. Require durable, authentic root-cause fixes in the typed data model."
       - "TEST HYGIENE & ANTI-MONOLITH: Reject diffs that append tests, review probes, or heavy integration fixtures into existing unit test functions. Enforce domain decomposition into focused, parallelizable test functions."
       - "ANTI-LOOPING & ARCHITECTURAL RE-EVALUATION: If an implementation fails repeatedly across review rounds or accumulates layers of duct tape, do NOT accept another patch. Reject the implementation, diagnose the defective contract, and require architectural re-synthesis."
@@ -164,9 +164,10 @@ gates:
       - code_map_overview
       - code_map_search
       - ast_grep_search
+      - forge_read
       - task_blackboard
     steps:
-      - "1. ARCHITECTURAL AUDIT: Inspect existing codebase extension points using code_map_* and ctx_read. Do NOT assume Tree-sitter or Cargo.toml changes are needed."
+      - "1. ARCHITECTURAL AUDIT: Inspect existing codebase extension points using code_map_* and forge_read. Do NOT assume Tree-sitter or Cargo.toml changes are needed."
       - "2. SCOPE VERIFICATION: Verify all implementation files are inside allowed_write_scope. Protected files (Cargo.toml, build.rs) must NOT be edited."
       - "3. SEAM TEST: Strengthen existing domain seam tests additively in tests/ with a cleanly compiling test that triggers runtime assertion failure (exit 101)."
       - "4. BLACKBOARD RECORD: Post architectural synthesis decision to task_blackboard (topic: decisions) detailing the chosen implementation path."
