@@ -125,6 +125,10 @@ commands:
     command: "cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets"
     description: "Run the milestone handoff verification commands from TESTS.md."
     timeout_seconds: 1800
+  check_ux002_focused:
+    command: "cargo clippy --all-targets --all-features -- -D warnings && cargo test --test mcp test_read:: && cargo test --test mcp -- task_submit_format_preserves_optional_input_and_evidence_semantics stdio_default_pages_and_stale_continuation_are_explicit && cargo test --test acdd -- acdd::runner:: acdd::mcp::command_ task_store_migrates_the_ac001_gate_persistence_contract stdio_tool_catalog_uses_object_schemas_for_every_property task_stdio_lifecycle_submits_inline_evidence_in_independent_worktrees task_manage_selector_diagnostics_report_fields_before_resolution"
+    description: "Run focused UX-002 reader, command and MCP verification."
+    timeout_seconds: 600
   test:
     command: "cargo test"
     description: "Compatibility command for legacy task evidence."
