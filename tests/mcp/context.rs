@@ -2283,6 +2283,48 @@ fn stdio_default_pages_and_stale_continuation_are_explicit() {
     );
     assert_eq!(stale["result"]["isError"], true, "{stale}");
 }
+#[test]
+fn task_submit_format_preserves_optional_input_and_evidence_semantics() {
+    use contextunity_forge_mcp::mcp::tools::TaskSubmitInput;
+
+    for (format, expected) in [
+        (None, None),
+        (Some(json!("markdown")), Some(OutputFormat::Markdown)),
+        (Some(json!("json")), Some(OutputFormat::Json)),
+    ] {
+        for evidence in [None, Some(json!({"proof": "caller supplied"}))] {
+            let mut input = json!({"task_id":"format-contract", "stage":"build", "action":"pass"});
+            if let Some(format) = &format {
+                input["format"] = format.clone();
+            }
+            if let Some(evidence) = &evidence {
+                input["evidence"] = evidence.clone();
+            }
+            let parsed: TaskSubmitInput = serde_json::from_value(input).unwrap();
+            assert_eq!(parsed.format, expected);
+            assert_eq!(
+                parsed.format.unwrap_or_default(),
+                expected.unwrap_or(OutputFormat::Markdown)
+            );
+            assert_eq!(parsed.evidence_provided, evidence.is_some());
+            assert_eq!(parsed.request.evidence, evidence.unwrap_or(Value::Null));
+        }
+    }
+    for invalid in [
+        json!("yaml"),
+        json!(""),
+        json!("JSON"),
+        Value::Null,
+        json!(7),
+        json!({}),
+    ] {
+        let input = json!({"task_id":"format-contract", "stage":"build", "action":"pass", "format":invalid});
+        assert!(serde_json::from_value::<TaskSubmitInput>(input).is_err());
+    }
+    let unknown = json!({"task_id":"format-contract", "stage":"build", "action":"pass", "format":"json", "unknown":true});
+    assert!(serde_json::from_value::<TaskSubmitInput>(unknown).is_err());
+}
+
 #[cfg(feature = "lang-python")]
 #[test]
 fn stdio_symbol_search_groups_the_current_page_by_file() {

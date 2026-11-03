@@ -175,7 +175,7 @@ and the two detail flags are mutually exclusive within one invocation. See the
 | --- | --- |
 | `task_list` | Optional `repository`, `milestone_ref`, `milestone_status`, `status`, `stage`, `detail`, `limit`, `offset`, and `generation`. Task status defaults to `ready`; values are `ready`, `in_progress`, `blocked`, `parked`, `completed`, `cancelled`, and `all`. `parked` selects tasks waiting for a scope owner with retained worker/worktree affinity; `all` includes them and retained cancelled tasks. Milestone status defaults to `active`; values are `active`, `planned`, `completed`, and `all`. A targeted `milestone_ref` defaults milestone status to `all`. With no explicit milestone under the active default, one unique active milestone is selected, zero yields an empty list, and multiple candidates fail with an ambiguity hint. `limit` accepts 1–100 (default 30); nonzero `offset` requires the task-view generation. `stage` matches a gate ID declared by the active profile; null matches every gate. Subtask detail defaults to compact references and statuses; `full` includes titles and verification evidence. Each task summary includes its declared `depends_on` references. |
 | `task_claim` | Required `task_id`, `stage`, `worker_id`, and `worktree`; optional `bundle` (boolean, defaults to true). Claims the current gate atomically, returning context tailored to the active gate (see below). Set `bundle: false` for minimal details. Collisions return typed `TASK_ALREADY_CLAIMED`. |
-| `task_submit` | Required `task_id`, `stage`, and `action` (`pass` or `reject`); optional JSON `evidence` and `findings`. Omit evidence for autonomous Contract/Command proof compilation; other proof types require evidence. `timeout_seconds` overrides autonomous command execution only and conflicts with explicit evidence. Reject requires findings. |
+| `task_submit` | Required `task_id`, `stage`, and `action` (`pass` or `reject`); optional JSON `evidence` and `findings`. Omit evidence for autonomous Contract/Command proof compilation or Delivery proof from the accepted candidate snapshot. Review, seam-test, and schema-defined proofs require evidence. `timeout_seconds` overrides autonomous command execution only and conflicts with explicit evidence. Reject requires findings. |
 | `task_manage` | Required `action`; optional `workspace`, `task_id`, `milestone_ref`, `task_ref`, `paths`, `force` (default false), `subtask_ref`, `title`, `subtask_status`, and `evidence`. `verify` requires `task_id` and accepts `timeout_seconds`. `next` additionally requires `worker_id` and a `worktree` path in CLI/engine action input. MCP accepts `worktree` as a routing selector for every action and requires it for `next`. See the action table below. |
 | `task_blackboard` | `action` is `post`, `read`, or `inspect`. Optional `scope` selects `milestone`, `task`, or `subtask`; `milestone_ref`, `task_id`, and `subtask_ref` identify or constrain that context. Post requires canonical `topic` and `payload`, accepts `author` and optional active-profile `gate`, and returns an ID. Read accepts `topic`, optional active-profile `gate`, `limit` (default 10, maximum 50), and `offset`; it returns newest-first summaries and pagination metadata without payload. Inspect with `message_id` returns that message including payload and gate, ignoring optional `scope`, `task_id`, and `milestone_ref`; without `message_id`, inspect returns the scoped read page. |
 
@@ -183,8 +183,9 @@ CLI `task submit` without `--evidence` and MCP `task_submit` without `evidence`
 compile claim-bound evidence for Contract and Command proof gates. Forge reuses
 a fresh completed execution trace matching the current candidate fingerprint;
 otherwise it runs the gate's registered command in the claimed worktree. It then
-uses the regular submit validation path. Review, seam-test, delivery, and
-schema-defined proof gates still require typed evidence. Explicit evidence uses
+uses the regular submit validation path. Delivery proof is compiled from the
+accepted candidate snapshot and its baseline without executing a command.
+Review, seam-test, and schema-defined proof gates require typed evidence. Explicit evidence uses
 the existing validation path. Direct engine callers use
 `engine::tasks::submit_zero_arg` or `submit_zero_arg_with_timeout`.
 
@@ -397,7 +398,8 @@ with the contract seam or indexed covering-test targets, while
 
 Contract proof has the form `{"contract_proof":{"seam_test_ref":"tests/...::test_name","red_exit_code":101}}`. `red_exit_code` may be 0 when `proof_policy` is `direct-proof` or `deferred-final-test`.
 Build proof is wrapped in `command_proof`; on pass it requires a nonempty command,
-exit code 0, at least one passing test, and zero failures. An optional `log` is
+exit code 0 and zero failures. A positive passing-test count is required unless
+the command's [output rules](profiles.md) set `require_counts: false`. An optional `log` is
 limited to 64 KiB. Review proof is wrapped in `review_proof` and requires a
 `decision` matching the action plus the review contours configured for the gate
 (`gate.contours`, defaulting to `standard` with the five canonical review contours: `paths`, `claims`,

@@ -30,6 +30,28 @@ contextunity-forge-mcp delta . src/module.py src/other.py
 
 `query`, `docs`, and `ast grep` open the index through `open_or_rebuild`: a missing or schema-incompatible index is built automatically. An existing index is not refreshed just because source files changed; run `build` or `delta` to update those results.
 
+## File and symbol reads
+
+```sh
+contextunity-forge-mcp read notes.txt --start-line 20 --line-count 40
+contextunity-forge-mcp read notes.txt --mode search --pattern 'timeout' --context 2
+contextunity-forge-mcp read notes.txt --mode search --pattern 'error|warning' --regex
+contextunity-forge-mcp read docs/reference/tasks.md --mode outline
+contextunity-forge-mcp read src/engine/reader.rs --selector forge_read_tool
+contextunity-forge-mcp read notes.txt --mode delta --baseline HEAD
+contextunity-forge-mcp read notes.txt --mode raw --output-file exports/read.txt
+```
+
+`read` uses the same layered reader as MCP `forge_read`. The positional path is
+required; `--selector` selects a symbol within that file. Alternatively, pass a
+symbol selector as the positional value with `--mode snippet`. Auto mode selects
+snippet for `--selector`, search for `--pattern`, and lines otherwise.
+Core text modes run without an index. Markdown outline requires docs; code
+outline and snippet require codemap. Use `--max-body-lines` and `--leading-lines`
+to bound symbol output, then `--source-offset` with the previous `--generation`
+for continuation. See the [reader contract](mcp-tools.md#layered-file-reader) for
+text bounds, exports, sensitive paths, task badges, and conditional hints.
+
 ## Queries
 
 ```sh
@@ -140,7 +162,9 @@ contextunity-forge-mcp task submit TASK_ID --stage build --action pass [--timeou
 
 `verify` executes the registered command in the claimed worktree and preserves
 the task stage. Submission without `--evidence` reuses fresh claim-bound proof
-or executes the command when needed. Other proof types require explicit evidence.
+or executes the command when needed. Delivery infers proof from the accepted
+candidate snapshot without running a command. Review, seam-test, and schema-defined
+proofs require explicit evidence.
 `--timeout` overrides the profile's command timeout within its configured maximum
 and conflicts with `--evidence`. See [command verification](tasks.md#iterative-command-verification)
 for timeout, scope-warning, and diagnostic behavior.

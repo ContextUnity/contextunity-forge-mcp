@@ -179,7 +179,7 @@ gates:
       gates:
         - id: contract
           role: contract_author
-          tools: [get_code_snippet, search_docs, get_doc]
+          tools: [forge_read, search_docs, get_doc]
           guidance: [task.contract, hitl.pro]
           proof: contract
           expected_failure:
@@ -190,7 +190,7 @@ gates:
 
         - id: build
           role: builder
-          tools: [get_code_snippet, search_docs, get_doc]
+          tools: [forge_read, search_docs, get_doc]
           guidance: [task.code, hitl.pro]
           command: rust-check-and-test
           proof: command
@@ -200,7 +200,7 @@ gates:
 
         - id: review
           role: independent_reviewer
-          tools: [get_code_snippet, search_docs, get_doc]
+          tools: [forge_read, search_docs, get_doc]
           guidance: [task.review, hitl.pro]
           policy: default_review
           proof: review

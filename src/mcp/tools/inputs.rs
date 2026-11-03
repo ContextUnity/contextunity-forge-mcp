@@ -611,6 +611,7 @@ pub struct TaskSubmitInput {
     pub timeout_seconds: Option<u64>,
     /// Worktree routing selector; execution remains bound to the claimed worktree.
     pub worktree: Option<String>,
+    #[serde(default)]
     #[schemars(schema_with = "output_format_schema")]
     /// Output format. Omit for readable Markdown; choose JSON for machine clients.
     pub format: Option<OutputFormat>,
