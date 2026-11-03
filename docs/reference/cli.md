@@ -94,7 +94,7 @@ shared page parity.
 ## Repository tasks
 
 Use [repository tasks](tasks.md) for `task list`, `create`, `sync`, `inspect`,
-`claim`, `submit`, `blackboard`, `extend-scope`, `delete`, `reset`, `cleanup`, and the
+`claim`, `verify`, `submit`, `blackboard`, `extend-scope`, `delete`, `reset`, `cleanup`, and the
 `migrate preview/apply/verify` administration commands. These operations use
 `tasks_db` from `forge-mcp.yaml`; global `--db` selects only the code index.
 `task submit --evidence` accepts a JSON object with claim-bound identity and
@@ -130,6 +130,20 @@ contextunity-forge-mcp task claim TASK_ID --stage deliver --worker REVIEWER --wo
 contextunity-forge-mcp task submit TASK_ID --stage deliver --action pass --evidence '<JSON_OBJECT>'
 contextunity-forge-mcp task context TASK_ID
 ```
+
+Verify a claimed command gate iteratively, then submit its cached proof:
+
+```sh
+contextunity-forge-mcp task verify TASK_ID [--timeout SECONDS]
+contextunity-forge-mcp task submit TASK_ID --stage build --action pass [--timeout SECONDS]
+```
+
+`verify` executes the registered command in the claimed worktree and preserves
+the task stage. Submission without `--evidence` reuses fresh claim-bound proof
+or executes the command when needed. Other proof types require explicit evidence.
+`--timeout` overrides the profile's command timeout within its configured maximum
+and conflicts with `--evidence`. See [command verification](tasks.md#iterative-command-verification)
+for timeout, scope-warning, and diagnostic behavior.
 
 `task show` is an alias for `task inspect`. Inspect, show, and submit accept
 `--task TASK_ID` in place of the positional task ID. `task sync` accepts

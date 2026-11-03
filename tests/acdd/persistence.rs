@@ -246,6 +246,7 @@ fn task_store_migrates_the_ac001_gate_persistence_contract() {
         transition.proof_payload
     );
 
+    let max_snippet_bytes = contextunity_forge_mcp::db::tasks_store::MAX_OUTPUT_SNIPPET_BYTES;
     let trace = contextunity_forge_mcp::db::tasks_store::GateExecutionTrace {
         milestone_id: "m-test".into(),
         subject: "task:first".into(),
@@ -256,7 +257,7 @@ fn task_store_migrates_the_ac001_gate_persistence_contract() {
         status: "completed".into(),
         exit_code: Some(0),
         log_path: None,
-        output_snippet: Some("λ".repeat(1_025)),
+        output_snippet: Some("λ".repeat(max_snippet_bytes / 2 + 1)),
         stdout_sha256: Some("stdout-sha256".into()),
         duration_ms: 25,
     };
@@ -272,8 +273,8 @@ fn task_store_migrates_the_ac001_gate_persistence_contract() {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .expect("the bounded trace output should be queryable");
-    assert_eq!(stored_output_bytes, 2_048);
-    assert_eq!(stored_output, "λ".repeat(1_024));
+    assert_eq!(stored_output_bytes as usize, max_snippet_bytes);
+    assert_eq!(stored_output, "λ".repeat(max_snippet_bytes / 2));
     assert!(
         store.record_execution_trace(&trace).is_err(),
         "the attempt and command uniqueness key should reject duplicate traces"

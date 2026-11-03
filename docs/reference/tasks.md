@@ -175,16 +175,18 @@ and the two detail flags are mutually exclusive within one invocation. See the
 | --- | --- |
 | `task_list` | Optional `repository`, `milestone_ref`, `milestone_status`, `status`, `stage`, `detail`, `limit`, `offset`, and `generation`. Task status defaults to `ready`; values are `ready`, `in_progress`, `blocked`, `parked`, `completed`, `cancelled`, and `all`. `parked` selects tasks waiting for a scope owner with retained worker/worktree affinity; `all` includes them and retained cancelled tasks. Milestone status defaults to `active`; values are `active`, `planned`, `completed`, and `all`. A targeted `milestone_ref` defaults milestone status to `all`. With no explicit milestone under the active default, one unique active milestone is selected, zero yields an empty list, and multiple candidates fail with an ambiguity hint. `limit` accepts 1–100 (default 30); nonzero `offset` requires the task-view generation. `stage` matches a gate ID declared by the active profile; null matches every gate. Subtask detail defaults to compact references and statuses; `full` includes titles and verification evidence. Each task summary includes its declared `depends_on` references. |
 | `task_claim` | Required `task_id`, `stage`, `worker_id`, and `worktree`; optional `bundle` (boolean, defaults to true). Claims the current gate atomically, returning context tailored to the active gate (see below). Set `bundle: false` for minimal details. Collisions return typed `TASK_ALREADY_CLAIMED`. |
-| `task_submit` | Required `task_id`, `stage`, JSON object `evidence`, and `action` (`pass` or `reject`); optional JSON `findings`. Reject requires findings. |
-| `task_manage` | Required `action`; optional `workspace`, `task_id`, `milestone_ref`, `task_ref`, `paths`, `force` (default false), `subtask_ref`, `title`, `subtask_status`, and `evidence`. `next` additionally requires `worker_id` and a `worktree` path in CLI/engine action input. MCP accepts `worktree` as a routing selector for every action and requires it for `next`. See the action table below. |
+| `task_submit` | Required `task_id`, `stage`, and `action` (`pass` or `reject`); optional JSON `evidence` and `findings`. Omit evidence for autonomous Contract/Command proof compilation; other proof types require evidence. `timeout_seconds` overrides autonomous command execution only and conflicts with explicit evidence. Reject requires findings. |
+| `task_manage` | Required `action`; optional `workspace`, `task_id`, `milestone_ref`, `task_ref`, `paths`, `force` (default false), `subtask_ref`, `title`, `subtask_status`, and `evidence`. `verify` requires `task_id` and accepts `timeout_seconds`. `next` additionally requires `worker_id` and a `worktree` path in CLI/engine action input. MCP accepts `worktree` as a routing selector for every action and requires it for `next`. See the action table below. |
 | `task_blackboard` | `action` is `post`, `read`, or `inspect`. Optional `scope` selects `milestone`, `task`, or `subtask`; `milestone_ref`, `task_id`, and `subtask_ref` identify or constrain that context. Post requires canonical `topic` and `payload`, accepts `author` and optional active-profile `gate`, and returns an ID. Read accepts `topic`, optional active-profile `gate`, `limit` (default 10, maximum 50), and `offset`; it returns newest-first summaries and pagination metadata without payload. Inspect with `message_id` returns that message including payload and gate, ignoring optional `scope`, `task_id`, and `milestone_ref`; without `message_id`, inspect returns the scoped read page. |
 
-Direct engine callers may use `engine::tasks::submit_zero_arg` for Contract and
-Command proof gates. It compiles claim-bound evidence from persisted execution
-traces and the claimed worktree's Git HEAD, then uses the regular submit
-validation path. Review, seam-test, delivery, and schema-defined proof gates
-still require typed evidence. The flat MCP `task_submit` tool continues to
-require an evidence object.
+CLI `task submit` without `--evidence` and MCP `task_submit` without `evidence`
+compile claim-bound evidence for Contract and Command proof gates. Forge reuses
+a fresh completed execution trace matching the current candidate fingerprint;
+otherwise it runs the gate's registered command in the claimed worktree. It then
+uses the regular submit validation path. Review, seam-test, delivery, and
+schema-defined proof gates still require typed evidence. Explicit evidence uses
+the existing validation path. Direct engine callers use
+`engine::tasks::submit_zero_arg` or `submit_zero_arg_with_timeout`.
 
 For MCP calls, every task tool accepts `worktree` as a routing selector;
 `task_claim` and `task_manage(action="next")` require it, while `task_submit`
@@ -211,6 +213,7 @@ for blocker callouts and message recovery.
 | `sync` | `milestone_ref` or `workspace` | Optional explicit file within workspace; omit task_id/task_ref/paths; force=false. |
 | `inspect` | `task_id` | Omit workspace/milestone_ref/task_ref/paths; force=false. |
 | `context` | `task_id` | Omit workspace/milestone_ref/task_ref/paths; returns zero-shot context bundle without claiming. |
+| `verify` | `task_id` | Runs and caches the claimed gate command without advancing lifecycle state. Optional `timeout_seconds`; omit unrelated action fields. |
 | `delete` | Exactly one of `task_id`, `milestone_ref` | Workspace is allowed only with milestone_ref; omit task_ref/paths. |
 | `extend_scope` | `task_id`, nonempty `paths` | Omit workspace/milestone_ref/task_ref; force=false. |
 | `subtask_add` | `task_id`, `subtask_ref`, `title` | Optional workspace; omit milestone_ref/paths; force=false. |
@@ -468,6 +471,29 @@ can be reopened for actual task repairs with `contextunity-forge-mcp task reopen
 Zero runtime backward compatibility applies strictly to SQLite runtime storage and active milestone manifests. Historical receipts archived in `docs/milestones/archive/` are read as-is and exempt from active profile receipt schema validation. Filtering by `--stage <id>` matches directly against the persistent `task.stage` string ID in SQLite; CLI argument validation checks that the stage ID is defined in the active profile of the workspace or open tasks. If a task references a stage missing from the active profile's `gates`, Forge fails closed with `TASK_STAGE_UNKNOWN`, naming mismatched gates and suggesting either migrating task records or pinning the intended profile via `acdd_profile: <path>:<sha256_prefix>`.
 
 ## Task lifecycle diagnostics and error ergonomics
+
+### Iterative command verification
+
+Run `task verify TASK_ID` or MCP `task_manage(action: "verify", task_id: "TASK_ID")`
+to execute the current claimed gate's registered command without advancing its
+stage. The result includes compiled evidence and command diagnostics. A later
+submission reuses fresh proof for the same claim and candidate; changes invalidate
+the cached proof. Gates without a configured registered command fail closed.
+
+CLI `task verify` and evidence-free `task submit` accept `--timeout SECONDS`;
+the corresponding MCP calls accept `timeout_seconds`. The default comes from
+`commands.<id>.timeout_seconds` (300 seconds when omitted). Overrides are bounded
+by `limits.max_command_timeout_seconds` (default 1800 seconds). A timeout kills
+the process group and returns `TIMEOUT` with a bounded rerun hint.
+
+Command output uses the profile's [output parsing rules](profiles.md). Passing
+runs and expected contract-red runs return compact summaries without log files.
+Failures fitting `limits.diagnostic_inline_bytes` (default 4096) return inline
+diagnostics. Larger failures retain a bounded excerpt and a `file:///` link to
+the full log under `<claimed-worktree>/.forge/task-traces/`. Durable proof does
+not depend on optional log files. Modified or untracked paths outside the
+admitted or extended scope before or after execution prepend
+`SCOPE_VIOLATION_WARNING`; this warning does not fail the command.
 
 Claim, submit, manage, and reset errors use one single-line format:
 `{CODE}: {task_id}. {facts}. Do: {action}`. Operations without a task selector use

@@ -149,7 +149,12 @@ fn claim_inner(root: &Path, p: Claim) -> Result<Value> {
     context::validate_claim_gate_requirements(workspace, &task)?;
     let profile = store.profile_for_task(&task)?;
     let cursor = super::claim::claim_nested_gate(&profile, &task.stage, &p.stage)?;
-    let claimed = store.claim(&p.task_id, &cursor.canonical_stage_id, &p.worker_id, &p.worktree)?;
+    let claimed = store.claim(
+        &p.task_id,
+        &cursor.canonical_stage_id,
+        &p.worker_id,
+        &p.worktree,
+    )?;
     finish_claim(root, workspace, &mut store, claimed, cursor, p.bundle)
 }
 
@@ -199,7 +204,10 @@ fn finish_claim(
     if cursor.gate.persistence.pre == Some(crate::tasks::profile::PersistenceAction::Commit) {
         let pre_commit = (|| -> Result<()> {
             let task_spec = store.inspect(id)?;
-            let msg = format!("pre({}): claim {}", cursor.canonical_stage_id, claimed.task_id);
+            let msg = format!(
+                "pre({}): claim {}",
+                cursor.canonical_stage_id, claimed.task_id
+            );
             crate::git::git_scoped_commit(worktree, &task_spec.spec.scope, &msg)?;
             Ok(())
         })();
@@ -208,15 +216,18 @@ fn finish_claim(
             return Err(error);
         }
     }
-    let (pre_snapshot_commit, pre_candidate_baseline) = if cursor.gate.persistence.pre == Some(crate::tasks::profile::PersistenceAction::Snapshot) {
+    let (pre_snapshot_commit, pre_candidate_baseline) = if cursor.gate.persistence.pre
+        == Some(crate::tasks::profile::PersistenceAction::Snapshot)
+    {
         let pre_snapshot = (|| -> Result<(String, String)> {
             let task_spec = store.inspect(id)?;
-            let (snapshot, baseline, mut objects) = crate::engine::git_snapshot::capture_scoped_snapshot(
-                worktree,
-                id,
-                &task_spec.spec.scope,
-            )?
-            .context("TASK_SNAPSHOT_FAILED: pre-snapshot capture requires a Git worktree")?;
+            let (snapshot, baseline, mut objects) =
+                crate::engine::git_snapshot::capture_scoped_snapshot(
+                    worktree,
+                    id,
+                    &task_spec.spec.scope,
+                )?
+                .context("TASK_SNAPSHOT_FAILED: pre-snapshot capture requires a Git worktree")?;
             objects.retain_pending();
             Ok((snapshot, baseline))
         })();
@@ -235,7 +246,10 @@ fn finish_claim(
         if let Some(object) = details.as_object_mut() {
             object.insert("breadcrumb".into(), json!(breadcrumb));
             object.insert("active_gate_path".into(), json!(cursor.gate_path.clone()));
-            object.insert("active_stage_id".into(), json!(cursor.canonical_stage_id.clone()));
+            object.insert(
+                "active_stage_id".into(),
+                json!(cursor.canonical_stage_id.clone()),
+            );
             object.insert("subagent_role".into(), json!(subagent_role));
         }
         let details = context::adapt_workspace_guidance(workspace, details)?;
@@ -289,7 +303,9 @@ fn finish_claim(
                         "worktree": claimed.worktree.clone(),
                         "subagent_role": subagent_role.clone(),
                     });
-                    if let (Some(commit), Some(baseline)) = (&pre_snapshot_commit, &pre_candidate_baseline) {
+                    if let (Some(commit), Some(baseline)) =
+                        (&pre_snapshot_commit, &pre_candidate_baseline)
+                    {
                         if let Some(obj) = payload.as_object_mut() {
                             obj.insert("commit".into(), json!(commit));
                             obj.insert("candidate_baseline_head".into(), json!(baseline));
@@ -360,6 +376,7 @@ pub fn reopen(root: &Path, id: &str) -> Result<Task> {
 
 fn manage_action_name(action: &ManageAction) -> &'static str {
     match action {
+        ManageAction::Verify => "verify",
         ManageAction::Next => "next",
         ManageAction::Create => "create",
         ManageAction::Sync => "sync",
@@ -401,6 +418,9 @@ fn selector_invalid_fields(p: &Manage) -> Vec<&'static str> {
             fields.push(field);
         }
     };
+    if p.action != ManageAction::Verify && p.timeout_seconds.is_some() {
+        invalid("timeout_seconds");
+    }
     if p.action != ManageAction::Next {
         if p.worker_id.is_some() {
             invalid("worker_id");
@@ -485,7 +505,7 @@ fn selector_invalid_fields(p: &Manage) -> Vec<&'static str> {
                     }
                 }
             }
-            ManageAction::Inspect | ManageAction::Context => {
+            ManageAction::Inspect | ManageAction::Context | ManageAction::Verify => {
                 if !has_id {
                     invalid("task_id");
                 }
@@ -686,6 +706,9 @@ fn manage_inner(root: &Path, p: &mut Manage) -> Result<Value> {
     let milestone = p.milestone_ref.as_deref();
     let mut store = workspace.open(&registry.database)?;
     match p.action {
+        ManageAction::Verify => {
+            super::verify_task(root, id.context("task_id required")?, p.timeout_seconds)
+        }
         ManageAction::Next => {
             store.lock_checkpoint()?;
             let worker = p.worker_id.as_deref().context("worker_id required")?;
@@ -749,10 +772,7 @@ fn manage_inner(root: &Path, p: &mut Manage) -> Result<Value> {
                         parsed.id,
                         task_ref.unwrap_or_default()
                     );
-                    bail!(
-                        "{}",
-                        crate::store::task_not_found_message(&task_id)
-                    );
+                    bail!("{}", crate::store::task_not_found_message(&task_id));
                 }
                 for spec in parsed
                     .tasks
@@ -878,14 +898,12 @@ fn manage_inner(root: &Path, p: &mut Manage) -> Result<Value> {
                     updated_task.authority_snapshot = Some(
                         crate::tasks::AuthoritySnapshot::capture(&milestone, manifest_task),
                     );
-                    Ok(Some(
-                        crate::store::recovery::ManifestReplacement::new(
-                            &workspace.root,
-                            &milestone_ref,
-                            original_manifest.as_bytes(),
-                            updated_manifest.as_bytes(),
-                        )?,
-                    ))
+                    Ok(Some(crate::store::recovery::ManifestReplacement::new(
+                        &workspace.root,
+                        &milestone_ref,
+                        original_manifest.as_bytes(),
+                        updated_manifest.as_bytes(),
+                    )?))
                 },
             )?)?)
         }

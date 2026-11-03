@@ -530,6 +530,10 @@ pub enum PersistenceAction {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct ResourceLimits {
+    /// Maximum cleaned diagnostic size before retaining a raw log.
+    pub diagnostic_inline_bytes: usize,
+    /// Maximum accepted runtime process timeout override in seconds.
+    pub max_command_timeout_seconds: u64,
     /// Maximum size of custom task and gate metadata.
     pub max_metadata_bytes: usize,
     /// Maximum size of persisted trace summaries.
@@ -539,6 +543,8 @@ pub struct ResourceLimits {
 impl Default for ResourceLimits {
     fn default() -> Self {
         Self {
+            diagnostic_inline_bytes: 4096,
+            max_command_timeout_seconds: 1800,
             max_metadata_bytes: 2048,
             max_trace_summary_bytes: 2048,
         }
@@ -693,8 +699,13 @@ impl CommandOutputSpec {
             patterns.push(("seam_ref_pattern", pattern));
         }
         for (field, pattern) in patterns {
-            regex::Regex::new(pattern)
+            let regex = regex::Regex::new(pattern)
                 .with_context(|| format!("ACDD_PROFILE_INVALID: invalid output.{field} regex"))?;
+            if (field.starts_with("counts.") || field == "seam_ref_pattern")
+                && regex.captures_len() < 2
+            {
+                bail!("ACDD_PROFILE_INVALID: output.{field} regex requires capture group 1");
+            }
         }
         Ok(())
     }
@@ -817,7 +828,7 @@ impl CommandDef {
     }
 }
 
-fn glob_pattern_matches(pattern: &str, path: &str) -> bool {
+pub(crate) fn glob_pattern_matches(pattern: &str, path: &str) -> bool {
     if let Some(open) = pattern.find('{') {
         if let Some(close) = pattern[open + 1..].find('}') {
             let close = open + 1 + close;
@@ -1337,6 +1348,12 @@ impl GateProfile {
 
     /// Validate the fully merged profile before it becomes active.
     pub fn validate(&self) -> Result<()> {
+        if self.limits.diagnostic_inline_bytes == 0
+            || self.limits.diagnostic_inline_bytes > 65536
+            || self.limits.max_command_timeout_seconds == 0
+        {
+            bail!("ACDD_PROFILE_SCHEMA_INVALID: diagnostic_inline_bytes must be 1..=65536 and max_command_timeout_seconds must be positive");
+        }
         self.modules.validate()?;
         self.validate_catalogs()?;
         if self.gates.is_empty() {

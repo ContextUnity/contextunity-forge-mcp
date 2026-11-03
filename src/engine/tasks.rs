@@ -9,7 +9,8 @@ pub fn ensure_extractors() {
     INIT_EXTRACTOR.call_once(|| {
         forge_tasks::set_ast_extractor(crate::engine::ast::extract_typed);
         forge_tasks::milestones::set_symbol_facts_extractor(|path, source| {
-            let Some(language) = crate::engine::languages::for_path(std::path::Path::new(path)) else {
+            let Some(language) = crate::engine::languages::for_path(std::path::Path::new(path))
+            else {
                 return Ok(Vec::new());
             };
             let facts = crate::engine::ast::extract(path, language.id(), source)?;
@@ -42,6 +43,36 @@ pub fn submit_zero_arg(
 ) -> anyhow::Result<serde_json::Value> {
     ensure_extractors();
     forge_tasks::engine::submit_zero_arg(root, task_id, stage, action, findings)
+}
+
+/// Verifies a claimed gate without advancing its lifecycle after wiring extractors.
+pub fn verify_task(
+    root: &std::path::Path,
+    task_id: &str,
+    timeout_seconds: Option<u64>,
+) -> anyhow::Result<serde_json::Value> {
+    ensure_extractors();
+    forge_tasks::engine::verify_task(root, task_id, timeout_seconds)
+}
+
+/// Submits an automated gate with a bounded runtime timeout override.
+pub fn submit_zero_arg_with_timeout(
+    root: &std::path::Path,
+    task_id: &str,
+    stage: &str,
+    action: Action,
+    findings: Option<serde_json::Value>,
+    timeout_seconds: Option<u64>,
+) -> anyhow::Result<serde_json::Value> {
+    ensure_extractors();
+    forge_tasks::engine::submit_zero_arg_with_timeout(
+        root,
+        task_id,
+        stage,
+        action,
+        findings,
+        timeout_seconds,
+    )
 }
 
 /// Manages a task lifecycle after ensuring production extractors are wired.

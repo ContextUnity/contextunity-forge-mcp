@@ -593,11 +593,62 @@ macro_rules! task_input {
 
 task_input!(TaskListInput, crate::engine::tasks::List, routing_worktree);
 task_input!(TaskClaimInput, crate::engine::tasks::Claim);
-task_input!(
-    TaskSubmitInput,
-    crate::engine::tasks::Submit,
-    routing_worktree
-);
+
+fn optional_submit_evidence(schema: &mut schemars::Schema) {
+    if let Some(required) = schema.get_mut("required").and_then(Value::as_array_mut) {
+        required.retain(|field| field.as_str() != Some("evidence"));
+    }
+}
+
+#[derive(JsonSchema)]
+#[schemars(deny_unknown_fields, transform = optional_submit_evidence)]
+/// A gate submission with optional autonomous proof compilation.
+pub struct TaskSubmitInput {
+    #[serde(flatten)]
+    #[schemars(flatten)]
+    /// The original gate submission fields; omit evidence to execute an automated gate.
+    pub request: crate::engine::tasks::Submit,
+    /// Runtime timeout in seconds for an automated submission, bounded by the active profile.
+    pub timeout_seconds: Option<u64>,
+    /// Worktree routing selector; execution remains bound to the claimed worktree.
+    pub worktree: Option<String>,
+    #[schemars(schema_with = "output_format_schema")]
+    /// Output format. Omit for readable Markdown; choose JSON for machine clients.
+    pub format: Option<OutputFormat>,
+    #[schemars(skip)]
+    /// Whether the caller supplied an explicit evidence value.
+    pub evidence_provided: bool,
+}
+
+impl<'de> Deserialize<'de> for TaskSubmitInput {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error as _;
+
+        let mut properties = serde_json::Map::<String, Value>::deserialize(deserializer)?;
+        let timeout_seconds =
+            serde_json::from_value(properties.remove("timeout_seconds").unwrap_or(Value::Null))
+                .map_err(D::Error::custom)?;
+        let evidence_provided = properties.contains_key("evidence");
+        properties.entry("evidence").or_insert(Value::Null);
+        let (request, format, worktree) =
+            deserialize_task_input::<_, crate::engine::tasks::Submit>(
+                Value::Object(properties),
+                true,
+            )
+            .map_err(D::Error::custom)?;
+        Ok(Self {
+            request,
+            timeout_seconds,
+            worktree,
+            format,
+            evidence_provided,
+        })
+    }
+}
+
 task_input!(TaskManageInput, crate::engine::tasks::Manage);
 task_input!(
     TaskBlackboardInput,

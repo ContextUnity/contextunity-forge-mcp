@@ -90,18 +90,536 @@ fn successful_gate_execution_does_not_write_a_trace_log() {
     let task_id = milestone.task_id(&milestone.tasks[0]);
     let mut configured = (*profile::compiled()).clone();
     let command = CommandDef::Script("printf 'test result: ok. 1 passed; 0 failed\\n'".into());
-    configured.commands.insert("trace-check".into(), command.clone());
-    configured.gates.iter_mut().find(|gate| gate.id == "contract").unwrap().command =
-        Some("trace-check".into());
+    configured
+        .commands
+        .insert("trace-check".into(), command.clone());
+    configured
+        .gates
+        .iter_mut()
+        .find(|gate| gate.id == "contract")
+        .unwrap()
+        .command = Some("trace-check".into());
     fs::create_dir_all(root.0.join(".forge/acdd")).unwrap();
     let profile_yaml = serde_yaml::to_string(&configured).unwrap();
     let parsed_profile = parse_profile(&profile_yaml).unwrap();
     let command = &parsed_profile.commands["trace-check"];
     fs::write(root.0.join(".forge/acdd/profile.yaml"), profile_yaml).unwrap();
-    store.claim(&task_id, "contract", "trace-author", root.0.to_str().unwrap()).unwrap();
-    let traces = forge_tasks::milestones::execute_command_gate(&root.0, &task_id, "tasks.contract", command, &[]).unwrap();
+    store
+        .claim(
+            &task_id,
+            "contract",
+            "trace-author",
+            root.0.to_str().unwrap(),
+        )
+        .unwrap();
+    let traces = forge_tasks::milestones::execute_command_gate(
+        &root.0,
+        &task_id,
+        "tasks.contract",
+        command,
+        &[],
+    )
+    .unwrap();
     assert_eq!(traces.len(), 1);
-    assert_eq!(traces[0].log_path, None, "successful execution must not create a trace log");
+    assert_eq!(
+        traces[0].log_path, None,
+        "successful execution must not create a trace log"
+    );
+}
+
+pub(super) fn command_fixture(
+    command: &str,
+    output: Option<profile::CommandOutputSpec>,
+) -> (super::support::ScopedWorkspace, TasksStore, String) {
+    let (root, mut store, milestone) = fixture();
+    root.write(".gitignore", ".forge/\n");
+    let task_id = milestone.task_id(&milestone.tasks[0]);
+    let mut configured = (*profile::compiled()).clone();
+    configured.commands.insert(
+        "check".into(),
+        CommandDef::Detailed {
+            command: command.into(),
+            timeout_seconds: Some(5),
+            description: None,
+            scope_args_by_pattern: Default::default(),
+            output,
+        },
+    );
+    let gate = configured
+        .gates
+        .iter_mut()
+        .find(|gate| gate.id == "contract")
+        .unwrap();
+    gate.command = Some("check".into());
+    gate.proof = profile::ProofDef::Kind(profile::ProofKind::Command);
+    gate.expected_failure = None;
+    root.write(
+        ".forge/acdd/profile.yaml",
+        &serde_yaml::to_string(&configured).unwrap(),
+    );
+    store
+        .claim(
+            &task_id,
+            "contract",
+            "command-builder",
+            root.0.to_str().unwrap(),
+        )
+        .unwrap();
+    (root, store, task_id)
+}
+
+pub(super) fn output_spec(require_counts: bool) -> profile::CommandOutputSpec {
+    profile::CommandOutputSpec {
+        require_counts,
+        counts: Some(profile::CommandCountsSpec {
+            passed: r"PASS=(\d+)".into(),
+            failed: r"FAIL=(\d+)".into(),
+        }),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn command_verification_reuses_durable_facts_and_invalidates_changed_candidates() {
+    let (root, store, id) = command_fixture(
+        "printf run >> .forge/counter; printf 'PASS=3 FAIL=0\\nPASS=4 FAIL=0\\n'",
+        Some(output_spec(true)),
+    );
+    let first = forge_tasks::engine::verify_task(&root.0, &id, None).unwrap();
+    assert_eq!(
+        first["evidence"]["proof"]["command_proof"]["tests_passed"], 7,
+        "{first}"
+    );
+    assert_eq!(first["verification"]["diagnostic_mode"], "pass");
+    assert_eq!(store.inspect(&id).unwrap().stage, "contract");
+    drop(store);
+    let cached = forge_tasks::engine::verify_task(&root.0, &id, None).unwrap();
+    assert_eq!(cached["evidence"], first["evidence"]);
+    assert_eq!(
+        fs::read_to_string(root.0.join(".forge/counter")).unwrap(),
+        "run"
+    );
+    root.write("src/lib.rs", "pub fn changed_candidate() {}\n");
+    forge_tasks::engine::verify_task(&root.0, &id, None).unwrap();
+    assert_eq!(
+        fs::read_to_string(root.0.join(".forge/counter")).unwrap(),
+        "runrun"
+    );
+    assert!(!root.0.join(".forge/task-traces").exists());
+}
+
+#[test]
+fn zero_argument_submit_executes_countless_linter_and_advances_gate() {
+    let (root, store, id) = command_fixture("printf checked", Some(output_spec(false)));
+    let result = submit_zero_arg(&root.0, &id, "contract", Action::Pass, None).unwrap();
+    assert_eq!(result["stage"], "build");
+    assert_eq!(store.inspect(&id).unwrap().stage, "build");
+}
+
+#[test]
+fn command_count_requirements_reject_missing_and_malformed_output() {
+    for (command, passed) in [
+        ("printf 'no summary'", r"PASS=(\d+)"),
+        ("printf 'PASS=invalid FAIL=0'", r"PASS=(\S+)"),
+    ] {
+        let mut spec = output_spec(true);
+        spec.counts.as_mut().unwrap().passed = passed.into();
+        let (root, _, id) = command_fixture(command, Some(spec));
+        assert!(submit_zero_arg(&root.0, &id, "contract", Action::Pass, None).is_err());
+    }
+}
+
+#[test]
+fn command_diagnostics_remove_noise_and_keep_short_failures_inline() {
+    let mut spec = output_spec(false);
+    spec.noise = vec!["^progress".into()];
+    spec.errors = vec!["^ERROR".into()];
+    let (root, _, id) = command_fixture("i=0; while [ $i -lt 500 ]; do printf 'progress compiling\\n'; i=$((i+1)); done; printf 'ERROR useful failure\\n' >&2; exit 2", Some(spec));
+    let result = forge_tasks::engine::verify_task(&root.0, &id, None).unwrap();
+    assert_eq!(
+        result["verification"]["diagnostic_mode"], "inline",
+        "{result}"
+    );
+    let output = result["verification"]["output"].as_str().unwrap();
+    assert!(output.contains("ERROR useful failure"));
+    assert!(!output.contains("progress compiling"));
+    assert!(result["verification"]["log_path"].is_null());
+    assert!(!root.0.join(".forge/task-traces").exists());
+}
+
+#[test]
+fn command_large_failure_retains_confined_raw_log_and_head_tail_excerpt() {
+    let (root, _, id) = command_fixture(
+        "printf 'HEAD\\n'; head -c 10000 /dev/zero | tr '\\0' x; printf '\\nTAIL\\n'; exit 2",
+        Some(output_spec(false)),
+    );
+    let result = forge_tasks::engine::verify_task(&root.0, &id, None).unwrap();
+    assert_eq!(
+        result["verification"]["diagnostic_mode"], "truncated",
+        "{result}"
+    );
+    let output = result["verification"]["output"].as_str().unwrap();
+    assert!(output.contains("HEAD") && output.contains("TAIL") && output.contains("file:///"));
+    let log = result["verification"]["log_path"].as_str().unwrap();
+    assert!(log.starts_with(".forge/task-traces/"));
+    assert!(fs::read(root.0.join(log)).unwrap().len() > 10000);
+}
+
+#[test]
+fn command_scope_guard_observes_paths_before_and_after_execution() {
+    let (root, _, id) = command_fixture(
+        "printf after > after.txt; printf checked",
+        Some(output_spec(false)),
+    );
+    root.write("before.txt", "existing out-of-scope change\n");
+    let result = forge_tasks::engine::verify_task(&root.0, &id, None).unwrap();
+    let output = result["verification"]["output"].as_str().unwrap();
+    assert!(output.starts_with("SCOPE_VIOLATION_WARNING"), "{result}");
+    let paths = result["verification"]["scope_violations"]
+        .as_array()
+        .unwrap();
+    assert!(paths.iter().any(|path| path["path"] == "before.txt"));
+    assert!(paths.iter().any(|path| path["path"] == "after.txt"));
+    assert_eq!(result["verification"]["exit_code"], 0);
+}
+
+#[test]
+fn command_timeout_override_is_bounded_and_returns_rerun_hint() {
+    let (root, _, id) = command_fixture("sleep 30", Some(output_spec(false)));
+    for timeout in [0, 1801] {
+        assert!(forge_tasks::engine::verify_task(&root.0, &id, Some(timeout)).is_err());
+    }
+    let started = Instant::now();
+    let result = forge_tasks::engine::verify_task(&root.0, &id, Some(1)).unwrap();
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert_eq!(
+        result["verification"]["diagnostic_mode"], "timeout",
+        "{result}"
+    );
+    assert!(result["verification"]["output"]
+        .as_str()
+        .unwrap()
+        .contains("timeout_seconds: 2"));
+}
+
+#[test]
+fn command_profile_output_changes_invalidate_cached_proof_and_timeout_limit() {
+    let (root, _, id) = command_fixture(
+        "printf run >> .forge/counter; printf checked",
+        Some(output_spec(false)),
+    );
+    forge_tasks::engine::verify_task(&root.0, &id, None).unwrap();
+    let mut configured = (*profile::load_for_workspace(&root.0).unwrap()).clone();
+    configured.limits.max_command_timeout_seconds = 2;
+    if let CommandDef::Detailed { output, .. } = configured.commands.get_mut("check").unwrap() {
+        output.as_mut().unwrap().noise.push("^new-noise".into());
+    }
+    root.write(
+        ".forge/acdd/profile.yaml",
+        &serde_yaml::to_string(&configured).unwrap(),
+    );
+    assert!(forge_tasks::engine::verify_task(&root.0, &id, Some(3)).is_err());
+    forge_tasks::engine::verify_task(&root.0, &id, Some(2)).unwrap();
+    assert_eq!(
+        fs::read_to_string(root.0.join(".forge/counter")).unwrap(),
+        "runrun"
+    );
+}
+
+#[test]
+fn command_scope_arguments_expand_once_for_directory_scope() {
+    let (root, _, id) = command_fixture("printf '%s\\n'", Some(output_spec(false)));
+    let mut configured = (*profile::load_for_workspace(&root.0).unwrap()).clone();
+    configured
+        .scope_args_by_pattern
+        .insert("src/*.rs".into(), "scoped-token".into());
+    root.write("src/other.rs", "pub fn other() {}\n");
+    root.write(
+        ".forge/acdd/profile.yaml",
+        &serde_yaml::to_string(&configured).unwrap(),
+    );
+    let result = forge_tasks::engine::verify_task(&root.0, &id, None).unwrap();
+    assert_eq!(
+        result["verification"]["diagnostic_mode"], "pass",
+        "{result}"
+    );
+    let store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
+    let traces = store.execution_traces(&id, Some("tasks.contract")).unwrap();
+    assert_eq!(traces.len(), 1);
+    assert_eq!(traces[0].command_str, "printf '%s\\n' scoped-token");
+}
+
+#[test]
+fn command_contract_proof_recovers_expected_red_and_configured_seam_without_logs() {
+    let mut spec = output_spec(false);
+    spec.seam_ref_pattern = Some(r"seam:(\S+)".into());
+    let (root, store, id) = command_fixture("head -c 10000 /dev/zero | tr '\\0' x; printf 'assertion failed'; exit 101 # seam:tests/acdd/runner.rs::successful_gate_execution_does_not_write_a_trace_log", Some(spec));
+    let mut configured = (*profile::load_for_workspace(&root.0).unwrap()).clone();
+    let gate = configured
+        .gates
+        .iter_mut()
+        .find(|gate| gate.id == "contract")
+        .unwrap();
+    gate.proof = profile::ProofDef::Kind(profile::ProofKind::Contract);
+    gate.expected_failure = Some(ExpectedFailure {
+        exit_codes: vec![101],
+        stderr_contains: Some("assertion failed".into()),
+    });
+    root.write(
+        ".forge/acdd/profile.yaml",
+        &serde_yaml::to_string(&configured).unwrap(),
+    );
+    let result = forge_tasks::engine::verify_task(&root.0, &id, None).unwrap();
+    assert_eq!(
+        result["evidence"]["proof"]["contract_proof"]["red_exit_code"], 101,
+        "{result}"
+    );
+    assert_eq!(
+        result["evidence"]["proof"]["contract_proof"]["seam_test_ref"],
+        "tests/acdd/runner.rs::successful_gate_execution_does_not_write_a_trace_log"
+    );
+    drop(store);
+    assert!(compile_evidence_envelope(&root.0, &id, "contract").is_ok());
+    assert!(!root.0.join(".forge/task-traces").exists());
+}
+
+#[test]
+fn command_missing_registered_contract_command_fails_closed() {
+    let (root, _, id) = command_fixture("printf checked", Some(output_spec(false)));
+    let mut configured = (*profile::load_for_workspace(&root.0).unwrap()).clone();
+    configured
+        .gates
+        .iter_mut()
+        .find(|gate| gate.id == "contract")
+        .unwrap()
+        .command = None;
+    root.write(
+        ".forge/acdd/profile.yaml",
+        &serde_yaml::to_string(&configured).unwrap(),
+    );
+    let error = forge_tasks::engine::verify_task(&root.0, &id, None)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("TASK_COMMAND_UNCONFIGURED"), "{error}");
+}
+
+#[test]
+fn command_trace_migration_preserves_inline_diagnostics_larger_than_two_kib() {
+    let (root, store, id) = command_fixture(
+        "head -c 3000 /dev/zero | tr '\\0' x; exit 2",
+        Some(output_spec(false)),
+    );
+    drop(store);
+    let connection = rusqlite::Connection::open(root.0.join(".forge/tasks.sqlite")).unwrap();
+    let schema: String = connection
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE name='gate_execution_traces'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    connection
+        .execute_batch("DROP TABLE gate_execution_traces")
+        .unwrap();
+    connection
+        .execute_batch(&schema.replace("<= 65536", "<= 2048"))
+        .unwrap();
+    drop(connection);
+    let result = forge_tasks::engine::verify_task(&root.0, &id, None).unwrap();
+    assert_eq!(result["verification"]["diagnostic_mode"], "inline");
+    let store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
+    let traces = store.execution_traces(&id, Some("tasks.contract")).unwrap();
+    assert!(
+        traces
+            .last()
+            .unwrap()
+            .output_snippet
+            .as_ref()
+            .unwrap()
+            .len()
+            > 2048
+    );
+    assert!(traces.last().unwrap().log_path.is_none());
+}
+
+#[test]
+fn command_embedded_language_output_profiles_prove_real_command_summaries() {
+    let embedded = profile::compiled();
+    let registered = &embedded.commands["check_full_repo"];
+    for (path, summary) in [
+        ("src/lib.rs", "test result: ok. 3 passed; 0 failed"),
+        ("tests/test_api.py", "=== 3 passed in 0.1s ==="),
+        ("src/api.ts", "Tests: 3 passed, 3 total"),
+    ] {
+        assert!(registered.command_for_path(path).is_some());
+        let (root, _, id) = command_fixture(
+            &format!("printf '%s\\n' '{}'", summary),
+            registered.output().cloned(),
+        );
+        let result = forge_tasks::engine::verify_task(&root.0, &id, None).unwrap();
+        assert_eq!(
+            result["evidence"]["proof"]["command_proof"]["tests_passed"], 3,
+            "{path}: {result}"
+        );
+    }
+}
+
+#[test]
+fn command_raw_failure_facts_cannot_be_forged_by_scope_warning_filenames() {
+    let (root, store, id) = command_fixture("printf 'different failure'; exit 101 # cargo test --test acdd runner::successful_gate_execution_does_not_write_a_trace_log", Some(output_spec(false)));
+    let mut configured = (*profile::load_for_workspace(&root.0).unwrap()).clone();
+    let gate = configured
+        .gates
+        .iter_mut()
+        .find(|gate| gate.id == "contract")
+        .unwrap();
+    gate.proof = profile::ProofDef::Kind(profile::ProofKind::Contract);
+    gate.expected_failure = Some(ExpectedFailure {
+        exit_codes: vec![101],
+        stderr_contains: Some("assertion failed".into()),
+    });
+    root.write(
+        ".forge/acdd/profile.yaml",
+        &serde_yaml::to_string(&configured).unwrap(),
+    );
+    root.write("assertion failed.txt", "untrusted filename\n");
+    for _ in 0..2 {
+        let result = forge_tasks::engine::verify_task(&root.0, &id, None).unwrap();
+        assert!(
+            result["evidence"].is_null(),
+            "decorated diagnostic must not prove raw failure: {result}"
+        );
+    }
+    assert!(submit_zero_arg(&root.0, &id, "contract", Action::Pass, None).is_err());
+    let run = latest_run(&store, &root.0, &id, "tasks.contract");
+    let red = store
+        .claim_bound_execution_traces(run.run_id)
+        .unwrap()
+        .pop()
+        .unwrap();
+    let mut green = red.clone();
+    green.trace.exit_code = Some(0);
+    green.trace.gate_path = "tasks.build".into();
+    green.trace_order += 1;
+    assert!(verify_red_to_green(
+        &red,
+        &green,
+        configured.gates[0].expected_failure.as_ref().unwrap()
+    )
+    .is_err());
+}
+
+#[test]
+fn command_cached_proof_requires_the_complete_current_pattern_plan() {
+    for mutation in ["add", "remove", "change"] {
+        let (root, _, id) = command_fixture("printf checked", Some(output_spec(false)));
+        root.write("src/readme.md", "scoped documentation\n");
+        let mut configured = (*profile::load_for_workspace(&root.0).unwrap()).clone();
+        let mut patterns = PatternCommands {
+            by_pattern: BTreeMap::from([("src/*.rs".into(), "printf rust >> .forge/runs".into())]),
+            description: None,
+            timeout_seconds: Some(5),
+            output: Some(output_spec(false)),
+        };
+        if mutation == "remove" {
+            patterns
+                .by_pattern
+                .insert("src/*.md".into(), "printf docs >> .forge/runs".into());
+        }
+        configured
+            .commands
+            .insert("check".into(), CommandDef::Pattern(patterns.clone()));
+        root.write(
+            ".forge/acdd/profile.yaml",
+            &serde_yaml::to_string(&configured).unwrap(),
+        );
+        assert!(
+            forge_tasks::engine::verify_task(&root.0, &id, None).unwrap()["evidence"].is_object()
+        );
+        match mutation {
+            "add" => {
+                patterns.by_pattern.insert(
+                    "src/*.md".into(),
+                    "printf docs > .forge/docs-ran; exit 2".into(),
+                );
+            }
+            "remove" => {
+                patterns.by_pattern.remove("src/*.md");
+            }
+            "change" => {
+                patterns.by_pattern.insert(
+                    "src/*.rs".into(),
+                    "printf changed > .forge/changed-ran; exit 2".into(),
+                );
+            }
+            _ => unreachable!(),
+        }
+        configured
+            .commands
+            .insert("check".into(), CommandDef::Pattern(patterns));
+        root.write(
+            ".forge/acdd/profile.yaml",
+            &serde_yaml::to_string(&configured).unwrap(),
+        );
+        assert!(
+            compile_evidence_envelope(&root.0, &id, "contract").is_err(),
+            "{mutation} must invalidate cached plan"
+        );
+        let result = forge_tasks::engine::verify_task(&root.0, &id, None).unwrap();
+        if mutation == "remove" {
+            assert!(result["evidence"].is_object(), "{result}");
+            assert_eq!(
+                fs::read_to_string(root.0.join(".forge/runs")).unwrap(),
+                "rustdocsrust"
+            );
+        } else {
+            assert!(result["evidence"].is_null(), "{result}");
+            assert!(root
+                .0
+                .join(if mutation == "add" {
+                    ".forge/docs-ran"
+                } else {
+                    ".forge/changed-ran"
+                })
+                .exists());
+        }
+    }
+}
+
+#[test]
+fn command_subset_execution_cannot_prove_an_entire_admitted_scope_plan() {
+    let (root, _, id) = command_fixture("printf checked", Some(output_spec(false)));
+    root.write("src/readme.md", "scoped documentation\n");
+    let mut configured = (*profile::load_for_workspace(&root.0).unwrap()).clone();
+    let command = CommandDef::Pattern(PatternCommands {
+        by_pattern: BTreeMap::from([
+            ("src/*.rs".into(), "printf rust".into()),
+            (
+                "src/*.md".into(),
+                "printf docs > .forge/docs-ran; exit 2".into(),
+            ),
+        ]),
+        description: None,
+        timeout_seconds: Some(5),
+        output: Some(output_spec(false)),
+    });
+    configured.commands.insert("check".into(), command.clone());
+    root.write(
+        ".forge/acdd/profile.yaml",
+        &serde_yaml::to_string(&configured).unwrap(),
+    );
+    execute_command_gate(
+        &root.0,
+        &id,
+        "tasks.contract",
+        &command,
+        &["src/lib.rs".into()],
+    )
+    .unwrap();
+    assert!(compile_evidence_envelope(&root.0, &id, "contract").is_err());
+    let result = forge_tasks::engine::verify_task(&root.0, &id, None).unwrap();
+    assert!(result["evidence"].is_null(), "{result}");
+    assert!(root.0.join(".forge/docs-ran").exists());
 }
 
 #[test]
@@ -111,11 +629,12 @@ fn transition_runner_compiles_proofs_and_covers_all_task3_subtasks() {
     let outside_trace_root = root.0.with_extension("task3-outside-traces");
     let outside_trace_root_arg = shell_quote(&outside_trace_root.to_string_lossy());
     root.write(".gitignore", ".forge/\n");
+    root.write("src/readme.md", "Scoped documentation command input.\n");
     fs::create_dir_all(root.0.join(".forge/task3-bin")).unwrap();
     let fake_cargo = root.0.join(".forge/task3-bin/cargo");
     fs::write(
         &fake_cargo,
-        "#!/bin/sh\ncase \"$TASK3_MODE\" in\n  contract-red) printf 'assertion failed\\n' >&2; exit 101 ;;\n  build-fail) printf 'test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out\\n'; exit 1 ;;\n  forge-symlink) mv .forge .forge-preserved && ln -s \"$TASK3_OUTSIDE\" .forge && printf 'swapped forge path\\n' ;;\n  *) printf 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\\n'; printf 'label=%s\\n' \"$TASK3_LABEL\" ;;\nesac\n",
+        "#!/bin/sh\ncase \"$TASK3_MODE\" in\n  contract-red) printf 'assertion failed\\n' >&2; exit 101 ;;\n  large-fail) head -c 10000 /dev/zero | tr '\\0' x; exit 1 ;;\n  build-fail) printf 'test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out\\n'; exit 1 ;;\n  forge-symlink) mv .forge .forge-preserved && ln -s \"$TASK3_OUTSIDE\" .forge && head -c 10000 /dev/zero | tr '\\0' x; exit 1 ;;\n  *) printf 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\\n'; printf 'label=%s\\n' \"$TASK3_LABEL\" ;;\nesac\n",
     )
     .unwrap();
     #[cfg(unix)]
@@ -253,13 +772,9 @@ fn transition_runner_compiles_proofs_and_covers_all_task3_subtasks() {
                 .all(|trace| trace.status == "completed" && trace.exit_code == Some(0))
             && command_order == "rust\ndocs\n"
     });
-    let complete_log_preserved = execution.as_ref().is_ok_and(|traces| {
-        traces.iter().any(|trace| {
-            trace.log_path.as_deref().is_some_and(|log_path| {
-                fs::read_to_string(root.0.join(log_path)).is_ok_and(|output| output.len() >= 4096)
-            })
-        })
-    });
+    let complete_log_preserved = execution
+        .as_ref()
+        .is_ok_and(|traces| traces.iter().all(|trace| trace.log_path.is_none()));
     let green_run = latest_run(&store, &root.0, task_id, "tasks.build");
     let green_entries = store
         .claim_bound_execution_traces(green_run.run_id)
@@ -352,7 +867,7 @@ fn transition_runner_compiles_proofs_and_covers_all_task3_subtasks() {
         task_id,
         "tasks.build",
         &build_commands,
-        &["src/lib.rs".to_owned()],
+        &source_paths,
     );
     let recovery_proof_ok =
         recovery_run.is_ok() && compile_evidence_envelope(&root.0, task_id, "build").is_ok();
@@ -389,11 +904,6 @@ fn transition_runner_compiles_proofs_and_covers_all_task3_subtasks() {
         .chain(concurrent_b.as_ref().ok().and_then(|traces| traces.first()))
         .cloned()
         .collect::<Vec<_>>();
-    let concurrent_logs: Vec<String> = concurrent_traces
-        .iter()
-        .filter_map(|trace| trace.log_path.as_deref())
-        .map(|path| fs::read_to_string(root.0.join(path)).unwrap())
-        .collect();
     let concurrent_attempts = concurrent_traces
         .iter()
         .map(|trace| trace.attempt_id)
@@ -406,16 +916,12 @@ fn transition_runner_compiles_proofs_and_covers_all_task3_subtasks() {
         && concurrent_b.is_ok()
         && concurrent_traces.len() == 2
         && concurrent_attempts.len() == 2
-        && concurrent_log_paths.len() == 2
-        && concurrent_logs.len() == 2
-        && concurrent_logs[0] != concurrent_logs[1]
-        && concurrent_logs
-            .iter()
-            .all(|log| log.contains("test result: ok."));
+        && concurrent_log_paths.is_empty();
 
     #[cfg(unix)]
     let (final_symlink_rejected, parent_symlink_rejected, forged_parent_symlink_rejected) = {
         use std::os::unix::fs::symlink;
+        fs::write(root.0.join(".forge/runner-mode"), "large-fail\n").unwrap();
 
         let path_command_id = "task3-check::src/lib.rs";
         let previous = store
@@ -506,7 +1012,7 @@ fn transition_runner_compiles_proofs_and_covers_all_task3_subtasks() {
         task_id,
         "tasks.build",
         &build_commands,
-        &["src/lib.rs".to_owned()],
+        &source_paths,
     );
     let final_proof_ok =
         final_run.is_ok() && compile_evidence_envelope(&root.0, task_id, "build").is_ok();
@@ -687,7 +1193,7 @@ fn transition_runner_compiles_proofs_and_covers_all_task3_subtasks() {
     .success();
 
     assert!(
-        contract_execution.is_err(),
+        contract_execution.is_ok(),
         "contract fixture produces an expected runtime red"
     );
     assert!(

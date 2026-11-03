@@ -1,10 +1,10 @@
+use anyhow::Result;
+use clap::Subcommand;
 use forge_tasks::engine as tasks;
 use forge_tasks::{
     Action, BlackboardAction, BlackboardRequest, BlackboardScope, Claim, List, Manage,
     ManageAction, MilestoneStatusFilter, Status, Submit, TaskListDetail,
 };
-use anyhow::Result;
-use clap::Subcommand;
 use serde_json::Value;
 use std::path::Path;
 
@@ -232,6 +232,14 @@ pub enum TaskCommand {
         /// Return unified zero-shot task context bundle.
         bundle: bool,
     },
+    /// Run and cache the claimed gate command without advancing the task.
+    Verify {
+        /// Task identifier.
+        task_id: String,
+        /// Runtime command timeout in seconds, bounded by the active profile.
+        #[arg(long = "timeout")]
+        timeout_seconds: Option<u64>,
+    },
     /// Represents the submit case.
     Submit {
         /// The task id value.
@@ -249,6 +257,9 @@ pub enum TaskCommand {
         #[arg(long)]
         /// Optional JSON evidence object; automated gates can infer proof from persisted execution.
         evidence: Option<String>,
+        /// Runtime command timeout in seconds for submission without explicit evidence.
+        #[arg(long = "timeout", conflicts_with = "evidence")]
+        timeout_seconds: Option<u64>,
         #[arg(long)]
         /// Optional findings value.
         findings: Option<String>,
@@ -446,7 +457,13 @@ pub fn run(root: &Path, command: TaskCommand) -> Result<Value> {
                     worktree,
                     bundle: if bundle { Some(true) } else { None },
                 },
-            )
+            );
+        }
+        TaskCommand::Verify {
+            task_id,
+            timeout_seconds,
+        } => {
+            return tasks::verify_task(root, &task_id, timeout_seconds);
         }
         TaskCommand::Submit {
             task_id,
@@ -454,6 +471,7 @@ pub fn run(root: &Path, command: TaskCommand) -> Result<Value> {
             stage,
             action,
             evidence,
+            timeout_seconds,
             findings,
         } => {
             let task_id = task_id
@@ -471,11 +489,18 @@ pub fn run(root: &Path, command: TaskCommand) -> Result<Value> {
                         findings,
                     },
                 ),
-                None => tasks::submit_zero_arg(root, &task_id, &stage, action, findings),
+                None => tasks::submit_zero_arg_with_timeout(
+                    root,
+                    &task_id,
+                    &stage,
+                    action,
+                    findings,
+                    timeout_seconds,
+                ),
             };
         }
         TaskCommand::Reset { task_id } | TaskCommand::Reopen { task_id } => {
-            return Ok(serde_json::to_value(tasks::reset(root, &task_id)?)?)
+            return Ok(serde_json::to_value(tasks::reset(root, &task_id)?)?);
         }
         TaskCommand::Context { task_id } => {
             manage.action = ManageAction::Context;
@@ -485,7 +510,7 @@ pub fn run(root: &Path, command: TaskCommand) -> Result<Value> {
         TaskCommand::Cleanup => {
             return Ok(
                 serde_json::json!({"deleted":tasks::store(root)?.cleanup(crate::db::tasks_store::now())?}),
-            )
+            );
         }
         TaskCommand::Subtask { command } => match command {
             SubtaskCommand::Add {

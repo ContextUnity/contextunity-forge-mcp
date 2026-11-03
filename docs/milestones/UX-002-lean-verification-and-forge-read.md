@@ -198,37 +198,126 @@ receipt:
 
 ```yaml
 task_ref: autonomous-command-execution-and-trace-diagnostics
-target: "Wire execute_command_gate into zero-arg task_submit and task verify, apply profile CommandOutputSpec parsing, enforce task-worktree confinement, and guard write scopes"
+target: Wire execute_command_gate into zero-arg task_submit and task verify, apply profile CommandOutputSpec parsing, enforce task-worktree confinement, and guard write scopes
 proof_policy: seam-test-first
-contract_revision: 1
+contract_revision: 2
 depends_on:
-  - contracts-and-shared-types-bootstrap
+- contracts-and-shared-types-bootstrap
 scope:
-  - crates/forge-tasks/src/milestones/command_gate.rs
-  - crates/forge-tasks/src/engine/submit.rs
-  - crates/forge-tasks/src/engine/lifecycle.rs
-  - crates/forge-tasks/src/tasks/gates.rs
-  - src/cli/task.rs
-  - docs/reference/tasks.md
-  - docs/reference/cli.md
-  - tests/acdd/runner.rs
+- crates/forge-tasks/src/milestones/command_gate.rs
+- crates/forge-tasks/src/milestones/mod.rs
+- crates/forge-tasks/src/engine/submit.rs
+- crates/forge-tasks/src/engine/lifecycle.rs
+- crates/forge-tasks/src/engine/mod.rs
+- crates/forge-tasks/src/store/
+- crates/forge-tasks/src/tasks/gates.rs
+- crates/forge-tasks/src/tasks/profile.rs
+- crates/forge-tasks/src/tasks/acdd.default.yaml
+- src/cli/task.rs
+- src/engine/tasks.rs
+- src/mcp/tools.rs
+- src/mcp/tools/inputs.rs
+- docs/reference/tasks.md
+- docs/reference/cli.md
+- docs/reference/profiles.md
+- docs/reference/mcp-tools.md
+- tests/acdd/runner.rs
+- tests/acdd/mcp.rs
+- tests/acdd/tasks/lifecycle.rs
+- src/cli/mod.rs
+- tests/acdd/persistence.rs
 symbols:
-  - fn:submit_zero_arg
-  - fn:execute_verify_check
-  - fn:parse_command_output
-  - fn:check_write_scope_violations
-status: planned
+- fn:submit_zero_arg
+- fn:execute_verify_check
+- fn:parse_command_output
+- fn:check_write_scope_violations
+status: completed
 subtasks:
-  - subtask_ref: zero-arg-submit-auto-wiring
-    title: "Invoke execute_command_gate inside submit_zero_arg when no fresh completed run matches candidate_fingerprint"
-  - subtask_ref: profile-output-spec-parser
-    title: "Implement parse_command_output using profile CommandOutputSpec regexes for counts and error extraction, replacing hardcoded Cargo strings"
-  - subtask_ref: require-counts-gate-validation
-    title: "Update validate_command to permit tests_passed == 0 when require_counts is false and exit_code is 0"
-  - subtask_ref: worktree-confinement-and-trace-thresholds
-    title: "Confine traces to <task_worktree>/.forge/task-traces/, emit 1-line pass summaries without files, display short failures inline, and link large failures"
-  - subtask_ref: pre-post-scope-guard-and-task-verify-cli
-    title: "Perform pre/post git status checks for SCOPE_VIOLATION_WARNING, support runtime timeout_seconds overrides in task verify/submit (CLI/MCP), and emit rerun hints on process timeout"
+- subtask_ref: zero-arg-submit-auto-wiring
+  title: Invoke execute_command_gate inside submit_zero_arg when no fresh completed run matches candidate_fingerprint
+  status: completed
+  evidence: 'cargo clippy --all-targets --all-features -- -D warnings && cargo test --test acdd -- acdd::runner:: acdd::mcp::command_ task_store_migrates_the_ac001_gate_persistence_contract stdio_tool_catalog_uses_object_schemas_for_every_property task_stdio_lifecycle_submits_inline_evidence_in_independent_worktrees task_manage_selector_diagnostics_report_fields_before_resolution; exit 0; 27 passed, 0 failed, 138 filtered; strict Clippy exit 0; archive 5ffc390541c3ab31. Review R1/R2 runtime-red archive 2b7e72c10ceacce8 (exit101, 3 assertion failures); repair ledger /tmp/ux002-command-review-closure.json. Focused tests only by explicit user instruction.'
+- subtask_ref: profile-output-spec-parser
+  title: Implement parse_command_output using profile CommandOutputSpec regexes for counts and error extraction, replacing hardcoded Cargo strings
+  status: completed
+  evidence: 'cargo clippy --all-targets --all-features -- -D warnings && cargo test --test acdd -- acdd::runner:: acdd::mcp::command_ task_store_migrates_the_ac001_gate_persistence_contract stdio_tool_catalog_uses_object_schemas_for_every_property task_stdio_lifecycle_submits_inline_evidence_in_independent_worktrees task_manage_selector_diagnostics_report_fields_before_resolution; exit 0; 27 passed, 0 failed, 138 filtered; strict Clippy exit 0; archive 5ffc390541c3ab31. Review R1/R2 runtime-red archive 2b7e72c10ceacce8 (exit101, 3 assertion failures); repair ledger /tmp/ux002-command-review-closure.json. Focused tests only by explicit user instruction.'
+- subtask_ref: require-counts-gate-validation
+  title: Update validate_command to permit tests_passed == 0 when require_counts is false and exit_code is 0
+  status: completed
+  evidence: 'cargo clippy --all-targets --all-features -- -D warnings && cargo test --test acdd -- acdd::runner:: acdd::mcp::command_ task_store_migrates_the_ac001_gate_persistence_contract stdio_tool_catalog_uses_object_schemas_for_every_property task_stdio_lifecycle_submits_inline_evidence_in_independent_worktrees task_manage_selector_diagnostics_report_fields_before_resolution; exit 0; 27 passed, 0 failed, 138 filtered; strict Clippy exit 0; archive 5ffc390541c3ab31. Review R1/R2 runtime-red archive 2b7e72c10ceacce8 (exit101, 3 assertion failures); repair ledger /tmp/ux002-command-review-closure.json. Focused tests only by explicit user instruction.'
+- subtask_ref: worktree-confinement-and-trace-thresholds
+  title: Confine traces to <task_worktree>/.forge/task-traces/, emit 1-line pass summaries without files, display short failures inline, and link large failures
+  status: completed
+  evidence: 'cargo clippy --all-targets --all-features -- -D warnings && cargo test --test acdd -- acdd::runner:: acdd::mcp::command_ task_store_migrates_the_ac001_gate_persistence_contract stdio_tool_catalog_uses_object_schemas_for_every_property task_stdio_lifecycle_submits_inline_evidence_in_independent_worktrees task_manage_selector_diagnostics_report_fields_before_resolution; exit 0; 27 passed, 0 failed, 138 filtered; strict Clippy exit 0; archive 5ffc390541c3ab31. Review R1/R2 runtime-red archive 2b7e72c10ceacce8 (exit101, 3 assertion failures); repair ledger /tmp/ux002-command-review-closure.json. Focused tests only by explicit user instruction.'
+- subtask_ref: pre-post-scope-guard-and-task-verify-cli
+  title: Perform pre/post git status checks for SCOPE_VIOLATION_WARNING, support runtime timeout_seconds overrides in task verify/submit (CLI/MCP), and emit rerun hints on process timeout
+  status: completed
+  evidence: 'cargo clippy --all-targets --all-features -- -D warnings && cargo test --test acdd -- acdd::runner:: acdd::mcp::command_ task_store_migrates_the_ac001_gate_persistence_contract stdio_tool_catalog_uses_object_schemas_for_every_property task_stdio_lifecycle_submits_inline_evidence_in_independent_worktrees task_manage_selector_diagnostics_report_fields_before_resolution; exit 0; 27 passed, 0 failed, 138 filtered; strict Clippy exit 0; archive 5ffc390541c3ab31. Review R1/R2 runtime-red archive 2b7e72c10ceacce8 (exit101, 3 assertion failures); repair ledger /tmp/ux002-command-review-closure.json. Focused tests only by explicit user instruction.'
+extended_scope:
+- src/cli/mod.rs
+- tests/acdd/persistence.rs
+receipt:
+  contract_revision: 2
+  passed_at: 2026-11-03T10:24:20.619141717+00:00
+  evidence:
+    seam_test_proof:
+      exit_code: 0
+      seam_test_refs:
+      - tests/acdd/mcp.rs::command_verify_and_zero_argument_submit_share_cli_mcp_cache
+      - tests/acdd/mcp.rs::task_stdio_lifecycle_submits_inline_evidence_in_independent_worktrees
+      - tests/acdd/runner.rs::command_raw_failure_facts_cannot_be_forged_by_scope_warning_filenames
+      - tests/acdd/runner.rs::command_cached_proof_requires_the_complete_current_pattern_plan
+      - tests/acdd/runner.rs::command_subset_execution_cannot_prove_an_entire_admitted_scope_plan
+      tests_passed: 27
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: Reviewed cumulative scoped candidate 479509fc40a8ebee4afb08bd89635edf41334fbb against d7e844deaa8bc2a32752b5b8d5d9f2c696cebd34 and remediation delta against 40ae7f246c6bee7755345797c1c3614eda421820. All 29 scoped blob hashes match candidate; git diff --check exit0. No protected Cargo.toml/build.rs/workspace-profile, credential or neighboring-project edit. All changed paths support admitted command execution/output/proof/diagnostic seams. Extended src/cli/mod.rs adds only necessary Verify presentation dispatch; tests/acdd/persistence.rs updates existing UTF-8 snippet boundary assertions to admitted persistence size. Both extensions approved and reasons verified.
+        claims:
+          applicable: true
+          evidence: 'Independently confirmed UX002-CMD-R1 and R2 from #1558 fixed against cumulative ledger /tmp/ux002-command-review-closure.json. R1: both contract_proof and verify_red_to_green call matches_failure_signature; Some durable facts is exclusive authority and malformed facts propagate errors. Only genuine facts absence enables <=2048-byte legacy fallback. Production regression covers filename spoof, repeat verify, zero-arg submit and red-green; genuine raw signature beyond compact display remains accepted. Original CLI fixture independently rerun: both forged-signature verifications now return null evidence, second TASK_AUTO_PROOF_INVALID. R2: runner and validator share resolve_command_plan; compiler and failed-run cache require exact full ordered current scope+extensions plan IDs/commands. Added/removed/changed matching rules and subset execution covered by focused regressions; original persisted incomplete CLI run now executes newly-added failing docs command and returns null evidence. Equality rejects missing/extra/reordered rows; shared planner preserves argument expansion/dedup and unchanged candidate cache reuse. Reviewed remaining cumulative source, tests and docs: autonomous CLI/MCP verify/submit, optional evidence compatibility, custom counts/seam refs, require_counts=false, expected red, confined conditional logs, pre/post scope warnings and bounded timeout use shared backend and match acceptance. Independent verification: cargo clippy --all-targets --all-features -- -D warnings && cargo test --test acdd -- acdd::runner:: acdd::mcp::command_ task_store_migrates_the_ac001_gate_persistence_contract stdio_tool_catalog_uses_object_schemas_for_every_property task_stdio_lifecycle_submits_inline_evidence_in_independent_worktrees task_manage_selector_diagnostics_report_fields_before_resolution; exit0; 27 passed, 0 failed, 0 ignored, 138 filtered; strict Clippy exit0 contributes no test count. Archive c16d580d27d64524. Explicit user focused-test instruction honored; no full test target/suite/benchmark executed.'
+        concurrency:
+          applicable: true
+          evidence: Existing Immediate run/attempt/trace/proof transactions preserve claim, namespace and candidate fences. Complete-output facts and trace attempt completion persist atomically. Shared plan comparison adds read-only current-authority validation before proof reuse; no new lock or cache owner. Focused transition runner covers concurrent attempts, stale candidate/claim evidence, restart/recovery and complete final plans. Recovery fixture corrected to execute actual full admitted plan instead of relying on subset acceptance; no new concurrency semantics introduced.
+        project_isolation:
+          applicable: true
+          evidence: Execution canonicalizes the claimed task worktree and confines subprocess cwd/fingerprint/logs there. Existing descriptor-relative O_NOFOLLOW/O_EXCL log writer remains canonical and is called only for truncated failure; passing, expected-red and short failure paths have no log. Focused transition runner retains final/parent symlink rejection, foreign task-store namespace and process group timeout seams. Shared planner expands Git inventory relative to that claimed root; trace path normalization/registered command identity guards remain. Review reproduction writes confined to /tmp and candidate remains unchanged.
+        administration:
+          applicable: true
+          evidence: 'Reviewed additive command_execution_proofs persistence and ID-preserving 2048-to-65536 trace migration with savepoint rollback; focused migration performs subsequent real trace write and UTF-8 boundary test. Regex capture validation, diagnostic bounds and timeout caps fail closed. Profile output rules invalidate cached proof; current complete command plan is now checked in both compiler/cache consumers. CLI/MCP explicit evidence, unknown fields and timeout conflicts remain validated by focused protocol tests. Profile pin, receipts, hooks and candidate delivery machinery are unchanged; no privileged handoff or protected profile mutation performed. Shared skill/examples and protected workspace profile co-evolution remain assigned to reader/milestone documentation scan per #1547/#1553.'
+      extended_scope_review:
+        approved_paths:
+        - src/cli/mod.rs
+        - tests/acdd/persistence.rs
+        reason_verified: true
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-AUTONOMOUS-COMMAND-GATE-WIRING: Zero-argument task_submit (across CLI and MCP) and task_verify automatically reuse execute_command_gate and compile_evidence_envelope, running the gate registered command in the claimed task worktree when no fresh claim-bound trace matches candidate_fingerprint, and expanding scope_args_by_pattern for task scope paths.'
+    - 'INV-PROFILE-DRIVEN-COMMAND-OUTPUT: The engine parses command stdout/stderr and validates gate proofs using declarative specifications in the active profile (commands.<id>.output with counts, require_counts, noise, errors, seam_ref_pattern), completely eliminating hardcoded Cargo string assumptions and enabling non-test linters, doc checkers, and multi-language toolchains without Rust binary modifications.'
+    - 'INV-WORKTREE-CONFINED-CONDITIONAL-TRACES: Command execution always runs inside the claimed task worktree (or repository root only for in-place milestone gates). Passing runs (exit 0 on build/verify, or matching expected_failure on contract) and short failures fitting the inline budget emit no external trace log files; full logs are persisted to <task_worktree>/.forge/task-traces/ and linked via file:/// URI only when diagnostic output is truncated.'
+    - 'INV-PRE-POST-WRITE-SCOPE-GUARD: Command verification checks git status --porcelain before and after process execution; any modified or untracked file outside the task admitted scope and extended_scope prepends a SCOPE_VIOLATION_WARNING without failing the process run itself.'
+    - 'INV-LAYERED-FORGE-READ: forge_read replaces get_code_snippet completely (removing get_code_snippet with zero aliases) and provides a layered capability model: core text reading (lines, raw, search, delta, output_file, null-byte binary check, and sensitive-pattern blocking from forge-mcp.yaml) is available in any workspace; structural symbols (snippet) and AST skeletons (outline) activate only when the codemap subsystem is enabled; doc section navigation activates when docs is enabled; task write-scope badges and gate verification hints activate when acdd is enabled.'
+    - 'INV-SIGNAL-DRIVEN-FILTERED-HINTS: Every forge_read mode appends a compact (1-3 line) conditional Hints footer containing pre-filled, copy-ready Forge tool calls (code_map_explain, code_map_impact, code_map_tests, get_doc, code_map_query implementations, task_manage verify, task_blackboard) strictly when the underlying SQLite graph edges or task state confirm the signal exists, filtered through filter_subsystem_tools so disabled subsystems never produce dead hints.'
+    architectural_notes:
+    - 'decisions: Architecture decision: use the existing claimed-gate command runner and durable claim-bound execution traces as the single authority. Resolve the registered command/profile and candidate fingerprint, reuse only matching current evidence, otherwise execute in the claimed worktree. Extract counts and red-failure signature before output truncation; persist sufficient bounded proof across restart without requiring a successful or short-failure log. Reconcile the existing SQLite 2048-byte constraint with the declared inline limit through an appropriate migration. Preserve timeout/process and scope protections and command identity, support declared output rules and legacy profiles. Where a gate has no configured registered command, fail closed with an actionable diagnostic; do not invent a seam selector. CLI and MCP must share this path. The red production-seam test successful_gate_execution_does_not_write_a_trace_log fails on the current unconditional log write (exit 101). Cross-task synthesis decisions are recorded at milestone #1538-1551; scope waves serialize shared MCP files. Embedded default profile language output migration and proof are in this task; protected workspace profile is milestone polish after task delivery.'
+    - 'decisions: Resolved #1555 using Forge authority, not a bypass: reader task not yet active releases src/cli/mod.rs via contract revision 3 and sync, command task extends scope to that path with its existing claim rev12. Ingress owner adds only task verify presentation match arm. After command delivery releases lock, reader must extend_scope src/cli/mod.rs before its reader changes. Reviewer must inspect extended scope necessity.'
+    - 'decisions: Implemented existing claimed-run authority end to end. Complete-output proof facts use typed CommandExecutionProof and are persisted atomically with trace and attempt; count/signature/seam recovery does not depend on optional logs. Additive execution-schema migration upgrades old 2048-byte CHECK to 65536 while preserving IDs/data and keeps the existing task schema/version and provenance owner. diagnostic_inline_bytes=4096, max_command_timeout_seconds=1800; runtime overrides validated even for cache reuse. Commands/output rules/claim/candidate identity fence cache reuse; configured expected red omits logs; short failures inline; large failures retain confined raw logs plus head/tail and file URI. Directory/glob scope paths expand through Git inventory, scope args deduplicate, CLI/MCP verify and zero-arg submit share backend APIs. Admitted extensions src/cli/mod.rs and tests/acdd/persistence.rs handle required CLI presentation and updated persisted UTF-8 truncation seam. Final verification follows explicit user instruction to stop full-target runs: strict Clippy and 24 focused production-seam tests passed, 0 failed, 138 filtered, command archive 576de620a280a64e; full target attempts were cancelled and are not passing proof. Shared skill/example and protected workspace-profile co-evolution remains assigned to reader/milestone documentation scan per #1547/#1553.'
+    - 'decisions: Review #1558 remediation ledger: /tmp/ux002-command-review-closure.json, both finding IDs remain awaiting independent confirmation. Runtime-red before production edits: archive 2b7e72c10ceacce8, 0 passed/3 failed at runtime, exit101; reproduces warning-filename signature spoof on repeat verify, added pattern ignored by cache, and direct subset accepted as full proof. R1 repaired at canonical shared matches_failure_signature predicate: persisted complete-output facts are exclusive when present; <=2048-byte legacy raw snippet fallback only for absent facts; both contract compiler and red-to-green consumers use it. R2 repaired by sharing existing planner as resolve_command_plan: runner and validator use same directory/glob expansion, args and dedup; both compiler and cache reuse demand exact ordered full scope+extensions plan. Matrix green: added/removed/changed matching rules, direct subset, repeated verify/zeroarg/redgreen warning spoof; unchanged complete plan, real raw signature, scoped args, expected failures and adapter compatibility remain green. Existing large runner fixture now supplies the actual scoped readme and executes complete recovery/final plans instead of claiming subset success. Residual ast-grep: two signature consumers; only text signature search is bounded absence branch; runner plus qualified validator share resolver, compiler plus cache share validator. Forge impact matched freshness and identifies both validator callers. Final strict Clippy plus same focused command as prior proof: 27 passed, 0 failed, 138 filtered, exit0, archive 5ffc390541c3ab31; git diff --check passed. No full targets run in remediation. No protected, wire/storage or scope changes. Request same independent reviewer, same contours/scope, explicit comparison with cumulative R1/R2 ledger after new build snapshot.'
+    - 'decisions: {"review":"task_blackboard #1558","candidate":"479509fc40a8ebee4afb08bd89635edf41334fbb","prior_candidate":"40ae7f246c6bee7755345797c1c3614eda421820","worker_id":"ux002-command-reviewer","claim_revision":35,"contract_revision":2,"decision":"pass","next_stage":"seam.integrate","scope_blob_count":29,"scope_blob_mismatches":[],"clusters":[{"finding":"UX002-CMD-R1","origin":"introduced-regression","disposition":"confirmed-fixed","canonical_owner":"engine/submit.rs::matches_failure_signature","evidence":"Both production consumers use exclusive durable expected_signature facts. Absent facts only permits bounded legacy fallback. Regression and original persisted CLI reproduction reject warning filenames on repeated verify and zeroarg/redgreen consumers; configured real raw signature remains accepted.","mutation_matrix":["raw signature absent + warning filename","repeat verification","zeroarg submit","red-to-green consumer","real raw signature beyond display","corrupt facts propagate","legacy facts absence <=2048 bytes"]},{"finding":"UX002-CMD-R2","origin":"introduced-regression","disposition":"confirmed-fixed","canonical_owner":"milestones/command_gate.rs::resolve_command_plan + engine/submit.rs::validate_execution_plan","evidence":"Runner and compiler/cache share canonical complete ordered scope+extension plan. Missing/extra/reordered traces fail exact sequence comparison. Production regressions cover added/removed/changed pattern rules and direct subset; original persisted incomplete CLI run now executes new failing docs command.","mutation_matrix":["added matching rule","removed planned rule","changed planned command","direct executor subset","missing/extra/reordered rows","argument expansion and dedup shared","new candidate invalidation","unchanged complete cache reuse"]}],"verification":{"command":"cargo clippy --all-targets --all-features -- -D warnings && cargo test --test acdd -- acdd::runner:: acdd::mcp::command_ task_store_migrates_the_ac001_gate_persistence_contract stdio_tool_catalog_uses_object_schemas_for_every_property task_stdio_lifecycle_submits_inline_evidence_in_independent_worktrees task_manage_selector_diagnostics_report_fields_before_resolution","exit_code":0,"tests_passed":27,"tests_failed":0,"tests_filtered":138,"clippy_exit_code":0,"archive":"c16d580d27d64524","full_target_run":false,"benchmark_run":false,"git_diff_check_exit_code":0},"extended_scope_review":{"approved_paths":["src/cli/mod.rs","tests/acdd/persistence.rs"],"reason_verified":true},"limitations":["Static Code Map covering-test queries for private helpers have unresolved Rust wrapper references; exact AST call sites and executed production-seam tests supply attribution.","Shared skill/examples and protected workspace-profile co-evolution remain owned by reader/milestone scan per #1547/#1553."]}'
+    - 'decisions: {"candidate":"479509fc40a8ebee4afb08bd89635edf41334fbb","claim_revision":38,"seam":"Real CLI task verify -> forge_tasks engine -> command execution/store -> real MCP stdio task_manage verify -> zero-arg task_submit -> same persisted claim-bound cache; separate real worktree lifecycle and runner proofs cover failure, timeout, scope, complete-plan invalidation and durable raw-output facts.","future_consumer":"Reader task can emit task_manage(action:verify) hints against existing registered MCP entrypoint and shared VerifyOutcome diagnostic contract. Reader implementation/end-to-end hint generation belongs to its later task and is not claimed proven here.","verification":{"command":"cargo clippy --all-targets --all-features -- -D warnings && cargo test --test acdd -- acdd::runner:: acdd::mcp::command_ task_store_migrates_the_ac001_gate_persistence_contract stdio_tool_catalog_uses_object_schemas_for_every_property task_stdio_lifecycle_submits_inline_evidence_in_independent_worktrees task_manage_selector_diagnostics_report_fields_before_resolution","exit_code":0,"tests_passed":27,"tests_failed":0,"filtered":138,"archive":"9bc34a475aeeafe0"},"immutability":"No candidate edits after review; git diff --quiet candidate -- exact admitted paths exit0; git diff --check exit0.","limitations":"Focused tests only as explicitly ordered by user; no full targets. No reader implementation exists in this task."}'
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Acceptance
@@ -254,19 +343,28 @@ subtasks:
 task_ref: unified-forge-read-and-subsystem-slices
 target: "Implement unified layered forge_read replacing get_code_snippet across core, docs, codemap, and acdd layers, and update all tool hints"
 proof_policy: seam-test-first
-contract_revision: 1
+contract_revision: 3
 depends_on:
   - contracts-and-shared-types-bootstrap
 scope:
   - src/mcp/tools.rs
   - src/mcp/tools/inputs.rs
-  - src/cli/mod.rs
+  - src/mcp/response.rs
+  - src/cli/guide.rs
+  - crates/forge-core/src/config.rs
+  - crates/forge-core/src/subsystems.rs
   - crates/forge-index/src/docs.rs
   - crates/forge-tasks/src/engine/context.rs
+  - README.md
+  - docs/reference/configuration.md
+  - docs/runbooks/limits-and-freshness.md
   - docs/reference/mcp-tools.md
   - docs/reference/mcp-markdown-contracts.md
   - skills/contextunity-forge/
-  - tests/mcp/test_read.rs
+  - tests/mcp/
+  - tests/query_context/diagnostics_and_source.rs
+  - tests/acdd/mcp.rs
+  - tests/acdd/gates_ast.rs
 symbols:
   - fn:forge_read_tool
   - fn:render_read_hints

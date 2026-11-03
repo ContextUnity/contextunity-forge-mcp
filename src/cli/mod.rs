@@ -916,6 +916,7 @@ fn command_presentation(command: &Command) -> (OperationKind, &'static str, Opti
                 task::TaskCommand::Submit { .. } => "task_submit",
                 task::TaskCommand::Blackboard { .. } => "task_blackboard",
                 task::TaskCommand::Next { .. }
+                | task::TaskCommand::Verify { .. }
                 | task::TaskCommand::Subtask { .. }
                 | task::TaskCommand::Reset { .. }
                 | task::TaskCommand::Reopen { .. }

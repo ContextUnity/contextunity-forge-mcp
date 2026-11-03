@@ -90,6 +90,20 @@ pub struct ClaimBoundExecutionTrace {
 }
 
 impl TasksStore {
+    /// Recover command facts in the owning project namespace.
+    pub fn execution_proof(
+        &self,
+        run_id: i64,
+        command_id: &str,
+        attempt_id: i64,
+    ) -> Result<Option<super::CommandExecutionProof>> {
+        execution_run_row(&self.connection, run_id, &self.repository, &self.project)?;
+        let payload: Option<String> = self.connection.query_row("SELECT payload FROM command_execution_proofs WHERE run_id=?1 AND command_id=?2 AND attempt_id=?3", params![run_id, command_id, attempt_id], |row| row.get(0)).optional()?;
+        payload
+            .map(|payload| serde_json::from_str(&payload).map_err(Into::into))
+            .transpose()
+    }
+
     /// Begin one execution run for the currently claimed task gate and Git candidate.
     pub fn start_execution_run(
         &mut self,
@@ -241,6 +255,16 @@ impl TasksStore {
         run_id: i64,
         trace: &GateExecutionTrace,
     ) -> Result<()> {
+        self.record_execution_trace_with_proof(run_id, trace, None)
+    }
+
+    /// Persist trace diagnostics and complete-output facts in the same transaction.
+    pub(crate) fn record_execution_trace_with_proof(
+        &mut self,
+        run_id: i64,
+        trace: &GateExecutionTrace,
+        proof: Option<&super::CommandExecutionProof>,
+    ) -> Result<()> {
         let repository = self.repository.clone();
         let project = self.project.clone();
         let tx = self
@@ -264,6 +288,9 @@ impl TasksStore {
             bail!("TASK_TRACE_INVALID: trace has no matching reserved command attempt");
         }
         let trace_id = super::trace::record_trace(&tx, trace)?;
+        if let Some(proof) = proof {
+            tx.execute("INSERT INTO command_execution_proofs (run_id, command_id, attempt_id, payload) VALUES (?1, ?2, ?3, ?4)", params![run_id, trace.command_id, trace.attempt_id, serde_json::to_string(proof)?])?;
+        }
         tx.execute(
             "UPDATE gate_execution_attempts
              SET state='completed', trace_id=?4, trace_status=?5, exit_code=?6

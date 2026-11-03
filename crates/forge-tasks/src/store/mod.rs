@@ -26,7 +26,10 @@ pub(crate) use blackboard::clear_blackboard;
 pub use blackboard::is_canonical_blackboard_topic;
 pub(crate) use lifecycle::validate_session_independence;
 pub use lifecycle::{ClaimBoundExecutionRun, ClaimBoundExecutionTrace};
-pub use trace::{GateCheckpoint, GateExecutionTrace, GateTransition, MAX_OUTPUT_SNIPPET_BYTES};
+pub use trace::{
+    CommandExecutionProof, GateCheckpoint, GateExecutionTrace, GateTransition,
+    MAX_OUTPUT_SNIPPET_BYTES,
+};
 
 /// The retention seconds value.
 pub const RETENTION_SECONDS: i64 = 14 * 24 * 60 * 60;
@@ -580,6 +583,7 @@ impl TasksStore {
             }
         }
         ensure_execution_provenance_schema(&connection)?;
+        trace::ensure_command_output_schema(&connection)?;
         let version: String = connection.query_row(
             "SELECT value FROM task_store_metadata WHERE key='schema_version'",
             [],

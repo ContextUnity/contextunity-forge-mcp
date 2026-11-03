@@ -5,8 +5,49 @@ use serde::{Deserialize, Serialize};
 
 const CHECKPOINT_PAYLOAD_KEY: &str = "_forge_checkpoint_payload_v1";
 
+pub(super) fn ensure_command_output_schema(connection: &Connection) -> Result<()> {
+    let proof_exists: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='command_execution_proofs')",
+        [],
+        |row| row.get(0),
+    )?;
+    let schema: String = connection.query_row(
+        "SELECT sql FROM sqlite_schema WHERE name='gate_execution_traces'",
+        [],
+        |row| row.get(0),
+    )?;
+    if proof_exists && !schema.contains("<= 2048") {
+        return Ok(());
+    }
+    connection.execute_batch("SAVEPOINT command_output_upgrade")?;
+    match migrate(connection) {
+        Ok(()) => {
+            connection.execute_batch("RELEASE command_output_upgrade")?;
+            Ok(())
+        }
+        Err(error) => {
+            connection.execute_batch(
+                "ROLLBACK TO command_output_upgrade; RELEASE command_output_upgrade",
+            )?;
+            Err(error)
+        }
+    }
+}
+
 /// Maximum number of UTF-8 bytes stored in a command trace output snippet.
-pub const MAX_OUTPUT_SNIPPET_BYTES: usize = 2 * 1024;
+pub const MAX_OUTPUT_SNIPPET_BYTES: usize = 64 * 1024;
+
+/// Proof-critical facts extracted from complete command output before presentation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CommandExecutionProof {
+    pub passed: Option<u64>,
+    pub failed: Option<u64>,
+    pub seam_ref: Option<String>,
+    pub output_spec: Option<crate::tasks::profile::CommandOutputSpec>,
+    pub expected_signature: Option<String>,
+    pub scope_violations: Vec<String>,
+}
 
 /// A durable record of one task or milestone gate transition.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -111,7 +152,7 @@ pub(super) fn migrate(connection: &Connection) -> Result<()> {
             UNIQUE(milestone_id, subject, gate_path, attempt_id, command_id),
             CHECK (
                 output_snippet IS NULL
-                OR length(CAST(output_snippet AS BLOB)) <= 2048
+                OR length(CAST(output_snippet AS BLOB)) <= 65536
             )
         );
 
@@ -125,6 +166,41 @@ pub(super) fn migrate(connection: &Connection) -> Result<()> {
             state_payload JSON NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );",
+    )?;
+    let schema: String = connection.query_row(
+        "SELECT sql FROM sqlite_master WHERE name='gate_execution_traces'",
+        [],
+        |row| row.get(0),
+    )?;
+    if schema.contains("<= 2048") {
+        connection.execute_batch(
+            "SAVEPOINT trace_snippet_upgrade;
+            ALTER TABLE gate_execution_traces RENAME TO gate_execution_traces_old;",
+        )?;
+        let result = (|| -> Result<()> {
+            connection.execute_batch(&schema.replace("<= 2048", "<= 65536"))?;
+            connection.execute_batch(
+                "INSERT INTO gate_execution_traces SELECT * FROM gate_execution_traces_old;
+                DROP TABLE gate_execution_traces_old;
+                RELEASE trace_snippet_upgrade;",
+            )?;
+            Ok(())
+        })();
+        if let Err(error) = result {
+            connection.execute_batch(
+                "ROLLBACK TO trace_snippet_upgrade; RELEASE trace_snippet_upgrade;",
+            )?;
+            return Err(error);
+        }
+    }
+    connection.execute_batch(
+        "CREATE TABLE IF NOT EXISTS command_execution_proofs (
+            run_id INTEGER NOT NULL REFERENCES gate_execution_runs(id) ON DELETE CASCADE,
+            command_id TEXT NOT NULL,
+            attempt_id INTEGER NOT NULL,
+            payload TEXT NOT NULL,
+            PRIMARY KEY(run_id, command_id, attempt_id)
         );",
     )?;
     Ok(())
@@ -241,11 +317,9 @@ impl TasksStore {
             }
         }
         let mut payload_envelope = serde_json::Map::new();
-        payload_envelope.insert(
-            CHECKPOINT_PAYLOAD_KEY.to_owned(),
-            state_payload,
-        );
-        let state_payload_str = serde_json::to_string(&serde_json::Value::Object(payload_envelope))?;
+        payload_envelope.insert(CHECKPOINT_PAYLOAD_KEY.to_owned(), state_payload);
+        let state_payload_str =
+            serde_json::to_string(&serde_json::Value::Object(payload_envelope))?;
         let changed = self.connection.execute(
             "INSERT INTO gate_checkpoints (
                 breadcrumb, milestone_id, subject, gate_path, transition_id,
@@ -286,7 +360,9 @@ impl TasksStore {
                     bail!("TASK_CHECKPOINT_OWNED: lifecycle checkpoint is owned by its gate transition");
                 }
                 if task_id.is_some() {
-                    bail!("TASK_CHECKPOINT_OWNED: lifecycle checkpoint is owned by active task claim");
+                    bail!(
+                        "TASK_CHECKPOINT_OWNED: lifecycle checkpoint is owned by active task claim"
+                    );
                 }
             }
         }
@@ -437,7 +513,9 @@ impl TasksStore {
             .optional()?;
         if let Some((transition_id, task_id)) = row {
             if transition_id.is_some() {
-                bail!("TASK_CHECKPOINT_OWNED: lifecycle checkpoint is owned by its gate transition");
+                bail!(
+                    "TASK_CHECKPOINT_OWNED: lifecycle checkpoint is owned by its gate transition"
+                );
             }
             if task_id.is_some() {
                 bail!("TASK_CHECKPOINT_OWNED: lifecycle checkpoint is owned by active task claim");

@@ -9,8 +9,8 @@ use crate::{
     engine::scanner,
 };
 use rmcp::{
-    handler::server::wrapper::Parameters, model::CallToolResult, tool, tool_handler, tool_router,
-    ServerHandler,
+    ServerHandler, handler::server::wrapper::Parameters, model::CallToolResult, tool, tool_handler,
+    tool_router,
 };
 use serde_json::Value;
 
@@ -200,7 +200,13 @@ fn rejected_selector_fields(
         ],
         "task_claim" => &["task_id", "stage", "worker_id", "worktree", "bundle"],
         "task_submit" => &[
-            "task_id", "stage", "evidence", "action", "findings", "worktree",
+            "task_id",
+            "stage",
+            "evidence",
+            "action",
+            "findings",
+            "worktree",
+            "timeout_seconds",
         ],
         "task_manage" => &[
             "worker_id",
@@ -216,6 +222,7 @@ fn rejected_selector_fields(
             "title",
             "subtask_status",
             "evidence",
+            "timeout_seconds",
         ],
         "task_blackboard" => &[
             "action",
@@ -352,16 +359,31 @@ impl Server {
         })
     }
     #[tool(
-        description = "Pass or reject the claimed gate. Passing deliver writes the milestone receipt and clears the blackboard. The evidence field describes the required object."
+        description = "Pass or reject the claimed gate. Omit evidence on automated contract/command gates to execute the registered command or reuse fresh claim-bound proof. timeout_seconds optionally overrides the command timeout within profile limits and requires omitted evidence. Other gates require the evidence object described by the schema. Passing deliver writes the milestone receipt and clears the blackboard."
     )]
     fn task_submit(&self, Parameters(p): Parameters<TaskSubmitInput>) -> CallToolResult {
         let format = p.format.unwrap_or_default();
         self.responding(format, OperationKind::Task, "task_submit", |_, _| {
-            super::tasks::submit(&self.root, p.request)
+            if p.evidence_provided {
+                anyhow::ensure!(
+                    p.timeout_seconds.is_none(),
+                    "TASK_SELECTOR_INVALID: timeout_seconds requires omitted evidence"
+                );
+                super::tasks::submit(&self.root, p.request)
+            } else {
+                crate::engine::tasks::submit_zero_arg_with_timeout(
+                    &self.root,
+                    &p.request.task_id,
+                    &p.request.stage,
+                    p.request.action,
+                    p.request.findings,
+                    p.timeout_seconds,
+                )
+            }
         })
     }
     #[tool(
-        description = "Run one task-store action: next, create, sync, inspect, delete, snapshot, rollback, extend_scope, subtask_add, subtask_update, subtask_list, reset, reopen, or context. snapshot creates a named Git worktree snapshot; rollback restores it. Both require name. next atomically claims eligible work and returns its context bundle; sync without milestone_ref imports the workspace milestone directory."
+        description = "Run one task-store action: next, create, sync, inspect, delete, snapshot, rollback, extend_scope, subtask_add, subtask_update, subtask_list, reset, reopen, context, or verify. verify runs and caches the claimed gate command without advancing the task; optional timeout_seconds is bounded by the profile and applies only to verify. snapshot creates a named Git worktree snapshot; rollback restores it. Both require name. next atomically claims eligible work and returns its context bundle; sync without milestone_ref imports the workspace milestone directory."
     )]
     fn task_manage(&self, Parameters(p): Parameters<TaskManageInput>) -> CallToolResult {
         let format = p.format.unwrap_or_default();

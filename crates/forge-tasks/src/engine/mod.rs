@@ -26,9 +26,9 @@ mod lifecycle;
 mod scheduler;
 mod submit;
 
+pub use crate::milestones;
 pub use blackboard::{blackboard, BlackboardAction, BlackboardRequest, BlackboardScope};
 pub use lifecycle::{claim, manage, reopen, reset};
-pub use crate::milestones;
 
 pub mod tasks {
     pub use super::*;
@@ -56,6 +56,23 @@ pub fn submit_zero_arg(
     findings: Option<Value>,
 ) -> Result<Value> {
     submit::submit_zero_arg(root, task_id, stage, action, findings)
+}
+
+/// Verify the active command gate without advancing its lifecycle.
+pub fn verify_task(root: &Path, task_id: &str, timeout_seconds: Option<u64>) -> Result<Value> {
+    submit::verify_task(root, task_id, timeout_seconds)
+}
+
+/// Submit inferred command evidence with an optional process timeout.
+pub fn submit_zero_arg_with_timeout(
+    root: &Path,
+    task_id: &str,
+    stage: &str,
+    action: Action,
+    findings: Option<Value>,
+    timeout_seconds: Option<u64>,
+) -> Result<Value> {
+    submit::submit_zero_arg_with_timeout(root, task_id, stage, action, findings, timeout_seconds)
 }
 
 /// Check that a configured red result is followed by a successful result.
@@ -269,6 +286,8 @@ fn evidence_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
 #[serde(rename_all = "snake_case")]
 /// Administrative actions for task management.
 pub enum ManageAction {
+    /// Execute or reuse the active claim's command verification.
+    Verify,
     /// Atomically dispatch the highest-priority eligible gate.
     Next,
     /// Create a new root task specification in SQLite.
@@ -303,6 +322,8 @@ pub enum ManageAction {
 #[serde(deny_unknown_fields)]
 /// Parameters for administrative task management in .forge/tasks.sqlite.
 pub struct Manage {
+    /// Process timeout override for verify, in seconds (1..=3600).
+    pub timeout_seconds: Option<u64>,
     /// Worker receiving an atomic next claim.
     pub worker_id: Option<String>,
     /// In MCP, selects the request root for every action using explicit paths, exact names,
@@ -556,11 +577,8 @@ pub fn store(root: &Path) -> Result<TasksStore> {
     Ok(store)
 }
 
-pub fn read_checkpoint_fence(
-    root: &Path,
-) -> Result<Option<crate::store::recovery::DatabaseFence>> {
-    let fence =
-        crate::store::recovery::read_database(&TaskSettings::load(root)?.path(root)?)?;
+pub fn read_checkpoint_fence(root: &Path) -> Result<Option<crate::store::recovery::DatabaseFence>> {
+    let fence = crate::store::recovery::read_database(&TaskSettings::load(root)?.path(root)?)?;
     let registry = Registry::load(root)?;
     let mut roots = vec![root.to_owned()];
     for workspace in registry.selected(Some("all"))? {
@@ -1014,9 +1032,9 @@ fn submit_inner(root: &Path, p: Submit) -> Result<Value> {
                 .join(", ")
         )
     })?;
-    let gate = profile.by_stage(&p.stage).with_context(|| {
-        format!("TASK_STAGE_UNKNOWN: '{}' is not in active profile", p.stage)
-    })?;
+    let gate = profile
+        .by_stage(&p.stage)
+        .with_context(|| format!("TASK_STAGE_UNKNOWN: '{}' is not in active profile", p.stage))?;
     let is_delivery = gate.proof.kind() == Some(crate::tasks::profile::ProofKind::Delivery);
     store.lock_checkpoint()?;
     let task = store.inspect(&p.task_id)?;
@@ -1052,7 +1070,8 @@ fn submit_inner(root: &Path, p: Submit) -> Result<Value> {
         .iter()
         .rev()
         .find(|prior| prior.sha_snapshot);
-    let needs_candidate = !gate.sha_snapshot && (prior_snapshot.is_some() || gate.persistence.immutable);
+    let needs_candidate =
+        !gate.sha_snapshot && (prior_snapshot.is_some() || gate.persistence.immutable);
     let mut candidate_commit = None;
     let mut provisional_objects = None;
     let mut delivery_rollback = None;

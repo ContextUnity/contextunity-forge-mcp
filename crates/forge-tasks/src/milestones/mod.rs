@@ -46,6 +46,11 @@ pub fn execute_command_gate(
     command_gate::execute_command_gate(root, task_id, gate_path, commands, paths)
 }
 
+pub(crate) use command_gate::{
+    execute_command_gate_with_timeout, expand_command_args, parse_command_output,
+    resolve_command_plan,
+};
+
 /// Validate task dependencies and return stable topological execution waves.
 pub fn validate_wave_dag(
     milestone: &Milestone,

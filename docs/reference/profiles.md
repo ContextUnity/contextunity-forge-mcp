@@ -195,8 +195,35 @@ Detailed and `by_pattern` command definitions accept an optional `output`
 mapping. Its optional `counts` mapping contains `passed` and `failed` regular
 expressions. `require_counts` defaults to `true`. `noise` and
 `errors` are lists of regular expressions, and `seam_ref_pattern` is an optional
-regular expression. The profile validator rejects invalid expressions. String
-commands and detailed commands without `output` remain valid.
+regular expression. Count and seam patterns extract capture group 1; the profile
+validator rejects invalid expressions and extraction patterns without that group.
+Counts are summed across matching summaries. When a configured passed count is
+present and the failed pattern has no match, the failed count is zero. Missing
+required counts, malformed integers, overflow, and reported failures reject proof.
+Set `require_counts: false` for linters and documentation checks whose zero exit
+code proves success without a test count. String commands and detailed commands
+without `output` retain legacy count and seam-command interpretation.
+
+The runner parses complete output before filtering `noise` lines, prioritizing
+`errors` lines, and truncating diagnostics. Durable claim-bound facts retain the
+counts, configured seam reference, expected failure signature, and output rules
+without requiring raw log files. Changing the candidate, claim, command identity,
+or output rules invalidates reusable proof. Reuse also requires the ordered
+execution traces to match the complete current command plan resolved from the
+admitted scope and extensions, including argument expansion and deduplication.
+Failure signatures use complete-output facts exclusively when those facts exist;
+only legacy traces without facts use the bounded raw snippet fallback.
+The embedded pattern commands carry
+declarative output rules for Rust, Python, and JavaScript test summaries.
+
+`limits.diagnostic_inline_bytes` defaults to 4096 and accepts 1..=65536 bytes.
+Passing commands and matching contract failures produce compact summaries without
+logs. Short failures remain inline; larger cleaned diagnostics retain head and
+tail excerpts and link the raw log under the claimed worktree's
+`.forge/task-traces/`. `limits.max_command_timeout_seconds` defaults to 1800 and
+bounds positive runtime timeout overrides, including requests that reuse cached
+proof. Each command's `timeout_seconds` supplies its ordinary timeout (300 seconds
+when omitted). See [task verification](tasks.md) for CLI and MCP operations.
 
 ---
 

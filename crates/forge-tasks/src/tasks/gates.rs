@@ -134,9 +134,9 @@ fn validate_command(
     let proof: CommandProof =
         serde_json::from_value(proof_payload(value, "command_proof")?.clone())
             .context("TASK_EVIDENCE_INVALID: typed command proof required")?;
-    let registered = commands.iter().any(|(name, definition)| {
+    let registered = commands.iter().find(|(name, definition)| {
         let command = definition.command().trim_end();
-        proof.command == *name
+        proof.command == **name
             || proof.command == command
             || proof
                 .command
@@ -144,16 +144,19 @@ fn validate_command(
                 .and_then(|suffix| suffix.chars().next())
                 .is_some_and(char::is_whitespace)
     });
-    if !registered {
+    let Some((_, definition)) = registered else {
         bail!(
             "TASK_EVIDENCE_INVALID: command '{}' is not registered in the active profile",
             proof.command
         );
-    }
+    };
     if passed
         && (proof.command.trim().is_empty()
             || proof.exit_code != 0
-            || proof.tests_passed == 0
+            || (proof.tests_passed == 0
+                && definition
+                    .output()
+                    .is_none_or(|output| output.require_counts))
             || proof.tests_failed != 0)
     {
         bail!("TASK_EVIDENCE_INVALID: passing test command and counts required");

@@ -25,18 +25,42 @@ pub(super) fn execute_command_gate(
     commands: &CommandDef,
     paths: &[String],
 ) -> Result<Vec<GateExecutionTrace>> {
+    execute_command_gate_with_timeout(root, task_id, gate_path, commands, paths, None)
+}
+
+pub(crate) fn execute_command_gate_with_timeout(
+    root: &Path,
+    task_id: &str,
+    gate_path: &str,
+    commands: &CommandDef,
+    paths: &[String],
+    timeout_seconds: Option<u64>,
+) -> Result<Vec<GateExecutionTrace>> {
     if task_id.trim().is_empty() || gate_path.trim().is_empty() {
         bail!("TASK_COMMAND_INVALID: task_id and gate_path must not be empty");
     }
     let mut store = store_for_task(root, task_id)?;
     let task = store.inspect(task_id)?;
+    let worktree = task
+        .worktree
+        .as_deref()
+        .context("TASK_STALE_CLAIM: claimed worktree is missing")?;
+    let root_path = Path::new(worktree).canonicalize()?;
+    let root = root_path.as_path();
     let stage = gate_path
         .strip_prefix("tasks.")
         .filter(|stage| !stage.trim().is_empty())
         .context("TASK_COMMAND_INVALID: gate_path must be 'tasks.<stage>'")?;
     let profile = store.profile_for_task(&task)?;
+    if timeout_seconds
+        .is_some_and(|value| value == 0 || value > profile.limits.max_command_timeout_seconds)
+    {
+        bail!("TASK_COMMAND_TIMEOUT_INVALID: timeout_seconds exceeds profile.limits.max_command_timeout_seconds ({}) or is zero", profile.limits.max_command_timeout_seconds);
+    }
     let cursor = crate::engine::tasks::claim::cursor_for_stage(&profile, &task.stage)?;
-    if (cursor.canonical_stage_id != stage && cursor.stage_id != stage) || task.status != "in_progress" {
+    if (cursor.canonical_stage_id != stage && cursor.stage_id != stage)
+        || task.status != "in_progress"
+    {
         bail!("TASK_STALE_CLAIM: task '{task_id}' is not actively claimed at gate '{gate_path}'");
     }
     let gate = cursor.gate;
@@ -53,7 +77,7 @@ pub(super) fn execute_command_gate(
             "TASK_COMMAND_INVALID: supplied command definition does not match registered command '{registered_name}'"
         );
     }
-    let commands_to_run = command_plan(registered_name, commands, paths)?;
+    let commands_to_run = resolve_command_plan(root, registered_name, commands, paths, &profile)?;
     if commands_to_run.is_empty() {
         bail!("TASK_COMMAND_NO_MATCH: no registered command matched the supplied project paths");
     }
@@ -61,6 +85,8 @@ pub(super) fn execute_command_gate(
     let run = store.start_execution_run(task_id, gate_path, root, &candidate_fingerprint)?;
     let mut traces = Vec::with_capacity(commands_to_run.len());
     for (command_id, command_str, timeout) in commands_to_run {
+        let timeout = timeout_seconds.map(Duration::from_secs).unwrap_or(timeout);
+        let mut violations = scope_violations(root, &task.spec)?;
         let attempt_id = store.reserve_execution_attempt(run.run_id, &command_id)?;
         let execution = run_shell(root, &command_str, timeout);
         let (status, exit_code, stdout, stderr, duration_ms) = match execution {
@@ -101,15 +127,68 @@ pub(super) fn execute_command_gate(
                 .as_bytes(),
             );
         }
-        let log_path = persist_log(
-            root,
-            task_id,
-            gate_path,
-            &command_id,
-            attempt_id,
-            &complete_log,
-        )?;
+        violations.extend(scope_violations(root, &task.spec)?);
         let output = String::from_utf8_lossy(&complete_log).into_owned();
+        let parsed = parse_command_output(&output, &command_str, commands.output())?;
+        let expected = gate.expected_failure.as_ref().is_some_and(|expected| {
+            status == "completed"
+                && exit_code.is_some_and(|code| {
+                    code != 0
+                        && (expected.exit_codes.is_empty() || expected.exit_codes.contains(&code))
+                })
+                && expected
+                    .stderr_contains
+                    .as_ref()
+                    .is_none_or(|signature| output.contains(signature))
+        });
+        let succeeded = status == "completed" && (exit_code == Some(0) || expected);
+        let budget = profile.limits.diagnostic_inline_bytes;
+        let mut diagnostic = if succeeded {
+            format!(
+                "PASS {command_id}: exit={} passed={} failed={} ({duration_ms} ms)",
+                exit_code.unwrap_or_default(),
+                parsed.passed.unwrap_or(0),
+                parsed.failed.unwrap_or(0)
+            )
+        } else {
+            parsed.diagnostic.clone()
+        };
+        if !violations.is_empty() {
+            diagnostic = format!(
+                "SCOPE_VIOLATION_WARNING: {}\n{diagnostic}",
+                violations.iter().cloned().collect::<Vec<_>>().join(", ")
+            );
+        }
+        if status == "timeout" {
+            diagnostic = format!("TIMEOUT: Hints: task_manage(action: \"verify\", task_id: \"{task_id}\", timeout_seconds: {})\n{diagnostic}", timeout.as_secs().saturating_mul(2).min(profile.limits.max_command_timeout_seconds));
+        }
+        let log_path = if !succeeded && diagnostic.len() > budget {
+            let relative = persist_log(
+                root,
+                task_id,
+                gate_path,
+                &command_id,
+                attempt_id,
+                &complete_log,
+            )?;
+            let head_end = output_boundary(&diagnostic, budget * 3 / 10);
+            let mut tail_start = diagnostic.len().saturating_sub(budget / 5);
+            while !diagnostic.is_char_boundary(tail_start) {
+                tail_start += 1;
+            }
+            diagnostic = format!(
+                "{}\n[… output truncated …]\n{}",
+                &diagnostic[..head_end],
+                &diagnostic[tail_start..]
+            );
+            diagnostic.push_str(&format!(
+                "\nFull log: file://{}",
+                root.join(&relative).display()
+            ));
+            Some(relative)
+        } else {
+            None
+        };
         let trace = GateExecutionTrace {
             milestone_id: run.milestone_id.clone(),
             subject: task_id.to_owned(),
@@ -119,13 +198,25 @@ pub(super) fn execute_command_gate(
             command_str,
             status: status.clone(),
             exit_code,
-            log_path: Some(log_path),
-            output_snippet: (!output.is_empty()).then_some(output),
+            log_path,
+            output_snippet: Some(diagnostic),
             stdout_sha256: Some(format!("{:x}", Sha256::digest(&stdout))),
             duration_ms,
         };
-        store.record_claim_bound_execution_trace(run.run_id, &trace)?;
-        let succeeded = trace.status == "completed" && trace.exit_code == Some(0);
+        let facts = crate::store::CommandExecutionProof {
+            passed: parsed.passed,
+            failed: parsed.failed,
+            seam_ref: parsed.seam_ref,
+            output_spec: commands.output().cloned(),
+            scope_violations: violations.into_iter().collect(),
+            expected_signature: gate
+                .expected_failure
+                .as_ref()
+                .and_then(|expected| expected.stderr_contains.as_ref())
+                .filter(|signature| output.contains(signature.as_str()))
+                .cloned(),
+        };
+        store.record_execution_trace_with_proof(run.run_id, &trace, Some(&facts))?;
         traces.push(trace);
         if !succeeded {
             store.complete_execution_run(run.run_id)?;
@@ -133,11 +224,11 @@ pub(super) fn execute_command_gate(
                 "TASK_TRACE_PERSISTENCE_FAILED: command result disappeared after persistence",
             )?;
             bail!(
-                "TASK_COMMAND_FAILED: gate '{gate_path}' command '{}' finished with status '{}' and exit code {:?}; full log: {}",
+                "TASK_COMMAND_FAILED: gate '{gate_path}' command '{}' finished with status '{}' and exit code {:?}; {}",
                 trace.command_id,
                 trace.status,
                 trace.exit_code,
-                trace.log_path.as_deref().unwrap_or("unavailable")
+                trace.output_snippet.as_deref().unwrap_or("no diagnostic")
             );
         }
     }
@@ -145,23 +236,27 @@ pub(super) fn execute_command_gate(
     Ok(traces)
 }
 
-fn command_plan(
+pub(crate) fn resolve_command_plan(
+    root: &Path,
     registered_name: &str,
     commands: &CommandDef,
     paths: &[String],
+    profile: &crate::tasks::profile::GateProfile,
 ) -> Result<Vec<(String, String, Duration)>> {
+    let paths = expanded_command_paths(root, paths)?;
     match commands {
         CommandDef::Pattern(patterns) => {
             let timeout = Duration::from_secs(patterns.timeout_seconds.unwrap_or(300).max(1));
             let mut selected = Vec::new();
-            for path in paths {
+            for path in &paths {
                 validate_project_path(path)?;
                 if let Some(command) = commands.command_for_path(path) {
-                    selected.push((
-                        format!("{registered_name}::{path}"),
-                        command.to_owned(),
-                        timeout,
-                    ));
+                    let command =
+                        expand_command_args(command, profile.scope_args_for_path(path).as_deref());
+                    if selected.iter().any(|(_, existing, _)| *existing == command) {
+                        continue;
+                    }
+                    selected.push((format!("{registered_name}::{path}"), command, timeout));
                 }
             }
             Ok(selected)
@@ -170,17 +265,80 @@ fn command_plan(
             command,
             timeout_seconds,
             ..
-        } => Ok(vec![(
-            registered_name.to_owned(),
-            command.clone(),
-            Duration::from_secs(timeout_seconds.unwrap_or(300).max(1)),
-        )]),
+        } => {
+            let args = paths
+                .iter()
+                .filter_map(|path| profile.scope_args_for_path(path).map(|args| (args, path)))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            if args.is_empty() {
+                return Ok(vec![(
+                    registered_name.to_owned(),
+                    command.clone(),
+                    Duration::from_secs(timeout_seconds.unwrap_or(300).max(1)),
+                )]);
+            }
+            Ok(args
+                .into_iter()
+                .map(|(args, path)| {
+                    (
+                        format!("{registered_name}::{path}"),
+                        expand_command_args(command, Some(&args)),
+                        Duration::from_secs(timeout_seconds.unwrap_or(300).max(1)),
+                    )
+                })
+                .collect())
+        }
         CommandDef::Script(command) => Ok(vec![(
             registered_name.to_owned(),
             command.clone(),
             Duration::from_secs(300),
         )]),
     }
+}
+
+pub(crate) fn expand_command_args(command: &str, args: Option<&str>) -> String {
+    match args {
+        Some(args) if command.contains("{scope_target}") => command.replace("{scope_target}", args),
+        Some(args) => format!("{command} {args}"),
+        None => command.to_owned(),
+    }
+}
+
+fn expanded_command_paths(root: &Path, paths: &[String]) -> Result<Vec<String>> {
+    let mut selected = std::collections::BTreeSet::new();
+    for path in paths {
+        validate_project_path(path.trim_end_matches('/'))?;
+        if root.join(path).is_dir() || path.contains(['*', '?', '{']) {
+            let output = crate::core::git::git_command(
+                root,
+                &[
+                    "ls-files",
+                    "--cached",
+                    "--others",
+                    "--exclude-standard",
+                    "-z",
+                ],
+            )?;
+            if !output.status.success() {
+                bail!("TASK_COMMAND_PATH_INVALID: could not expand task paths");
+            }
+            for candidate in output
+                .stdout
+                .split(|byte| *byte == 0)
+                .filter(|path| !path.is_empty())
+            {
+                let candidate = String::from_utf8_lossy(candidate).into_owned();
+                if candidate.starts_with(&format!("{}/", path.trim_end_matches('/')))
+                    || crate::tasks::profile::glob_pattern_matches(path, &candidate)
+                {
+                    selected.insert(candidate);
+                }
+            }
+        } else {
+            selected.insert(path.clone());
+        }
+    }
+    Ok(selected.into_iter().collect())
 }
 
 fn validate_project_path(path: &str) -> Result<()> {
@@ -194,6 +352,144 @@ fn validate_project_path(path: &str) -> Result<()> {
         bail!("TASK_COMMAND_PATH_INVALID: '{path}' must be a normalized project-relative path");
     }
     Ok(())
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ParsedCommandOutput {
+    pub passed: Option<u64>,
+    pub failed: Option<u64>,
+    pub seam_ref: Option<String>,
+    pub diagnostic: String,
+}
+
+pub(crate) fn parse_command_output(
+    output: &str,
+    command: &str,
+    spec: Option<&crate::tasks::profile::CommandOutputSpec>,
+) -> Result<ParsedCommandOutput> {
+    fn count(output: &str, pattern: &str) -> Result<Option<u64>> {
+        let regex = regex::Regex::new(pattern)?;
+        let mut total = None;
+        for captures in regex.captures_iter(output) {
+            let value = captures
+                .get(1)
+                .context("TASK_COMMAND_OUTPUT_INVALID: count regex requires capture group 1")?
+                .as_str()
+                .parse::<u64>()
+                .context("TASK_COMMAND_OUTPUT_INVALID: test count is not an unsigned integer")?;
+            total = Some(
+                total
+                    .unwrap_or(0_u64)
+                    .checked_add(value)
+                    .context("TASK_COMMAND_OUTPUT_INVALID: test count overflow")?,
+            );
+        }
+        Ok(total)
+    }
+    let counts = spec.and_then(|spec| spec.counts.as_ref());
+    let passed = count(
+        output,
+        counts.map_or(r"(?m)\b(\d+) passed\b", |counts| counts.passed.as_str()),
+    )?;
+    let failed = count(
+        output,
+        counts.map_or(r"(?m)\b(\d+) failed\b", |counts| counts.failed.as_str()),
+    )?;
+    let failed = failed.or_else(|| (counts.is_some() && passed.is_some()).then_some(0));
+    let noise = spec
+        .map(|spec| &spec.noise)
+        .into_iter()
+        .flatten()
+        .map(|pattern| regex::Regex::new(pattern))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let errors = spec
+        .map(|spec| &spec.errors)
+        .into_iter()
+        .flatten()
+        .map(|pattern| regex::Regex::new(pattern))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let lines = output
+        .lines()
+        .filter(|line| {
+            errors.iter().any(|pattern| pattern.is_match(line))
+                || !noise.iter().any(|pattern| pattern.is_match(line))
+        })
+        .collect::<Vec<_>>();
+    let diagnostic = lines
+        .iter()
+        .filter(|line| errors.iter().any(|pattern| pattern.is_match(line)))
+        .chain(
+            lines
+                .iter()
+                .filter(|line| !errors.iter().any(|pattern| pattern.is_match(line))),
+        )
+        .copied()
+        .collect::<Vec<_>>()
+        .join("\n");
+    let seam_ref = spec
+        .and_then(|spec| spec.seam_ref_pattern.as_ref())
+        .map(|pattern| -> Result<Option<String>> {
+            Ok(regex::Regex::new(pattern)?
+                .captures(command)
+                .and_then(|captures| captures.get(1))
+                .map(|value| value.as_str().to_owned()))
+        })
+        .transpose()?
+        .flatten();
+    Ok(ParsedCommandOutput {
+        passed,
+        failed,
+        seam_ref,
+        diagnostic,
+    })
+}
+
+fn output_boundary(value: &str, limit: usize) -> usize {
+    let mut end = value.len().min(limit);
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    end
+}
+
+fn scope_violations(
+    root: &Path,
+    spec: &crate::tasks::TaskSpec,
+) -> Result<std::collections::BTreeSet<String>> {
+    let output = crate::core::git::git_command(
+        root,
+        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+    )?;
+    if !output.status.success() {
+        bail!("TASK_COMMAND_SCOPE_CHECK_FAILED: git status failed");
+    }
+    let mut paths = std::collections::BTreeSet::new();
+    let mut entries = output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|entry| !entry.is_empty());
+    while let Some(entry) = entries.next() {
+        if entry.len() < 4 {
+            continue;
+        }
+        let mut candidates = vec![String::from_utf8_lossy(&entry[3..]).into_owned()];
+        if entry[..2].iter().any(|byte| *byte == b'R' || *byte == b'C') {
+            if let Some(source) = entries.next() {
+                candidates.push(String::from_utf8_lossy(source).into_owned());
+            }
+        }
+        for path in candidates {
+            if !spec.scope.iter().chain(&spec.extended_scope).any(|scope| {
+                path == *scope
+                    || path.starts_with(&format!("{}/", scope.trim_end_matches('/')))
+                    || crate::tasks::profile::glob_pattern_matches(scope, &path)
+            }) {
+                paths.insert(path);
+            }
+        }
+    }
+    Ok(paths)
 }
 
 struct ShellResult {

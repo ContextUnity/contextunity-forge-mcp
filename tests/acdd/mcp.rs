@@ -34,6 +34,94 @@ impl Workspace {
 type Client = StdioClient;
 
 #[test]
+fn command_verify_and_zero_argument_submit_share_cli_mcp_cache() {
+    let (root, store, id) = super::runner::command_fixture(
+        "printf run >> .forge/counter; printf checked",
+        Some(super::runner::output_spec(false)),
+    );
+    let verified = json_cli()
+        .args([
+            "--root",
+            root.0.to_str().unwrap(),
+            "task",
+            "verify",
+            &id,
+            "--timeout",
+            "5",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        verified.status.success(),
+        "{}",
+        String::from_utf8_lossy(&verified.stderr)
+    );
+    let verified: Value = serde_json::from_slice(&verified.stdout).unwrap();
+    assert_eq!(verified["verification"]["exit_code"], 0, "{verified}");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"));
+    command.args(["--root", root.0.to_str().unwrap(), "serve"]);
+    let mut client = Client::with_command(&mut command);
+    let checked = client.payload(
+        "task_manage",
+        json!({"action":"verify", "task_id":id, "timeout_seconds":5}),
+    );
+    assert_eq!(
+        checked["verification"]["diagnostic_mode"], "pass",
+        "{checked}"
+    );
+    assert_eq!(store.inspect(&id).unwrap().stage, "contract");
+    let (_, catalog) = client.request("tools/list", json!({}));
+    let submit = catalog["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "task_submit")
+        .unwrap();
+    assert!(!submit["inputSchema"]["required"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|name| name == "evidence"));
+    assert!(submit["inputSchema"]["properties"]
+        .get("timeout_seconds")
+        .is_some());
+    let submitted = client.payload(
+        "task_submit",
+        json!({"task_id":id, "stage":"contract", "action":"pass", "timeout_seconds":5}),
+    );
+    assert_eq!(submitted["stage"], "build", "{submitted}");
+    assert_eq!(
+        fs::read_to_string(root.0.join(".forge/counter")).unwrap(),
+        "run"
+    );
+}
+
+#[test]
+fn command_submit_preserves_typed_evidence_and_rejects_unknown_fields() {
+    let (root, _, id) =
+        super::runner::command_fixture("printf checked", Some(super::runner::output_spec(false)));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"));
+    command.args(["--root", root.0.to_str().unwrap(), "serve"]);
+    let mut client = Client::with_command(&mut command);
+    for extras in [
+        json!({"evidence":null}),
+        json!({"unknown":true}),
+        json!({"evidence":{}, "timeout_seconds":5}),
+    ] {
+        let mut args = json!({"task_id":id, "stage":"contract", "action":"pass"});
+        args.as_object_mut()
+            .unwrap()
+            .extend(extras.as_object().unwrap().clone());
+        let (_, result) = client.call("task_submit", args);
+        assert!(
+            result["error"].is_object() || result["result"]["isError"] == true,
+            "{result}"
+        );
+    }
+    assert!(!root.0.join(".forge/task-traces").exists());
+}
+
+#[test]
 fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
     let main = Workspace::new();
     let linked = Workspace::new();
