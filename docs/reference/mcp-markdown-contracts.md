@@ -19,9 +19,9 @@ framing; this flag changes operation content, not the transport protocol.
 Every registered MCP tool advertises the same optional `format` selector with
 the exact string enum `markdown` and `json`; clients can omit it to receive the
 default. The shared CLI/MCP seam tests compare omitted and explicit Markdown,
-then compare parsed JSON for operations with CLI equivalents. `get_code_snippet`
-remains MCP-only and is checked for default Markdown, explicit Markdown, and
-explicit JSON without adding a synthetic CLI command. See
+then compare parsed JSON for operations with CLI equivalents. `forge_read`
+shares its reader and bounded renderer with CLI `read`; core text/export tests
+compare parsed JSON across both transports. See
 [`stdio_compact_navigation_preserves_symbol_and_page_contracts`](../../tests/mcp/context.rs)
 and [`mcp_exposes_and_executes_evolution_tools`](../../tests/mcp/tool_evolution/cli_and_relations.rs).
 For every shared operation, route equivalent validated input and semantic data

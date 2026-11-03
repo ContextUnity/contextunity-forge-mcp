@@ -17,6 +17,9 @@ ignore:
   - .venv
   - .git
 
+# Reader paths blocked before reads and exports (gitignore-style patterns).
+sensitive: ['.env*', 'secrets/**']
+
 # Task configuration
 task_repository: "forge-mcp"
 task_project: "forge-mcp"

@@ -152,6 +152,9 @@ pub fn bytes_from_mebibytes(mebibytes: u64) -> std::io::Result<u64> {
 #[derive(Debug, Clone, Deserialize, Default)]
 /// Represents adapter file YAML representation.
 pub struct AdapterFile {
+    /// Workspace-relative glob patterns blocked by the reader.
+    #[serde(default)]
+    pub sensitive: Vec<String>,
     #[serde(default)]
     /// The response policy.
     pub response: ResponsePolicy,
@@ -263,6 +266,8 @@ pub struct LinkedWorkspace {
 #[derive(Debug, Clone)]
 /// Represents workspace adapter configuration.
 pub struct Adapter {
+    /// Workspace-relative glob patterns blocked by the reader.
+    pub sensitive: Vec<String>,
     /// Optional adapter path value.
     pub adapter_path: Option<PathBuf>,
     /// The response value.
@@ -297,6 +302,7 @@ impl Default for Adapter {
     fn default() -> Self {
         Self {
             adapter_path: None,
+            sensitive: Vec::new(),
             response: ResponsePolicy::default(),
             modules: SubsystemRegistry::default(),
             limits: ScannerLimits::default(),
@@ -490,6 +496,7 @@ pub fn load_adapter(root: &Path, adapter_path: Option<&Path>) -> std::io::Result
     }
 
     Ok(Adapter {
+        sensitive: raw.sensitive,
         adapter_path: explicit_adapter_path,
         response: raw.response,
         modules,
@@ -617,6 +624,7 @@ pub fn policy(root: &Path, adapter: &Adapter) -> Value {
     json!({
         "adapter_path": adapter.adapter_path.as_ref().map(|path| path.strip_prefix(root).unwrap_or(path).to_string_lossy()),
         "roots": adapter.roots.iter().map(|p| p.strip_prefix(root).unwrap_or(p).to_string_lossy()).collect::<Vec<_>>(),
+        "sensitive": adapter.sensitive,
         "limits": &adapter.limits,
         "ignored_names": adapter.ignored_names,
         "adapter_version": adapter.adapter_version,
@@ -675,6 +683,7 @@ pub fn read_policy_from_value(root: &Path, value: &Value) -> Result<Adapter> {
         adapter_path,
         response: ResponsePolicy::default(),
         modules: SubsystemRegistry::default(),
+        sensitive: serde_json::from_value(value["sensitive"].clone()).unwrap_or_default(),
         limits,
         roots,
         ignored_names,

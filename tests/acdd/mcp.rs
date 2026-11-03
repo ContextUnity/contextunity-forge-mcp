@@ -2662,7 +2662,7 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
     assert_eq!(bundle["guidance"]["stage"], "contract");
     assert_eq!(bundle["guidance"]["role"], "contract_author");
     let recommended_tools = bundle["guidance"]["recommended_tools"].as_array().unwrap();
-    for tool in ["get_code_snippet", "search_docs", "get_doc"] {
+    for tool in ["forge_read", "search_docs", "get_doc"] {
         assert!(recommended_tools.iter().any(|value| value == tool));
     }
     assert!(bundle["guidance"]["actionable_steps"]

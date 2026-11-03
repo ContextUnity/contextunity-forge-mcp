@@ -242,21 +242,21 @@ fn ergonomic_source_budgets_preserve_defaults_and_explicit_limits_at_mcp_boundar
         assert_eq!(clamped_low["source_preview"]["body_lines"], 1, "{tool}");
     }
     let first_page = m.ok(
-        "get_code_snippet",
+        "forge_read",
         json!({"selector":"app.py:preview","show_source":true,"leading_lines":20,"max_body_lines":501}),
     );
     assert_eq!(first_page["source_preview"]["body_lines"], 501);
     assert_eq!(first_page["source_preview"]["next_source_offset"], 501);
     assert_eq!(first_page["source_preview"]["has_more"], true);
     let smaller_page = m.ok(
-        "get_code_snippet",
+        "forge_read",
         json!({"selector":"app.py:preview","show_source":true,"leading_lines":20,"max_body_lines":17}),
     );
     assert_eq!(smaller_page["source_preview"]["body_lines"], 17);
     assert_eq!(smaller_page["source_preview"]["next_source_offset"], 17);
     assert_eq!(smaller_page["source_preview"]["has_more"], true);
     let next_page = m.ok(
-        "get_code_snippet",
+        "forge_read",
         json!({"selector":"app.py:preview","show_source":true,"leading_lines":20,"max_body_lines":501,"source_offset":first_page["source_preview"]["next_source_offset"],"generation":first_page["generation"]}),
     );
     assert_eq!(next_page["source_preview"]["body_offset"], 501);
@@ -473,7 +473,7 @@ fn symbol_boundary_recovery_and_search_preview_resilience() {
                 .unwrap();
         assert_eq!(snippet["source"], expected, "{path}: {snippet}");
         let mut m = Mcp::new(&w);
-        for tool in ["code_map_inspect", "code_map_explain", "get_code_snippet"] {
+        for tool in ["code_map_inspect", "code_map_explain", "forge_read"] {
             let result = m.ok(
                 tool,
                 json!({"selector":id,"show_source":true,"leading_lines":0}),
@@ -535,7 +535,7 @@ fn symbol_boundary_recovery_and_search_preview_resilience() {
             assert!(hits[1]["source_preview"].is_object(), "{failure}: {result}");
         }
         if failure == "boundary" {
-            for tool in ["code_map_inspect", "code_map_explain", "get_code_snippet"] {
+            for tool in ["code_map_inspect", "code_map_explain", "forge_read"] {
                 m.err(
                     tool,
                     json!({"selector":"a.py:resilient_hit","show_source":true}),
@@ -545,7 +545,7 @@ fn symbol_boundary_recovery_and_search_preview_resilience() {
         }
         if failure == "digest" || failure == "missing" {
             let (_, response) = m.call(
-                "get_code_snippet",
+                "forge_read",
                 json!({"selector":"a.py:resilient_hit","format":"json"}),
             );
             assert_eq!(response["result"]["isError"], true, "{failure}: {response}");
@@ -574,7 +574,7 @@ fn mcp_selector_and_source_boundaries() {
         "code_map_impact",
         "code_map_tests",
         "code_map_prove_removal",
-        "get_code_snippet",
+        "forge_read",
     ] {
         m.err(tool, json!({"selector":"scanner"}), "ambiguous selector");
         m.err(tool, json!({"selector":""}), "selector is empty");
@@ -611,43 +611,43 @@ fn mcp_selector_and_source_boundaries() {
         "selector not found",
     );
     let first = m.ok(
-        "get_code_snippet",
+        "forge_read",
         json!({"selector":"src/app.py:first","leading_lines":0}),
     );
     assert_eq!(first["source"], "def first(): pass\n");
     let last = m.ok(
-        "get_code_snippet",
+        "forge_read",
         json!({"selector":"src/app.py:last","leading_lines":0}),
     );
     assert_eq!(last["source"], "def last(): pass\n");
     let one_line = m.ok(
-        "get_code_snippet",
+        "forge_read",
         json!({"selector":"src/app.py:first","leading_lines":0,"max_body_lines":0}),
     );
     assert_eq!(one_line["source"], "def first(): pass\n");
     assert_eq!(one_line["source_preview"]["body_lines"], 1);
     assert_eq!(one_line["source_preview"]["has_more"], false);
     m.err(
-        "get_code_snippet",
+        "forge_read",
         json!({"selector":"src/app.py:first","leading_lines":-1}),
         "expected usize",
     );
     m.err(
-        "get_code_snippet",
+        "forge_read",
         json!({"selector":"src/app.py:first","max_body_lines":-1}),
         "expected usize",
     );
     m.err(
-        "get_code_snippet",
+        "forge_read",
         json!({"selector":"src/app.py:first","source_offset":-1}),
         "expected usize",
     );
-    let comments = m.ok("get_code_snippet", json!({"selector":"comments.py"}));
+    let comments = m.ok("forge_read", json!({"selector":"comments.py"}));
     assert_eq!(comments["node"]["kind"], "module");
     assert_eq!(comments["source"], "# license only\n# no code body\n");
 
     let (_, traversal) = m.call(
-        "get_code_snippet",
+        "forge_read",
         json!({"selector":"scanner.py:scanner","path":"../outside.py","format":"json"}),
     );
     assert_eq!(traversal["result"]["isError"], true, "{traversal}");
@@ -658,7 +658,7 @@ fn mcp_selector_and_source_boundaries() {
         fs::remove_file(w.path("guarded.py")).unwrap();
         std::os::unix::fs::symlink(outside.path("outside.py"), w.path("guarded.py")).unwrap();
         let (_, response) = m.call(
-            "get_code_snippet",
+            "forge_read",
             json!({"selector":"guarded.py:guarded","leading_lines":0,"format":"json"}),
         );
         assert_eq!(response["result"]["isError"], true, "{response}");

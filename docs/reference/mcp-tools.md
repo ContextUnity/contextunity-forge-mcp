@@ -41,7 +41,7 @@ optional fields as described under [SQL](#sql-and-checkpoints).
 Start with `code_map_overview` to confirm the selected workspace and indexed
 coverage. Reuse a sufficient search preview instead of fetching the same source
 again. Use `code_map_inspect` for one declaration summary and `code_map_explain`
-when relationship edges are needed. Use `get_code_snippet` when source is absent
+when relationship edges are needed. Use `forge_read` when source is absent
 from previews or a complete-symbol read is needed; it reads the complete body by
 default, with `max_body_lines` available to bound it. Use this instead of repeated
 `ctx_read` file chunks. Triage sections with `search_docs(query="...", include_excerpt=true)`,
@@ -90,12 +90,56 @@ modules; embedded gates therefore remain usable with navigation disabled.
 
 ## Tools
 
+### Layered file reader
+
+Use `forge_read(path: "notes.txt", mode: "lines")` or
+`contextunity-forge-mcp read notes.txt --mode lines`. CLI and MCP use the same
+reader and response budgets. `mode` accepts `auto` (default), `lines`, `raw`,
+`search`, `delta`, `outline`, and `snippet`. Auto selects snippet when `selector`
+is present, search when `pattern` is present, and lines otherwise.
+
+Core text modes work with `profile: minimal` and create no code index.
+`start_line` is one-based; `line_count` defaults to 200 and accepts 1–10,000.
+Lines include source line numbers; raw preserves the returned text, including
+line endings. Search requires `pattern`, uses substring matching by default,
+and accepts `regex: true` and `context` (default 2, capped at 100).
+Text collection stops at 48 KiB or the requested line count and reports
+`truncated`; a physical line over 1 MiB returns an error.
+
+Delta returns a unified Git diff against `baseline`, the unique active task's
+candidate baseline, or `HEAD`, in that order. Delta treats the admitted filename
+literally, including wildcard and
+Git pathspec-magic characters; it never expands that name to sibling files.
+`output_file` exports the returned
+content to a distinct workspace-relative destination. Input and output paths
+reject traversal and symlinks. Input files with a NUL byte in their first 8 KiB
+return `BINARY_FILE`; adapter `sensitive` patterns block reads and exports before
+content is returned. See [sensitive paths](configuration.md#sensitive-reader-paths).
+
+Markdown outline uses the docs subsystem and preserves heading hierarchy while
+excluding fenced-code headings. Code outline and snippet require codemap.
+Outline uses the compiled language profile's AST declarations; snippet accepts
+all existing symbol selectors and retains digest checks, complete-line source
+pagination, `source_offset`, and explicit continuation `generation`.
+Graph pulse counts describe indexed callers, verified tests, implementations,
+and invariants; unavailable test mapping contributes no test hint.
+Implementation-query hints require an explicitly selected symbol; file-level
+edge totals alone do not produce a type-query hint.
+
+With ACDD enabled, a unique in-progress task claimed in the selected worktree
+adds `write_scope: ALLOWED|OUT_OF_SCOPE`. Conditional `Hints` contain copy-ready
+calls bound to that worktree: graph relations and verified tests, indexed docs,
+scope extension, command verification, and blackboard navigation. Verify appears
+only when the active gate names a registered command. Disabled subsystems and
+absent signals produce no hints. CLI flags use hyphens, for example
+`--start-line 20 --line-count 40 --output-file exports/read.txt`.
+
 | Tool | Purpose and main input |
 | --- | --- |
 | `code_map_overview` | Workspace, index, language and documentation summary; request `coverage_by_workspace` for persisted primary and linked workspace coverage counts. |
 | `code_map_search` | Search symbols by `pattern`; exact name or qualified-name matches have priority. When matching parameter or return types also exist, they appear in ranked results alongside exact names. Otherwise exact-name matches retain the exclusive default. Prefixes and natural-language terms use ranked FTS5 BM25 exploratory search. Hits include an indexed `signature` and `inspect_selector` arguments for `code_map_inspect` with `show_source:true`. Previews appear automatically when the total is at most three; set `include_preview:true` for larger result sets. Supports `include_docs`, `group_by_file`, prefix patterns such as `parse*`, and optional file or directory `path` scope. |
 | `code_map_inspect` | Resolve a `selector` and return a compact signature, docstring, receiver-aware container, call counts, and direct caller/callee preview. Paged `documented_in` citations retain one linked row per cited section, with full-detail content shown beneath its citation. Inspect Markdown omits its duplicate `documents` JSON page while JSON keeps both pages. Bounded `governing_invariants` add verified documentation context. Set `include_coverage=true` for paged resolution evidence. |
-| `get_code_snippet` | Read the complete indexed source range for one `selector` when it fits the serialized response byte limit; otherwise continue the source range with `source_offset` and `generation`. |
+| `forge_read` | Layered text, search, Git delta, Markdown/code outline, and digest-verified symbol reads by `path` or `selector`; optional confined `output_file` export. |
 | `code_map_explain` | Explain direct inbound or outbound relationships for a `selector`; edge rows include both public endpoint IDs and direction relative to the selected node. Full detail also includes stored edge evidence. |
 | `code_map_impact` | Find inbound (default) or outbound dependencies for a `selector`, or analyze one Git change view (`staged`, `unstaged`, or `head`); provide exactly one of `selector` and `changes`. Selector results also page affected documentation and governing invariants. Depth defaults to one edge. |
 | `code_map_tests` | Find test relationships for a narrow `selector`; `direction` accepts `inbound` or `outbound`. Inbound results identify verified test cases and shortest exact `calls` paths, with a bounded lexical fallback when no call path exists. Markdown links graph-backed paths in producer order and shows only producer-supplied test roles. Outbound results follow exact `calls` edges. Results classify test cases, helpers, and fixtures; `possible_calls` do not establish coverage. |
@@ -235,7 +279,7 @@ For a Git change view, pass `changes:"staged"`, `changes:"unstaged"`, or `change
 and requested `max_body_lines` to 1–500. When omitted, their body limit uses
 `response.source_context.max_body_lines` (200 by default). Adapter
 `response.source_context.max_body_lines` values remain strictly validated from
-1 to 500. `get_code_snippet` defaults to the complete selected symbol and honors
+1 to 500. `forge_read` defaults to the complete selected symbol and honors
 an explicit `max_body_lines` limit normalized to at least one, without an
 implicit 500-line cap.
 All three tools clamp `leading_lines` above 20 to 20. Negative values and
@@ -248,13 +292,13 @@ including calls in the same MCP session. Missing tokens return an actionable
 error: provide that generation or restart at `source_offset=0`. Ordinary
 collection pagination also requires its explicit generation.
 
-`code_map_inspect`, `code_map_explain`, and `get_code_snippet` include serialized
+`code_map_inspect`, `code_map_explain`, and `forge_read` include serialized
 metadata and Markdown or JSON rendering in the configured byte limit.
-`get_code_snippet` pages an oversized symbol to fit that serialized limit, with
+`forge_read` pages an oversized symbol to fit that serialized limit, with
 truthful `next_source_offset`, `has_more`, and the active generation. Inspect and
 explain keep their configured preview line limits and 8 KiB source sub-budget;
 if the resulting response still exceeds the serialized limit after collection
-trimming, request fewer source lines, less detail, or `get_code_snippet` instead.
+trimming, request fewer source lines, less detail, or `forge_read` instead.
 Source pages contain only complete lines. A single line that cannot fit returns
 a clear budget error and a local-file recovery hint, never a partial line or a
 non-advancing cursor. Source reads still verify the on-disk digest and reject
@@ -262,7 +306,7 @@ stale generations.
 
 Code-map paged tools accept `limit` (default 30, range 1–100) and `offset`. Continue an ordinary page with its `next_offset` and `generation`; ordinary pages omit the repeated continuation text. A completed zero-result code-map page contains `total` and `items` without pagination fields. Computation and byte limits retain their truncation status and recovery hint, including when no items were returned. The response byte budget is configurable from 1,024 to 98,304 bytes; actual UTF-8 serialization, metadata, and JSON/Markdown escaping count toward it. Task-list pagination is separate: it always reports `total`, `limit`, `offset`, actual `returned`, `has_more`, and its task-view `generation`, with `next_offset` only when another page remains. When response trimming removes task or collection tails, it preserves whole records and advances to the actual returned offset. Task-view generations bind the selected workspace, task filters, and complete task/subtask state, not the code-index snapshot.
 
-Code source previews from `code_map_search` appear automatically when the total hit count is at most three. For larger results, set `include_preview:true`; each response attaches previews to at most three hits, with at most 20 lines and 12 KiB combined preview text. Every search hit includes an indexed signature and an `inspect_selector` object; pass that object as the arguments to `code_map_inspect` to request the source preview directly. Search previews and snippets check that on-disk source still matches the indexed digest. `get_code_snippet` supports `leading_lines` from 0 to 20 and an explicit `max_body_lines` limit normalized to at least one; when omitted, it reads the complete selected symbol if the serialized response fits. If source changed, refresh the index before relying on the result.
+Code source previews from `code_map_search` appear automatically when the total hit count is at most three. For larger results, set `include_preview:true`; each response attaches previews to at most three hits, with at most 20 lines and 12 KiB combined preview text. Every search hit includes an indexed signature and an `inspect_selector` object; pass that object as the arguments to `code_map_inspect` to request the source preview directly. Search previews and snippets check that on-disk source still matches the indexed digest. `forge_read` supports `leading_lines` from 0 to 20 and an explicit `max_body_lines` limit normalized to at least one; when omitted, it reads the complete selected symbol if the serialized response fits. If source changed, refresh the index before relying on the result.
 
 ## AST pattern capabilities
 

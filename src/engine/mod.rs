@@ -10,6 +10,8 @@ pub use forge_index::linker;
 pub use forge_tasks::milestones;
 /// Indexing pipeline orchestration.
 pub mod pipeline;
+/// Shared layered file and symbol reader for CLI and MCP.
+pub mod reader;
 /// Implements scanner support.
 pub use forge_index::scanner;
 /// Implements tasks support.

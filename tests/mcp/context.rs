@@ -822,7 +822,7 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
     let inspected = client.payload("code_map_inspect", json!({"selector":selector}));
     assert_eq!(inspected["node"]["id"], selector);
     assert!(inspected.get("documents").is_none());
-    let snippet = client.payload("get_code_snippet", json!({"selector":selector}));
+    let snippet = client.payload("forge_read", json!({"selector":selector}));
     assert!(snippet["header"].as_str().unwrap().contains(&format!(
         "{}:{}-{}",
         snippet["node"]["path"].as_str().unwrap(),
@@ -877,7 +877,7 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
     );
     assert_eq!(directory_scoped["node"]["path"], "nested/helper.py");
     let snippet_scoped = client.payload(
-        "get_code_snippet",
+        "forge_read",
         json!({"selector":"target","path":"other.py"}),
     );
     assert_eq!(snippet_scoped["node"]["path"], "other.py");
@@ -2259,7 +2259,7 @@ fn stdio_default_pages_and_stale_continuation_are_explicit() {
     }
     // Source-only continuation must retain a usable token with every collection complete.
     let source = client.payload(
-        "get_code_snippet",
+        "forge_read",
         json!({"selector":"selected",
         "max_body_lines":3,"format":"json"}),
     );
@@ -2271,13 +2271,13 @@ fn stdio_default_pages_and_stale_continuation_are_explicit() {
         .as_str()
         .expect("source continuation requires generation");
     let resumed = client.payload(
-        "get_code_snippet",
+        "forge_read",
         json!({"selector":"selected",
         "max_body_lines":3,"source_offset":offset,"generation":token,"format":"json"}),
     );
     assert_eq!(resumed["source_preview"]["body_offset"], offset);
     let (_, stale) = client.call(
-        "get_code_snippet",
+        "forge_read",
         json!({"selector":"selected",
         "source_offset":offset,"generation":"stale-token","format":"json"}),
     );
@@ -2377,7 +2377,7 @@ fn stdio_source_previews_respect_boundaries_and_continue_crlf_utf8() {
         if let Some(lines) = max_body_lines {
             arguments["max_body_lines"] = json!(lines);
         }
-        let (full_bytes, full_response) = client.call("get_code_snippet", arguments);
+        let (full_bytes, full_response) = client.call("forge_read", arguments);
         assert_ne!(
             full_response["result"]["isError"], true,
             "{label}: {full_response}"
@@ -2410,14 +2410,14 @@ fn stdio_source_previews_respect_boundaries_and_continue_crlf_utf8() {
     }
 
     let smaller = client.payload(
-        "get_code_snippet",
+        "forge_read",
         json!({"selector":"full.py:full_symbol","leading_lines":0,"max_body_lines":17}),
     );
     assert_eq!(smaller["source_preview"]["body_lines"], 17);
     assert_eq!(smaller["source_preview"]["next_source_offset"], 17);
     assert_eq!(smaller["source_preview"]["has_more"], true);
     let first = client.payload(
-        "get_code_snippet",
+        "forge_read",
         json!({"selector":"selected","max_body_lines":35}),
     );
     let text = first["source"].as_str().unwrap();
@@ -2426,7 +2426,7 @@ fn stdio_source_previews_respect_boundaries_and_continue_crlf_utf8() {
     assert!(!text.contains("following"));
     assert_eq!(first["source_preview"]["body_lines"], 35);
     let (_, wrong_cursor) = client.call(
-        "get_code_snippet",
+        "forge_read",
         json!({
             "selector":"selected","max_body_lines":35,"source_offset":36,"format":"json"
         }),
@@ -2436,14 +2436,14 @@ fn stdio_source_previews_respect_boundaries_and_continue_crlf_utf8() {
         .as_str()
         .unwrap()
         .contains("generation"));
-    let second = client.payload("get_code_snippet", json!({"selector":"selected","max_body_lines":35,"source_offset":first["source_preview"]["next_source_offset"],"generation":first["generation"]}));
+    let second = client.payload("forge_read", json!({"selector":"selected","max_body_lines":35,"source_offset":first["source_preview"]["next_source_offset"],"generation":first["generation"]}));
     assert_eq!(second["source_preview"]["body_offset"], 35);
     assert!(!second["source"].as_str().unwrap().contains("def selected"));
     assert_eq!(second["generation"], first["generation"]);
-    let third = client.payload("get_code_snippet", json!({"selector":"selected","max_body_lines":35,"source_offset":second["source_preview"]["next_source_offset"],"generation":second["generation"]}));
+    let third = client.payload("forge_read", json!({"selector":"selected","max_body_lines":35,"source_offset":second["source_preview"]["next_source_offset"],"generation":second["generation"]}));
     assert_eq!(third["source_preview"]["body_offset"], 70);
     let (_, markdown_first) = client.call(
-        "get_code_snippet",
+        "forge_read",
         json!({
             "selector":"selected","max_body_lines":5,"leading_lines":0
         }),
@@ -2452,7 +2452,7 @@ fn stdio_source_previews_respect_boundaries_and_continue_crlf_utf8() {
         markdown_first["result"]["isError"], true,
         "{markdown_first}"
     );
-    let (_, markdown_next) = client.call("get_code_snippet", json!({
+    let (_, markdown_next) = client.call("forge_read", json!({
         "selector":"selected","max_body_lines":5,"leading_lines":0,"source_offset":5,"generation":first["generation"]
     }));
     assert_ne!(
@@ -2491,7 +2491,7 @@ fn stdio_source_previews_respect_boundaries_and_continue_crlf_utf8() {
 
     let mut restarted = Client::new(&workspace);
     let (_, restarted_response) = restarted.call(
-        "get_code_snippet",
+        "forge_read",
         json!({
             "selector":"selected","max_body_lines":35,"source_offset":35,"format":"json"
         }),
@@ -2502,14 +2502,14 @@ fn stdio_source_previews_respect_boundaries_and_continue_crlf_utf8() {
         .unwrap()
         .contains("previous page's generation"));
     let (_, foreign_symbol) = client.call(
-        "get_code_snippet",
+        "forge_read",
         json!({
             "selector":"selected_116","max_body_lines":35,"source_offset":35,"format":"json"
         }),
     );
     assert_eq!(foreign_symbol["result"]["isError"], true);
     let (_, unrelated_page) = client.call(
-        "get_code_snippet",
+        "forge_read",
         json!({
             "selector":"selected","max_body_lines":35,"offset":1,"source_offset":35,"format":"json"
         }),
@@ -2534,14 +2534,14 @@ fn stdio_source_previews_respect_boundaries_and_continue_crlf_utf8() {
     workspace.delta(&["service.py"]);
     invalidate_mcp_connection_cache(&workspace.db()).unwrap();
     let second_generation = client.payload(
-        "get_code_snippet",
+        "forge_read",
         json!({
             "selector":"selected","max_body_lines":35,"format":"json"
         }),
     );
     assert_ne!(second_generation["generation"], first["generation"]);
     let (_, ambiguous) = client.call(
-        "get_code_snippet",
+        "forge_read",
         json!({
             "selector":"selected","max_body_lines":35,"source_offset":35,"format":"json"
         }),
@@ -2551,14 +2551,14 @@ fn stdio_source_previews_respect_boundaries_and_continue_crlf_utf8() {
         .as_str()
         .unwrap()
         .contains("generation"));
-    let (_, stale_explicit) = client.call("get_code_snippet", json!({
+    let (_, stale_explicit) = client.call("forge_read", json!({
         "selector":"selected","max_body_lines":35,"source_offset":35,"generation":first_generation,"format":"json"
     }));
     assert_eq!(
         stale_explicit["result"]["isError"], true,
         "explicit stale token remains authoritative: {stale_explicit}"
     );
-    let current = client.payload("get_code_snippet", json!({
+    let current = client.payload("forge_read", json!({
         "selector":"selected","max_body_lines":35,"source_offset":35,"generation":second_generation["generation"],"format":"json"
     }));
     assert_eq!(current["source_preview"]["body_offset"], 35);
@@ -2566,14 +2566,14 @@ fn stdio_source_previews_respect_boundaries_and_continue_crlf_utf8() {
     let selector = "full.py:full_symbol";
     let max_body_lines = full_source.lines().count();
     let (_, complete_page) = client.call(
-        "get_code_snippet",
+        "forge_read",
         json!({
             "selector":selector,"max_body_lines":max_body_lines,"format":"json"
         }),
     );
     assert_ne!(complete_page["result"]["isError"], true, "{complete_page}");
     let (_, missing_token) = client.call(
-        "get_code_snippet",
+        "forge_read",
         json!({
             "selector":selector,"max_body_lines":max_body_lines,"source_offset":1,"format":"json"
         }),
@@ -2584,14 +2584,14 @@ fn stdio_source_previews_respect_boundaries_and_continue_crlf_utf8() {
         &format!("def enormous(): return '{}'\n", "Привіт".repeat(50_000)),
     );
     invalidate_mcp_connection_cache(&workspace.db()).unwrap();
-    let (_, enormous) = client.call("get_code_snippet", json!({"selector":"enormous"}));
+    let (_, enormous) = client.call("forge_read", json!({"selector":"enormous"}));
     assert_eq!(enormous["result"]["isError"], true);
     assert!(enormous["result"]["content"][0]["text"]
         .as_str()
         .unwrap()
         .contains("huge.py"));
     let (_, enormous_missing_token) = client.call(
-        "get_code_snippet",
+        "forge_read",
         json!({
             "selector":"enormous","source_offset":1,"format":"json"
         }),
@@ -2623,7 +2623,7 @@ fn stdio_source_previews_respect_boundaries_and_continue_crlf_utf8() {
             arguments["source_offset"] = json!(offset);
             arguments["generation"] = generation.clone();
         }
-        let (frame_bytes, response) = bounded_client.call("get_code_snippet", arguments);
+        let (frame_bytes, response) = bounded_client.call("forge_read", arguments);
         assert!(
             frame_bytes <= 4096,
             "configured response was {frame_bytes} bytes"
@@ -2650,7 +2650,7 @@ fn stdio_source_previews_respect_boundaries_and_continue_crlf_utf8() {
     }
     assert_eq!(reconstructed, bounded_source);
     let (markdown_bytes, markdown_response) = bounded_client.call(
-        "get_code_snippet",
+        "forge_read",
         json!({
             "selector":"bounded.py:bounded",
             "leading_lines":0,
@@ -4067,12 +4067,12 @@ fn stdio_server_keeps_its_linked_worktree_and_resolves_registered_sibling_names(
     assert_eq!(sibling_result["nodes"]["total"], 1);
     assert!(sibling_result["nodes"]["items"][0].get("uri").is_none());
     let linked_page = client.payload(
-        "get_code_snippet",
+        "forge_read",
         json!({"selector":"shared_source","max_body_lines":1,"leading_lines":0,"worktree":"."}),
     );
     assert_eq!(linked_page["source_preview"]["next_source_offset"], 1);
     let (_, mirror_continuation) = client.call(
-        "get_code_snippet",
+        "forge_read",
         json!({"selector":"shared_source","max_body_lines":1,"leading_lines":0,"source_offset":1,"worktree":"mirror","format":"json"}),
     );
     assert_eq!(mirror_continuation["result"]["isError"], true);
@@ -4081,7 +4081,7 @@ fn stdio_server_keeps_its_linked_worktree_and_resolves_registered_sibling_names(
         .unwrap()
         .contains("generation"));
     let (_, sibling_continuation) = client.call(
-        "get_code_snippet",
+        "forge_read",
         json!({"selector":"shared_source","max_body_lines":1,"leading_lines":0,"source_offset":1,"worktree":"external","format":"json"}),
     );
     assert_eq!(sibling_continuation["result"]["isError"], true);

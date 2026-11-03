@@ -62,3 +62,6 @@ pub(crate) mod db {
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
+
+/// Regular expression dependency shared with application-level readers.
+pub use regex;

@@ -962,7 +962,7 @@ pub(super) fn context_bundle(
             "code_map_overview",
             "code_map_search",
             "code_map_inspect",
-            "get_code_snippet",
+            "forge_read",
             "search_docs",
             "get_doc",
             "task_blackboard",

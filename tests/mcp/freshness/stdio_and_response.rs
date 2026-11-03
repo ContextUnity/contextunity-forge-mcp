@@ -1811,7 +1811,7 @@ fn all_mcp_tools_admit_large_inventory_snapshot_without_raising_query_limit() {
         ),
         ("code_map_inspect", json!({"selector":"main.rs:current"})),
         (
-            "get_code_snippet",
+            "forge_read",
             json!({"selector":"main.rs:current","format":"json"}),
         ),
         (
@@ -1844,7 +1844,7 @@ fn all_mcp_tools_admit_large_inventory_snapshot_without_raising_query_limit() {
             client.request_value("tools/call", json!({"name":name,"arguments":arguments}));
         assert!(response.get("error").is_none(), "{name}: {response}");
         assert_ne!(response["result"]["isError"], true, "{name}: {response}");
-        if name == "get_code_snippet" {
+        if name == "forge_read" {
             let snippet: Value =
                 serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())
                     .unwrap();

@@ -92,11 +92,7 @@ impl SubsystemRegistry {
             "get_doc" | "search_docs" => Some("docs"),
             "task_list" | "task_claim" | "task_submit" | "task_manage" | "milestone_init"
             | "milestone_verify" | "milestone_handoff" => Some("acdd"),
-            name if name.starts_with("code_map_")
-                || matches!(name, "ast_grep_search" | "get_code_snippet") =>
-            {
-                Some("codemap")
-            }
+            name if name.starts_with("code_map_") || name == "ast_grep_search" => Some("codemap"),
             _ => None,
         }
     }

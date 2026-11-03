@@ -152,12 +152,11 @@ impl Inspect {
 }
 
 #[derive(Deserialize, JsonSchema)]
-/// Represents snippet data.
+/// Layered reader options and source continuation bounds.
 pub struct Snippet {
-    /// Exact symbol ID or name; path forms include path:name, path:known_kind:name, path:line, and path#Lline.
-    pub selector: String,
-    /// Restrict selector resolution to a workspace-relative file or directory.
-    pub path: Option<String>,
+    #[serde(flatten)]
+    /// Shared layered reader request.
+    pub read: crate::engine::reader::ReadRequest,
     /// Optional show source value.
     pub show_source: Option<bool>,
     /// Optional leading lines value.

@@ -9,8 +9,8 @@ use crate::{
     engine::scanner,
 };
 use rmcp::{
-    ServerHandler, handler::server::wrapper::Parameters, model::CallToolResult, tool, tool_handler,
-    tool_router,
+    handler::server::wrapper::Parameters, model::CallToolResult, tool, tool_handler, tool_router,
+    ServerHandler,
 };
 use serde_json::Value;
 
@@ -45,7 +45,15 @@ fn rejected_selector_fields(
             "generation",
             "worktree",
         ],
-        "get_code_snippet" => &[
+        "forge_read" => &[
+            "mode",
+            "start_line",
+            "line_count",
+            "pattern",
+            "regex",
+            "context",
+            "baseline",
+            "output_file",
             "selector",
             "path",
             "show_source",
@@ -496,43 +504,33 @@ impl Server {
         )
     }
     #[tool(
-        description = "Byte-bounded source for one selector. Returns the complete selected symbol when it fits the serialized response limit; otherwise continue with source_offset and the previous page's generation. Defaults to 5 leading lines; an explicit max_body_lines limit is honored. The on-disk file must match the indexed digest."
+        description = "Read workspace text by path: lines, raw, search (pattern, optional regex/context), or Git delta (optional baseline). Auto selects snippet for selector, search for pattern, otherwise lines. Core reads work without an index. Outline uses docs for Markdown and codemap AST declarations for code; snippet requires codemap and preserves digest-verified complete-symbol paging with source_offset/generation. Optional output_file exports returned content to a confined path. Sensitive patterns, symlinks, traversal and NUL binary input are rejected. Enabled graph/task signals add scope badges and copy-ready Hints."
     )]
-    fn get_code_snippet(&self, Parameters(p): Parameters<Snippet>) -> CallToolResult {
+    fn forge_read(&self, Parameters(p): Parameters<Snippet>) -> CallToolResult {
         let format = p.page.output_format();
         self.responding_with_presentation(
             format,
             OperationKind::Navigation,
-            "get_code_snippet",
+            "forge_read",
             |adapter, policy| {
                 let page = p.page.resolve(policy)?;
                 let source = p.source(policy)?;
-                self.read_with_adapter(adapter, |c| {
-                    let mut value = symbols::snippet_paged_with_response_budget(
-                        c,
-                        &self.root,
-                        &p.selector,
-                        p.path.as_deref(),
-                        &source,
-                        &page,
-                        policy.max_output_bytes,
-                    )?;
-                    if let (Some(path), Some(start), Some(end)) = (
-                        value["node"]["path"].as_str(),
-                        value["source_preview"]["start_line"].as_u64(),
-                        value["source_preview"]["end_line"].as_u64(),
-                    ) {
-                        value["header"] = serde_json::json!(format!(
-                            "{} {} in {path}:{start}-{end}",
-                            value["node"]["kind"].as_str().unwrap_or("symbol"),
-                            value["node"]["qualname"]
-                                .as_str()
-                                .or_else(|| value["node"]["name"].as_str())
-                                .unwrap_or(&p.selector)
-                        ));
-                    }
-                    Ok(value)
-                })
+                let read = |conn: Option<&rusqlite::Connection>| {
+                    crate::engine::reader::forge_read_tool(
+                        &self.root, adapter, &p.read, &page, &source, conn,
+                    )
+                };
+                let structural = p.read.requires_index(adapter)?;
+                if structural {
+                    self.read_with_adapter(adapter, |conn| read(Some(conn)))
+                } else if self.db.is_file()
+                    && (adapter.modules.is_enabled("codemap") || adapter.modules.is_enabled("docs"))
+                {
+                    self.read_with_adapter(adapter, |conn| read(Some(conn)))
+                        .or_else(|_| read(None))
+                } else {
+                    read(None)
+                }
             },
             None,
             None,

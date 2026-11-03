@@ -20,6 +20,33 @@ struct ActiveLink {
     claim_start: usize,
 }
 
+/// Render only parsed Markdown headings, preserving their hierarchy.
+pub fn render_outline(path: &str, source: &str) -> Result<String> {
+    let sections = extract_with_details(path, source, 0.0)?;
+    Ok(sections
+        .iter()
+        .filter_map(|(section, _)| {
+            let mut lines = section.content.lines();
+            let first = lines.next()?.trim_start();
+            let hashes = first.chars().take_while(|c| *c == '#').count();
+            let level = if (1..=6).contains(&hashes) {
+                hashes
+            } else {
+                let underline = lines.next()?.trim();
+                if !underline.is_empty() && underline.chars().all(|c| c == '=') {
+                    1
+                } else if !underline.is_empty() && underline.chars().all(|c| c == '-') {
+                    2
+                } else {
+                    return None;
+                }
+            };
+            Some(format!("{} {}", "#".repeat(level), section.section_title))
+        })
+        .collect::<Vec<_>>()
+        .join("\n"))
+}
+
 /// Source-derived metadata retained on the generic document node.
 pub fn extract_with_details(
     path: &str,

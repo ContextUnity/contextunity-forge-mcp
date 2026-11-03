@@ -254,7 +254,7 @@ concurrency:
     let filtered = filter_subsystem_tools(
         [
             "code_map_overview",
-            "get_code_snippet",
+            "forge_read",
             "task_list",
             "task_blackboard",
             "search_docs",
@@ -264,7 +264,7 @@ concurrency:
     );
     assert_eq!(
         filtered,
-        ["code_map_overview", "get_code_snippet", "search_docs"]
+        ["code_map_overview", "forge_read", "search_docs"]
     );
     assert!(
         contextunity_forge_mcp::core::tasks::catalog::disabled_tool_error("task_list", &registry)
@@ -279,7 +279,7 @@ concurrency:
         ["codemap", "acdd", "blackboard", "docs", "checkpoints"]
             .iter()
             .all(|module| !minimal.modules.is_enabled(module)),
-        "minimal should leave only the unassigned forge_guide tool enabled"
+        "minimal should leave only core tools enabled"
     );
     assert_eq!(
         filter_subsystem_tools(
@@ -287,18 +287,18 @@ concurrency:
                 "forge_guide",
                 "task_list",
                 "code_map_overview",
-                "get_code_snippet"
+                "forge_read"
             ],
             &minimal.modules
         ),
-        ["forge_guide"]
+        ["forge_guide", "forge_read"]
     );
     assert!(
         contextunity_forge_mcp::core::tasks::catalog::disabled_tool_error(
-            "get_code_snippet",
+            "forge_read",
             &minimal.modules
         )
-        .is_some_and(|error| error.starts_with("FEATURE_DISABLED:"))
+        .is_none()
     );
 
     adapter_workspace.write("forge-mcp.yaml", "profile: full\n");

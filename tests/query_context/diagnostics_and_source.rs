@@ -334,12 +334,12 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
     .is_err());
     let mut client = common::mcp_client::StdioClient::new(&workspace.1);
     let mcp_first = client.payload(
-        "get_code_snippet",
+        "forge_read",
         serde_json::json!({"selector":"selected","max_body_lines":35,"format":"json"}),
     );
     assert_eq!(mcp_first["source_preview"]["next_source_offset"], 35);
     let (_, inferred_response) = client.call(
-        "get_code_snippet",
+        "forge_read",
         serde_json::json!({
             "selector":"selected",
             "max_body_lines":35,
@@ -353,7 +353,7 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
         "source continuation must require an explicit generation even in the same session: {inferred_response}"
     );
     let resumed = client.payload(
-        "get_code_snippet",
+        "forge_read",
         serde_json::json!({
             "selector":"selected",
             "max_body_lines":35,
@@ -390,7 +390,7 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
             arguments["format"] = serde_json::json!(format);
         }
         let (first_bytes, first_response) =
-            bounded_client.call("get_code_snippet", arguments.clone());
+            bounded_client.call("forge_read", arguments.clone());
         if first_response["result"]["isError"] == true {
             failures.push(format!("{label} bounded first page errored: {first_response}"));
             continue;
@@ -428,7 +428,7 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
         let mut continuation = arguments;
         continuation["source_offset"] = serde_json::json!(cursor);
         let (_, missing_generation) =
-            bounded_client.call("get_code_snippet", continuation.clone());
+            bounded_client.call("forge_read", continuation.clone());
         assert_eq!(missing_generation["result"]["isError"], true);
         let generation = if format.is_some() {
             common::assertions::mcp_payload(&first_response)["generation"].clone()
@@ -438,7 +438,7 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
             serde_json::from_str(encoded).unwrap()
         };
         continuation["generation"] = generation;
-        let (_, next_response) = bounded_client.call("get_code_snippet", continuation);
+        let (_, next_response) = bounded_client.call("forge_read", continuation);
         if next_response["result"]["isError"] == true {
             failures.push(format!("{label} trimmed page rejected explicit generation at {cursor}: {next_response}"));
             continue;
@@ -469,12 +469,12 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
     );
     let mut line_client = common::mcp_client::StdioClient::new(&line_workspace.1);
     let first_line = line_client.payload(
-        "get_code_snippet",
+        "forge_read",
         serde_json::json!({"selector":"budget_line","leading_lines":0,"max_body_lines":1}),
     );
     for format in ["json", "markdown"] {
         let (bytes, response) = line_client.call(
-            "get_code_snippet",
+            "forge_read",
             serde_json::json!({
                 "selector":"budget_line","leading_lines":0,"max_body_lines":1,
                 "source_offset":1,"generation":first_line["generation"],"format":format,

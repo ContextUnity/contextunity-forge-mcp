@@ -341,49 +341,126 @@ receipt:
 
 ```yaml
 task_ref: unified-forge-read-and-subsystem-slices
-target: "Implement unified layered forge_read replacing get_code_snippet across core, docs, codemap, and acdd layers, and update all tool hints"
+target: Implement unified layered forge_read replacing get_code_snippet across core, docs, codemap, and acdd layers, and update all tool hints
 proof_policy: seam-test-first
-contract_revision: 3
+contract_revision: 5
 depends_on:
-  - contracts-and-shared-types-bootstrap
+- contracts-and-shared-types-bootstrap
 scope:
-  - src/mcp/tools.rs
-  - src/mcp/tools/inputs.rs
-  - src/mcp/response.rs
-  - src/cli/guide.rs
-  - crates/forge-core/src/config.rs
-  - crates/forge-core/src/subsystems.rs
-  - crates/forge-index/src/docs.rs
-  - crates/forge-tasks/src/engine/context.rs
-  - README.md
-  - docs/reference/configuration.md
-  - docs/runbooks/limits-and-freshness.md
-  - docs/reference/mcp-tools.md
-  - docs/reference/mcp-markdown-contracts.md
-  - skills/contextunity-forge/
-  - tests/mcp/
-  - tests/query_context/diagnostics_and_source.rs
-  - tests/acdd/mcp.rs
-  - tests/acdd/gates_ast.rs
+- crates/forge-tasks/src/lib.rs
+- src/engine/mod.rs
+- src/engine/reader.rs
+- src/mcp/tools.rs
+- src/mcp/tools/inputs.rs
+- src/mcp/response.rs
+- src/cli/guide.rs
+- crates/forge-core/src/config.rs
+- crates/forge-core/src/subsystems.rs
+- crates/forge-index/src/docs.rs
+- crates/forge-tasks/src/engine/context.rs
+- README.md
+- docs/reference/configuration.md
+- docs/runbooks/limits-and-freshness.md
+- docs/reference/mcp-tools.md
+- docs/reference/mcp-markdown-contracts.md
+- skills/contextunity-forge/
+- tests/mcp/
+- tests/query_context/diagnostics_and_source.rs
+- tests/acdd/mcp.rs
+- tests/acdd/gates_ast.rs
+- src/cli/mod.rs
 symbols:
-  - fn:forge_read_tool
-  - fn:render_read_hints
-  - fn:extract_file_slice
-  - fn:compute_file_delta
-status: planned
+- fn:forge_read_tool
+- fn:render_read_hints
+- fn:extract_file_slice
+- fn:compute_file_delta
+status: completed
 subtasks:
-  - subtask_ref: forge-read-tool-registration
-    title: "Register forge_read tool (CLI: contextunity-forge-mcp read) and completely remove get_code_snippet without alias"
-  - subtask_ref: core-layer-windowed-and-delta-reads
-    title: "Implement core layer: lines, raw, and search modes with canonical path confinement, binary null-byte check, sensitive pattern blocking from forge-mcp.yaml, and git delta diff"
-  - subtask_ref: docs-layer-markdown-outline
-    title: "Implement docs layer: outline mode parsing Markdown headings (#, ##, ###) with get_doc and search_docs hints when docs subsystem is active"
-  - subtask_ref: codemap-layer-snippets-and-ast-skeletons
-    title: "Implement codemap layer: snippet by symbol selector and outline via Tree-sitter with caller/test/invariant counts when codemap subsystem is active"
-  - subtask_ref: acdd-layer-scope-badges-and-hints
-    title: "Implement acdd layer: write_scope status badges (ALLOWED vs OUT_OF_SCOPE), task_manage extend_scope, blackboard, and verify hints"
-  - subtask_ref: purge-get-code-snippet-and-update-hints
-    title: "Replace all legacy get_code_snippet references in code_map_*, search_docs, forge_guide, and skill prompt templates with forge_read"
+- subtask_ref: forge-read-tool-registration
+  title: 'Register forge_read tool (CLI: contextunity-forge-mcp read) and completely remove get_code_snippet without alias'
+  status: completed
+  evidence: 'Actual MCP stdio/CLI core parity and removed legacy endpoint: cargo test --test mcp test_read::, 9 passed; strict Clippy passed.'
+- subtask_ref: core-layer-windowed-and-delta-reads
+  title: 'Implement core layer: lines, raw, and search modes with canonical path confinement, binary null-byte check, sensitive pattern blocking from forge-mcp.yaml, and git delta diff'
+  status: completed
+  evidence: 'Core lines/raw/literal+regex/context/export, binary/sensitive/traversal/symlink and real Git delta proofs: cargo test --test mcp test_read::,9 passed.'
+- subtask_ref: docs-layer-markdown-outline
+  title: 'Implement docs layer: outline mode parsing Markdown headings (#, ##, ###) with get_doc and search_docs hints when docs subsystem is active'
+  status: completed
+  evidence: 'Docs-only outline preserves parsed hierarchy and excludes fenced headings; enabled get_doc/search_docs hints: cargo test --test mcp test_read::,9 passed.'
+- subtask_ref: codemap-layer-snippets-and-ast-skeletons
+  title: 'Implement codemap layer: snippet by symbol selector and outline via Tree-sitter with caller/test/invariant counts when codemap subsystem is active'
+  status: completed
+  evidence: 'AST skeleton/snippet/graph hints and counts: reader tests9 passed; existing MCP source regressions10 passed; query_context source_preview3 and oversized_source_lines1 passed.'
+- subtask_ref: acdd-layer-scope-badges-and-hints
+  title: 'Implement acdd layer: write_scope status badges (ALLOWED vs OUT_OF_SCOPE), task_manage extend_scope, blackboard, and verify hints'
+  status: completed
+  evidence: 'Real claimed task/worktree ALLOWED/OUT_OF_SCOPE and command-present/absent verify hints: reader tests9 passed; task-store special file navigation isolation1 passed.'
+- subtask_ref: purge-get-code-snippet-and-update-hints
+  title: Replace all legacy get_code_snippet references in code_map_*, search_docs, forge_guide, and skill prompt templates with forge_read
+  status: completed
+  evidence: Scoped live sources/docs/skills/tests legacy-name scan clean; tool context/parser/catalog affected filters3 passed total; profile example validates; docs and skills co-evolved.
+extended_scope:
+- src/cli/mod.rs
+receipt:
+  contract_revision: 5
+  passed_at: 2026-11-03T11:14:07.049152629+00:00
+  evidence:
+    seam_test_proof:
+      exit_code: 0
+      seam_test_refs:
+      - tests/mcp/test_read.rs::forge_read_serves_text_in_a_minimal_workspace
+      - tests/mcp/test_read.rs::forge_read_core_modes_and_cli_share_bounded_text_and_exports
+      - tests/mcp/test_read.rs::forge_read_delta_never_exposes_sensitive_sibling_through_git_pathspec
+      - tests/mcp/test_read.rs::forge_read_implementation_hints_select_an_executable_type
+      tests_passed: 11
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: 'Accepted: all 64 scoped candidate blobs match live bytes; only reader.rs/tests/reference docs changed from b4249 remediation. Protected Cargo.toml/build.rs/.forge profile untouched; diff --check clean. src/cli/mod.rs admitted extension necessary for real shared reader CLI ingress.'
+        claims:
+          applicable: true
+          evidence: 'Accepted reader claims; original #1570 R1/R2 independently confirmed fixed against cumulative ledger #1572 and original fixtures. Strict Clippy passed. 32 focused tests passed and one additional existing focused check FAILED on pre-existing command-owned task_submit required-format schema, not hidden: see milestone #1573 and detailed task blackboard proof. The valid test remains intact. Core modes/security/export/delta, docs/code outline, snippet selectors/digests/complete-line budgets, graph/task hints, tool removal and cross-transport behavior exercised through production seams.'
+        concurrency:
+          applicable: true
+          evidence: 'Accepted: repairs add no state, transaction, migration or lock behavior; current exact map attributes both canonical helpers to shared forge_read_tool and both transports. Active task selection remains unique current-worktree/project filtered, canonical snippet generation/digest fencing unchanged and focused regressions pass. Candidate source is immutable.'
+        project_isolation:
+          applicable: true
+          evidence: 'Accepted: canonical diff now literal exact path; six special-name matrix and synthetic sensitive sibling exclusion across actual CLI/MCP/export plus original fixture replay confirm R1 closure. Existing traversal/symlink/binary/sensitive and linked-worktree routing checks pass; no alternate Git diff owner in validated AST inventory.'
+        administration:
+          applicable: true
+          evidence: 'Accepted within reader authority: no protected profiles/Cargo/build/schema/receipts changed. Legacy public endpoint removal and existing object tool schema tests pass. Additional required-format schema regression is verified as originating in delivered command commit36727fea5 and unchanged by reader; routed separately at #1573 for mandatory pre-handoff repair. Protected active profile tool rename remains milestone polish per #1542/#1563.'
+      extended_scope_review:
+        approved_paths:
+        - src/cli/mod.rs
+        reason_verified: true
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-AUTONOMOUS-COMMAND-GATE-WIRING: Zero-argument task_submit (across CLI and MCP) and task_verify automatically reuse execute_command_gate and compile_evidence_envelope, running the gate registered command in the claimed task worktree when no fresh claim-bound trace matches candidate_fingerprint, and expanding scope_args_by_pattern for task scope paths.'
+    - 'INV-PROFILE-DRIVEN-COMMAND-OUTPUT: The engine parses command stdout/stderr and validates gate proofs using declarative specifications in the active profile (commands.<id>.output with counts, require_counts, noise, errors, seam_ref_pattern), completely eliminating hardcoded Cargo string assumptions and enabling non-test linters, doc checkers, and multi-language toolchains without Rust binary modifications.'
+    - 'INV-WORKTREE-CONFINED-CONDITIONAL-TRACES: Command execution always runs inside the claimed task worktree (or repository root only for in-place milestone gates). Passing runs (exit 0 on build/verify, or matching expected_failure on contract) and short failures fitting the inline budget emit no external trace log files; full logs are persisted to <task_worktree>/.forge/task-traces/ and linked via file:/// URI only when diagnostic output is truncated.'
+    - 'INV-PRE-POST-WRITE-SCOPE-GUARD: Command verification checks git status --porcelain before and after process execution; any modified or untracked file outside the task admitted scope and extended_scope prepends a SCOPE_VIOLATION_WARNING without failing the process run itself.'
+    - 'INV-LAYERED-FORGE-READ: forge_read replaces get_code_snippet completely (removing get_code_snippet with zero aliases) and provides a layered capability model: core text reading (lines, raw, search, delta, output_file, null-byte binary check, and sensitive-pattern blocking from forge-mcp.yaml) is available in any workspace; structural symbols (snippet) and AST skeletons (outline) activate only when the codemap subsystem is enabled; doc section navigation activates when docs is enabled; task write-scope badges and gate verification hints activate when acdd is enabled.'
+    - 'INV-SIGNAL-DRIVEN-FILTERED-HINTS: Every forge_read mode appends a compact (1-3 line) conditional Hints footer containing pre-filled, copy-ready Forge tool calls (code_map_explain, code_map_impact, code_map_tests, get_doc, code_map_query implementations, task_manage verify, task_blackboard) strictly when the underlying SQLite graph edges or task state confirm the signal exists, filtered through filter_subsystem_tools so disabled subsystems never produce dead hints.'
+    architectural_notes:
+    - 'decisions: Architectural synthesis: MCP and CLI share one reader implementation and one typed ReadMode/ReadBounds/ReadResult; register universally in the existing subsystem catalog and replace get_code_snippet without aliases. Core path resolves and confines workspace paths, rejects configured sensitive patterns and NUL binary before data export, implements bounded line/raw/search and git delta in any workspace without opening the code map. Treat path traversal, symlink escape, binary/sensitive reads and output_file destination escapes as fail-closed; preserve response budgets and avoid loading unbounded data. Layer capabilities onto that same owner: docs-only Markdown outline uses docs headings, codemap-only snippet reuses existing snippet_paged_with_response_budget and selector/freshness handling, code outline uses existing Tree-sitter/parser registries, ACDD derives scope badges and verify/blackboard hints from the active task. Query graph signals before suggesting explain/impact/tests/query; filter every generated hint via existing filter_subsystem_tools; unknown tools remain visible under that function so only supply registered names. get_doc hints use separate path and section fields (decision #1544). CLI and MCP adapters must use same path and preserve structured JSON/Markdown budgets. Remove old names throughout source, CLI guide, task context, docs, skills and tests; protected .forge profile is milestone polish after delivery. Scope of src/cli/mod.rs transferred back via extend_scope #1556. Existing snippet tests cover selector/budget/pagination, adapt rather than discard guarantees; add dedicated subsystem and path-security production tests. Red seam tests/mcp/test_read.rs::forge_read_serves_text_in_a_minimal_workspace runs actual MCP stdio against profile minimal with real file and fails assertion tool not found exit101; graph confirms exact call to in-scope subsystem filtering. Decisions #1538-1552 and delivered command task #1562 define cross-task boundaries.'
+    - 'decisions: Contract revision 4 adds the canonical shared reader owner src/engine/reader.rs and module registration src/engine/mod.rs: CLI and MCP depend downward on engine under src/AGENTS.md, never on each other. Existing architectural decision #1563 and contract red proof remain applicable; no production edits occurred since original red run. Other layers reuse existing canonical core/index/task services; no parallel reader or registry. Command task deliver receipt remains intact (sync reports completed).'
+    - 'decisions: Revision 5 additionally admits crates/forge-tasks/src/lib.rs solely to re-export the existing regex dependency for shared reader substring/regex search. Cargo.toml/build.rs remain strictly protected; forge-tasks already depends on regex and root depends on forge-tasks. This preserves the standard regex semantics without inventing a matcher, shell subprocess or misleading ACDD reader owner. Existing engine owner and synthesis #1563/#1565 remain. Incomplete builder edits are safely saved outside the worktree, actual minimal MCP seam was rerun and compiled then failed on expected tool-not-found assertion (101); they are restored only after the contract gates pass.'
+    - 'decisions: {"review_of":"#1570","cumulative_ledger":"#1572","candidate":"903b264949755132dbda09b6cca74743887ab24f","baseline":"c25501615f0b2304b69c6d0f7ee7c806cd6863c3","worker_id":"ux002-reader-reviewer","claim_revision":53,"contract_revision":5,"decision":"pass","clusters":[{"id":"UX002-READ-R1","origin":"pre-existing-missed in pre-remediation reader candidate b4249; introduced by initial reader feature, no remediation regression","disposition":"confirmed-fixed","owner":"compute_file_delta","evidence":"Single canonical Git diff invocation uses --literal-pathspecs. Independent original fixture now returns empty exact-safe-file diff and no sensitive content. New real MCP/CLI six-name regression confirms only admitted file hunks, default/explicit HEAD parity, and output_file readback.","mutation_matrix":["Git magic :(glob)**","wildcard *","wildcard ?","bracket [ab]","nested :(literal)secrets/token.txt","leading --option.txt","sensitive old/new sibling contents excluded","MCP exported bytes match","CLI baseline HEAD equals MCP default","prior traversal/symlink/binary/sensitive rejection retained"],"mutation_evidence":"Builder deliberate flag removal rejected by regression per #1572, /tmp/ux002-R1-literal-pathspecs-mutation.log; reviewer initial b4249 reproduction and current replay independently confirm behavior."},{"id":"UX002-READ-R2","origin":"pre-existing-missed in pre-remediation reader candidate b4249; introduced by initial reader feature, no remediation regression","disposition":"confirmed-fixed","owner":"render_read_hints","evidence":"File-level aggregate signal no longer produces type-only hint. Explicit selected Base node emits exact id and following actual MCP implementations call succeeds with one Child. Original file outline replay now omits invalid hint.","mutation_matrix":["file outline","file lines","file raw","file search","module/file snippet","Base type with child","Child without incoming implementation","standalone function plus invalid function-base syntax","CLI file outline","CLI selected Base"],"mutation_evidence":"Builder restored fallback mutation rejected by real seam per #1572, /tmp/ux002-R2-file-selector-fallback-mutation.log; reviewer original b4249 call failure and current replay independently confirm behavior."}],"structural_evidence":{"current_map":"Both owner impacts freshness matched across 600 files; each owner reaches forge_read_tool plus containing module.","ast_inventory":"Validated git_command predicate returns exactly rev-parse and literal diff; implementations format predicate exactly one owner; shared forge_read_tool predicate returns four CLI and one MCP call site.","candidate_binding":{"scoped_blobs":64,"live_blob_mismatches":[]},"protected_paths":"Live diff for Cargo.toml, build.rs, .forge/acdd/profile.yaml empty; git diff --check clean.","remediation_diff":"Only reader.rs, reader tests, and admitted MCP tool reference differ from reviewed b4249.","extended_scope_review":{"approved_paths":["src/cli/mod.rs"],"reason_verified":true}},"verification":[{"command":"cargo clippy --all-targets --all-features -- -D warnings && cargo test --test mcp test_read:: && cargo test --test mcp source && cargo test --test query_context source_preview && cargo test --test query_context oversized_source_lines && cargo test --test mcp stdio_navigation_is_independent_of_task_store_special_files && cargo test --test mcp mcp_exposes_and_executes_evolution_tools && cargo test --test acdd profile_parser_accepts_polymorphic_drivers_and_catalogs && cargo test --test acdd task_claim_bundle_and_task_manage_context_returns_unified_agent_context && cargo test --test acdd stdio_tool_catalog_uses_object_schemas_for_every_property","exit_code":0,"tests_passed":30,"tests_failed":0,"tests_filtered":961,"clippy_exit_code":0},{"command":"cargo test --test mcp stdio_server_keeps_its_linked_worktree_and_resolves_registered_sibling_names && cargo test --test mcp stdio_compact_navigation_preserves_symbol_and_page_contracts && cargo test --test mcp stdio_default_pages_and_stale_continuation_are_explicit","exit_code":101,"tests_passed":2,"tests_failed":1,"tests_filtered":303,"failure":"context::stdio_default_pages_and_stale_continuation_are_explicit at tests/mcp/context.rs:2254: task_submit format advertised required. Command-owned pre-existing regression introduced by 36727fea5, unchanged in reader baseline/candidate; tracked at milestone #1573."}],"totals":{"tests_passed":32,"tests_failed":1,"full_target_run":false,"suite_run":false,"benchmark_run":false},"adjacent_failure":{"owner":"autonomous-command-execution-and-trace-diagnostics","tracking":"#1573","authority":"ADR0019 omission means Markdown; docs/reference/mcp-markdown-contracts.md requires optional format; runtime tools/list requires format but actual task_submit deserializer accepts omission.","attribution":"git diff 36727fea5^..36727fea5 replaces macro with custom TaskSubmitInput and loses serde(default) on schema_with format. c255016 baseline and current reader candidate retain that exact custom submit code unchanged.","effect":"Existing assertion remains valid; test is not weakened. Separate owner must fix before milestone binding/handoff per coordinator."},"limitations":["No full targets/suites/benchmarks, per explicit user direction.","Active protected profile rename remains admitted milestone polish; reader review does not claim it already changed.","No delivery claim/submission; coordinator owns next gate scheduling."]}'
+    - 'decisions: {"candidate":"903b264949755132dbda09b6cca74743887ab24f","claim_revision":59,"decision":"pass","integration":"#1575","prior_independent_review":"#1574","binding":{"files":64,"mismatches":[]},"verification":{"command":"cargo test --test mcp test_read:: && cargo test --test mcp mcp_exposes_and_executes_evolution_tools","exit_code":0,"tests_passed":12,"tests_failed":0,"tests_filtered":192,"archive":"/home/oleksii/.lean-ctx/tee/cargo_test_--test_mcp_test_read______car_85747ca2.log"},"adjacent_open":"#1573 preserved at milestone scope for mandatory coordinator repair before handoff","no_full_suite":true,"no_candidate_edits":true}'
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Acceptance

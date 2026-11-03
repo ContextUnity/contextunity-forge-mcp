@@ -9,6 +9,31 @@ use std::{
 };
 use tokio::io::AsyncWrite;
 
+fn render_for_operation(
+    value: &Value,
+    output_format: OutputFormat,
+    title: &str,
+    discovery: Option<DiscoveryKind>,
+    operation: OperationKind,
+) -> String {
+    if title == "forge_read" && output_format == OutputFormat::Markdown {
+        let mut body = value.clone();
+        let hints = body
+            .as_object_mut()
+            .and_then(|object| object.remove("Hints"));
+        let mut rendered =
+            format::render_for_operation(&body, output_format, title, discovery, operation);
+        if let Some(hints) = hints.and_then(|value| value.as_str().map(str::to_owned)) {
+            rendered.push_str("\nHints: ");
+            rendered.push_str(&hints.replace('\n', "\n       "));
+            rendered.push('\n');
+        }
+        rendered
+    } else {
+        format::render_for_operation(value, output_format, title, discovery, operation)
+    }
+}
+
 // The tool result is JSON inside a text block, then escaped by JSON-RPC again.
 const ENVELOPE_RESERVE: usize = 256;
 
@@ -67,13 +92,9 @@ pub(crate) fn result_for_presented(
             if discovery == Some(DiscoveryKind::Ast) && value.get("diagnostic").is_some() {
                 let diagnostic = &value["diagnostic"];
                 let rendered = match output_format {
-                    OutputFormat::Markdown => format::render_for_operation(
-                        &value,
-                        output_format,
-                        title,
-                        discovery,
-                        operation,
-                    ),
+                    OutputFormat::Markdown => {
+                        render_for_operation(&value, output_format, title, discovery, operation)
+                    }
                     OutputFormat::Json => format::ast_legacy_error(diagnostic),
                 };
                 return if success_text_bytes(&rendered) <= budget {
@@ -87,13 +108,8 @@ pub(crate) fn result_for_presented(
             }
             let mut compacted = value.clone();
             format::compact(&mut compacted, operation, explain);
-            let rendered = format::render_for_operation(
-                &compacted,
-                output_format,
-                title,
-                discovery,
-                operation,
-            );
+            let rendered =
+                render_for_operation(&compacted, output_format, title, discovery, operation);
             if success_text_bytes(&rendered) <= budget {
                 return CallToolResult::success(vec![ContentBlock::text(rendered)]);
             }
@@ -112,7 +128,7 @@ pub(crate) fn result_for_presented(
                     budget,
                 )
             };
-            let mut trimmed = if title == "get_code_snippet" {
+            let mut trimmed = if title == "forge_read" {
                 trim_snippet_source_to_budget(
                     &mut trimmed_value,
                     output_format,
@@ -125,11 +141,11 @@ pub(crate) fn result_for_presented(
             } else {
                 false
             };
-            if title != "get_code_snippet" {
+            if title != "forge_read" {
                 loop {
                     let mut compact_candidate = trimmed_value.clone();
                     format::compact(&mut compact_candidate, operation, explain);
-                    let candidate = format::render_for_operation(
+                    let candidate = render_for_operation(
                         &compact_candidate,
                         output_format,
                         title,
@@ -152,7 +168,7 @@ pub(crate) fn result_for_presented(
                 }
             }
             if !trimmed {
-                if title == "get_code_snippet" && trimmed_value.get("source_preview").is_some() {
+                if title == "forge_read" && trimmed_value.get("source_preview").is_some() {
                     return bounded_error(
                         "Snippet line exceeds the serialized response byte budget; use a larger response budget or read the local source file. No partial line was returned.",
                         budget,
@@ -161,13 +177,8 @@ pub(crate) fn result_for_presented(
                 return output_too_large(&trimmed_value);
             }
             format::compact(&mut trimmed_value, operation, explain);
-            let rendered = format::render_for_operation(
-                &trimmed_value,
-                output_format,
-                title,
-                discovery,
-                operation,
-            );
+            let rendered =
+                render_for_operation(&trimmed_value, output_format, title, discovery, operation);
             if success_text_bytes(&rendered) > budget {
                 return output_too_large(&trimmed_value);
             }
@@ -309,8 +320,7 @@ fn trim_snippet_source_to_budget(
     let fits = |candidate: &Value| {
         let mut compacted = candidate.clone();
         format::compact(&mut compacted, operation, explain);
-        let rendered =
-            format::render_for_operation(&compacted, output_format, title, discovery, operation);
+        let rendered = render_for_operation(&compacted, output_format, title, discovery, operation);
         success_text_bytes(&rendered) <= budget
     };
 
@@ -592,7 +602,7 @@ fn oversized_response_error(
             metadata["tasks"] = json!([]);
             format::compact(&mut metadata, operation, explain);
             let rendered =
-                format::render_for_operation(&metadata, output_format, title, discovery, operation);
+                render_for_operation(&metadata, output_format, title, discovery, operation);
             if success_text_bytes(&rendered) <= budget {
                 "One complete task record exceeds the configured byte limit. Request compact task details, a smaller page, or a narrower filter; no partial task or continuation was returned."
             } else {

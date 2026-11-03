@@ -625,6 +625,50 @@ impl From<CliOutputFormat> for OutputFormat {
 #[derive(Subcommand, Debug)]
 /// Enumerates the supported command values.
 pub enum Command {
+    /// Read text, symbols, outlines, or Git changes through the layered reader.
+    Read {
+        /// Workspace-relative file, or symbol selector with --mode snippet.
+        path: String,
+        /// auto, lines, raw, search, delta, snippet, or outline.
+        #[arg(long, default_value = "auto")]
+        mode: String,
+        /// Indexed symbol selector, optionally confined by path.
+        #[arg(long)]
+        selector: Option<String>,
+        /// One-based first line.
+        #[arg(long)]
+        start_line: Option<usize>,
+        /// Maximum number of text lines.
+        #[arg(long)]
+        line_count: Option<usize>,
+        /// Search pattern.
+        #[arg(long)]
+        pattern: Option<String>,
+        /// Interpret pattern as a regular expression.
+        #[arg(long)]
+        regex: bool,
+        /// Search context lines on each side.
+        #[arg(long)]
+        context: Option<usize>,
+        /// Git baseline revision.
+        #[arg(long)]
+        baseline: Option<String>,
+        /// Workspace-relative export destination.
+        #[arg(long)]
+        output_file: Option<String>,
+        /// Symbol source page offset.
+        #[arg(long, default_value_t = 0)]
+        source_offset: usize,
+        /// Previous source page generation.
+        #[arg(long)]
+        generation: Option<String>,
+        /// Smaller symbol body limit.
+        #[arg(long)]
+        max_body_lines: Option<usize>,
+        /// Symbol leading context lines.
+        #[arg(long)]
+        leading_lines: Option<usize>,
+    },
     /// Validates one ACDD profile or milestone manifest.
     Validate {
         /// Optional workspace-relative file; without it the active profile and open milestones are scanned.
@@ -909,6 +953,7 @@ pub fn default_db(root: &std::path::Path) -> PathBuf {
 
 fn command_presentation(command: &Command) -> (OperationKind, &'static str, Option<bool>) {
     match command {
+        Command::Read { .. } => (OperationKind::Navigation, "forge_read", None),
         Command::Task { command } => {
             let title = match command {
                 task::TaskCommand::List { .. } => "task_list",
@@ -976,9 +1021,9 @@ fn command_presentation(command: &Command) -> (OperationKind, &'static str, Opti
             QueryCommand::Remove { .. } => {
                 (OperationKind::Navigation, "code_map_prove_removal", None)
             }
-            QueryCommand::Analyze { .. }
-            | QueryCommand::Run { .. }
-            | QueryCommand::Sql { .. } => unreachable!(),
+            QueryCommand::Analyze { .. } | QueryCommand::Run { .. } | QueryCommand::Sql { .. } => {
+                unreachable!()
+            }
         },
         Command::Docs { command } => match command {
             DocsCommand::Search { .. } => (OperationKind::Navigation, "search_docs", None),
@@ -1077,6 +1122,84 @@ impl Cli {
             _ => None,
         };
         let result: Value = match command {
+            Command::Read {
+                path,
+                mode,
+                selector,
+                start_line,
+                line_count,
+                pattern,
+                regex,
+                context,
+                baseline,
+                output_file,
+                source_offset,
+                generation,
+                max_body_lines,
+                leading_lines,
+            } => {
+                let adapter = crate::engine::scanner::load_adapter(&root, None)?;
+                let mode = serde_json::from_value::<forge_core::model::ReadMode>(json!(mode))?;
+                let request = crate::engine::reader::ReadRequest {
+                    path: Some(path),
+                    mode,
+                    selector,
+                    start_line,
+                    line_count,
+                    pattern,
+                    regex,
+                    context,
+                    baseline,
+                    output_file,
+                };
+                anyhow::ensure!(
+                    source_offset == 0 || generation.is_some(),
+                    "source continuation requires generation"
+                );
+                let source = SourceOptions::resolve_full_symbol(
+                    &adapter.response,
+                    leading_lines,
+                    max_body_lines,
+                    source_offset,
+                )?;
+                let mut page = QueryOptions::resolve(&adapter.response, None, 0, None, generation)?;
+                page.detail = Detail::Full;
+                let structural = request.requires_index(&adapter)?;
+                if structural {
+                    let conn = open_or_rebuild(&db, &root)?;
+                    crate::engine::reader::forge_read_tool(
+                        &root,
+                        &adapter,
+                        &request,
+                        &page,
+                        &source,
+                        Some(&conn),
+                    )?
+                } else if db.is_file()
+                    && (adapter.modules.is_enabled("codemap") || adapter.modules.is_enabled("docs"))
+                {
+                    reader::open_locked(&db, &root)
+                        .and_then(|conn| {
+                            crate::engine::reader::forge_read_tool(
+                                &root,
+                                &adapter,
+                                &request,
+                                &page,
+                                &source,
+                                Some(&conn),
+                            )
+                        })
+                        .or_else(|_| {
+                            crate::engine::reader::forge_read_tool(
+                                &root, &adapter, &request, &page, &source, None,
+                            )
+                        })?
+                } else {
+                    crate::engine::reader::forge_read_tool(
+                        &root, &adapter, &request, &page, &source, None,
+                    )?
+                }
+            }
             Command::Validate { path } => validate::run(&root, path.as_deref())?,
             Command::Migrate { command } => migrate::run(&root, command)?,
             Command::Task { command } => task::run(&root, command)?,
@@ -1444,7 +1567,7 @@ impl Cli {
         format::compact(&mut result, operation, explain);
         let formatted = match checkpoint_action.as_deref() {
             Some(action) => format::render_checkpoint(&result, output_format, title, action),
-            None if title == "task_list" => {
+            None if matches!(title, "task_list" | "forge_read") => {
                 let policy = crate::engine::scanner::load_adapter(&root, None)
                     .map(|adapter| adapter.response)
                     .unwrap_or_default();

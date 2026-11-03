@@ -30,6 +30,8 @@ modules:
 limits:
   max_metadata_bytes: 2048       # 2 KiB limit for arbitrary task/gate metadata & metrics
   max_trace_summary_bytes: 2048  # Tail output size for execution traces
+  diagnostic_inline_bytes: 4096 # Persist full logs only when diagnostics exceed this budget.
+  max_command_timeout_seconds: 1800
 
 git_commit_note:
   limits:
@@ -179,6 +181,13 @@ commands:
     by_pattern:
       "**/*.rs": "cargo clippy --all-targets --all-features -- -D warnings && cargo test"
     description: "Run strict Rust checks followed by the repository's test suite. Append --test <target> to focus the test command."
+    timeout_seconds: 300
+    output:
+      counts: {passed: '(\d+) passed', failed: '(\d+) failed'}
+      require_counts: true
+      noise: ['^\s*(Compiling|Downloading|Finished)\b']
+      errors: ['^error(\[E\d+\])?:', 'panicked at', '^FAIL ']
+      seam_ref_pattern: '--test\s+([^\s]+)'
   check_full_repo:
     by_pattern:
       "**/*.py": "pytest"
@@ -186,6 +195,17 @@ commands:
       "**/*.rs": "cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets"
     description: "Run the milestone handoff verification commands from TESTS.md."
     timeout_seconds: 600
+    output:
+      counts: {passed: '(\d+) passed', failed: '(\d+) failed'}
+      require_counts: true
+      noise: ['^\s*(Compiling|Downloading|Finished)\b']
+      errors: ['^error(\[E\d+\])?:', 'panicked at', '^FAIL ']
+  lint:
+    command: "cargo clippy --all-targets --all-features -- -D warnings"
+    output:
+      require_counts: false
+      noise: ['^\s*(Checking|Compiling|Finished)\b']
+      errors: ['^error(\[E\d+\])?:']
   test:
     by_pattern:
       "**/*.rs": "cargo test"

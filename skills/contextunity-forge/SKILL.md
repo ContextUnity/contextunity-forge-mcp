@@ -73,12 +73,16 @@ signature, docstring, and compact call summary; use `code_map_explain` for paged
 incoming/outgoing relationships. Request `include_coverage=true` when resolution
 evidence matters.
 
-Use `get_code_snippet(selector)` for complete symbol bodies instead of repeated
-100–300-line `ctx_read` chunks. Snippets default to the complete symbol within the
+Use `forge_read(selector="path:Symbol")` for complete symbol bodies. Use
+`forge_read(path="notes.txt", mode="lines", start_line=1, line_count=100)` for
+text, `mode="search"` with `pattern` for literal/regex search, `mode="delta"`
+for Git changes, and `mode="outline"` for Markdown or code declarations.
+CLI parity is `contextunity-forge-mcp read notes.txt --mode lines`. Snippets default to the complete symbol within the
 serialized byte budget; `max_body_lines` sets an explicit smaller bound. Inspect
-and explain retain configured preview defaults. Use `ctx_read` for exact file
-ranges before editing, unindexed files, or a single line too large for the MCP
-budget.
+and explain retain configured preview defaults. Core text reads work without codemap. Respect `sensitive` path blocking and
+confined `output_file` exports. Follow the conditional `Hints` footer only when
+the enabled graph or active task confirms the suggested operation. Use `ctx_read`
+for a single source line too large for the MCP budget.
 
 Run depth-1 `code_map_impact` before interface edits or removals. Git change views
 accept exactly one of `selector` or `changes="staged"|"unstaged"|"head"`; check
@@ -177,7 +181,12 @@ command, and review proofs. Keep optional advice out of hard requirements when a
 workflow must run with navigation disabled.
 
 Claim the current gate, stay within admitted scope, and use `extend_scope`
-before expanding it. Preserve candidate immutability after review and during
+before expanding it. Run iterative checks with `task_manage(action="verify", task_id="...")`
+or CLI `task verify <TASK_ID>`; omit submit evidence to execute or reuse fresh
+claim-bound command proof. Command output schemas declare regex counts, noise,
+errors, and seam extraction under `commands.<id>.output`. Passing runs and short
+failures stay inline; truncated failures link worktree-confined trace logs.
+Preserve candidate immutability after review and during
 delivery; let `task_submit` manage receipts. `task_manage(action="next")` claims
 eligible work atomically; CLI milestone init/list/show/handoff-context/handoff
 owns milestone operations. For schemas, recovery, delivery, and handoff, consult

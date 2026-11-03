@@ -12,7 +12,7 @@ fn mcp_exposes_and_executes_evolution_tools() {
     let mut client = StdioClient::new(&w);
     let cases = [
         (
-            "get_code_snippet",
+            "forge_read",
             serde_json::json!({"selector":"compute","format":"json"}),
         ),
         (
@@ -45,7 +45,7 @@ fn mcp_exposes_and_executes_evolution_tools() {
     }
 
     let (_, default_snippet) = client.call(
-        "get_code_snippet",
+        "forge_read",
         serde_json::json!({"selector":"compute"}),
     );
     assert_eq!(
@@ -56,12 +56,12 @@ fn mcp_exposes_and_executes_evolution_tools() {
         .as_str()
         .unwrap();
     assert!(
-        default_text.starts_with("# get_code_snippet"),
+        default_text.starts_with("# forge_read"),
         "{default_text}"
     );
 
     let (_, explicit_markdown) = client.call(
-        "get_code_snippet",
+        "forge_read",
         serde_json::json!({"selector":"compute","format":"markdown"}),
     );
     assert_eq!(
@@ -74,7 +74,7 @@ fn mcp_exposes_and_executes_evolution_tools() {
     );
 
     let explicit_json = client.payload(
-        "get_code_snippet",
+        "forge_read",
         serde_json::json!({"selector":"compute","format":"json"}),
     );
     assert_eq!(explicit_json["source"], "def compute():\n    return 42\n");

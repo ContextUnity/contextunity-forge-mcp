@@ -177,7 +177,7 @@ The agent walks the graph through a short series of calls. Each one adds a narro
 
 1. `code_map_overview` reports the workspace, generation, language coverage, and documentation counts. This is the check that the index matches the repository you think you opened.
 2. `code_map_search` finds symbols by exact name, prefix (`parse*`), or full text. `ast_grep_search` matches a syntax pattern (`print($VALUE)`) in admitted files of one language.
-3. `code_map_inspect` returns the signature, docstring, and a short caller and callee preview. Linked documentation sections come with it. `get_code_snippet` adds a bounded source window after checking that the file still matches the indexed digest.
+3. `code_map_inspect` returns the signature, docstring, and a short caller and callee preview. Linked documentation sections come with it. `forge_read(selector="path:Symbol")` adds digest-verified source. Read any workspace text through `forge_read(path="notes.txt", mode="lines")` or CLI `read notes.txt`; `search`, `delta`, and `output_file` are available with the minimal profile. Docs and codemap enable their respective outlines; active task claims add scope badges and conditional hints.
 4. `code_map_explain` lists direct relationships. `code_map_impact` walks the inbound blast radius, one edge deep unless you ask for more.
 5. `code_map_tests` names tests that reach the symbol, or the production code a test depends on. `code_map_prove_removal` estimates what a deletion would disturb from static references. It is a structural estimate, and runtime safety still belongs to the tests.
 6. `code_map_analyze` returns stored syntax diagnostics and, on request, dependency cycles. `code_map_query` runs the same graph operations or one read-only `SELECT`.
@@ -213,7 +213,7 @@ MCP is the surface agents use. The CLI is the same operations for a terminal, pl
 | You want | MCP | CLI |
 |---|---|---|
 | Build or refresh the map | First overview, then automatic refresh | `scan`, `build`, `delta` |
-| Find and read symbols | `code_map_search`, `code_map_inspect`, `get_code_snippet`, `ast_grep_search` | `query search`, `query inspect`, `ast grep` |
+| Find and read symbols | `code_map_search`, `code_map_inspect`, `forge_read`, `ast_grep_search` | `query search`, `query inspect`, `read`, `ast grep` |
 | Callers, impact, tests | `code_map_explain`, `code_map_impact`, `code_map_tests`, `code_map_prove_removal` | `query explain`, `query impact`, `query tests`, `query remove` |
 | Diagnostics and SQL | `code_map_analyze`, `code_map_query` | `query analyze`, `query run sql` |
 | Documentation | `search_docs`, `get_doc` | `docs search`, `docs get` |
