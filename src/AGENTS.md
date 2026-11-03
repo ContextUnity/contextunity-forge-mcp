@@ -106,16 +106,12 @@ See [Performance Architecture](../docs/architecture/performance.md) for complete
 
 Before delivering any source code change, verify the required gates from [TESTS.md](../TESTS.md):
 
-1. **Task-Level Proof**: Run the focused test seam proving the admitted change.
-2. **Target Gate**: Run the complete affected test target:
-   ```bash
-   cargo test --test <affected-target>
-   ```
-3. **Strict Linter**:
+1. **Task-Level Proof**: Run the focused test seam and scoped suite proving the admitted change (e.g. `cargo test --test <target> <filter>`).
+2. **Strict Linter**:
    ```bash
    cargo clippy --all-targets --all-features -- -D warnings
    ```
-4. **Milestone Handoff Gate**: Run the single compound verification command:
+3. **Milestone Handoff Gate**: Run the single compound verification command before milestone handoff:
    ```bash
    cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets
    ```

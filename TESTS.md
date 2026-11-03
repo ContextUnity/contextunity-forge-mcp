@@ -11,27 +11,13 @@ isolation.
 
 ## Task-level proof
 
-Run the focused test command required by the admitted task contract. Record the
-exact command, exit code, passing count, and failing count in the active
-`build` proof. This focused contract/build proof uses the narrowest real
-production seam that proves the task; it is separate from the affected-target
-gate below.
+Run the focused test command required by the admitted task contract (e.g. `cargo test --test <target> <seam_filter>` or scoped test module). Record the exact command, exit code, passing count, and failing count in the active `build` and `review` evidence. This focused test proof uses the narrowest real production seam that proves the task without forcing slow, unrelated suite execution during task iteration.
 
-At both task build and review, run the complete affected test target without a
-filter: `cargo test --test <affected-target>`. Record the exact target command,
-exit code, passing count, and failing count in the build/review evidence. Do not
-use a focused test command in place of this target gate. If a target cannot pass
-because of an external environment issue, record the failing test and its cause
-in the evidence without changing or omitting the required command.
-
-For Rust task builds, also run
-`cargo clippy --all-targets --all-features -- -D warnings`. Record its exact
-command and exit code with the build evidence; Clippy contributes no test count.
-The embedded ACDD profile registers the combined command
+For Rust task builds and reviews, run strict Clippy alongside the focused test:
+`cargo clippy --all-targets --all-features -- -D warnings`. Record its exact command and exit code with the build evidence; Clippy contributes no test count.
+The embedded ACDD profile registers the scoped verification command:
 `cargo clippy --all-targets --all-features -- -D warnings && cargo test`.
-Claim context supplies `workflow_guidance.scoped_commands` with the contract
-seam and indexed covering-test targets appended as `--test <target>`; use the
-command matching the affected proof and record its exact string.
+Claim context supplies `workflow_guidance.scoped_commands` with the contract seam and indexed covering-test targets; use the scoped command matching the task proof (with test filter) and record its exact string. Full unfiltered suite execution (`cargo test --all-targets`) is deferred to the milestone handoff gate.
 
 ## Milestone handoff gate
 

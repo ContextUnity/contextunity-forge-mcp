@@ -19,9 +19,9 @@
 - Forge tool discovery and task operations: load the shared `contextunity-forge` skill.
 - Follow the [Blackboard procedure](skills/contextunity-forge/SKILL.md#blackboard) for claim context, progress reports, and gate or agent handoffs.
 
-Use Forge MCP tools or the `contextunity-forge-mcp` CLI on the surface that provides the needed operation. Follow the active task profile and the `workflow_guidance` returned by task claim for gate sequence, proof policy, roles, models, review contours, and profile-specific behavior. Task builds run the affected test target and strict Clippy. Follow [TESTS.md](TESTS.md) for the exact task and milestone verification commands and count rules.
+Use Forge MCP tools or the `contextunity-forge-mcp` CLI on the surface that provides the needed operation. Follow the active task profile and the `workflow_guidance` returned by task claim for gate sequence, proof policy, roles, models, review contours, and profile-specific behavior. Task builds and reviews run the scoped task seam test and strict Clippy (without forcing full unfiltered test suite execution during task iteration). Follow [TESTS.md](TESTS.md) for the exact task and milestone verification commands and count rules.
 
-The embedded ACDD profile registers `rust-check-and-test` as strict Clippy followed by tests. Use its `workflow_guidance.scoped_commands` entry for an affected test target and submit the task-bound `expected_evidence_template` with completed proof fields.
+The embedded ACDD profile registers `rust-check-and-test` as strict Clippy followed by tests. Use its `workflow_guidance.scoped_commands` entry for the task-scoped test target and submit the task-bound `expected_evidence_template` with completed proof fields.
 
 <!-- acdd-forge:agents-verification:start -->
 When authoring contracts or testing capabilities:
