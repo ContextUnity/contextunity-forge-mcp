@@ -101,6 +101,8 @@ fn rejected_selector_fields(
         "code_map_query" => &[
             "operation",
             "selector",
+            "sql",
+            "query",
             "target",
             "path",
             "direction",
@@ -138,8 +140,45 @@ fn rejected_selector_fields(
         ],
         "ast_grep_search" => &[
             "pattern",
+            "query",
             "language",
             "path",
+            "limit",
+            "offset",
+            "detail",
+            "generation",
+            "worktree",
+        ],
+        "search_docs" => &[
+            "query",
+            "pattern",
+            "doc_type",
+            "component",
+            "path",
+            "include_excerpt",
+            "limit",
+            "offset",
+            "detail",
+            "generation",
+            "worktree",
+        ],
+        "get_doc" => &[
+            "path_or_id",
+            "path",
+            "selector",
+            "section",
+            "limit",
+            "offset",
+            "detail",
+            "generation",
+            "worktree",
+        ],
+        "code_map_analyze" => &[
+            "target",
+            "path",
+            "selector",
+            "include_cycles",
+            "lint",
             "limit",
             "offset",
             "detail",
@@ -491,7 +530,7 @@ impl Server {
                     let page = p.page.resolve(policy)?;
                     let res = symbols::search_with_options(
                         c,
-                        &p.pattern,
+                        p.pattern()?,
                         &symbols::SearchOptions {
                             kind: p.kind.as_deref(),
                             path: p.path.as_deref().filter(|path| !path.is_empty()),
@@ -635,12 +674,33 @@ impl Server {
     )]
     fn code_map_query(&self, Parameters(p): Parameters<Query>) -> CallToolResult {
         let format = p.page.output_format();
-        let operation = if p.operation == "sql" {
+        let implicit_sql = p.sql.is_some()
+            || looks_like_sql(&p.operation)
+            || (p.operation.trim().is_empty() && p.query.as_deref().is_some_and(looks_like_sql));
+        let (effective_op, effective_selector) = if implicit_sql {
+            (
+                "sql",
+                p.sql
+                    .as_deref()
+                    .or(p.query.as_deref())
+                    .or(p.selector.as_deref())
+                    .or_else(|| looks_like_sql(&p.operation).then_some(p.operation.as_str())),
+            )
+        } else {
+            (
+                p.operation.as_str(),
+                p.target
+                    .as_deref()
+                    .or(p.selector.as_deref())
+                    .or(p.query.as_deref()),
+            )
+        };
+        let operation = if effective_op == "sql" {
             OperationKind::Sql
         } else {
             OperationKind::Navigation
         };
-        let is_inspect = p.operation.trim() == "inspect";
+        let is_inspect = effective_op.trim() == "inspect";
         let discovery = is_inspect.then_some(DiscoveryKind::Inspect);
         self.responding_with_presentation(
             format,
@@ -649,7 +709,7 @@ impl Server {
             |adapter, policy| {
                 self.read_with_adapter(adapter, |c| {
                     let page = p.page.resolve(policy)?;
-                    if p.target.is_some() && p.operation.trim() != "untested" {
+                    if p.target.is_some() && effective_op.trim() != "untested" {
                         anyhow::bail!("target is supported only for untested");
                     }
                     if let Some(target) = p.target.as_deref() {
@@ -661,8 +721,8 @@ impl Server {
                     }
                     let mut result = traversal::query_with_path_options(
                         c,
-                        &p.operation,
-                        p.target.as_deref().or(p.selector.as_deref()),
+                        effective_op,
+                        effective_selector,
                         p.path.as_deref(),
                         &traversal::GraphQueryOptions {
                             depth: p.depth,
@@ -689,12 +749,14 @@ impl Server {
     )]
     fn code_map_analyze(&self, Parameters(p): Parameters<Analyze>) -> CallToolResult {
         let format = p.page.output_format();
-        let operation = if looks_like_sql(&p.target) {
+        let target = p.target();
+        let operation = if target.as_deref().is_ok_and(looks_like_sql) {
             OperationKind::Sql
         } else {
             OperationKind::Navigation
         };
         self.responding(format, operation, "code_map_analyze", |adapter, policy| {
+            let target = target?;
             anyhow::ensure!(
                 !p.lint || p.include_cycles != Some(true),
                 "lint=true cannot be combined with include_cycles=true"
@@ -702,9 +764,9 @@ impl Server {
             self.read_with_adapter(adapter, |c| {
                 let options = p.page.resolve(policy)?;
                 if p.lint {
-                    crate::db::lint::syntax_paged(c, &p.target, &options)
+                    crate::db::lint::syntax_paged(c, target, &options)
                 } else {
-                    reader::analyze_paged(c, &p.target, p.include_cycles, &options)
+                    reader::analyze_paged(c, target, p.include_cycles, &options)
                 }
             })
         })
@@ -737,6 +799,7 @@ impl Server {
         let format = p.page.output_format();
         self.responding_with_presentation(format, OperationKind::Navigation, "ast_grep_search", |adapter, policy| {
             self.read_with_adapter(adapter, |conn| {
+                let pattern = p.pattern()?;
                 let language = match p.language.as_deref().filter(|l| !l.is_empty()) {
                     Some(lang) => lang.to_owned(),
                     None => {
@@ -769,17 +832,17 @@ impl Server {
                 let mut result = cli::ast::search_paged(
                     conn,
                     &self.root,
-                    &p.pattern,
+                    pattern,
                     &language,
                     p.path.as_deref(),
                     &p.page.resolve(policy)?,
                 )?;
-                result["pattern"] = serde_json::json!(p.pattern);
+                result["pattern"] = serde_json::json!(pattern);
                 result["language"] = serde_json::json!(language);
                 if format == OutputFormat::Markdown {
                     result["request_scope"] = serde_json::json!({
                         "workspace_root": self.root.display().to_string(),
-                        "pattern": p.pattern,
+                        "pattern": pattern,
                         "language": language,
                         "path": p.path,
                     });
@@ -801,10 +864,10 @@ impl Server {
                 self.read_with_adapter(adapter, |c| {
                     reader::search_docs_with_options(
                         c,
-                        &p.query,
+                        p.query()?,
                         &reader::DocSearchOptions {
                             doc_type: p.doc_type.as_deref(),
-                            component: p.component.as_deref(),
+                            component: p.component()?,
                             include_excerpt: p.include_excerpt,
                             page: &p.page.resolve(policy)?,
                         },
@@ -828,7 +891,7 @@ impl Server {
                     page.detail = Detail::Full;
                 }
                 self.read_with_adapter(adapter, |c| {
-                    reader::get_doc_paged(c, &p.path_or_id, p.section.as_deref(), &page)
+                    reader::get_doc_paged(c, p.path_or_id()?, p.section.as_deref(), &page)
                 })
             },
         )
@@ -861,6 +924,7 @@ impl Server {
                     if !codemap_enabled {
                         for key in [
                             "start",
+                            "sql_schema",
                             "symbols",
                             "snippets",
                             "tests",
@@ -963,16 +1027,28 @@ fn operation_kind(name: &str, arguments: Option<&serde_json::Map<String, Value>>
         "forge_guide" => OperationKind::Guide,
         "session_checkpoint" => OperationKind::Checkpoint,
         "code_map_query"
-            if arguments
-                .and_then(|arguments| arguments.get("operation"))
-                .and_then(Value::as_str)
-                == Some("sql") =>
+            if arguments.is_some_and(|arguments| {
+                let operation = arguments.get("operation").and_then(Value::as_str);
+                operation == Some("sql")
+                    || arguments.get("sql").is_some()
+                    || operation.is_some_and(looks_like_sql)
+                    || (operation.unwrap_or("").trim().is_empty()
+                        && arguments
+                            .get("query")
+                            .and_then(Value::as_str)
+                            .is_some_and(looks_like_sql))
+            }) =>
         {
             OperationKind::Sql
         }
         "code_map_analyze"
             if arguments
-                .and_then(|arguments| arguments.get("target"))
+                .and_then(|arguments| {
+                    arguments
+                        .get("target")
+                        .or(arguments.get("path"))
+                        .or(arguments.get("selector"))
+                })
                 .and_then(Value::as_str)
                 .is_some_and(looks_like_sql) =>
         {
@@ -983,13 +1059,9 @@ fn operation_kind(name: &str, arguments: Option<&serde_json::Map<String, Value>>
 }
 
 fn looks_like_sql(value: &str) -> bool {
-    let value = value.trim_start().to_ascii_lowercase();
-    value.starts_with("select ")
-        || value.starts_with("select\n")
-        || value == "select"
-        || value.starts_with("with ")
-        || value.starts_with("with\n")
-        || value == "with"
+    value.split_whitespace().next().is_some_and(|keyword| {
+        keyword.eq_ignore_ascii_case("select") || keyword.eq_ignore_ascii_case("with")
+    })
 }
 
 #[tool_handler(

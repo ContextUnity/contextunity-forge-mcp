@@ -8,7 +8,7 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    io::Read,
+    io::{Read, Write},
     path::Path,
     process::{Child, Command, ExitStatus, Stdio},
     sync::mpsc,
@@ -136,9 +136,52 @@ pub(super) struct CommandObservation {
     selection: String,
     command: String,
     exit_code: i32,
-    stdout_digest: String,
-    stderr_digest: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stdout_digest: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stderr_digest: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reused_verification: Option<bool>,
     implementation_digest: String,
+}
+
+pub(super) fn observe_or_reuse_project_command(
+    root: &Path,
+    selection: &str,
+    binding: &HandoffBinding,
+    verification: &IntegrationVerification,
+    sha: &str,
+) -> Result<CommandObservation> {
+    let profile = crate::core::tasks::profile::load_for_workspace(root)?;
+    let registered_command = profile
+        .commands
+        .get(selection)
+        .with_context(|| {
+            let available: Vec<_> = profile.commands.keys().map(String::as_str).collect();
+            format!(
+                "HANDOFF_COMMAND_UNREGISTERED: '{selection}' is not a registered project command in profile (available: {available:?})"
+            )
+        })?
+        .command();
+    // Handoff validates this content binding against the selected commit before
+    // collecting telemetry. Bind reuse to HEAD as well; the binding deliberately
+    // contains content digests rather than navigation commit identities.
+    if verification.exit_code == 0
+        && verification.tests_failed == 0
+        && verification.command.trim() == registered_command.trim()
+        && resolve_commit(root, "HEAD")? == sha
+    {
+        return Ok(CommandObservation {
+            selection: selection.to_owned(),
+            command: registered_command.to_owned(),
+            exit_code: 0,
+            stdout_digest: None,
+            stderr_digest: None,
+            reused_verification: Some(true),
+            implementation_digest: binding.implementation_digest.clone(),
+        });
+    }
+    observe_command(root, selection, binding)
 }
 
 /// Execute only an explicitly selected, registered project command.
@@ -166,8 +209,9 @@ pub(super) fn observe_command(
         selection: selection.to_owned(),
         command: command.to_owned(),
         exit_code: output.status.code().unwrap_or(-1),
-        stdout_digest: hex::encode(Sha256::digest(&output.stdout)),
-        stderr_digest: hex::encode(Sha256::digest(&output.stderr)),
+        stdout_digest: Some(hex::encode(Sha256::digest(&output.stdout))),
+        stderr_digest: Some(hex::encode(Sha256::digest(&output.stderr))),
+        reused_verification: None,
         implementation_digest: binding.implementation_digest.clone(),
     };
     if !output.status.success() {
@@ -794,6 +838,48 @@ fn note_ref(root: &Path) -> Result<Option<String>> {
         return Ok(None);
     }
     bail!("HANDOFF_PASSPORT_UNAVAILABLE: cannot resolve Git notes ref");
+}
+
+pub(super) fn delete_refs(root: &Path, refs: &[String]) -> Result<()> {
+    if refs.is_empty() {
+        return Ok(());
+    }
+    let batch = (|| -> Result<bool> {
+        let mut child = Command::new("git")
+            .args(["update-ref", "--stdin"])
+            .current_dir(root)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()?;
+        let written = (|| -> Result<()> {
+            let mut stdin = child
+                .stdin
+                .take()
+                .context("Git ref deletion stdin unavailable")?;
+            for reference in refs {
+                writeln!(stdin, "delete {reference}")?;
+            }
+            Ok(())
+        })();
+        let status = child.wait()?;
+        Ok(written.is_ok() && status.success())
+    })();
+    if !matches!(batch, Ok(true)) {
+        let mut result = Ok(());
+        for reference in refs {
+            let deletion = git_write(
+                root,
+                &["update-ref", "-d", reference],
+                "HANDOFF_REF_CLEANUP_FAILED",
+            );
+            if result.is_ok() {
+                result = deletion;
+            }
+        }
+        result?;
+    }
+    Ok(())
 }
 
 pub(super) fn git_write(root: &Path, args: &[&str], code: &str) -> Result<()> {

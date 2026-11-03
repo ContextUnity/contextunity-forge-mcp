@@ -466,7 +466,7 @@ and has no fabricated breadcrumb. A node without a verified role has no role bad
 ### Governing rules and edge evidence
 
 This repository example uses the verified rule for
-[`document_symbol_candidates`](../../src/engine/linker/resolution/mod.rs#L105-L143)
+[`document_symbol_candidates`](../../crates/forge-index/src/linker/resolution/mod.rs)
 and its actual rule source:
 
 ```markdown

@@ -183,7 +183,10 @@ pub fn extract_with_details(
             doc_id: doc_id.clone(),
             path: path.into(),
             section_title: title.clone(),
-            doc_type: meta.doc_type.clone().unwrap_or_else(|| "guide".into()),
+            doc_type: meta
+                .doc_type
+                .clone()
+                .unwrap_or_else(|| default_doc_type(path).into()),
             content: content.into(),
             is_invariant: !invariants.is_empty()
                 || content.lines().any(|line| invariant_id(line).is_some()),
@@ -224,6 +227,23 @@ pub fn extract(path: &str, source: &str, mtime: f64) -> Result<Vec<DocSection>> 
         .into_iter()
         .map(|(doc, _)| doc)
         .collect())
+}
+
+/// Returns the default `doc_type` inferred from path when frontmatter omits `doc_type`.
+pub fn default_doc_type(path: &str) -> &'static str {
+    let relative = path
+        .strip_prefix('[')
+        .and_then(|rest| rest.split_once("]/").map(|(_, rel)| rel))
+        .unwrap_or(path);
+    if relative.starts_with("docs/milestones/")
+        || relative.contains("/docs/milestones/")
+        || relative.starts_with("docs/contracts/")
+        || relative.contains("/docs/contracts/")
+    {
+        "contract"
+    } else {
+        "guide"
+    }
 }
 
 fn is_symbol_token(value: &str) -> bool {

@@ -21,12 +21,32 @@ Selector grammar, SQL shape, proof objects, and examples stay in this page and i
 
 ## Efficient navigation
 
+MCP navigation accepts unified parameter spellings alongside the canonical fields:
+
+| Tool | Canonical field | Accepted aliases |
+| --- | --- | --- |
+| `code_map_search` | `pattern` | `query` |
+| `ast_grep_search` | `pattern` | `query` |
+| `search_docs` | `query`, `component` | `pattern`, `path` respectively |
+| `get_doc` | `path_or_id` | `path`, `selector` |
+| `code_map_analyze` | `target` | `path`, `selector`; omission selects workspace totals |
+| `code_map_query` | `selector` | `query`; `sql` selects read-only SQL mode |
+
+Aliases are explicit optional properties in the published `tools/list` schemas;
+the canonical field is not required when an alias supplies the value. Handlers
+normalize these fields before querying. Supply one spelling per value; a nonempty
+canonical field together with an alias is a duplicate-field error. `code_map_query` resolves its separate
+optional fields as described under [SQL](#sql-and-checkpoints).
+
 Start with `code_map_overview` to confirm the selected workspace and indexed
 coverage. Reuse a sufficient search preview instead of fetching the same source
 again. Use `code_map_inspect` for one declaration summary and `code_map_explain`
 when relationship edges are needed. Use `get_code_snippet` when source is absent
-from previews or a complete-symbol read is needed. Use `get_doc` for the selected
-document section; full detail is the default and includes content. Use
+from previews or a complete-symbol read is needed; it reads the complete body by
+default, with `max_body_lines` available to bound it. Use this instead of repeated
+`ctx_read` file chunks. Triage sections with `search_docs(query="...", include_excerpt=true)`,
+inspect outlines with `get_doc(path_or_id="...", detail="compact")`, and read a selected
+section with `get_doc(path_or_id="...", section="...")`; full detail includes content. Use
 `code_map_tests` for verified exact-call paths, and treat
 `code_map_prove_removal` as indexed static evidence, not runtime-safety proof.
 `code_map_analyze(lint=true)` reads stored syntax diagnostics;
@@ -56,6 +76,17 @@ exact inspect request. Topic grouping creates no reply or resolution state.
 Task tools use the dedicated lifecycle layout: summaries retain dependencies and
 actual statuses, while claims and contexts preserve active guidance and available
 evidence. See the [task lifecycle Markdown contract](mcp-markdown-contracts.md#task-lifecycle).
+
+Claim/context blackboard bundles include untargeted and current-gate messages.
+Active `decisions`, `findings`, and `blockers` also remain eligible across gates,
+retaining their original gate and subject to context response bounds. The
+`contract_synthesis` architect records architectural decisions with `topic=decisions`.
+The guide lists `contract_synthesis`, `contract`, `build`, `review`, and `deliver`;
+the active profile determines the configured sequence.
+
+Explicit gate `tools` are module requirements. Empty lists on contract, command,
+and review proof gates receive advisory navigation tools filtered by enabled
+modules; embedded gates therefore remain usable with navigation disabled.
 
 ## Tools
 
@@ -257,7 +288,25 @@ byte sizes; save and delete display the actual action and breadcrumb. Get
 preserves the stored JSON value losslessly and does not interpret user fields
 such as `generation`, `freshness`, or `items` as Forge metadata.
 
-`code_map_query(operation="sql")` accepts exactly one `SELECT` or `WITH` statement. The connection is read-only, and write or administrative SQL is rejected. It has a query time budget; large result sets should be paged. For structural cycle analysis, use `code_map_analyze` with `include_cycles=true`. Cycles are static graph findings.
+`code_map_query` accepts operations `overview`, `inspect`, `explain`, `impact`, `slice`, `unwired`, `sql`, `untested`, and `implementations`. Use `code_map_query(sql="SELECT count(*) FROM nodes")` to select SQL mode directly, or `code_map_query(operation="sql", selector="SELECT ...")`. A SELECT/WITH statement in `operation`, or in `query` when `operation` is omitted or blank, also selects SQL mode. In these inferred forms, the statement resolves from `sql`, then `query`, then `selector`, then SQL text in `operation`. With an explicit operation and no inferred form, the selector resolves from `target`, then `selector`, then `query`; `target` remains valid only for `untested`. SQL accepts exactly one read-only `SELECT` or `WITH` statement. Writes and additional statements remain rejected, with the same query budgets and pagination. For structural cycle analysis, use `code_map_analyze` with `include_cycles=true`. Cycles are static graph findings.
+
+### SQL columns and joins
+
+The SQL schema is `nodes(node_id, id, kind, name, qualname, path_id, line, end_line, is_test, language, generated, details, node_hash, owner_path_id)`, `path_dictionary(path_id, path)`, `edges(src_hash, kind, dst_hash, path_id, line, evidence_id, confidence_id, occurrence_count)`, `files(path, status, digest, size, language, is_test, generated, path_hash)`, and `doc_sections(doc_id, path, section_title, doc_type, content, invariants, referenced_symbols, is_invariant)`. Paths and endpoints use integer IDs/hashes; there are no compatibility views or `nodes.path`, `edges.src`, or `edges.dst` columns.
+
+```sql
+SELECT n.name, p.path, n.line
+FROM nodes n JOIN path_dictionary p ON p.path_id = n.path_id
+ORDER BY p.path, n.line, n.id;
+
+SELECT src.name AS source, e.kind, dst.name AS target
+FROM edges e
+JOIN nodes src ON e.src_hash = src.node_hash
+JOIN nodes dst ON e.dst_hash = dst.node_hash
+ORDER BY src.id, e.kind, dst.id;
+```
+
+Missing-table or missing-column SQL errors retain the SQLite error and append a schema hint.
 
 `session_checkpoint` stores values in SQLite `gate_checkpoints`, scoped to the
 active task-store project. Its schema-compatible `name` field carries the
@@ -293,6 +342,12 @@ Syntax lint mode does not execute cycle analysis. Use `code_map_query` for custo
 
 ## Documentation queries
 
+Use `search_docs`'s optional `component` (alias `path`) for a documentation component or directory
+prefix filter, and `query` (alias `pattern`) for search terms. Prefer
+`include_excerpt=true` for match-centered triage. Omit `get_doc.section` with
+`detail="compact"` to inspect the outline, then supply an exact section title to
+read that section.
+
 Markdown search and document results render the actual sections, excerpts when
 requested, and selected detail. A path link appears only after the selected
 primary or linked workspace root resolves that path. Preserve each returned
@@ -310,4 +365,6 @@ Compact responses omit candidate data and return a hint to request full detail; 
 
 `code_map_inspect` returns paged `documented_in` sections for verified symbol references. Its Markdown presents each cited section once with document identity, citation line, and a resolved file URI; it does not repeat the separate JSON `documents` page. `code_map_explain` retains its own `documents` page. `code_map_impact` returns paged `affected_docs` for a selected path or symbol. Exact Markdown `code_map_analyze` responses may include paged `doc_diagnostics`: `broken_doc_link` for a link that does not resolve, `dead_doc_symbol` for a claim with no matching declaration (with an optional `suggested_symbol`), and `stale_doc_sections` when an in-bounds source range is disjoint from the unique current symbol range. Suggestions are remediation hints, not graph edges; ambiguous, unsafe, malformed, or out-of-bounds claims do not prove stale documentation.
 
-Lines that declare `INV-*` rules are indexed as invariant nodes. A `governs` / `governed_by` edge requires a uniquely resolved code claim with an explicit normalized source-file target on the same line as the invariant ID; uniqueness alone is insufficient. Inspect, impact, and task context can surface verified governing rules with a single-line rule and source path/line. Navigation includes at most five direct rules and five IDs governing one-hop callers or callees; omitted counts and source references keep the response bounded. This graph context does not replace or truncate task contract invariants, profile guidance, decisions, commands, or proof receipts.
+Lines that declare `INV-*` rules are indexed as invariant nodes. A `governs` / `governed_by` edge requires a uniquely resolved code claim within the invariant node's inclusive line span (with `end_line` at least `line`). Explicit source-file targets confine resolution to that file; unscoped claims use the document's workspace and the same first-tier uniqueness rule as `documents` edges. Inspect, impact, and task context can surface verified governing rules with a single-line rule and source path/line. Navigation includes at most five direct rules and five IDs governing one-hop callers or callees; omitted counts and source references keep the response bounded. This graph context does not replace or truncate task contract invariants, profile guidance, decisions, commands, or proof receipts.
+
+Archived documents under any `archive/` directory (`docs/milestones/archive/`, `docs/plans/archive/`, or `.../archive/...`, including paths prefixed by a linked workspace) are excluded from default `search_docs` results and overview documentation hubs. Pass a `component` or its `path` alias targeting `archive` to search them explicitly. `get_doc` can still read them directly. Archived documents emit no `documents`, `references_doc`, `governs`, or `governed_by` edges, so they contribute no live `documented_in`, `affected_docs`, or invariant governance. Document-to-document citations remain available. In task context bundles (`context_bundle.adrs` and `scope_symbols[].documented_by`), all indexed non-archive documentation across the repository is intersected while excluding `archive/**`, `docs/milestones/**`, and `docs/contracts/**`. See [ADR 0019](../adr/0019-mcp-markdown-output-and-dead-metadata-compaction.md#archive-exclusion-from-documentation-search-and-code-documentation-graph).

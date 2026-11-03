@@ -119,6 +119,12 @@ pub struct RoleDef {
     /// Free-form advisory guidance for the role.
     #[serde(default)]
     pub guidance: Option<String>,
+    /// Optional external agent runner template.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runner: Option<String>,
+    /// Optional prompt assembled from the active task and role context.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_template: Option<String>,
 }
 
 impl RoleDef {
@@ -144,6 +150,12 @@ impl RoleDef {
         }
         if other.guidance.is_some() {
             self.guidance = other.guidance;
+        }
+        if other.runner.is_some() {
+            self.runner = other.runner;
+        }
+        if other.prompt_template.is_some() {
+            self.prompt_template = other.prompt_template;
         }
     }
 }
@@ -352,6 +364,16 @@ impl GuidanceEntry {
             Self::Text(text) => text.as_str(),
             Self::Structured { description, .. } => description.as_str(),
         }
+    }
+
+    /// Render guidance with each operational criterion as a bullet point.
+    pub fn rendered_text(&self) -> String {
+        let mut text = self.text().to_owned();
+        for criterion in self.criteria() {
+            text.push_str("\n- ");
+            text.push_str(criterion);
+        }
+        text
     }
 
     /// Return operational criteria if this is a structured guidance entry.
@@ -621,6 +643,9 @@ pub enum CommandDef {
         /// Optional execution timeout in seconds.
         #[serde(default)]
         timeout_seconds: Option<u64>,
+        /// Project-path patterns mapped to scoped command arguments.
+        #[serde(default)]
+        scope_args_by_pattern: BTreeMap<String, String>,
     },
     /// Commands selected declaratively from source path patterns.
     Pattern(PatternCommands),
@@ -665,14 +690,19 @@ impl CommandDef {
             .into_iter()
             .filter_entry(|entry| {
                 let name = entry.file_name().to_str().unwrap_or_default();
-                !matches!(name, ".git" | "target" | "node_modules" | ".venv" | "dist" | "build")
+                !matches!(
+                    name,
+                    ".git" | "target" | "node_modules" | ".venv" | "dist" | "build"
+                )
             });
         for entry in walker.flatten() {
             if entry.file_type().is_file() {
                 if let Ok(rel) = entry.path().strip_prefix(root) {
                     let rel_str = rel.to_string_lossy();
                     for (pattern, command) in &patterns.by_pattern {
-                        if glob_pattern_matches(pattern, &rel_str) && pattern.len() > max_matched_len {
+                        if glob_pattern_matches(pattern, &rel_str)
+                            && pattern.len() > max_matched_len
+                        {
                             max_matched_len = pattern.len();
                             matched_command = Some(command.as_str());
                         }
@@ -891,7 +921,6 @@ fn normalize_gate_condition(condition: &str) -> Option<&'static str> {
     }
 }
 
-
 fn default_auto_commit() -> bool {
     true
 }
@@ -965,8 +994,17 @@ impl GateProfile {
     /// The `{file_stem}` token expands to the path's filename without its extension.
     pub fn scope_args_for_path(&self, path: &str) -> Option<String> {
         let scope_args = self
-            .scope_args_by_pattern
-            .iter()
+            .commands
+            .values()
+            .filter_map(|command| match command {
+                CommandDef::Detailed {
+                    scope_args_by_pattern,
+                    ..
+                } => Some(scope_args_by_pattern),
+                _ => None,
+            })
+            .flat_map(|patterns| patterns.iter())
+            .chain(self.scope_args_by_pattern.iter())
             .filter(|(pattern, _)| glob_pattern_matches(pattern, path))
             .max_by_key(|(pattern, _)| {
                 let literal_bytes = pattern
@@ -1016,7 +1054,9 @@ impl GateProfile {
             return Some(pos);
         }
         let leaf = id.rsplit('.').next().unwrap_or(id);
-        gates.iter().position(|g| g.id == leaf || g.id.rsplit('.').next() == Some(leaf))
+        gates
+            .iter()
+            .position(|g| g.id == leaf || g.id.rsplit('.').next() == Some(leaf))
     }
     /// Return a gate by its persisted identifier or leaf alias.
     pub fn by_stage(&self, stage: &str) -> Option<&GateDef> {
@@ -1025,12 +1065,18 @@ impl GateProfile {
             return Some(*gate);
         }
         let leaf = stage.rsplit('.').next().unwrap_or(stage);
-        gates.into_iter().find(|g| g.id == leaf || g.id.rsplit('.').next() == Some(leaf))
+        gates
+            .into_iter()
+            .find(|g| g.id == leaf || g.id.rsplit('.').next() == Some(leaf))
     }
     /// Return the definition of done criteria for subtasks, derived from `guidance["subtask.dod"]`
     /// or `guidance["subtask_dod"]`.
     pub fn subtask_dod_criteria(&self) -> Vec<String> {
-        if let Some(entry) = self.guidance.get("subtask.dod").or_else(|| self.guidance.get("subtask_dod")) {
+        if let Some(entry) = self
+            .guidance
+            .get("subtask.dod")
+            .or_else(|| self.guidance.get("subtask_dod"))
+        {
             if !entry.criteria().is_empty() {
                 return entry.criteria().to_vec();
             } else if !entry.text().is_empty() {
@@ -1042,7 +1088,11 @@ impl GateProfile {
     /// Return the review guidance criteria, derived from `guidance["review.policy"]`
     /// or `guidance["review_policy"]`.
     pub fn review_policy_criteria(&self) -> Vec<String> {
-        if let Some(entry) = self.guidance.get("review.policy").or_else(|| self.guidance.get("review_policy")) {
+        if let Some(entry) = self
+            .guidance
+            .get("review.policy")
+            .or_else(|| self.guidance.get("review_policy"))
+        {
             if !entry.criteria().is_empty() {
                 return entry.criteria().to_vec();
             } else if !entry.text().is_empty() {
@@ -1194,8 +1244,8 @@ impl GateProfile {
 
                 let text = resolved_entry
                     .or_else(|| self.guidance.get(requested))
-                    .map(|entry| entry.text())?;
-                Some((requested.clone(), text.to_owned()))
+                    .map(GuidanceEntry::rendered_text)?;
+                Some((requested.clone(), text))
             })
             .collect()
     }
@@ -1313,6 +1363,18 @@ impl GateProfile {
         if self
             .scope_args_by_pattern
             .iter()
+            .chain(
+                self.commands
+                    .values()
+                    .filter_map(|command| match command {
+                        CommandDef::Detailed {
+                            scope_args_by_pattern,
+                            ..
+                        } => Some(scope_args_by_pattern),
+                        _ => None,
+                    })
+                    .flat_map(|patterns| patterns.iter()),
+            )
             .any(|(pattern, scope_args)| pattern.trim().is_empty() || scope_args.trim().is_empty())
         {
             bail!("ACDD_PROFILE_SCHEMA_INVALID: scope_args_by_pattern patterns and arguments must not be empty");
@@ -1569,8 +1631,13 @@ impl GateProfile {
             .collect();
         let has_terminal_delivery = gates.last().is_some_and(|g| {
             g.proof.kind() == Some(ProofKind::Delivery)
-                || g.gates.last().is_some_and(|cg| cg.proof.kind() == Some(ProofKind::Delivery))
-                || g.tasks.as_ref().and_then(|t| t.gates.last()).is_some_and(|tg| tg.proof.kind() == Some(ProofKind::Delivery))
+                || g.gates
+                    .last()
+                    .is_some_and(|cg| cg.proof.kind() == Some(ProofKind::Delivery))
+                || g.tasks
+                    .as_ref()
+                    .and_then(|t| t.gates.last())
+                    .is_some_and(|tg| tg.proof.kind() == Some(ProofKind::Delivery))
         });
         if (require_terminal_delivery && !has_terminal_delivery)
             || deliveries.len() > 1
@@ -1683,10 +1750,9 @@ impl GateProfile {
             bail!("GATE_INVALID_CONFIGURATION: non-container gate requires an id");
         }
         if !gate.id.is_empty()
-            && !gate
-                .id
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-' || byte == b'.')
+            && !gate.id.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-' || byte == b'.'
+            })
         {
             bail!(
                 "GATE_INVALID_CONFIGURATION: gate id '{}' must be a non-empty token",
@@ -1877,6 +1943,19 @@ impl GateProfile {
                 self.roles.insert(key, role);
             }
         }
+        for command in other.commands.values() {
+            if let CommandDef::Detailed {
+                scope_args_by_pattern,
+                ..
+            } = command
+            {
+                self.scope_args_by_pattern.extend(
+                    scope_args_by_pattern
+                        .iter()
+                        .map(|(pattern, args)| (pattern.clone(), args.clone())),
+                );
+            }
+        }
         self.commands.extend(other.commands);
         self.scope_args_by_pattern
             .extend(other.scope_args_by_pattern);
@@ -1953,9 +2032,13 @@ fn parse_profile_document(yaml_str: &str) -> Result<ParsedProfile> {
             let Some(definition) = definition.as_mapping_mut() else {
                 continue;
             };
-            let Some(scope_args) = definition.remove(&scope_args_key) else {
+            let Some(scope_args) = definition.get(&scope_args_key).cloned() else {
                 continue;
             };
+            // Pattern commands still use the profile-level compatibility map.
+            if !definition.contains_key(serde_yaml::Value::String("command".to_owned())) {
+                definition.remove(&scope_args_key);
+            }
             let scope_args = serde_yaml::from_value::<BTreeMap<String, String>>(scope_args)
                 .with_context(|| {
                     format!(
@@ -2015,8 +2098,8 @@ fn parse_profile_document(yaml_str: &str) -> Result<ParsedProfile> {
         if let Some(templates) = policy.settings.remove("templates") {
             let templates = serde_yaml::from_value::<BTreeMap<String, GateTemplate>>(templates)
                 .context(
-                    "ACDD_PROFILE_SCHEMA_INVALID: policies.milestone_verification.templates is invalid",
-                )?;
+                "ACDD_PROFILE_SCHEMA_INVALID: policies.milestone_verification.templates is invalid",
+            )?;
             profile.gate_templates.extend(templates);
         }
     }
@@ -2248,4 +2331,101 @@ pub fn load_for_workspace(root: &Path) -> Result<Arc<GateProfile>> {
     }
     base.validate()?;
     Ok(Arc::new(base))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gate_guidance_renders_structured_criteria() {
+        for (entry, expected) in [
+            (GuidanceEntry::Text("plain".into()), "plain"),
+            (
+                GuidanceEntry::Structured {
+                    description: "empty".into(),
+                    criteria: vec![],
+                },
+                "empty",
+            ),
+            (
+                GuidanceEntry::Structured {
+                    description: "review".into(),
+                    criteria: vec!["check scope".into(), "check invariants".into()],
+                },
+                "review\n- check scope\n- check invariants",
+            ),
+        ] {
+            let mut profile = GateProfile::default();
+            profile.guidance.insert("task.review".into(), entry.clone());
+            let gate: GateDef =
+                serde_yaml::from_str("id: review\nguidance: [task.review]\n").unwrap();
+            assert_eq!(entry.rendered_text(), expected);
+            assert_eq!(
+                profile.resolve_gate_guidance(&gate, &BTreeMap::new()),
+                vec![("task.review".into(), expected.into())],
+            );
+        }
+    }
+
+    #[test]
+    fn command_scope_patterns_are_retained_when_parsing_profiles() {
+        let profile = parse_profile(
+            r#"commands:
+  check:
+    command: cargo test
+    scope_args_by_pattern:
+      "crates/forge-tasks/**/*.rs": "--package forge-tasks --lib"
+"#,
+        )
+        .unwrap();
+        let CommandDef::Detailed {
+            scope_args_by_pattern,
+            ..
+        } = &profile.commands["check"]
+        else {
+            panic!("expected a detailed command");
+        };
+        assert_eq!(
+            scope_args_by_pattern["crates/forge-tasks/**/*.rs"],
+            "--package forge-tasks --lib"
+        );
+        assert_eq!(
+            profile
+                .scope_args_for_path("crates/forge-tasks/src/tasks/profile.rs")
+                .as_deref(),
+            Some("--package forge-tasks --lib"),
+        );
+    }
+
+    #[test]
+    fn scope_selection_ranks_profile_and_command_patterns_together() {
+        let profile: GateProfile = serde_yaml::from_str(
+            r#"scope_args_by_pattern:
+  "**/*.rs": "--lib"
+  "tests/special/*.rs": "--test special"
+commands:
+  check:
+    command: cargo test
+    scope_args_by_pattern:
+      "tests/*.rs": "--test {file_stem}"
+      "tests/**/*.rs": "--test nested"
+      "checks/*.rs": "--test {file_stem}"
+"#,
+        )
+        .unwrap();
+        for (path, expected) in [
+            ("src/lib.rs", Some("--lib")),
+            ("tests/example.rs", Some("--test nested")),
+            ("tests/special/case.rs", Some("--test special")),
+            ("checks/example.rs", Some("--test example")),
+            ("README.md", None),
+        ] {
+            assert_eq!(
+                profile.scope_args_for_path(path).as_deref(),
+                expected,
+                "{path}"
+            );
+        }
+    }
 }

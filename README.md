@@ -161,7 +161,13 @@ A profile is a YAML file that names gates, proof kinds, review contours, roles, 
 
 Pin a profile as `path:sha256-prefix`. On later claims Forge recomputes the hash and stops with `TASK_PROFILE_TAMPERED` if the file changed. That keeps the gate rules stable for the life of the task.
 
-Writing a profile for a milestone or a task — gates, roles, models, contours, and the pin — is documented in [ACDD profiles](docs/reference/profiles.md). The executable example is [`acdd_profile.yaml.example`](skills/contextunity-forge/references/acdd_profile.yaml.example).
+Forge supports **Universal Task Profiles** (`version: 2`), decoupled from hardcoded language assumptions. A universal profile defines:
+- **`commands`**: Scoped command mappings (e.g. `rust-check-and-test`, `pytest-check`, `npm-test`) referenced by gates and verification contours.
+- **`guidance`**: Role- and stage-specific guidance with structured descriptions and concrete acceptance criteria, injected directly into the agent's context under `workflow_guidance`.
+- **`review_contours`**: Enforced review contours (`paths`, `claims`, `concurrency`, `project_isolation`, `administration`, etc.) tailored to repository conventions.
+- **`roles` & Runners**: Configurable role definitions with optional execution runners (`runner`) and prompt templates (`prompt_template`) for customized agent dispatch.
+
+See the complete [ACDD profiles reference](docs/reference/profiles.md) and the version 2 executable template in [`skills/contextunity-forge/references/acdd_profile.yaml.example`](skills/contextunity-forge/references/acdd_profile.yaml.example).
 
 ## Code graph
 
@@ -243,7 +249,25 @@ Call `code_map_overview` once. That first call creates the index. On Unix, `cont
 
 ### Skills
 
-Install the `contextunity-forge` skill where the agent loads skills (`~/.agents/skills/contextunity-forge/` or `.agents/skills/contextunity-forge/` in the repo). Claim and inspect report `TASK_GUIDANCE_MISSING` when that skill is absent, when `AGENTS.md` does not name it, when the guidance file is missing, or when `.gitignore` lacks the canonical protective rules.
+Install the `contextunity-forge` skill where the agent loads skills. Use the bundled zero-config installation script:
+
+```bash
+# Sync all bundled skills into ~/.agents/skills and symlink to detected agent runtimes
+./skills/install.sh
+
+# Or install specific skills:
+./skills/install.sh contextunity-forge test-contract-seam
+```
+
+`skills/install.sh` establishes `~/.agents/skills/` as the canonical global hub and automatically symlinks skills into detected agent directories:
+- Antigravity / Gemini CLI (`~/.gemini/config/skills/`)
+- OpenAI Codex (`~/.codex/skills/`)
+- Anthropic Claude (`~/.claude/skills/`)
+- Cursor (`~/.cursor/skills/`)
+
+Use `--copy` to perform isolated file copies instead of symlinks, or `--dry-run` to preview actions without touching disk.
+
+Claim and inspect report `TASK_GUIDANCE_MISSING` when that skill is absent, when `AGENTS.md` does not name it, when the guidance file is missing, or when `.gitignore` lacks the canonical protective rules.
 
 In the repository `AGENTS.md`, tell the agent to load `contextunity-forge`, to follow `workflow_guidance` from the claim, and to use this repo's `TESTS.md` for verification commands. The copy-paste router is [`agents.md.example`](skills/contextunity-forge/references/agents.md.example).
 

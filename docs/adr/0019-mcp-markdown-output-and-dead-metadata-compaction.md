@@ -89,6 +89,27 @@ Use actual command names and available arguments. Missing optional configuration
 is not an error: Forge supports defaults without `forge-mcp.yaml`.
 AST diagnostics use the selected language profile's examples and guidance.
 
+### Archive Exclusion from Documentation Search and Code-Documentation Graph
+
+Documents under any `archive/` directory (`archive/...` or `.../archive/...`,
+including `docs/milestones/archive/` and `docs/plans/archive/` across primary
+and linked workspaces) remain indexed for explicit historical retrieval. Default
+documentation search and overview documentation hubs exclude them. A search
+`component` or `path` targeting `archive` opts into archive search; direct
+`get_doc` retrieval remains available.
+
+Archived documents emit no `documents`, `references_doc`, `governs`, or
+`governed_by` edges. Their historical claims therefore contribute no live
+`documented_in`, `affected_docs`, or invariant governance. Document-to-document
+citations remain available. In task claim/context bundles (`context_bundle.adrs`
+and `scope_symbols[].documented_by`), all indexed non-archive documentation
+across the repository with `doc_type != 'contract'` is intersected via `governs`
+and `documents` edges (while `doc_type = 'contract'` documents—milestones and
+contracts—are delivered through `context_bundle.contract` and
+`context_bundle.governing_invariants`; see ADR 0016). The exclusion belongs to
+the documentation reader, linker, and task context builder, without SQL views or
+a separate archive registry.
+
 ## Output contracts and admission boundaries
 
 The [Markdown contracts](../reference/mcp-markdown-contracts.md) own field-level

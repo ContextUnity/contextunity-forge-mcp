@@ -521,6 +521,61 @@ impl PreparedPattern {
     }
 }
 
+fn strip_trailing_wildcard_body(pattern: &str) -> Option<&str> {
+    let pattern = pattern.trim_end().strip_suffix('}')?;
+    let (prefix, body) = pattern.rsplit_once('{')?;
+    let name = body.trim().strip_prefix("$$$")?;
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return None;
+    }
+    Some(prefix.trim_end())
+}
+
+fn parse_declaration_completion(
+    parser: &mut Parser,
+    profile: &dyn LanguageProfile,
+    normalized: &NormalizedPattern,
+    budget: &mut SearchBudget,
+) -> Result<Option<PreparedPattern>> {
+    let capabilities = profile.ast_search_capabilities();
+    if capabilities.declaration_kinds.is_empty() {
+        return Ok(None);
+    }
+    for suffix in capabilities
+        .declaration_completions
+        .iter()
+        .copied()
+        .chain(std::iter::once(";"))
+    {
+        let candidate_source = format!("{}{suffix}", normalized.source);
+        let Some(candidate_tree) = parse_pattern_candidate(parser, &candidate_source, budget)?
+        else {
+            return Ok(None);
+        };
+        if candidate_tree.root_node().has_error() {
+            continue;
+        }
+        let Some(node) = unwrap_pattern_node(candidate_tree.root_node(), profile) else {
+            continue;
+        };
+        if capabilities.declaration_kinds.contains(&node.kind()) {
+            // Parameters supplied only by completion must not constrain the signature.
+            let declaration_prefix_end = node
+                .child_by_field_name("parameters")
+                .filter(|parameters| parameters.start_byte() >= normalized.source.len())
+                .map(|_| normalized.source.len());
+            return Ok(Some(PreparedPattern {
+                source: candidate_source,
+                tree: candidate_tree,
+                mode: PatternMode::Declaration,
+                fragment_range: None,
+                declaration_prefix_end,
+            }));
+        }
+    }
+    Ok(None)
+}
+
 fn prepare_search_pattern(
     parser: &mut Parser,
     profile: &dyn LanguageProfile,
@@ -589,59 +644,55 @@ fn prepare_search_pattern(
         }));
     }
 
-    for suffix in capabilities.declaration_completions {
-        let candidate_source = format!("{}{suffix}", normalized.source);
-        let Some(candidate_tree) = parse_pattern_candidate(parser, &candidate_source, budget)?
-        else {
-            return Ok(None);
-        };
-        if candidate_tree.root_node().has_error() {
-            continue;
-        }
-        let Some(node) = unwrap_pattern_node(candidate_tree.root_node(), profile) else {
-            continue;
-        };
-        if capabilities.declaration_kinds.contains(&node.kind()) {
-            // Parameters supplied only by completion must not constrain the signature.
-            let declaration_prefix_end = node
-                .child_by_field_name("parameters")
-                .filter(|parameters| parameters.start_byte() >= normalized.source.len())
-                .map(|_| normalized.source.len());
-            return Ok(Some(PreparedPattern {
-                source: candidate_source,
-                tree: candidate_tree,
-                mode: PatternMode::Declaration,
-                fragment_range: None,
-                declaration_prefix_end,
-            }));
+    if let Some(prepared) = parse_declaration_completion(parser, profile, &normalized, budget)? {
+        return Ok(Some(prepared));
+    }
+    if !capabilities.declaration_kinds.is_empty() {
+        if let Some(prefix) = strip_trailing_wildcard_body(pattern) {
+            let prefix = normalize_search_pattern(prefix);
+            if let Some(prepared) = parse_declaration_completion(parser, profile, &prefix, budget)?
+            {
+                return Ok(Some(prepared));
+            }
         }
     }
 
     if let Some(probe) = capabilities.fragment_probe {
-        let mut candidate_source = String::with_capacity(
-            probe.prefix.len() + normalized.source.len() + probe.suffix.len(),
-        );
-        candidate_source.push_str(probe.prefix);
-        let fragment_start =
-            candidate_source.len() + normalized.source.len() - normalized.source.trim_start().len();
-        candidate_source.push_str(&normalized.source);
-        let fragment_end =
-            candidate_source.len() - (normalized.source.len() - normalized.source.trim_end().len());
-        candidate_source.push_str(probe.suffix);
-        let Some(candidate_tree) = parse_pattern_candidate(parser, &candidate_source, budget)?
-        else {
-            return Ok(None);
-        };
-        if !candidate_tree.root_node().has_error() {
-            let range = fragment_start..fragment_end;
-            if exact_fragment_node(&candidate_tree, &range).is_some() {
-                return Ok(Some(PreparedPattern {
-                    source: candidate_source,
-                    tree: candidate_tree,
-                    mode: PatternMode::Fragment,
-                    fragment_range: Some(range),
-                    declaration_prefix_end: None,
-                }));
+        for complete_semicolon in [false, true] {
+            if complete_semicolon && pattern.trim_end().ends_with(';') {
+                break;
+            }
+            let fragment = if complete_semicolon {
+                format!("{};\n", normalized.source.trim_end())
+            } else {
+                normalized.source.clone()
+            };
+            let mut candidate_source =
+                String::with_capacity(probe.prefix.len() + fragment.len() + probe.suffix.len());
+            candidate_source.push_str(probe.prefix);
+            let fragment_start =
+                candidate_source.len() + fragment.len() - fragment.trim_start().len();
+            candidate_source.push_str(&fragment);
+            let fragment_end =
+                candidate_source.len() - (fragment.len() - fragment.trim_end().len());
+            candidate_source.push_str(probe.suffix);
+            let Some(candidate_tree) = parse_pattern_candidate(parser, &candidate_source, budget)?
+            else {
+                return Ok(None);
+            };
+            if !candidate_tree.root_node().has_error() {
+                let range = fragment_start..fragment_end;
+                if exact_fragment_node(&candidate_tree, &range)
+                    .is_some_and(|node| !node.has_error() && !node.is_missing())
+                {
+                    return Ok(Some(PreparedPattern {
+                        source: candidate_source,
+                        tree: candidate_tree,
+                        mode: PatternMode::Fragment,
+                        fragment_range: Some(range),
+                        declaration_prefix_end: None,
+                    }));
+                }
             }
         }
     }

@@ -259,17 +259,12 @@ pub fn search_with_options(
             )?
         }
     } else {
-        let query = pattern
+        let terms = pattern
             .split(|c: char| !c.is_alphanumeric())
             .filter(|s| !s.is_empty())
             .map(|s| format!("\"{s}\""))
-            .collect::<Vec<_>>()
-            .join(if pattern.starts_with('@') {
-                " AND "
-            } else {
-                " OR "
-            });
-        if query.is_empty() {
+            .collect::<Vec<_>>();
+        if terms.is_empty() {
             bail!("pattern must contain a symbol fragment");
         }
         let escaped = pattern
@@ -288,9 +283,14 @@ pub fn search_with_options(
         let structural_candidates = "SELECT node_id FROM nodes WHERE name LIKE ?7 ESCAPE '\\' UNION SELECT node_id FROM nodes WHERE qualname=?6 COLLATE NOCASE";
         let filters = "(?2='' OR n.kind=?2 OR (?2='method' AND n.kind='function') OR (?2='function' AND n.kind='method')) AND (?3='' OR pd.path=?3 OR (pd.path>=?4 AND pd.path<?5)) AND (?8=1 OR n.language!='markdown')";
         let structural_score = "CASE WHEN n.name=?6 COLLATE NOCASE OR n.qualname=?6 COLLATE NOCASE THEN 1000 WHEN n.name LIKE ?7 ESCAPE '\\' THEN 500 ELSE 0 END";
-        let fts_score = "CASE WHEN n.name=?6 COLLATE NOCASE OR n.qualname=?6 COLLATE NOCASE THEN 1000 WHEN n.name LIKE ?7 ESCAPE '\\' THEN 500 ELSE 0 END - bm25(node_search)";
+        let fts_score = "CASE WHEN n.name=?6 COLLATE NOCASE OR n.qualname=?6 COLLATE NOCASE THEN 1000 WHEN n.name LIKE ?7 ESCAPE '\\' THEN 500 ELSE 0 END + CASE WHEN ?11=1 AND n.node_hash IN (SELECT node_hash FROM fts_and_matches) THEN 250 ELSE 0 END - bm25(node_search)";
         let sql = format!(
             "WITH
+            fts_and_matches AS MATERIALIZED (
+                SELECT n.node_hash
+                FROM node_search JOIN nodes n ON n.node_hash=node_search.rowid JOIN path_dictionary pd ON pd.path_id=n.path_id
+                WHERE ?11=1 AND node_search MATCH ?10 AND {filters}
+            ),
             fts AS MATERIALIZED (
                 SELECT n.node_id,pd.path,n.line,n.id,({fts_score}) AS score
                 FROM node_search JOIN nodes n ON n.node_hash=node_search.rowid JOIN path_dictionary pd ON pd.path_id=n.path_id
@@ -332,22 +332,41 @@ pub fn search_with_options(
             ,c.graph_boost,c.search_total FROM ranked c JOIN nodes n ON n.node_id=c.node_id JOIN path_dictionary pd ON pd.path_id=n.path_id
             ORDER BY c.graph_group,(c.score+c.graph_boost) DESC,pd.path,n.line,n.id"
         );
-        ranked_search_page(
-            conn,
-            &sql,
-            &[
-                &query,
-                &kind,
-                &path,
-                &path_start,
-                &path_end,
-                &pattern,
-                &prefix,
-                &include_docs,
-                &candidate_limit,
-            ],
-            options,
-        )?
+        let and_query = terms.join(" AND ");
+        let or_query = terms.join(" OR ");
+        let is_natural_query = !pattern.starts_with('@') && pattern.chars().any(char::is_whitespace);
+        let apply_and_bonus = i64::from(is_natural_query && terms.len() > 1);
+        let run_query = |query: &str, and_bonus: i64| {
+            ranked_search_page(
+                conn,
+                &sql,
+                &[
+                    &query,
+                    &kind,
+                    &path,
+                    &path_start,
+                    &path_end,
+                    &pattern,
+                    &prefix,
+                    &include_docs,
+                    &candidate_limit,
+                    &and_query,
+                    &and_bonus,
+                ],
+                options,
+            )
+        };
+        if is_natural_query {
+            run_query(&or_query, apply_and_bonus)?
+        } else {
+            let rows = run_query(&and_query, 0)?;
+            // An exhausted page must not switch a matching AND query to OR results.
+            if terms.len() > 1 && !pattern.starts_with('@') && rows["total"] == 0 {
+                run_query(&or_query, 0)?
+            } else {
+                rows
+            }
+        }
     };
     if let Some(items) = nodes["items"].as_array_mut() {
         for item in items {

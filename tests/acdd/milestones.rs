@@ -4423,6 +4423,13 @@ fn milestone_and_plan_directories_configured_and_excluded_from_scanner() {
             "commerceplancontractisolationtoken",
             "extensions/commerce/docs/plans/commerce_plan.md",
         ),
+    ] {
+        assert!(
+            search_doc_paths(query).contains(&path.to_owned()),
+            "{query}/{path}"
+        );
+    }
+    for (query, path) in [
         (
             "archivemilestoneoverviewtoken",
             "docs/milestones/archive/README.md",
@@ -4430,8 +4437,8 @@ fn milestone_and_plan_directories_configured_and_excluded_from_scanner() {
         ("archiveplanoverviewtoken", "docs/plans/archive/README.md"),
     ] {
         assert!(
-            search_doc_paths(query).contains(&path.to_owned()),
-            "{query}/{path}"
+            !search_doc_paths(query).contains(&path.to_owned()),
+            "archive path {path} must be excluded from default search_docs ({query})"
         );
     }
 

@@ -1401,7 +1401,7 @@ sys.stdout.buffer.write(r.stdout);sys.stderr.buffer.write(r.stderr);sys.exit(r.r
     );
 
     // 3. Independent review: the gate rejects reusing the builder's worker id.
-    tasks::claim(
+    let same_worker_error = tasks::claim(
         &root.0,
         tasks::Claim {
             task_id: task_id.into(),
@@ -1411,24 +1411,10 @@ sys.stdout.buffer.write(r.stdout);sys.stderr.buffer.write(r.stderr);sys.exit(r.r
             ..Default::default()
         },
     )
-    .unwrap();
-
-    let mut review_store = tasks::store(&root.0).unwrap();
-    let same_worker = review_store.inspect(task_id).unwrap();
-    let same_worker_evidence = evidence(&same_worker);
-    assert_eq!(
-        review_store
-            .submit(task_id, "review", &same_worker_evidence, "pass", None)
-            .unwrap_err()
-            .to_string(),
-        format!(
-            "TASK_REVIEW_NOT_INDEPENDENT: task '{task_id}'. reviewer worker 'builder' matches builder 'builder'. Do: submit review with a worker_id other than 'builder'."
-        )
-    );
-    review_store
-        .release_failed_claim(task_id, same_worker.claim_revision)
-        .unwrap();
-    drop(review_store);
+    .unwrap_err();
+    assert!(same_worker_error
+        .to_string()
+        .contains("TASK_REVIEW_NOT_INDEPENDENT"));
     tasks::claim(
         &root.0,
         tasks::Claim {

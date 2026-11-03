@@ -958,7 +958,7 @@ fn module_topology(conn: &Connection, options: &QueryOptions, _generation: &str)
 pub fn documentation_hubs(conn: &Connection, options: &QueryOptions) -> Result<Value> {
     paging::query(
         conn,
-        "SELECT d.doc_id,d.path,d.section_title,d.doc_type,n.line FROM doc_sections d LEFT JOIN nodes n ON n.id=d.doc_id WHERE d.rowid IN (SELECT min(rowid) FROM doc_sections GROUP BY path) ORDER BY d.path,d.doc_id",
+        "SELECT d.doc_id,d.path,d.section_title,d.doc_type,n.line FROM doc_sections d LEFT JOIN nodes n ON n.id=d.doc_id WHERE d.path NOT LIKE 'archive/%' AND d.path NOT LIKE '%/archive/%' AND d.rowid IN (SELECT min(rowid) FROM doc_sections GROUP BY path) ORDER BY d.path,d.doc_id",
         &[],
         options,
     )
@@ -1413,19 +1413,39 @@ pub fn search_docs_with_options(
     let kind = doc_type.unwrap_or("");
     let resolved = resolve_component_prefix(conn, component.unwrap_or(""));
     let component = resolved.as_str();
+    let archive_filter = if component == "archive"
+        || component.starts_with("archive/")
+        || component.ends_with("/archive")
+        || component.contains("/archive/")
+    {
+        ""
+    } else {
+        " AND d.path NOT LIKE 'archive/%' AND d.path NOT LIKE '%/archive/%'"
+    };
     let (prefix, end) = path_bounds(component);
     let excerpt = if include_excerpt {
         ",substr(snippet(doc_search,-1,'[',']',' … ',16),1,240) excerpt"
     } else {
         ""
     };
+    let and_query = terms.join(" AND ");
+    let (cte, order) = if terms.len() > 1 {
+        (
+            "WITH fts_and_matches AS (SELECT rowid FROM doc_search WHERE doc_search MATCH ?6) ",
+            "CASE WHEN doc_search.rowid IN (SELECT rowid FROM fts_and_matches) THEN 0 ELSE 1 END,rank,d.path,d.doc_id",
+        )
+    } else {
+        ("", "rank,d.path,d.doc_id")
+    };
     let sql = format!(
-        "SELECT {},bm25(doc_search,3.0,1.0,1.0) rank{excerpt} FROM doc_search JOIN doc_sections d ON d.rowid=doc_search.rowid WHERE doc_search MATCH ?1 AND (?2='' OR d.doc_type=?2) AND (?3='' OR d.path=?3 OR (d.path>=?4 AND d.path<?5)) ORDER BY rank,d.path,d.doc_id",
+        "{cte}SELECT {},bm25(doc_search,3.0,1.0,1.0) rank{excerpt} FROM doc_search JOIN doc_sections d ON d.rowid=doc_search.rowid WHERE doc_search MATCH ?1 AND (?2='' OR d.doc_type=?2) AND (?3='' OR d.path=?3 OR (d.path>=?4 AND d.path<?5)){archive_filter} ORDER BY {order}",
         paging::docs("d", options.detail)
     );
-    Ok(
-        json!({"sections":paging::query(conn, &sql, &[&query,&kind,&component,&prefix,&end], options)?}),
-    )
+    let mut params: Vec<&dyn rusqlite::ToSql> = vec![&query, &kind, &component, &prefix, &end];
+    if terms.len() > 1 {
+        params.push(&and_query);
+    }
+    Ok(json!({"sections":paging::query(conn, &sql, &params, options)?}))
 }
 
 const DOC_SEARCH_ENGLISH_STOP_WORDS: &[&str] = &[
@@ -1861,6 +1881,15 @@ pub fn governing_invariants_for_scope(conn: &Connection, scope: &[String]) -> Re
     }))
 }
 
+fn sql_schema_hint(error: anyhow::Error) -> anyhow::Error {
+    let message = error.to_string();
+    if message.contains("no such column") || message.contains("no such table") {
+        error.context(format!("{message}; Schema hint: nodes(node_id, id, kind, name, qualname, path_id, line, end_line, is_test, language, generated, details, node_hash, owner_path_id) joins path_dictionary(path_id, path) on path_id; edges(src_hash, kind, dst_hash, path_id, line, evidence_id, confidence_id, occurrence_count) joins nodes on src_hash=node_hash and dst_hash=node_hash; files(path, status, digest, size, language, is_test, generated, path_hash); doc_sections(doc_id, path, section_title, doc_type, content, invariants, referenced_symbols, is_invariant)."))
+    } else {
+        error
+    }
+}
+
 /// Runs a bounded read-only analysis query with generation-aware pagination.
 ///
 /// # Errors
@@ -1875,12 +1904,14 @@ pub fn analyze_paged(
     let generation = paging::generation(conn, options)?;
     let sql = target.trim();
     if let Some(statement_sql) = classify_read_only_sql(sql)? {
-        let statement = conn.prepare(statement_sql)?;
+        let statement = conn
+            .prepare(statement_sql)
+            .map_err(|error| sql_schema_hint(error.into()))?;
         if !statement.readonly() {
             bail!("query must be read-only");
         }
         return Ok(
-            json!({"rows":paging::query_opaque(conn, statement_sql, &[], options)?, "ordering":"SQL order is preserved; include a deterministic ORDER BY for stable pagination."}),
+            json!({"rows":paging::query_opaque(conn, statement_sql, &[], options).map_err(sql_schema_hint)?, "ordering":"SQL order is preserved; include a deterministic ORDER BY for stable pagination."}),
         );
     }
     if sql.contains(';') {

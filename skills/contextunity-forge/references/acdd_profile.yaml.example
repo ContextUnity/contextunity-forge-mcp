@@ -20,6 +20,13 @@
 
 version: 2
 
+# Module selections use profile/enabled/disabled/required, not adapter boolean overrides.
+modules:
+  profile: full
+  enabled: [codemap, docs, acdd, blackboard]
+  disabled: []
+  required: [acdd]
+
 limits:
   max_metadata_bytes: 2048       # 2 KiB limit for arbitrary task/gate metadata & metrics
   max_trace_summary_bytes: 2048  # Tail output size for execution traces
@@ -136,6 +143,16 @@ roles:
   independent_reviewer:
     mode: subagent
     reuse_on_reject: true
+    # Advisory templates returned in workflow_guidance.role_runner; the engine
+    # does not launch the runner. Quote/escape rendered values before execution.
+    # Runner slots: task_id, stage, role, worktree, model, reasoning.
+    runner: 'codex exec -C "{worktree}" -m "{model}" -c model_reasoning_effort="{reasoning}"'
+    # Prompt slots also include role_guidance and goal. Omitting prompt_template
+    # with a runner configured supplies a default context/scope/evidence prompt.
+    prompt_template: >-
+      Execute {role} for task {task_id}, stage {stage}, in {worktree}.
+      Goal: {goal}. {role_guidance}
+      Inspect the claimed gate context and submit evidence via task_submit.
     models:
       - 'sol-6.1:xhigh'
     guidance: "Review independently, then claim and submit delivery in the same reviewer session."
@@ -145,7 +162,16 @@ roles:
     reuse_on_reject: true
     models:
       - 'sol-6.1:high'
-    guidance: "Repair cross-milestone verification findings within the admitted milestone branch, then return the candidate for a fresh full check and independent review."
+    guidance: "Lead contract synthesis: inspect extension points and typed invariants, establish a compiling runtime-red seam test, and post the architectural decision with topic=decisions. Repair admitted integration findings for fresh verification and independent review."
+
+# Scoped arguments augment the selected command for affected paths.
+scope_args_by_pattern:
+  "src/**/*.rs": "--lib"
+  "crates/forge-core/**/*.rs": "--package forge-core --lib"
+  "crates/forge-index/**/*.rs": "--package forge-index --lib"
+  "crates/forge-tasks/**/*.rs": "--package forge-tasks --lib"
+  "tests/acdd/**/*.rs": "--test acdd"
+  "tests/mcp/**/*.rs": "--test mcp"
 
 # Registered commands
 commands:
@@ -167,6 +193,9 @@ commands:
 
 # Central guidance catalog
 guidance:
+  # Navigation: code_map_query(sql="SELECT ...") or operation="sql", selector="SELECT ...".
+  # Supply ast_grep_search language when path is a directory or omitted.
+  # Triage with search_docs(query="...", include_excerpt=true), then get_doc(path_or_id="...", detail="compact").
   task.contract: "Define a production-seam proof and keep the task contract inside admitted scope and symbols."
   task.code: "Implement the accepted seam with the smallest change that satisfies the task contract."
   task.review: "Review the complete candidate against scope, contract, concurrency, isolation, and administration evidence."
@@ -270,54 +299,92 @@ gate_templates:
         contours: "guidance.contours"
         independent_from: "build"
 
-# Primary task gates
+# Hierarchical workflow: synthesize once, then execute each task's gates.
 gates:
-  - id: "contract"
-    role: "contract_author"
-    guidance: [task.contract, hitl.pro]
+  - id: "contract_synthesis"
+    role: "architect"
+    guidance: [milestone.synthesis, hitl.pro]
+    tools: [code_map_overview, code_map_search, code_map_inspect, code_map_impact, ast_grep_search, task_blackboard]
+    steps:
+      - "Inspect extension points and typed invariants within admitted scope."
+      - "Post the architectural decision with topic=decisions before submitting runtime-red proof."
     proof: "contract"
     expected_failure:
       exit_codes: [1, 101, 134]
       stderr_contains: "assertion failed"
     persistence:
-      post: snapshot
-
-  - id: "build"
-    role: "builder"
-    guidance: [task.code, hitl.pro]
-    command: "rust-check-and-test"
-    proof: "command"
-    persistence:
       pre: snapshot
-      post: snapshot
-
-  - id: "review"
-    role: "independent_reviewer"
-    guidance: [task.review, hitl.pro]
-    policy: "default_review"
-    proof: "review"
-    contours: "guidance.contours"
-    independent_from: "build"
-    reject_to: "build"
-    reject_routing:
-      scope: "build"
-      symbols: "contract"
-    persistence:
-      immutable: true
-
-  - id: "deliver"
-    role: "independent_reviewer"
-    guidance: [hitl.pro]
-    proof: "delivery"
-    receipt: true
-    review_sources:
-      - "review"
-    independent_from: "build"
-    reject_to: "build"
-    persistence:
-      immutable: true
       post: commit
-      git_commit_note: telemetry
+
+  - tasks:
+      gates:
+        - id: "contract"
+          role: "contract_author"
+          guidance: [task.contract, hitl.pro]
+          proof: "contract"
+          expected_failure:
+            exit_codes: [1, 101, 134]
+            stderr_contains: "assertion failed"
+          persistence:
+            post: snapshot
+
+        - id: "build"
+          role: "builder"
+          guidance: [task.code, hitl.pro]
+          command: "rust-check-and-test"
+          proof: "command"
+          persistence:
+            pre: snapshot
+            post: snapshot
+
+        - id: "review"
+          role: "independent_reviewer"
+          guidance: [task.review, hitl.pro]
+          policy: "default_review"
+          proof: "review"
+          contours: "guidance.contours"
+          independent_from: "build"
+          reject_to: "build"
+          reject_routing:
+            scope: "build"
+            symbols: "contract"
+          persistence:
+            immutable: true
+
+        - id: "seam"
+          when: seam
+          gates:
+            - id: "integrate"
+              role: "builder"
+              command: "rust-check-and-test"
+              proof: "seam_test"
+              persistence:
+                pre: snapshot
+                post: snapshot
+            - id: "review"
+              role: "independent_reviewer"
+              guidance: [task.seam_review, hitl.pro]
+              policy: "default_review"
+              proof: "review"
+              contours: "guidance.contours"
+              independent_from: "integrate"
+              reject_to: "integrate"
+              persistence:
+                immutable: true
+
+        - id: "deliver"
+          role: "independent_reviewer"
+          guidance: [hitl.pro]
+          proof: "delivery"
+          receipt: true
+          review_sources:
+            - "review"
+          independent_from: "build"
+          reject_to: "build"
+          persistence:
+            immutable: true
+            post: commit
+            git_commit_note: telemetry
 
 # Milestone verification workflow
 milestone_verification:

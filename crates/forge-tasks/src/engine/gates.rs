@@ -1,3 +1,4 @@
+use crate::store::{check_stage, clear_blackboard, end_claim, load, now, save, Task, TasksStore};
 use crate::tasks::{
     canonical_commit_from_prefix,
     gates::{
@@ -5,9 +6,6 @@ use crate::tasks::{
     },
     profile::ProofKind,
     Receipt, ReceiptRollup, SubtaskSpec,
-};
-use crate::store::{
-    check_stage, clear_blackboard, end_claim, load, now, save, Task, TasksStore,
 };
 use anyhow::{bail, Context, Result};
 use rusqlite::{params, OptionalExtension};
@@ -176,7 +174,8 @@ fn exported_callable(
     }
 }
 
-pub type AstExtractor = fn(path: &str, language: &str, source: &str) -> Result<forge_core::typed_facts::TypedFacts>;
+pub type AstExtractor =
+    fn(path: &str, language: &str, source: &str) -> Result<forge_core::typed_facts::TypedFacts>;
 static AST_EXTRACTOR: std::sync::RwLock<Option<AstExtractor>> = std::sync::RwLock::new(None);
 
 pub fn set_ast_extractor(extractor: AstExtractor) {
@@ -185,18 +184,28 @@ pub fn set_ast_extractor(extractor: AstExtractor) {
     }
 }
 
-pub(crate) fn extract_typed(path: &str, language: &str, source: &str) -> Result<forge_core::typed_facts::TypedFacts> {
+pub(crate) fn extract_typed(
+    path: &str,
+    language: &str,
+    source: &str,
+) -> Result<forge_core::typed_facts::TypedFacts> {
     let extractor = {
         let guard = AST_EXTRACTOR
             .read()
             .map_err(|_| anyhow::anyhow!("task AST extractor lock poisoned"))?;
-        (*guard).context("TASK_EXTRACTOR_NOT_INITIALIZED: production task AST extractor is not configured")?
+        (*guard).context(
+            "TASK_EXTRACTOR_NOT_INITIALIZED: production task AST extractor is not configured",
+        )?
     };
     extractor(path, language, source)
 }
 
 #[cfg(test)]
-fn fallback_extract_typed(path: &str, language: &str, source: &str) -> Result<forge_core::typed_facts::TypedFacts> {
+fn fallback_extract_typed(
+    path: &str,
+    language: &str,
+    source: &str,
+) -> Result<forge_core::typed_facts::TypedFacts> {
     let mut nodes = Vec::new();
     let mut current_trait: Option<String> = None;
     for (idx, line) in source.lines().enumerate() {
@@ -204,7 +213,10 @@ fn fallback_extract_typed(path: &str, language: &str, source: &str) -> Result<fo
         if trimmed.contains("trait ") {
             if let Some(trait_pos) = trimmed.find("trait ") {
                 let rest = &trimmed[trait_pos + 6..];
-                if let Some(name) = rest.split(|c: char| !c.is_alphanumeric() && c != '_').next() {
+                if let Some(name) = rest
+                    .split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .next()
+                {
                     let sig = trimmed.split('{').next().unwrap_or(trimmed).trim();
                     nodes.push(forge_core::models::Node {
                         id: format!("trait:{name}"),
@@ -227,9 +239,15 @@ fn fallback_extract_typed(path: &str, language: &str, source: &str) -> Result<fo
         if trimmed.contains("fn ") {
             if let Some(fn_pos) = trimmed.find("fn ") {
                 let rest = &trimmed[fn_pos + 3..];
-                if let Some(name) = rest.split(|c: char| !c.is_alphanumeric() && c != '_').next() {
+                if let Some(name) = rest
+                    .split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .next()
+                {
                     let sig = trimmed.split('{').next().unwrap_or(trimmed).trim();
-                    let mod_name = std::path::Path::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                    let mod_name = std::path::Path::new(path)
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("");
                     let qualname = if let Some(ref tr) = current_trait {
                         format!("{tr}.{name}")
                     } else if !mod_name.is_empty() {
@@ -239,7 +257,11 @@ fn fallback_extract_typed(path: &str, language: &str, source: &str) -> Result<fo
                     };
                     nodes.push(forge_core::models::Node {
                         id: format!("fn:{name}"),
-                        kind: if current_trait.is_some() { "method".into() } else { "function".into() },
+                        kind: if current_trait.is_some() {
+                            "method".into()
+                        } else {
+                            "function".into()
+                        },
                         name: name.into(),
                         qualname,
                         path: path.into(),
@@ -268,9 +290,7 @@ fn fallback_extract_typed(path: &str, language: &str, source: &str) -> Result<fo
 fn typed_source_nodes(path: &str, source: &str) -> Result<Vec<forge_core::models::Node>> {
     let language = language_for_source_path(path)
         .context("TASK_CODE_MAP_INVALID: source language is unavailable")?;
-    Ok(extract_typed(path, language, source)?
-        .facts
-        .nodes)
+    Ok(extract_typed(path, language, source)?.facts.nodes)
 }
 
 fn public_callable_nodes(path: &str, source: &str) -> Result<Vec<forge_core::models::Node>> {
@@ -361,7 +381,7 @@ fn accepted_submission_for_cursor(
     Ok(None)
 }
 
-fn accepted_evidence_for_cursor(
+pub(crate) fn accepted_evidence_for_cursor(
     conn: &rusqlite::Connection,
     id: &str,
     profile: &crate::tasks::profile::GateProfile,
@@ -610,7 +630,7 @@ const SEAM_EDGE_KINDS: [&str; 5] = [
     "implements",
     "overrides",
 ];
-const MAX_SEAM_HOPS: usize = 4;
+const MAX_SEAM_HOPS: usize = 8;
 
 fn reference_source_identities(
     facts: &forge_core::typed_facts::TypedFacts,
@@ -1352,6 +1372,20 @@ fn validate_seam_reachability(
         bail!("TASK_SEAM_DISCONNECTED: {task_id}. seam_test_ref '{}' has no exact indexed test symbol. Calls discovered: none. Coverage statuses: parsed test symbols={}, indexed test symbols=0. Reached targets: [{}]. Stop reason: the index has no node matching the current test source. Do: run `contextunity-forge-mcp scan`, then submit the current test file or exact symbol.", reference.path, parsed_tests.len(), parsed_tests.join(", "));
     }
 
+    let non_test_scope = scope
+        .iter()
+        .filter(|path| !path.starts_with("tests/") && **path != reference.path)
+        .collect::<Vec<_>>();
+    let declarative_scope = !non_test_scope.is_empty()
+        && non_test_scope.iter().all(|path| {
+            matches!(
+                Path::new(path)
+                    .extension()
+                    .and_then(|extension| extension.to_str()),
+                Some("toml" | "yaml" | "yml" | "json" | "scm")
+            ) && super::confined_path(worktree, path).is_ok_and(|path| path.is_file())
+        });
+
     let mut queue = VecDeque::new();
     let mut visited = BTreeSet::new();
     let mut reached = BTreeSet::new();
@@ -1427,6 +1461,18 @@ fn validate_seam_reachability(
 
             current_edges += 1;
             reached.insert(seam_node_label(&edge.dst_path, &edge.dst));
+            if declarative_scope
+                && edge.kind == "calls"
+                && !edge.dst.is_test
+                && declarative_target_matches_scope(
+                    worktree,
+                    &edge.dst_path,
+                    &edge.dst,
+                    &non_test_scope,
+                )
+            {
+                return Ok(());
+            }
             if !edge.dst.is_test && path_is_in_scope(&edge.dst_path, scope) {
                 return Ok(());
             }
@@ -1457,7 +1503,7 @@ fn validate_seam_reachability(
     let missing_scope = missing_scope_files(worktree, scope);
     let (stop_reason, action) = if missing_scope.is_empty() {
         (
-            "no current proven call/import path reaches admitted production scope within four hops".to_owned(),
+            format!("no current proven call/import path reaches admitted production scope within {MAX_SEAM_HOPS} hops"),
             "refresh the claimed-worktree code map with `contextunity-forge-mcp scan`, then connect a current indexed test path to an admitted production target".to_owned(),
         )
     } else {
@@ -1473,6 +1519,130 @@ fn validate_seam_reachability(
         )
     };
     bail!("TASK_SEAM_DISCONNECTED: {task_id}. seam_test_ref '{}' has no current proven call/import path into admitted production scope. Calls discovered: [{calls}]. Coverage statuses: {coverage}. Reached targets: [{reached}]. Stop reason: {stop_reason}. Do: {action}.", reference.path)
+}
+
+fn declarative_target_matches_scope(
+    worktree: &Path,
+    dst_path: &str,
+    dst: &SeamNodeIdentity,
+    non_test_scope: &[&String],
+) -> bool {
+    let Ok(Some(target_facts)) = current_local_facts(worktree, dst_path) else {
+        return false;
+    };
+    let sources = reference_source_identities(&target_facts);
+    let call_expressions = target_facts
+        .facts
+        .references
+        .iter()
+        .filter(|reference| {
+            matches!(reference.kind.as_str(), "calls" | "possible_calls")
+                && sources.get(&reference.source) == Some(dst)
+        })
+        .map(|reference| reference.expression.trim())
+        .collect::<Vec<_>>();
+    if call_expressions.is_empty() {
+        return false;
+    }
+
+    non_test_scope.iter().all(|scope_path| {
+        let Some(ext) = Path::new(scope_path.as_str())
+            .extension()
+            .and_then(|ext| ext.to_str())
+        else {
+            return false;
+        };
+        dst_path_owns_declarative_scope(dst_path, scope_path)
+            && call_expressions
+                .iter()
+                .any(|expr| expression_is_declarative_loader_call(expr, ext))
+    })
+}
+
+fn source_root_and_domain_path(path: &str) -> (Option<&str>, &Path) {
+    let p = Path::new(path);
+    let components = p
+        .components()
+        .filter_map(|c| c.as_os_str().to_str())
+        .collect::<Vec<_>>();
+    let (root_id, strip_count) = match components.as_slice() {
+        ["crates", crate_name, "src", ..] => (Some(*crate_name), 3),
+        ["src", ..] => (Some("src"), 1),
+        [".forge", ..] => (None, 1),
+        _ => (None, 0),
+    };
+    let mut trimmed = p;
+    for _ in 0..strip_count {
+        if let Some(first) = trimmed.components().next() {
+            trimmed = trimmed.strip_prefix(first.as_os_str()).unwrap_or(trimmed);
+        }
+    }
+    (root_id, trimmed)
+}
+
+fn dst_path_owns_declarative_scope(dst_path: &str, scope_path: &str) -> bool {
+    let (dst_root, dst_rel) = source_root_and_domain_path(dst_path);
+    let (scope_root, scope_rel) = source_root_and_domain_path(scope_path);
+
+    if dst_root.is_some() && dst_root == scope_root {
+        if let (Some(dst_parent), Some(scope_parent)) = (dst_rel.parent(), scope_rel.parent()) {
+            if !dst_parent.as_os_str().is_empty()
+                && !scope_parent.as_os_str().is_empty()
+                && (dst_parent.starts_with(scope_parent) || scope_parent.starts_with(dst_parent))
+            {
+                return true;
+            }
+        }
+    }
+
+    let dst_stem = dst_rel
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default();
+    let scope_stem = scope_rel
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default();
+    let scope_stem_prefix = scope_stem
+        .split(['-', '.', '_'])
+        .next()
+        .unwrap_or(scope_stem);
+
+    (scope_root.is_none() || dst_root == scope_root)
+        && !scope_stem_prefix.is_empty()
+        && !matches!(dst_stem, "mod" | "lib" | "main" | "index")
+        && (dst_stem == scope_stem || dst_stem == scope_stem_prefix)
+}
+
+fn expression_is_declarative_loader_call(expression: &str, extension: &str) -> bool {
+    let normalized = expression.replace(' ', "");
+    let matches_call = |candidates: &[&str]| {
+        candidates.iter().any(|candidate| {
+            normalized == *candidate || normalized.ends_with(&format!("::{candidate}"))
+        })
+    };
+    match extension {
+        "toml" => matches_call(&[
+            "toml::from_str",
+            "toml::de::from_str",
+            "FrameworkManifest::parse",
+        ]),
+        "yaml" | "yml" => matches_call(&[
+            "serde_yaml::from_str",
+            "serde_yaml::from_slice",
+            "serde_yaml::from_reader",
+            "serde_yaml::from_value",
+            "FrameworkManifest::parse",
+        ]),
+        "json" => matches_call(&[
+            "serde_json::from_str",
+            "serde_json::from_slice",
+            "serde_json::from_reader",
+            "serde_json::from_value",
+        ]),
+        "scm" => matches_call(&["Query::new", "tree_sitter::Query::new"]),
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -1682,8 +1852,7 @@ fn deleted_source_retires_public_symbols_without_read_errors() {
 }
 
 fn commit_tree_and_parent(worktree: &Path, commit: &str) -> Result<(String, String)> {
-    let output =
-        crate::git::git_command(worktree, &["rev-list", "--parents", "-n", "1", commit])?;
+    let output = crate::git::git_command(worktree, &["rev-list", "--parents", "-n", "1", commit])?;
     if !output.status.success() {
         bail!("TASK_RECEIPT_INVALID: Git commit is unavailable");
     }
@@ -1886,11 +2055,9 @@ impl TasksStore {
             None
         };
         let checkpoint = self.checkpoint_context()?;
-        let mut tx =
-            crate::store::recovery::transaction(&mut self.connection, checkpoint)?;
+        let mut tx = crate::store::recovery::transaction(&mut self.connection, checkpoint)?;
         tx.enroll(&[id.to_owned()], false)?;
-        let mut task =
-            load(&tx, id)?.context(crate::store::task_not_found_message(id))?;
+        let mut task = load(&tx, id)?.context(crate::store::task_not_found_message(id))?;
         if task.profile_pin != observed_task.profile_pin || task.stage != observed_task.stage {
             bail!("TASK_STALE_SUBMISSION: task '{id}'. stage or profile_pin changed concurrently. Do: retry submission.");
         }
@@ -1914,7 +2081,8 @@ impl TasksStore {
             }
             let commit_matches = accepted.evidence.commit == evidence.commit
                 || expected_evidence.commit == evidence.commit
-                || observed_cursor.gate.persistence.post == Some(crate::tasks::profile::PersistenceAction::Commit)
+                || observed_cursor.gate.persistence.post
+                    == Some(crate::tasks::profile::PersistenceAction::Commit)
                 || observed_cursor.gate.auto_commit;
             let mut expected_without_commit = expected_evidence.clone();
             expected_without_commit.commit = evidence.commit.clone();
@@ -2044,8 +2212,17 @@ impl TasksStore {
                 .context("TASK_GATES_INVALID: independent gate has no accepted proof")?;
             let builder = prior_evidence.worker_id.clone();
             if builder == evidence.worker_id {
-                bail!("TASK_REVIEW_NOT_INDEPENDENT: task '{id}'. reviewer worker '{}' matches builder '{builder}'. Do: submit review with a worker_id other than '{builder}'.", evidence.worker_id);
+                bail!("TASK_REVIEW_NOT_INDEPENDENT: task '{id}'. reviewer worker '{}' matches builder '{builder}'. Do: dispatch a separate independent reviewer agent session to claim and submit review (do not reuse builder '{builder}').", evidence.worker_id);
             }
+            crate::store::validate_session_independence(
+                &tx,
+                id,
+                stage,
+                prior,
+                &prior_evidence,
+                &evidence.worker_id,
+                Some(task.claim_revision),
+            )?;
             let build = prior_evidence;
             if gate_def.proof.kind() != Some(ProofKind::Delivery) {
                 let canonical = evidence.commit.as_deref().and_then(|supplied| {
@@ -2278,12 +2455,22 @@ impl TasksStore {
                     let has_symbols = match findings {
                         serde_json::Value::String(s) => {
                             let lower = s.to_ascii_lowercase();
-                            lower.contains("symbol") || lower.contains("interface") || lower.contains("signature")
+                            lower.contains("symbol")
+                                || lower.contains("interface")
+                                || lower.contains("signature")
                         }
                         serde_json::Value::Object(map) => {
-                            map.get("kind").and_then(serde_json::Value::as_str).is_some_and(|k| k.contains("symbol"))
-                                || map.get("topic").and_then(serde_json::Value::as_str).is_some_and(|t| t.contains("symbol"))
-                                || map.get("category").and_then(serde_json::Value::as_str).is_some_and(|c| c.contains("symbol"))
+                            map.get("kind")
+                                .and_then(serde_json::Value::as_str)
+                                .is_some_and(|k| k.contains("symbol"))
+                                || map
+                                    .get("topic")
+                                    .and_then(serde_json::Value::as_str)
+                                    .is_some_and(|t| t.contains("symbol"))
+                                || map
+                                    .get("category")
+                                    .and_then(serde_json::Value::as_str)
+                                    .is_some_and(|c| c.contains("symbol"))
                                 || map.values().any(|v| {
                                     v.as_str().is_some_and(|s| {
                                         let l = s.to_ascii_lowercase();
@@ -2294,12 +2481,22 @@ impl TasksStore {
                         serde_json::Value::Array(items) => items.iter().any(|item| match item {
                             serde_json::Value::String(s) => {
                                 let lower = s.to_ascii_lowercase();
-                                lower.contains("symbol") || lower.contains("interface") || lower.contains("signature")
+                                lower.contains("symbol")
+                                    || lower.contains("interface")
+                                    || lower.contains("signature")
                             }
                             serde_json::Value::Object(map) => {
-                                map.get("kind").and_then(serde_json::Value::as_str).is_some_and(|k| k.contains("symbol"))
-                                    || map.get("topic").and_then(serde_json::Value::as_str).is_some_and(|t| t.contains("symbol"))
-                                    || map.get("category").and_then(serde_json::Value::as_str).is_some_and(|c| c.contains("symbol"))
+                                map.get("kind")
+                                    .and_then(serde_json::Value::as_str)
+                                    .is_some_and(|k| k.contains("symbol"))
+                                    || map
+                                        .get("topic")
+                                        .and_then(serde_json::Value::as_str)
+                                        .is_some_and(|t| t.contains("symbol"))
+                                    || map
+                                        .get("category")
+                                        .and_then(serde_json::Value::as_str)
+                                        .is_some_and(|c| c.contains("symbol"))
                                     || map.values().any(|v| {
                                         v.as_str().is_some_and(|s| {
                                             let l = s.to_ascii_lowercase();
@@ -2380,10 +2577,14 @@ impl TasksStore {
                     bail!("TASK_DELIVERY_COMMIT_REQUIRED: auto_commit delivery must create a hooked commit");
                 }
                 (None, Some(landed)) => {
-                    if gate_def.persistence.post == Some(crate::tasks::profile::PersistenceAction::Commit) {
+                    if gate_def.persistence.post
+                        == Some(crate::tasks::profile::PersistenceAction::Commit)
+                    {
                         evidence.commit = Some(landed);
                     } else {
-                        bail!("TASK_DELIVERY_COMMIT_INVALID: unexpected commit result for this gate");
+                        bail!(
+                            "TASK_DELIVERY_COMMIT_INVALID: unexpected commit result for this gate"
+                        );
                     }
                 }
                 (None, None) => {}
@@ -2430,7 +2631,11 @@ impl TasksStore {
             .unwrap_or_default();
             let worker_id = evidence.worker_id.clone();
             let proof_payload = serde_json::to_string(evidence)?;
-            let action_str = if action == "pass" { "advance" } else { "reject" };
+            let action_str = if action == "pass" {
+                "advance"
+            } else {
+                "reject"
+            };
             let proof_kind = gate_def.proof.kind().map(|k| k.as_str()).unwrap_or("none");
             tx.execute(
                 "INSERT INTO gate_transitions (
@@ -2462,11 +2667,9 @@ impl TasksStore {
                 "contract_revision": task.contract_revision,
             });
             let mut payload_envelope = serde_json::Map::new();
-            payload_envelope.insert(
-                "_forge_checkpoint_payload_v1".to_owned(),
-                checkpoint_state,
-            );
-            let state_payload_str = serde_json::to_string(&serde_json::Value::Object(payload_envelope))?;
+            payload_envelope.insert("_forge_checkpoint_payload_v1".to_owned(), checkpoint_state);
+            let state_payload_str =
+                serde_json::to_string(&serde_json::Value::Object(payload_envelope))?;
             tx.execute(
                 "INSERT INTO gate_checkpoints (
                     breadcrumb, milestone_id, subject, gate_path, transition_id,

@@ -56,7 +56,7 @@ to code symbols in the SQLite code map. Follow these structural standards:
    declaration. Do not invent a qualified name or present an approximate symbol
    as a verified code claim. For example, this claim names a real declaration
    and explicitly selects its source file:
-   [`extract_with_details`](../src/engine/docs.rs#L24-L28).
+   [`extract_with_details`](../crates/forge-index/src/docs.rs).
    Ordinary inline code remains useful for commands, configuration keys, and
    other technical text; a code span alone does not certify that its contents
    match an indexed declaration.
@@ -85,11 +85,12 @@ to code symbols in the SQLite code map. Follow these structural standards:
    Supported alert tags: `[!IMPORTANT]`, `[!WARNING]`, `[!NOTE]`.
    Forge marks such a section with `is_invariant: true`; this section flag alone
    does not create an invariant node or a `governs` edge. To declare a linked
-   invariant, put its `INV-*` identifier and an exact, source-linked code claim
-   on the same line. The linked declaration must resolve uniquely for Forge to
+   invariant, put its `INV-*` identifier and an exact code claim within the
+   invariant node's line span. Use a source link to confine resolution when needed.
+   The declaration must resolve uniquely for Forge to
    create a verified governance edge. This guide declares the resolver's actual
    priority rule:
-   - INV-DOC-FIRST-MATCH-TIER: Candidate resolution returns the first non-empty eligible declaration tier. [`document_symbol_candidates`](../src/engine/linker/resolution/mod.rs#L105-L143).
+   - INV-DOC-FIRST-MATCH-TIER: Candidate resolution returns the first non-empty eligible declaration tier. [`document_symbol_candidates`](../crates/forge-index/src/linker/resolution/mod.rs).
    The identifier remains documentation authority; the code link identifies
    the governed declaration. See [documentation queries](reference/mcp-tools.md#documentation-queries)
    for the distinction between invariant discovery and verified governance.

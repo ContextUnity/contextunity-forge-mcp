@@ -278,7 +278,11 @@ fn render_context(value: &Value, heading: &str) -> String {
         };
         rendered_guidance.push(source);
         output.push_str(&format!("\n## {heading}\n"));
-        let guidance_fields = fields_without(guidance, &["blackboard_messages"]);
+        let mut guidance_skip = vec!["blackboard_messages"];
+        if guidance.get("actionable_steps") == guidance.get("steps") {
+            guidance_skip.push("actionable_steps");
+        }
+        let guidance_fields = fields_without(guidance, &guidance_skip);
         render_fields(&mut output, &guidance_fields, 0, &mut state);
     }
 
@@ -344,6 +348,28 @@ fn render_context(value: &Value, heading: &str) -> String {
         "blackboard",
         "blackboard_info",
     ];
+    if object.get("initial_scope") == object.get("allowed_write_scope") {
+        skip.push("initial_scope");
+    }
+    if let Some(guidance) = object.get("workflow_guidance").and_then(Value::as_object) {
+        if guidance.get("breadcrumb") == object.get("breadcrumb") {
+            skip.push("breadcrumb");
+        }
+        if let Some(cursor) = guidance.get("gate_cursor").and_then(Value::as_object) {
+            for (root_field, cursor_field) in [
+                ("active_gate_path", "gate_path"),
+                ("active_stage_id", "stage_id"),
+                ("subagent_role", "subagent_role"),
+            ] {
+                if cursor.get(cursor_field).is_some()
+                    && (cursor.get(cursor_field) == object.get(root_field)
+                        || cursor.get(root_field) == object.get(root_field))
+                {
+                    skip.push(root_field);
+                }
+            }
+        }
+    }
     if let Some(contract) = contract {
         for (root_key, contract_key) in [
             ("goal", "target"),

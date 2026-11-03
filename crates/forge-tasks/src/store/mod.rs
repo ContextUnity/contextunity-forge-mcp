@@ -24,6 +24,7 @@ use self::trace::prune_milestone_gate_records;
 
 pub(crate) use blackboard::clear_blackboard;
 pub use blackboard::is_canonical_blackboard_topic;
+pub(crate) use lifecycle::validate_session_independence;
 pub use lifecycle::{ClaimBoundExecutionRun, ClaimBoundExecutionTrace};
 pub use trace::{GateCheckpoint, GateExecutionTrace, GateTransition, MAX_OUTPUT_SNIPPET_BYTES};
 
@@ -537,7 +538,7 @@ impl TasksStore {
             CREATE TABLE IF NOT EXISTS milestone_tombstones(milestone_id TEXT PRIMARY KEY,archived_at INTEGER NOT NULL,all_tasks_terminal INTEGER NOT NULL,completed_task_ids TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS task_revisions(task_id TEXT PRIMARY KEY,revision INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS tasks(task_id TEXT PRIMARY KEY,milestone_ref TEXT NOT NULL,descriptor TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS task_claims(task_id TEXT NOT NULL REFERENCES tasks ON DELETE CASCADE,revision INTEGER NOT NULL,worker_id TEXT NOT NULL,worktree TEXT NOT NULL,claimed_at INTEGER NOT NULL,ended INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(task_id,revision));
+            CREATE TABLE IF NOT EXISTS task_claims(task_id TEXT NOT NULL REFERENCES tasks ON DELETE CASCADE,revision INTEGER NOT NULL,worker_id TEXT NOT NULL,worktree TEXT NOT NULL,claimed_at INTEGER NOT NULL,ended INTEGER NOT NULL DEFAULT 0,session_fingerprint TEXT,PRIMARY KEY(task_id,revision));
             CREATE TABLE IF NOT EXISTS task_gates(task_id TEXT NOT NULL REFERENCES tasks ON DELETE CASCADE,gate TEXT NOT NULL,revision INTEGER NOT NULL,state TEXT NOT NULL,evidence TEXT,PRIMARY KEY(task_id,gate,revision));
             CREATE TABLE IF NOT EXISTS task_findings(task_id TEXT NOT NULL REFERENCES tasks ON DELETE CASCADE,revision INTEGER NOT NULL,findings TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS task_scope_paths(task_id TEXT NOT NULL REFERENCES tasks ON DELETE CASCADE,path TEXT NOT NULL,base_root TEXT NOT NULL,frozen INTEGER NOT NULL,PRIMARY KEY(task_id,path));
@@ -556,6 +557,28 @@ impl TasksStore {
             COMMIT;")?;
         }
         schema::migrate(&mut connection)?;
+        if !connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('task_claims') WHERE name='session_fingerprint')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )? {
+            connection.execute_batch("BEGIN IMMEDIATE;")?;
+            let migrate_res = (|| -> Result<()> {
+                if !connection.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM pragma_table_info('task_claims') WHERE name='session_fingerprint')",
+                    [],
+                    |row| row.get::<_, bool>(0),
+                )? {
+                    connection.execute("ALTER TABLE task_claims ADD COLUMN session_fingerprint TEXT", [])?;
+                }
+                connection.execute_batch("COMMIT;")?;
+                Ok(())
+            })();
+            if let Err(err) = migrate_res {
+                let _ = connection.execute_batch("ROLLBACK;");
+                return Err(err);
+            }
+        }
         ensure_execution_provenance_schema(&connection)?;
         let version: String = connection.query_row(
             "SELECT value FROM task_store_metadata WHERE key='schema_version'",
@@ -648,24 +671,37 @@ impl TasksStore {
         })?;
         let exec_gates = profile.executable_gates();
         let current_gate = &exec_gates[stage_index];
-        if current_gate.persistence.pre == Some(crate::tasks::profile::PersistenceAction::Snapshot) {
+        if current_gate.persistence.pre == Some(crate::tasks::profile::PersistenceAction::Snapshot)
+        {
             let cursor = crate::engine::claim::cursor_for_stage(&profile, &task.stage)?;
             let (_, task_breadcrumb) = crate::engine::claim::breadcrumb(task_id, &cursor)?;
             let namespace_prefix = format!("{}/{}/", self.repository, self.project);
             let canonical_breadcrumb = format!("{namespace_prefix}{task_breadcrumb}");
-            let state_str: Option<String> = self.connection.query_row(
-                "SELECT state_payload FROM gate_checkpoints
+            let state_str: Option<String> = self
+                .connection
+                .query_row(
+                    "SELECT state_payload FROM gate_checkpoints
                  WHERE breadcrumb=?1",
-                params![canonical_breadcrumb],
-                |r| r.get(0),
-            ).optional()?;
+                    params![canonical_breadcrumb],
+                    |r| r.get(0),
+                )
+                .optional()?;
             if let Some(state_str) = state_str {
                 let payload: serde_json::Value = serde_json::from_str(&state_str)?;
-                let inner = payload.get("_forge_checkpoint_payload_v1").unwrap_or(&payload);
-                let task_id_matches = inner.get("task_id").and_then(|v| v.as_str()) == Some(task_id);
-                let revision_matches = inner.get("claim_revision").and_then(|v| v.as_u64()) == Some(task.claim_revision);
+                let inner = payload
+                    .get("_forge_checkpoint_payload_v1")
+                    .unwrap_or(&payload);
+                let task_id_matches =
+                    inner.get("task_id").and_then(|v| v.as_str()) == Some(task_id);
+                let revision_matches = inner.get("claim_revision").and_then(|v| v.as_u64())
+                    == Some(task.claim_revision);
                 if task_id_matches && revision_matches {
-                    if let (Some(c), Some(b)) = (inner.get("commit").and_then(|v| v.as_str()), inner.get("candidate_baseline_head").and_then(|v| v.as_str())) {
+                    if let (Some(c), Some(b)) = (
+                        inner.get("commit").and_then(|v| v.as_str()),
+                        inner
+                            .get("candidate_baseline_head")
+                            .and_then(|v| v.as_str()),
+                    ) {
                         return Ok(Some((c.to_owned(), b.to_owned())));
                     }
                 }
@@ -678,7 +714,11 @@ impl TasksStore {
             .context(
                 "TASK_SNAPSHOT_NOT_FOUND: no accepted candidate snapshot precedes this gate",
             )?;
-        let leaf_alias = snapshot_gate.id.rsplit('.').next().unwrap_or(&snapshot_gate.id);
+        let leaf_alias = snapshot_gate
+            .id
+            .rsplit('.')
+            .next()
+            .unwrap_or(&snapshot_gate.id);
         let evidence: Option<String> = self
             .connection
             .prepare("SELECT evidence FROM task_gates WHERE task_id=?1 AND (gate=?2 OR gate=?3) AND state='passed' ORDER BY revision DESC LIMIT 1")?

@@ -21,3 +21,7 @@ The `docs/plans/` directory holds active design documents, architectural proposa
 - [Declarative Tree-sitter Queries Study](declarative-tree-sitter-queries-study.md)
 - [Forge MCP Audit and Architecture](forge-mcp-audit-and-architecture.md)
 - [Universal Multi-Worktree Resolution](universal-multi-worktree-resolution.md)
+
+## Archived Plans
+
+- [ACDD Profile Ergonomics, Forge Engine Remediation, and Token-Diet Overhaul](archive/acdd-engine-ergonomics-and-token-diet-overhaul.md)

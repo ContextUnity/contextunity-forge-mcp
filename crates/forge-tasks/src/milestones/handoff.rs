@@ -2134,15 +2134,12 @@ fn cleanup_handoff_refs(
 ) -> Result<()> {
     let mut proofs = proof_shas(text)?;
     proofs.extend(owners.outgoing_proofs.iter().cloned());
+    let mut refs_to_delete = Vec::new();
     for sha in proofs {
         if owners.proofs.contains(&sha) {
             continue;
         }
-        integration::git_write(
-            root,
-            &["update-ref", "-d", &format!("refs/forge/evidence/{sha}")],
-            "HANDOFF_REF_CLEANUP_FAILED",
-        )?;
+        refs_to_delete.push(format!("refs/forge/evidence/{sha}"));
     }
     // Delete only the outgoing namespace; active foreign owners remain protected.
     for prefix in [
@@ -2172,17 +2169,13 @@ fn cleanup_handoff_refs(
             bail!("HANDOFF_REF_CLEANUP_FAILED: cannot enumerate keeper refs");
         }
         let refs = String::from_utf8(output.stdout)?;
-        for reference in refs
-            .lines()
-            .filter(|reference| reference.starts_with(&prefix))
-        {
-            integration::git_write(
-                root,
-                &["update-ref", "-d", reference],
-                "HANDOFF_REF_CLEANUP_FAILED",
-            )?;
-        }
+        refs_to_delete.extend(
+            refs.lines()
+                .filter(|reference| reference.starts_with(&prefix))
+                .map(str::to_owned),
+        );
     }
+    integration::delete_refs(root, &refs_to_delete)?;
     prune_snapshot_refs(root, &format!("{project}/{id}:"));
     integration::clear_handoff_owners(root, &format!("{repository}/{project}/{id}"))?;
     Ok(())
@@ -2192,8 +2185,10 @@ fn already_handed_off(id: &str) -> anyhow::Error {
     anyhow::anyhow!("MILESTONE_ALREADY_HANDED_OFF: Milestone '{id}' has already been handed off and pruned in SQLite by another worktree. Merge or pull the handoff commit into this branch.")
 }
 
-pub type SymbolFactsExtractor = fn(path: &str, source: &str) -> Result<Vec<forge_core::models::Node>>;
-static SYMBOL_FACTS_EXTRACTOR: std::sync::RwLock<Option<SymbolFactsExtractor>> = std::sync::RwLock::new(None);
+pub type SymbolFactsExtractor =
+    fn(path: &str, source: &str) -> Result<Vec<forge_core::models::Node>>;
+static SYMBOL_FACTS_EXTRACTOR: std::sync::RwLock<Option<SymbolFactsExtractor>> =
+    std::sync::RwLock::new(None);
 
 pub fn set_symbol_facts_extractor(extractor: SymbolFactsExtractor) {
     if let Ok(mut lock) = SYMBOL_FACTS_EXTRACTOR.write() {
@@ -2202,6 +2197,17 @@ pub fn set_symbol_facts_extractor(extractor: SymbolFactsExtractor) {
 }
 
 fn symbol_facts(root: &Path, revision: &str, path: &str) -> Result<BTreeMap<String, String>> {
+    if path.starts_with(".forge/")
+        || path.starts_with(".git/")
+        || matches!(
+            Path::new(path)
+                .extension()
+                .and_then(|extension| extension.to_str()),
+            Some("md" | "yaml" | "yml" | "json" | "toml" | "lock" | "txt" | "scm" | "svg" | "png")
+        )
+    {
+        return Ok(BTreeMap::new());
+    }
     let extractor = match SYMBOL_FACTS_EXTRACTOR.read() {
         Ok(lock) => *lock,
         Err(_) => None,
@@ -2294,11 +2300,11 @@ fn telemetry_passport(
     if !diff.status.success() {
         bail!("HANDOFF_TELEMETRY_FAILED: cannot inspect integration diff");
     }
-    let mut breakdown: BTreeMap<&str, Vec<Value>> = BTreeMap::from([
-        ("src", vec![]),
-        ("tests", vec![]),
-        ("docs", vec![]),
-        ("other", vec![]),
+    let mut breakdown: BTreeMap<&str, (u64, u64, u64)> = BTreeMap::from([
+        ("src", (0, 0, 0)),
+        ("tests", (0, 0, 0)),
+        ("docs", (0, 0, 0)),
+        ("other", (0, 0, 0)),
     ]);
     let mut before = BTreeMap::new();
     let mut after = BTreeMap::new();
@@ -2312,7 +2318,7 @@ fn telemetry_passport(
         let added = fields.next().context("invalid numstat")?;
         let removed = fields.next().context("invalid numstat")?;
         let path = fields.next().context("invalid numstat path")?;
-        let category = if path.starts_with("src/") {
+        let category = if path.starts_with("src/") || path.starts_with("crates/") {
             "src"
         } else if path.starts_with("tests/") {
             "tests"
@@ -2321,25 +2327,40 @@ fn telemetry_passport(
         } else {
             "other"
         };
-        breakdown.get_mut(category).context("diff category missing")?.push(json!({"path":path,"added":added.parse::<u64>().ok(),"removed":removed.parse::<u64>().ok()}));
+        let summary = breakdown
+            .get_mut(category)
+            .context("diff category missing")?;
+        summary.0 += 1;
+        summary.1 += added.parse::<u64>().unwrap_or(0);
+        summary.2 += removed.parse::<u64>().unwrap_or(0);
+        // Zero removed lines can also mean an insertion into an existing code file;
+        // keep its baseline facts so unchanged symbols are not reported as added.
         before.extend(symbol_facts(root, target, path)?);
         after.extend(symbol_facts(root, sha, path)?);
     }
-    let added: Vec<_> = after
+    let added_total = after
         .keys()
         .filter(|key| !before.contains_key(*key))
-        .cloned()
-        .collect();
-    let removed: Vec<_> = before
+        .count();
+    let removed_total = before
         .keys()
         .filter(|key| !after.contains_key(*key))
-        .cloned()
-        .collect();
-    let modified: Vec<_> = after
+        .count();
+    let modified_total = after
         .iter()
         .filter(|(key, value)| before.get(*key).is_some_and(|old| old != *value))
-        .map(|(key, _)| key.clone())
-        .collect();
+        .count();
+    let ast_symbol_deltas = json!({
+        "added": added_total,
+        "removed": removed_total,
+        "modified": modified_total,
+    });
+    let breakdown = breakdown
+        .into_iter()
+        .map(|(category, (files, added, removed))| {
+            (category, json!({"files":files,"added":added,"removed":removed}))
+        })
+        .collect::<BTreeMap<_, _>>();
     let settings = tasks::TaskSettings::load(root)?;
     let canonical = |dep: &str, project: &str| -> Result<String> {
         // Only an explicitly qualified owner is raw alias input; the default
@@ -2395,10 +2416,12 @@ fn telemetry_passport(
     };
     let verification = if source_polish(root, item)? {
         let selection = evidence.verification.project_command.as_deref().context("HANDOFF_COMMAND_REQUIRED: source polish requires an explicitly selected registered project_command")?;
-        Some(integration::observe_command(
+        Some(integration::observe_or_reuse_project_command(
             root,
             selection,
             &evidence.binding,
+            &evidence.verification,
+            sha,
         )?)
     } else {
         None
@@ -2406,7 +2429,7 @@ fn telemetry_passport(
     let mut passport = json!({"version":1,"identity":identity,"binding":evidence.binding,"commit":sha,"target_base":target,
         "active_authority_digest":integration::digest(&integration::manifest_projection(item.text.as_bytes())?)?,
         "started_at":started.to_rfc3339(),"completed_at":completed.to_rfc3339(),"duration_seconds":(completed-started).num_seconds(),
-        "tasks_count":relevant.len(),"tasks":per_task,"diff":breakdown,"ast_symbol_deltas":{"added":added,"removed":removed,"modified":modified},
+        "tasks_count":relevant.len(),"tasks":per_task,"diff":breakdown,"ast_symbol_deltas":ast_symbol_deltas,
         "test_suite_results":evidence.verification,"automatic_project_verification":verification,"linter":lint,
         "topology":{"upstream":upstream,"downstream":downstream,"unresolved_upstream":upstream.difference(&known).collect::<Vec<_>>()}});
     let token = integration::digest(&passport)?;
@@ -2828,13 +2851,13 @@ fn prune_snapshot_refs(root: &Path, prefix: &str) {
             "refs/forge/snapshots/",
         ],
     ) {
-        let refs = String::from_utf8_lossy(&output.stdout);
-        for ref_line in refs.lines() {
-            let r = ref_line.trim();
-            if r.starts_with(&target_prefix) {
-                let _ = crate::core::git::git_status(root, &["update-ref", "-d", r]);
-            }
-        }
+        let refs: Vec<String> = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|reference| reference.starts_with(&target_prefix))
+            .map(str::to_owned)
+            .collect();
+        let _ = integration::delete_refs(root, &refs);
     }
 }
 

@@ -21,10 +21,10 @@ pub fn run(root: &Path, topic: &str, force: bool) -> Result<Value> {
             json!({"filename":"forge-mcp.yaml","template":TEMPLATE,"keys":["roots","eligible_roots","docs","milestones","plans","ignore","excluded_directory_names","excluded_file_names","linked_workspaces","workspaces"],"roots":"relative plain paths or .; symlinks and parent traversal rejected","ignore":"exact file or directory basenames","linked_workspaces":"array of {name, path, enabled?, roots, docs, ignore}; indexes external/sibling worktrees into unified graph; enabled (default true) allows toggling workspaces; skips unavailable worktrees and auto-rebuilds","default":"workspace root; gitignore and common build directories excluded"}),
         ),
         "docs" => Ok(
-            json!({"frontmatter":"---\ndoc_type: architecture\ntitle: Module contract\n---","invariant":"> [!IMPORTANT] Invariant: Document the rule and reference `symbol.name`.","types":["architecture","adr","guide","api","plan"]}),
+            json!({"frontmatter":"---\ndoc_type: architecture\ntitle: Module contract\n---","invariant":"> [!IMPORTANT] INV-MODULE-RULE: Document the rule and reference [`symbol.name`](../src/module.rs).","types":["architecture","adr","guide","api","plan"]}),
         ),
         "acdd" => Ok(json!({
-            "gates": ["contract", "build", "review", "deliver"],
+            "gates": ["contract_synthesis", "contract", "build", "review", "deliver"],
             "proof_policies": {
                 "seam-test-first": "Greenfield: failing red seam test at contract (nonzero exit), passing green at build.",
                 "direct-proof": "Pre-existing code: validate existing seam directly, exit code 0 accepted at contract.",
@@ -38,7 +38,7 @@ pub fn run(root: &Path, topic: &str, force: bool) -> Result<Value> {
                 "decisions": "Decisions and trade-offs retained in the delivery receipt.",
                 "deferred": "Deferred findings retained in the delivery receipt."
             },
-            "blackboard_gate_targeting": "An optional gate field targets a message to one gate id from the active task profile. Untargeted messages remain generally visible; claim context also includes messages targeted to its active gate.",
+            "blackboard_gate_targeting": "An optional gate field targets a message to one gate id from the active task profile. Claim context includes untargeted and active-gate messages; active decisions, findings, and blockers remain visible across gates in context_bundle.",
             "blackboard_schema_version": 5,
             "review_contours": ["paths", "claims", "concurrency", "project_isolation", "administration"],
             "subtask_rules": "Subtask must name concrete target, expected status, and verification command. Not completed with partial implementation. Use subtask_add to deepen tasks, not root task proliferation.",
@@ -47,12 +47,13 @@ pub fn run(root: &Path, topic: &str, force: bool) -> Result<Value> {
         })),
         "query" => Ok(json!({
             "start": "Call code_map_overview to identify indexed paths and coverage.",
+            "sql_schema": "nodes(node_id, id, kind, name, qualname, path_id, line, end_line, is_test, language, generated, details, node_hash, owner_path_id); path_dictionary(path_id, path); edges(src_hash, kind, dst_hash, path_id, line, evidence_id, confidence_id, occurrence_count); files(path, status, digest, size, language, is_test, generated, path_hash); doc_sections(doc_id, path, section_title, doc_type, content, invariants, referenced_symbols, is_invariant). Paths: FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id. Edge endpoints: FROM edges e JOIN nodes src ON e.src_hash=src.node_hash JOIN nodes dst ON e.dst_hash=dst.node_hash. nodes and edges have no path text column; edges have no src/dst text columns or compatibility views.",
             "symbols": "Use code_map_search with FTS terms or prefix* pattern. Hits include their indexed signature and inspect_selector arguments for code_map_inspect with show_source=true. Previews appear automatically for at most three total hits; set include_preview=true to include up to three previews on larger result sets. Selectors accept an exact ID, path:name, path:known_kind:name, path:line, or path#Lline. Bare names never get hijacked into modules. Compact inspect and explain include signature, docstring, receiver-aware container, inbound/outbound call counts, and up to five direct callers/callees; set include_coverage=true when resolution evidence is needed.",
-            "snippets": "Use get_code_snippet for a fast, bounded AST preview (default 5 leading + 35 body lines) before reading entire files via ctx_read.",
+            "snippets": "Use get_code_snippet to read the complete symbol source body by default (or bound with max_body_lines) instead of multi-chunk ctx_read file slicing.",
             "tests": "Call code_map_tests on a narrow symbol or module; broad scopes are rejected before unbounded traversal.",
-            "queries": "Use code_map_inspect and code_map_explain for symbols, code_map_analyze for diagnostics, and code_map_impact for traversal. The legacy code_map_query tool supports overview, impact, slice, unwired, and read-only SQL; its inspect and explain operations are deprecated. For SQL, put one SELECT/WITH statement in selector; pages use limit, offset, and generation.",
+            "queries": "Use code_map_inspect and code_map_explain for symbols, code_map_analyze for diagnostics, and code_map_impact for traversal. Use code_map_query for sql (pass sql='SELECT ...' directly), untested, implementations, slice, and unwired; pages use limit, offset, and generation.",
             "diagnostics": "Call code_map_analyze with target='' for workspace totals; use an indexed path for a smaller scope or an exact file for paged rows. Cycles require include_cycles=true.",
-            "documents": "Use search_docs to find sections and get_doc to read the selected section.",
+            "documents": "Use search_docs with include_excerpt=true to find sections, get_doc with detail='compact' for section outlines, and get_doc with section='...' to read a specific section.",
             "pages": "Start with compact detail and a small limit. Continue with the returned next_offset and generation for the same selector and filters. For tighter agent context, set adapter response.page_size=10 and response.max_output_bytes=16384.",
             "recovery": "On a computation budget error, narrow the selector or path and reduce depth; lowering limit alone may not reduce count or traversal work. On a byte limit error, use compact detail, a smaller limit, or fewer SQL columns."
         })),

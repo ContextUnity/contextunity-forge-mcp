@@ -2442,6 +2442,10 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
     workspace.write("AGENTS.md", "# Test guidance\n");
     let routing_adr = "---\ntitle: Task Routing Invariants\ndoc_type: adr\nstatus: accepted\n---\n# Task Routing Invariants\n- INV-ADR: Preserve [`route_task`](../../src/routing.rs#L2).\n- Decision: Admit every caller before changing the public signature.";
     workspace.write(
+        "docs/reference/routing.md",
+        "# Routing Reference\n\nSee [route_task](../../src/routing.rs#L2) for the `route_task` entry point.\n\n## Unrelated Rules\n- Invariant: Unrelated section rule.\n",
+    );
+    workspace.write(
         "docs/adr/001-task-routing.md",
         &routing_adr.replace('\n', "\r\n"),
     );
@@ -2569,7 +2573,10 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
     // Check guidance in bundle
     assert_eq!(bundle["guidance"]["stage"], "contract");
     assert_eq!(bundle["guidance"]["role"], "contract_author");
-    assert!(bundle["guidance"]["recommended_tools"].is_array());
+    let recommended_tools = bundle["guidance"]["recommended_tools"].as_array().unwrap();
+    for tool in ["get_code_snippet", "search_docs", "get_doc"] {
+        assert!(recommended_tools.iter().any(|value| value == tool));
+    }
     assert!(bundle["guidance"]["actionable_steps"]
         .as_array()
         .is_some_and(|steps| !steps.is_empty()));
@@ -2588,9 +2595,17 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
     assert_eq!(adr["relevance"], "direct");
     assert_eq!(
         adrs.len(),
-        1,
+        2,
         "unrelated ADRs must not appear as governing context"
     );
+    let reference = adrs
+        .iter()
+        .find(|document| document["path"] == "docs/reference/routing.md")
+        .expect("reference documentation must appear in scoped context");
+    assert!(reference["invariants_summary"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("Section: Routing Reference")));
     assert!(adr["invariants_summary"]
         .as_array()
         .unwrap()
@@ -2619,7 +2634,15 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
     assert_eq!(governing["omitted_transitive"], 0);
 
     let symbols = bundle["scope_symbols"].as_array().unwrap();
-    assert!(symbols.iter().any(|symbol| symbol["name"] == "route_task"));
+    let route_task = symbols
+        .iter()
+        .find(|symbol| symbol["name"] == "route_task")
+        .expect("scoped symbols must include route_task");
+    assert!(route_task["documented_by"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|section| section == "docs/reference/routing.md#Routing Reference"));
 
     // Check covering tests
     let tests = bundle["covering_tests"].as_array().unwrap();

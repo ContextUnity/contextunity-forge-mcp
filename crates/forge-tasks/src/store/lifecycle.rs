@@ -1,5 +1,58 @@
 use super::*;
 
+fn current_session_fingerprint() -> Option<String> {
+    [
+        "FORGE_AGENT_SESSION_ID",
+        "CODEX_THREAD_ID",
+        "AGY_CONVERSATION_ID",
+        "CLAUDE_SESSION_ID",
+    ]
+    .into_iter()
+    .filter_map(|key| std::env::var(key).ok())
+    .find(|value| !value.trim().is_empty())
+}
+
+pub(crate) fn validate_session_independence(
+    conn: &Connection,
+    id: &str,
+    stage: &str,
+    prior: &str,
+    evidence: &crate::tasks::gates::Evidence,
+    worker: &str,
+    claim_revision: Option<u64>,
+) -> Result<()> {
+    let current_fp = current_session_fingerprint();
+    let prior_fp: Option<String> = conn
+        .query_row(
+            "SELECT session_fingerprint FROM task_claims WHERE task_id=?1 AND revision=?2",
+            params![id, evidence.claim_revision],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+    let claim_fp: Option<String> = if let Some(revision) = claim_revision {
+        conn.query_row(
+            "SELECT session_fingerprint FROM task_claims WHERE task_id=?1 AND revision=?2",
+            params![id, revision],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten()
+    } else {
+        None
+    };
+    if prior_fp.is_some() && prior_fp == current_fp
+        || prior_fp
+            .as_ref()
+            .is_some_and(|prior| Some(prior) == claim_fp.as_ref())
+    {
+        let current_fp = prior_fp.as_deref().unwrap_or_default();
+        let prior_worker = &evidence.worker_id;
+        bail!("TASK_REVIEW_NOT_INDEPENDENT: task '{id}'. gate '{stage}' was claimed from the same agent session fingerprint ('{current_fp}') as '{prior}' despite changing worker_id from '{prior_worker}' to '{worker}'. Do: spawn a separate subagent process/session to claim and review this gate.");
+    }
+    Ok(())
+}
+
 /// One persisted command gate execution bound to an active claim and Git candidate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClaimBoundExecutionRun {
@@ -487,7 +540,7 @@ impl TasksStore {
                 .or_else(|| matches!(task.stage.as_str(), "review" | "deliver").then_some("build"));
             if let Some(from) = independent {
                 let owner: Option<String> = tx.query_row(
-                    "SELECT json_extract(evidence,'$.worker_id') FROM task_gates WHERE task_id=?1 AND gate=?2 AND state='passed' ORDER BY revision DESC LIMIT 1",
+                    "SELECT json_extract(evidence,'$.worker_id') FROM task_gates WHERE task_id=?1 AND (gate=?2 OR gate='tasks.'||?2 OR (?2='build' AND gate IN ('implement','tasks.implement'))) AND state='passed' ORDER BY CASE WHEN gate IN (?2,'tasks.'||?2) THEN 0 ELSE 1 END, revision DESC LIMIT 1",
                     params![task.task_id, from], |row| row.get(0)).optional()?.flatten();
                 if owner.as_deref() == Some(worker) {
                     continue;
@@ -967,6 +1020,29 @@ impl ClaimContext {
         check_stage(id, &task.stage, stage)?;
         task.gate = task_gate;
         task.stage = profile.gate_id(task_gate).to_owned();
+        if let Some(prior) = profile
+            .by_stage(&task.stage)
+            .and_then(|gate| gate.independent_from.as_deref())
+        {
+            let prior_cursor = crate::engine::claim::cursor_for_stage(&profile, prior)?;
+            if let Some(prior_evidence) =
+                crate::engine::gates::accepted_evidence_for_cursor(tx, id, &profile, &prior_cursor)?
+            {
+                let prior_worker = &prior_evidence.worker_id;
+                if prior_worker == worker {
+                    bail!("TASK_REVIEW_NOT_INDEPENDENT: task '{id}'. gate '{}' requires an independent worker distinct from '{prior}' worker '{prior_worker}'. Do: dispatch a separate independent agent session to claim and execute stage '{}'.", task.stage, task.stage);
+                }
+                validate_session_independence(
+                    tx,
+                    id,
+                    &task.stage,
+                    prior,
+                    &prior_evidence,
+                    worker,
+                    None,
+                )?;
+            }
+        }
         let my_scope_paths: Vec<PathBuf> = tx
             .prepare("SELECT path FROM task_scope_paths WHERE task_id=?1")?
             .query_map([id], |row| row.get::<_, String>(0).map(PathBuf::from))?
@@ -1004,7 +1080,7 @@ impl ClaimContext {
         task.worker_id = Some(worker.into());
         task.worktree = Some(worktree.to_string_lossy().into_owned());
         task.status = "in_progress".into();
-        tx.execute("INSERT INTO task_claims(task_id,revision,worker_id,worktree,claimed_at) VALUES(?1,?2,?3,?4,?5)",params![id,task.claim_revision,worker,task.worktree,now()])?;
+        tx.execute("INSERT INTO task_claims(task_id,revision,worker_id,worktree,claimed_at,session_fingerprint) VALUES(?1,?2,?3,?4,?5,?6)",params![id,task.claim_revision,worker,task.worktree,now(),current_session_fingerprint()])?;
         save(tx, &task)?;
 
         Ok(task)

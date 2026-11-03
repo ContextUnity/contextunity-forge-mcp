@@ -3,6 +3,7 @@
 
 roots:
   - src
+  - crates # Include crates for multi-crate workspaces.
 docs:
   - README.md
   - docs
