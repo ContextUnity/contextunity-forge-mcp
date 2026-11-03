@@ -191,6 +191,13 @@ Claim context derives
 tests, and provides `expected_evidence_template` bound to the active task,
 stage, revisions, worker, and worktree.
 
+Detailed and `by_pattern` command definitions accept an optional `output`
+mapping. Its optional `counts` mapping contains `passed` and `failed` regular
+expressions. `require_counts` defaults to `true`. `noise` and
+`errors` are lists of regular expressions, and `seam_ref_pattern` is an optional
+regular expression. The profile validator rejects invalid expressions. String
+commands and detailed commands without `output` remain valid.
+
 ---
 
 ## Key Concepts

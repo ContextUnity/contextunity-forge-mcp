@@ -2,6 +2,42 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Presentation chosen for a command verification diagnostic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VerifyDiagnosticMode {
+    /// The command passed and only a compact summary is needed.
+    Pass,
+    /// The full diagnostic fits in the response.
+    Inline,
+    /// The diagnostic was truncated and the raw log is retained.
+    Truncated,
+    /// The command exceeded its execution timeout.
+    Timeout,
+}
+
+/// A path found outside the active task's admitted write scope.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScopeViolationAlert {
+    /// Project-relative path reported by Git.
+    pub path: String,
+}
+
+/// Result of a command check without a task lifecycle transition.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VerifyOutcome {
+    /// Command exit code, absent when the process did not exit normally.
+    pub exit_code: Option<i32>,
+    /// Diagnostic presentation mode.
+    pub diagnostic_mode: VerifyDiagnosticMode,
+    /// Compact summary or diagnostic excerpt.
+    pub output: String,
+    /// Optional raw log location for truncated output.
+    pub log_path: Option<String>,
+    /// Paths outside the admitted write scope observed before or after execution.
+    pub scope_violations: Vec<ScopeViolationAlert>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 /// Admitted proof policy for task contracts.

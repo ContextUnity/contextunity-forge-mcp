@@ -44,6 +44,46 @@ fn command_profile_preserves_declarative_output_specification() {
 }
 
 #[test]
+fn command_profile_accepts_legacy_formats_and_defaults_output_rules() {
+    let profile = parse_profile(
+        "commands:\n  script: echo ok\n  legacy:\n    command: echo ok\n  configured:\n    command: echo ok\n    output: {}\n  pattern_legacy:\n    by_pattern: {'*.rs': 'cargo test'}\n  pattern_configured:\n    by_pattern: {'*.py': pytest}\n    output: {require_counts: false}\n",
+    )
+    .unwrap();
+    assert!(profile.commands["script"].output().is_none());
+    assert!(profile.commands["legacy"].output().is_none());
+    assert!(profile.commands["pattern_legacy"].output().is_none());
+    assert!(
+        !profile.commands["pattern_configured"]
+            .output()
+            .unwrap()
+            .require_counts
+    );
+    let output = profile.commands["configured"].output().unwrap();
+    assert!(output.require_counts);
+    assert!(output.counts.is_none());
+    assert!(output.noise.is_empty());
+    assert!(output.errors.is_empty());
+    assert!(output.seam_ref_pattern.is_none());
+}
+
+#[test]
+fn profile_validation_rejects_invalid_output_patterns() {
+    for field in [
+        "counts:\n        passed: '['\n        failed: '(\\d+)'",
+        "noise: ['[']",
+        "errors: ['[']",
+        "seam_ref_pattern: '['",
+    ] {
+        let yaml =
+            format!("commands:\n  check:\n    command: pytest\n    output:\n      {field}\n");
+        let error = profile::validate_profile_document(&yaml)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("commands.check.output"), "{error}");
+    }
+}
+
+#[test]
 fn transition_runner_compiles_proofs_and_covers_all_task3_subtasks() {
     let (root, mut store, _) = fixture();
     let task_id = "forge-mcp/m-test:first";
@@ -86,6 +126,7 @@ fn transition_runner_compiles_proofs_and_covers_all_task3_subtasks() {
             timeout_seconds: Some(5),
             description: Some("Run the persisted contract seam fixture".into()),
             scope_args_by_pattern: Default::default(),
+            output: None,
         },
     );
     profile_override.commands.insert(
@@ -98,6 +139,7 @@ fn transition_runner_compiles_proofs_and_covers_all_task3_subtasks() {
             ]),
             description: Some("Dispatch commands for each matching path".into()),
             timeout_seconds: Some(1),
+            output: None,
         }),
     );
     let contract_gate = profile_override

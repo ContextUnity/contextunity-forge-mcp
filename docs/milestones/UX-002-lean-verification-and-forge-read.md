@@ -2,35 +2,36 @@
 id: UX-002-lean-verification-and-forge-read
 title: Autonomous command gates, lean verification diagnostics, profile output schemas, and unified layered forge_read
 doc_type: contract
-status: planned
+status: active
 depends_on: []
 guidance:
   hitl: pro
 owners:
-  - src/cli/
-  - src/mcp/tools.rs
-  - src/mcp/tools/inputs.rs
-  - crates/forge-core/src/
-  - crates/forge-index/src/db/
-  - crates/forge-tasks/src/engine/
-  - crates/forge-tasks/src/milestones/
-  - crates/forge-tasks/src/tasks/
-  - docs/reference/mcp-tools.md
-  - docs/reference/cli.md
-  - docs/reference/tasks.md
-  - docs/reference/mcp-markdown-contracts.md
-  - skills/contextunity-forge/
+- src/cli/
+- src/mcp/tools.rs
+- src/mcp/tools/inputs.rs
+- crates/forge-core/src/
+- crates/forge-index/src/db/
+- crates/forge-tasks/src/engine/
+- crates/forge-tasks/src/milestones/
+- crates/forge-tasks/src/tasks/
+- docs/reference/mcp-tools.md
+- docs/reference/cli.md
+- docs/reference/tasks.md
+- docs/reference/mcp-markdown-contracts.md
+- skills/contextunity-forge/
 invariants:
-  - 'INV-AUTONOMOUS-COMMAND-GATE-WIRING: Zero-argument task_submit (across CLI and MCP) and task_verify automatically reuse execute_command_gate and compile_evidence_envelope, running the gate registered command in the claimed task worktree when no fresh claim-bound trace matches candidate_fingerprint, and expanding scope_args_by_pattern for task scope paths.'
-  - 'INV-PROFILE-DRIVEN-COMMAND-OUTPUT: The engine parses command stdout/stderr and validates gate proofs using declarative specifications in the active profile (commands.<id>.output with counts, require_counts, noise, errors, seam_ref_pattern), completely eliminating hardcoded Cargo string assumptions and enabling non-test linters, doc checkers, and multi-language toolchains without Rust binary modifications.'
-  - 'INV-WORKTREE-CONFINED-CONDITIONAL-TRACES: Command execution always runs inside the claimed task worktree (or repository root only for in-place milestone gates). Passing runs (exit 0 on build/verify, or matching expected_failure on contract) and short failures fitting the inline budget emit no external trace log files; full logs are persisted to <task_worktree>/.forge/task-traces/ and linked via file:/// URI only when diagnostic output is truncated.'
-  - 'INV-PRE-POST-WRITE-SCOPE-GUARD: Command verification checks git status --porcelain before and after process execution; any modified or untracked file outside the task admitted scope and extended_scope prepends a SCOPE_VIOLATION_WARNING without failing the process run itself.'
-  - 'INV-LAYERED-FORGE-READ: forge_read replaces get_code_snippet completely (removing get_code_snippet with zero aliases) and provides a layered capability model: core text reading (lines, raw, search, delta, output_file, null-byte binary check, and sensitive-pattern blocking from forge-mcp.yaml) is available in any workspace; structural symbols (snippet) and AST skeletons (outline) activate only when the codemap subsystem is enabled; doc section navigation activates when docs is enabled; task write-scope badges and gate verification hints activate when acdd is enabled.'
-  - 'INV-SIGNAL-DRIVEN-FILTERED-HINTS: Every forge_read mode appends a compact (1-3 line) conditional Hints footer containing pre-filled, copy-ready Forge tool calls (code_map_explain, code_map_impact, code_map_tests, get_doc, code_map_query implementations, task_manage verify, task_blackboard) strictly when the underlying SQLite graph edges or task state confirm the signal exists, filtered through filter_subsystem_tools so disabled subsystems never produce dead hints.'
+- 'INV-AUTONOMOUS-COMMAND-GATE-WIRING: Zero-argument task_submit (across CLI and MCP) and task_verify automatically reuse execute_command_gate and compile_evidence_envelope, running the gate registered command in the claimed task worktree when no fresh claim-bound trace matches candidate_fingerprint, and expanding scope_args_by_pattern for task scope paths.'
+- 'INV-PROFILE-DRIVEN-COMMAND-OUTPUT: The engine parses command stdout/stderr and validates gate proofs using declarative specifications in the active profile (commands.<id>.output with counts, require_counts, noise, errors, seam_ref_pattern), completely eliminating hardcoded Cargo string assumptions and enabling non-test linters, doc checkers, and multi-language toolchains without Rust binary modifications.'
+- 'INV-WORKTREE-CONFINED-CONDITIONAL-TRACES: Command execution always runs inside the claimed task worktree (or repository root only for in-place milestone gates). Passing runs (exit 0 on build/verify, or matching expected_failure on contract) and short failures fitting the inline budget emit no external trace log files; full logs are persisted to <task_worktree>/.forge/task-traces/ and linked via file:/// URI only when diagnostic output is truncated.'
+- 'INV-PRE-POST-WRITE-SCOPE-GUARD: Command verification checks git status --porcelain before and after process execution; any modified or untracked file outside the task admitted scope and extended_scope prepends a SCOPE_VIOLATION_WARNING without failing the process run itself.'
+- 'INV-LAYERED-FORGE-READ: forge_read replaces get_code_snippet completely (removing get_code_snippet with zero aliases) and provides a layered capability model: core text reading (lines, raw, search, delta, output_file, null-byte binary check, and sensitive-pattern blocking from forge-mcp.yaml) is available in any workspace; structural symbols (snippet) and AST skeletons (outline) activate only when the codemap subsystem is enabled; doc section navigation activates when docs is enabled; task write-scope badges and gate verification hints activate when acdd is enabled.'
+- 'INV-SIGNAL-DRIVEN-FILTERED-HINTS: Every forge_read mode appends a compact (1-3 line) conditional Hints footer containing pre-filled, copy-ready Forge tool calls (code_map_explain, code_map_impact, code_map_tests, get_doc, code_map_query implementations, task_manage verify, task_blackboard) strictly when the underlying SQLite graph edges or task state confirm the signal exists, filtered through filter_subsystem_tools so disabled subsystems never produce dead hints.'
 required_skills:
-  - contextunity-forge
-  - agent-instructions
+- contextunity-forge
+- agent-instructions
 related_plans: []
+started_at: 2026-11-03T08:59:21+00:00
 ---
 
 # Autonomous command gates, lean verification diagnostics, profile output schemas, and unified layered `forge_read`
@@ -83,34 +84,104 @@ Deliver a streamlined, low-overhead developer loop and replace fragmented file-r
 
 ```yaml
 task_ref: contracts-and-shared-types-bootstrap
-target: "Define shared command output schemas, verification data types, layered read models, error variants, and pre-register seam test stubs for the milestone"
+target: Define shared command output schemas, verification data types, layered read models, error variants, and pre-register seam test stubs for the milestone
 proof_policy: seam-test-first
-contract_revision: 1
+contract_revision: 2
 depends_on: []
 scope:
-  - crates/forge-tasks/src/tasks/profile.rs
-  - crates/forge-core/src/subsystems.rs
-  - crates/forge-core/src/model.rs
-  - tests/acdd/runner.rs
-  - tests/mcp/test_read.rs
+- crates/forge-tasks/src/tasks/profile.rs
+- crates/forge-core/src/subsystems.rs
+- crates/forge-core/src/model.rs
+- tests/acdd/runner.rs
+- tests/mcp/test_read.rs
+- tests/acdd/tasks/lifecycle.rs
+- crates/forge-core/src/lib.rs
+- crates/forge-tasks/src/verification.rs
+- tests/mcp.rs
+- docs/reference/profiles.md
 symbols:
-  - struct:CommandOutputSpec
-  - struct:CommandCountsSpec
-  - enum:ReadMode
-  - struct:ReadBounds
-  - struct:ReadResult
-  - struct:VerifyOutcome
-  - enum:VerifyDiagnosticMode
-status: ready
+- struct:CommandOutputSpec
+- struct:CommandCountsSpec
+- enum:ReadMode
+- struct:ReadBounds
+- struct:ReadResult
+- struct:VerifyOutcome
+- enum:VerifyDiagnosticMode
+status: completed
 subtasks:
-  - subtask_ref: command-output-spec-schema
-    title: "Define CommandOutputSpec and CommandCountsSpec in profile.rs with serde support for counts, require_counts, noise, errors, and seam_ref_pattern"
-  - subtask_ref: verification-types-and-diagnostics
-    title: "Define VerifyOutcome, VerifyDiagnosticMode, and scope violation alert structures in forge-tasks"
-  - subtask_ref: layered-read-model-and-subsystems
-    title: "Define ReadMode, ReadBounds, and ReadResult in forge-core decoupled from codemap dependency and register forge_read in SubsystemRegistry"
-  - subtask_ref: seam-test-stubs-pre-registration
-    title: "Pre-register minimal compiling test stubs in tests/acdd/runner.rs and tests/mcp/test_read.rs"
+- subtask_ref: command-output-spec-schema
+  title: Define CommandOutputSpec and CommandCountsSpec in profile.rs with serde support for counts, require_counts, noise, errors, and seam_ref_pattern
+  status: completed
+  evidence: 'cargo test --test acdd: 146 passed, 0 failed; profile output, legacy formats, defaults and invalid regex tests passed; strict Clippy passed'
+- subtask_ref: verification-types-and-diagnostics
+  title: Define VerifyOutcome, VerifyDiagnosticMode, and scope violation alert structures in forge-tasks
+  status: completed
+  evidence: 'cargo test --test acdd: 146 passed, 0 failed; strict cargo clippy --all-targets --all-features -- -D warnings passed'
+- subtask_ref: layered-read-model-and-subsystems
+  title: Define ReadMode, ReadBounds, and ReadResult in forge-core decoupled from codemap dependency and register forge_read in SubsystemRegistry
+  status: completed
+  evidence: 'cargo test --test mcp: 93 passed, 0 failed; reader model and minimal/docs/codemap subsystem tests passed; strict Clippy passed'
+- subtask_ref: seam-test-stubs-pre-registration
+  title: Pre-register minimal compiling test stubs in tests/acdd/runner.rs and tests/mcp/test_read.rs
+  status: completed
+  evidence: 'cargo test --test acdd: 146 passed, 0 failed; cargo test --test mcp: 93 passed, 0 failed; both test modules compile and run'
+extended_scope:
+- tests/acdd/tasks/lifecycle.rs
+- crates/forge-core/src/lib.rs
+receipt:
+  contract_revision: 2
+  passed_at: 2026-11-03T09:31:20.350863153+00:00
+  evidence:
+    seam_test_proof:
+      exit_code: 0
+      seam_test_refs:
+      - tests/acdd/runner.rs::command_profile_preserves_declarative_output_specification
+      tests_passed: 146
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: Reviewed scoped snapshot 5a9bde8cfd9e5f779361a4df702243b83b337400 against baseline 304a425b358ba651d53a566f6caded15e23a0ee0 and current Git status, including staged-deletion/untracked replacements. All ten scoped file blob IDs match the snapshot. Each change belongs to the bootstrap type/schema/test/documentation slice; protected Cargo.toml, build.rs, profile/configuration and credential paths are unchanged. The milestone manifest diff records prior activation and admitted contract revision 2, not a source scope escape. git diff --check exited 0.
+        claims:
+          applicable: true
+          evidence: 'Acceptance 1-2: CommandOutputSpec/CommandCountsSpec deserialize optional counts, noise/errors/seam regexes and require_counts=true; Detailed and Pattern commands expose the same optional spec while legacy strings/mappings serialize without a new output field. Both profile versions call the shared regex validator. The contract seam directly calls production parse_profile (confirmed exact graph edge); dedicated tests cover preservation, legacy/defaults, and invalid regex rejection through validate_profile_document. Acceptance 3-5: public read DTOs use serde in the unchanged forge-core leaf, with no forge-index/tree-sitter dependency; canonical SubsystemRegistry keeps forge_read universal and mode gating distinguishes Markdown docs outline from codemap source outline/snippet. tests/mcp/test_read.rs is registered and exercises these seams. VerifyOutcome/VerifyDiagnosticMode/ScopeViolationAlert live at the existing verification-domain owner. docs/reference/profiles.md accurately documents the admitted schema; downstream execution/read behavior and assigned example co-evolution remain outside this bootstrap slice. Performance review found no indexing/storage path changes, duplicate registries/caches, nested parallel work or repeated source I/O. Independent review verification on the unchanged candidate: cargo clippy --all-targets --all-features -- -D warnings exited 0 (no test count); cargo test --test acdd exited 0 with 146 passed, 0 failed, 0 ignored, 0 filtered; cargo test --test mcp exited 0 with 93 passed, 0 failed, 0 ignored, 0 filtered. Combined command exit 0, 239 tests passed. Raw verification archive: b132ff53bc8cb85b. Post-check hashing reconfirmed all ten scoped blobs match candidate 5a9bde8cfd9e5f779361a4df702243b83b337400.'
+        concurrency:
+          applicable: false
+          evidence: The candidate adds immutable data models, serde schema/defaults, profile validation and pure subsystem gating only. It changes no transactions, claim fences, revision checks, locks, receipt persistence, candidate baselines or filesystem/Git mutation flow; existing lifecycle/concurrency behavior is preserved and covered by the full ACDD target.
+        project_isolation:
+          applicable: true
+          evidence: Reviewed canonical forge-core subsystem registry and forge-tasks catalog re-export, model module ownership and profile validation path. New DTOs and mode gating perform no repository traversal, file reads/writes, workspace resolution, database access or subprocess execution, so they introduce no cross-project access path. Existing roots, symlink guards, task IDs, Git scopes and profile source selection are unchanged.
+        administration:
+          applicable: true
+          evidence: No storage/schema migration, privileged delivery change, hook handling, profile pin/hash implementation, receipt rewrite, Cargo manifest/build script or repository profile change is present. Optional output is omitted when absent, retaining existing command serialization for legacy profiles. Invalid configured regexes fail at the canonical profile validator. Candidate was kept unchanged throughout independent review; all prior accepted authority and delivery mechanisms remain intact.
+      extended_scope_review:
+        approved_paths:
+        - tests/acdd/tasks/lifecycle.rs
+        - crates/forge-core/src/lib.rs
+        reason_verified: true
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-AUTONOMOUS-COMMAND-GATE-WIRING: Zero-argument task_submit (across CLI and MCP) and task_verify automatically reuse execute_command_gate and compile_evidence_envelope, running the gate registered command in the claimed task worktree when no fresh claim-bound trace matches candidate_fingerprint, and expanding scope_args_by_pattern for task scope paths.'
+    - 'INV-PROFILE-DRIVEN-COMMAND-OUTPUT: The engine parses command stdout/stderr and validates gate proofs using declarative specifications in the active profile (commands.<id>.output with counts, require_counts, noise, errors, seam_ref_pattern), completely eliminating hardcoded Cargo string assumptions and enabling non-test linters, doc checkers, and multi-language toolchains without Rust binary modifications.'
+    - 'INV-WORKTREE-CONFINED-CONDITIONAL-TRACES: Command execution always runs inside the claimed task worktree (or repository root only for in-place milestone gates). Passing runs (exit 0 on build/verify, or matching expected_failure on contract) and short failures fitting the inline budget emit no external trace log files; full logs are persisted to <task_worktree>/.forge/task-traces/ and linked via file:/// URI only when diagnostic output is truncated.'
+    - 'INV-PRE-POST-WRITE-SCOPE-GUARD: Command verification checks git status --porcelain before and after process execution; any modified or untracked file outside the task admitted scope and extended_scope prepends a SCOPE_VIOLATION_WARNING without failing the process run itself.'
+    - 'INV-LAYERED-FORGE-READ: forge_read replaces get_code_snippet completely (removing get_code_snippet with zero aliases) and provides a layered capability model: core text reading (lines, raw, search, delta, output_file, null-byte binary check, and sensitive-pattern blocking from forge-mcp.yaml) is available in any workspace; structural symbols (snippet) and AST skeletons (outline) activate only when the codemap subsystem is enabled; doc section navigation activates when docs is enabled; task write-scope badges and gate verification hints activate when acdd is enabled.'
+    - 'INV-SIGNAL-DRIVEN-FILTERED-HINTS: Every forge_read mode appends a compact (1-3 line) conditional Hints footer containing pre-filled, copy-ready Forge tool calls (code_map_explain, code_map_impact, code_map_tests, get_doc, code_map_query implementations, task_manage verify, task_blackboard) strictly when the underlying SQLite graph edges or task state confirm the signal exists, filtered through filter_subsystem_tools so disabled subsystems never produce dead hints.'
+    architectural_notes:
+    - 'decisions: Architectural synthesis: Extend the existing CommandDef detailed profile schema with typed optional output and counts; preserve legacy script and detailed forms, validate patterns at profile boundary, and have command execution/proof compilation consume that same profile definition. Existing command_gate is the process/trace owner and submit::compile_evidence_envelope is the claim/fingerprint proof owner; avoid duplicate registries. Read types belong in the forge-core leaf, universal reader routing uses existing SubsystemRegistry and filter_subsystem_tools, indexed snippet extraction remains owned by forge-index; disabled structural modes must fail closed. Execution must bind claimed worktree, preserve candidate and trace integrity, and distinguish expected-red results from failures. Graph inspection found an additional CommandDef initializer in tests/acdd/tasks/lifecycle.rs; extended scope for compilation. tests/mcp/test_read.rs needs registration in tests/mcp.rs, but extend_scope rejected that path outside admitted roots; resolve authority before adding that registration. Protected Cargo.toml, build.rs and .forge files remain untouched.'
+    - 'decisions: Revision 2 synthesis: milestone-wide data flow and scope findings are recorded in milestone #1538 and decision #1539. Bootstrap must use existing profile and verification owners, register core read model in lib.rs and the test module in tests/mcp.rs, and update profile documentation; tests/acdd/tasks/lifecycle.rs is included because adding CommandDef::Detailed.output changes the constructor. Red profile parser seam remains current (exit 101). Preserve serde compatibility and leaf dependency boundaries; no protected files.'
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: not_applicable
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Acceptance

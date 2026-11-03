@@ -15,5 +15,7 @@ mod lint_tools;
 mod query_ranking;
 #[path = "mcp/skill_sync.rs"]
 mod skill_sync;
+#[path = "mcp/test_read.rs"]
+mod test_read;
 #[path = "mcp/tool_evolution.rs"]
 mod tool_evolution;

@@ -6,6 +6,7 @@ pub mod format;
 pub mod fs;
 pub mod git;
 pub mod interner;
+pub mod model;
 pub mod models;
 pub mod response;
 pub mod semantic;

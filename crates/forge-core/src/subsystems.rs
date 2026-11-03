@@ -86,6 +86,7 @@ impl SubsystemRegistry {
     /// Return the subsystem assigned to an MCP tool, if it is registered here.
     pub fn subsystem_for_tool(tool: &str) -> Option<&'static str> {
         match tool {
+            "forge_read" => None,
             "task_blackboard" => Some("blackboard"),
             "session_checkpoint" => Some("checkpoints"),
             "get_doc" | "search_docs" => Some("docs"),
@@ -121,6 +122,26 @@ pub fn disabled_tool_error(tool: &str, registry: &SubsystemRegistry) -> Option<S
     let subsystem = SubsystemRegistry::subsystem_for_tool(tool)?;
     (!registry.is_enabled(subsystem)).then(|| {
         format!("FEATURE_DISABLED: MCP tool '{tool}' belongs to disabled subsystem '{subsystem}'")
+    })
+}
+
+/// Return a disabled-feature error for a layered reader operation.
+pub fn disabled_read_mode_error(
+    mode: crate::model::ReadMode,
+    markdown: bool,
+    registry: &SubsystemRegistry,
+) -> Option<String> {
+    use crate::model::ReadMode;
+    let subsystem = match mode {
+        ReadMode::Snippet => "codemap",
+        ReadMode::Outline if markdown => "docs",
+        ReadMode::Outline => "codemap",
+        _ => return None,
+    };
+    (!registry.is_enabled(subsystem)).then(|| {
+        format!(
+            "FEATURE_DISABLED: reader mode '{mode:?}' requires disabled subsystem '{subsystem}'"
+        )
     })
 }
 

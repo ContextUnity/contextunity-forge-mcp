@@ -497,6 +497,9 @@ pub struct PatternCommands {
     /// Optional per-command timeout in seconds.
     #[serde(default)]
     pub timeout_seconds: Option<u64>,
+    /// Optional output parsing rules shared by the selected commands.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<CommandOutputSpec>,
 }
 
 /// Supported persistence hooks surrounding one gate transition.
@@ -627,6 +630,76 @@ pub struct GateFallback {
     pub max_attempts: Option<u32>,
 }
 
+/// Regular expressions used to extract test result counts from command output.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CommandCountsSpec {
+    /// Pattern identifying the number of passed tests.
+    pub passed: String,
+    /// Pattern identifying the number of failed tests.
+    pub failed: String,
+}
+
+/// Declarative parsing and diagnostic rules for a registered command.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CommandOutputSpec {
+    /// Optional patterns for extracting test counts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub counts: Option<CommandCountsSpec>,
+    /// Whether the command must report test counts.
+    #[serde(default = "default_require_counts")]
+    pub require_counts: bool,
+    /// Patterns for lines omitted from diagnostic output.
+    #[serde(default)]
+    pub noise: Vec<String>,
+    /// Patterns identifying diagnostic error lines.
+    #[serde(default)]
+    pub errors: Vec<String>,
+    /// Optional pattern identifying the seam in the command string.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seam_ref_pattern: Option<String>,
+}
+
+fn default_require_counts() -> bool {
+    true
+}
+
+impl Default for CommandOutputSpec {
+    fn default() -> Self {
+        Self {
+            counts: None,
+            require_counts: true,
+            noise: Vec::new(),
+            errors: Vec::new(),
+            seam_ref_pattern: None,
+        }
+    }
+}
+
+impl CommandOutputSpec {
+    fn validate(&self) -> Result<()> {
+        let mut patterns: Vec<(&str, &str)> = self
+            .noise
+            .iter()
+            .map(|p| ("noise", p.as_str()))
+            .chain(self.errors.iter().map(|p| ("errors", p.as_str())))
+            .collect();
+        if let Some(counts) = &self.counts {
+            patterns.push(("counts.passed", &counts.passed));
+            patterns.push(("counts.failed", &counts.failed));
+        }
+        if let Some(pattern) = &self.seam_ref_pattern {
+            patterns.push(("seam_ref_pattern", pattern));
+        }
+        for (field, pattern) in patterns {
+            regex::Regex::new(pattern)
+                .with_context(|| format!("ACDD_PROFILE_INVALID: invalid output.{field} regex"))?;
+        }
+        Ok(())
+    }
+}
+
 /// A registered command available to command proof gates.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
@@ -646,6 +719,9 @@ pub enum CommandDef {
         /// Project-path patterns mapped to scoped command arguments.
         #[serde(default)]
         scope_args_by_pattern: BTreeMap<String, String>,
+        /// Optional declarative output parsing rules.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output: Option<CommandOutputSpec>,
     },
     /// Commands selected declaratively from source path patterns.
     Pattern(PatternCommands),
@@ -662,6 +738,15 @@ impl CommandDef {
                 .next()
                 .map(String::as_str)
                 .unwrap_or_default(),
+        }
+    }
+
+    /// Return the declared output rules, if present.
+    pub fn output(&self) -> Option<&CommandOutputSpec> {
+        match self {
+            Self::Detailed { output, .. } => output.as_ref(),
+            Self::Pattern(patterns) => patterns.output.as_ref(),
+            _ => None,
         }
     }
 
@@ -1348,13 +1433,7 @@ impl GateProfile {
         if deliveries.len() != 1 || deliveries[0].0 + 1 != self.gates.len() {
             bail!("ACDD_PROFILE_INVALID: exactly one terminal delivery gate is required");
         }
-        for (name, command) in &self.commands {
-            if name.trim().is_empty() || !command.is_valid() {
-                bail!(
-                    "ACDD_PROFILE_INVALID: commands registry names and commands must be non-empty"
-                );
-            }
-        }
+        self.validate_commands()?;
         self.validate_contours()?;
         Ok(())
     }
@@ -1532,6 +1611,11 @@ impl GateProfile {
                 bail!(
                     "ACDD_PROFILE_INVALID: commands registry names and commands must be non-empty"
                 );
+            }
+            if let Some(output) = command.output() {
+                output
+                    .validate()
+                    .with_context(|| format!("ACDD_PROFILE_INVALID: commands.{name}.output"))?;
             }
         }
         Ok(())

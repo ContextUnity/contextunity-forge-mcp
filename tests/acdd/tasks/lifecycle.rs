@@ -377,6 +377,7 @@ fn task_cli_submit_accepts_json_object_and_persists_gate_evidence() {
             timeout_seconds: Some(5),
             description: Some("Run the zero-argument CLI proof fixture".into()),
             scope_args_by_pattern: Default::default(),
+            output: None,
         },
     );
     profile_override
