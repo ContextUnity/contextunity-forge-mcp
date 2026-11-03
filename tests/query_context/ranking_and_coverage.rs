@@ -1426,6 +1426,55 @@ fn coverage_is_opt_in_and_snippet_preserves_source_continuation() {
 }
 
 #[test]
+fn search_docs_prioritizes_all_term_matches_above_single_term_title_hits() {
+    let workspace = Workspace::new();
+    workspace.write("forge-mcp.yaml", "roots: [.]\ndocs: [docs]\n");
+    workspace.write("docs/alpha.md", "# Alpha\n\nUnrelated text.\n");
+    workspace.write(
+        "docs/overview.md",
+        "# Overview\n\nAlpha beta gamma pipeline.\n",
+    );
+    let conn = workspace.build();
+    let result = reader::search_docs_with_options(
+        &conn,
+        "alpha beta gamma",
+        &reader::DocSearchOptions {
+            doc_type: None,
+            component: None,
+            include_excerpt: true,
+            page: &options(10),
+        },
+    )
+    .unwrap();
+    assert_eq!(result["sections"]["total"], 2);
+    let sections = result["sections"]["items"].as_array().unwrap();
+    assert_eq!(sections.len(), 2);
+    assert_eq!(sections[0]["path"], "docs/overview.md");
+    assert_eq!(sections[1]["path"], "docs/alpha.md");
+
+    let mut statement = conn
+        .prepare(
+            "SELECT d.path,bm25(doc_search,3.0,1.0,1.0) FROM doc_search JOIN doc_sections d ON d.rowid=doc_search.rowid WHERE doc_search MATCH ?1",
+        )
+        .unwrap();
+    let ranks = statement
+        .query_map(["\"alpha\" OR \"beta\" OR \"gamma\""], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(ranks.len(), 2);
+    for section in sections {
+        let (_, expected_rank) = ranks
+            .iter()
+            .find(|(path, _)| section["path"] == path.as_str())
+            .unwrap();
+        assert_eq!(section["rank"].as_f64().unwrap(), *expected_rank);
+    }
+}
+
+#[test]
 fn search_docs_resolves_component_via_adapter_aliases_and_owners() {
     let workspace = Workspace::new();
     workspace.write(

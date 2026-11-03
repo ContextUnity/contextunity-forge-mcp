@@ -10,12 +10,15 @@ owners:
   - .github/workflows/
   - install.sh
   - skills/
+  - build.rs
+  - crates/forge-core/src/paths/
 invariants:
   - 'INV-DISTRIBUTION-PROFILES: Distribution must explicitly support Recommended Languages (default: Python, Rust, TS, JS, Vue, Proto, HTML, YAML, TOML), All Languages (all-languages: +Go, Java, C#, Kotlin, PHP, Ruby, C, C++), and Targeted Single Flavors (Python, Web, Rust).'
   - 'INV-ZERO-DEPENDENCY-INSTALL: The install.sh installer must run via standard POSIX sh using only curl/wget and tar, installing working binaries without requiring cargo, rustc, or C compilers for precompiled flavors.'
   - 'INV-SKILL-PARITY: Skills installed into global agent directories (~/.agents/skills/, ~/.claude/skills/) or repository-local (.agents/skills/) must match canonical contextunity-forge and acdd specifications.'
   - 'INV-ACDD-ONBOARDING: Adapter scaffolding must detect project language boundaries and generate valid, repo-tailored forge-mcp.yaml, AGENTS.md workflow guidance, and .mcp.json client configuration.'
   - 'INV-UPDATE-SEAMLESSNESS: The updater must cleanly detect existing installations, preserve user-tailored forge-mcp.yaml adapter configurations, and update binary and skills without data loss.'
+  - 'INV-POSIX-DARWIN-PARITY: Filesystem operations and compilation workflows on macOS must resolve /var and /tmp symlinks to canonical paths, preserve APFS case-casing, normalize Unicode paths to NFC, and configure C11/no-warnings flags for vendored Tree-sitter parsers.'
 related_plans: []
 ---
 
@@ -29,6 +32,7 @@ Deliver an end-to-end seamless installation, update, and onboarding experience f
 3. Provide zero-config installation of agent skills (`contextunity-forge`, `acdd`) globally into agent environments (`~/.agents/skills/`, `~/.claude/skills/`) or repo-locally (`.agents/skills/`).
 4. Provide intelligent scaffolding for repo-tailored `forge-mcp.yaml` adapters, `AGENTS.md` ACDD rules, and `.mcp.json` client registrations.
 5. Establish a robust GitHub Actions release workflow for automated multi-platform binary compilation and release asset publishing.
+6. Ensure robust POSIX compatibility for macOS (Darwin), resolving symlinks (/var, /tmp), APFS case-insensitivity, Unicode NFC normalization, and Apple Clang compiler standards.
 
 ---
 
@@ -133,3 +137,40 @@ subtasks:
 2. Packages binaries for `recommended` (default), `all-languages`, and single-language flavors (`python`, `web`, `rust`).
 3. Strips debug symbols, produces `.tar.gz` archives, and generates `SHA256SUMS`.
 4. Publishes release assets and checksums to GitHub Releases upon semver tag push.
+
+---
+
+### task: macos-posix-runtime-and-filesystem-compatibility
+
+```yaml
+task_ref: macos-posix-runtime-and-filesystem-compatibility
+target: "Ensure seamless macOS POSIX compatibility for canonical paths, APFS case-insensitivity, Unicode NFC, and Darwin C builds"
+proof_policy: seam-test-first
+contract_revision: 1
+scope:
+  - build.rs
+  - src/core/paths.rs
+  - crates/forge-core/src/
+  - crates/forge-tasks/src/
+status: planned
+subtasks:
+  - subtask_ref: canonical-workspace-root-and-symlinks
+    title: "Implement CanonicalWorkspaceRoot to resolve Darwin /var -> /private/var and /tmp -> /private/tmp symlinks without prefix breakage"
+    status: pending
+  - subtask_ref: apfs-case-preservation
+    title: "Implement normalize_repo_relative_path to preserve physical disk casing via canonicalize/F_GETPATH on APFS"
+    status: pending
+  - subtask_ref: unicode-nfc-normalization
+    title: "Enforce Unicode NFC path normalization across SQLite path indexing and milestone contracts"
+    status: pending
+  - subtask_ref: darwin-c-build-flags
+    title: "Configure build.rs cc::Build with C11 standard and disabled warnings for Apple Clang compatibility"
+    status: pending
+```
+
+#### Acceptance
+
+1. `CanonicalWorkspaceRoot` resolves Darwin `/var` and `/tmp` symlinks to `/private/var` and `/private/tmp` at workspace initialization, preventing prefix stripping errors in `tempfile::TempDir` and worktree child paths.
+2. Existing files preserve true physical casing on APFS via `canonicalize()` / `fcntl(F_GETPATH)`, preventing case mismatch desync between SQLite locks and disk.
+3. All repository-relative path comparisons and stored SQLite keys enforce Unicode NFC normalization.
+4. `build.rs` compiles vendored C Tree-sitter grammars cleanly with Apple Clang on ARM64 macOS without implicit declaration errors.

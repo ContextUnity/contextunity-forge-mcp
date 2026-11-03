@@ -444,3 +444,34 @@ fn public_ast_search_reports_structured_tree_sitter_pattern_diagnostics() {
     assert!(!diagnostic["hint"].as_str().unwrap().is_empty());
     assert!(!diagnostic["examples"].as_array().unwrap().is_empty());
 }
+
+#[cfg(feature = "lang-rust")]
+#[test]
+fn ast_search_matches_rust_wildcard_declaration_bodies_and_semicolonless_items() {
+    let source = concat!(
+        "mod rust;\n",
+        "pub struct Foo { pub field: usize }\n",
+        "pub trait Bar { fn run(&self); }\n",
+        "impl Foo { pub fn new() -> Self { Self { field: 1 } } }\n",
+        "fn local() { let value = 42; }\n",
+    );
+    for (pattern, expected_prefix) in [
+        ("pub struct Foo { $$$ }", "pub struct Foo"),
+        ("pub trait Bar { $$$ }", "pub trait Bar"),
+        ("impl Foo { $$$ }", "impl Foo"),
+        ("mod rust", "mod rust;"),
+        ("let value = $EXPR", "let value = 42;"),
+    ] {
+        let matches = ast::search(source, "src/lib.rs", "rust", pattern, 10)
+            .unwrap_or_else(|err| panic!("pattern '{pattern}' should succeed: {err}"));
+        assert_eq!(matches.len(), 1, "pattern: {pattern}");
+        assert!(
+            matches[0]["text"]
+                .as_str()
+                .unwrap()
+                .starts_with(expected_prefix),
+            "pattern '{pattern}' matched unexpected text: {}",
+            matches[0]
+        );
+    }
+}

@@ -1,6 +1,7 @@
 DEBUG: true
 roots:
   - src
+  - crates
   - tests
   - build.rs
 docs:

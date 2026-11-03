@@ -67,6 +67,7 @@ fn transition_runner_compiles_proofs_and_covers_all_task3_subtasks() {
             command: contract_command,
             timeout_seconds: Some(5),
             description: Some("Run the persisted contract seam fixture".into()),
+            scope_args_by_pattern: Default::default(),
         },
     );
     profile_override.commands.insert(

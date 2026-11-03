@@ -1,6 +1,151 @@
 use super::*;
 
 #[test]
+fn unified_navigation_parameters_and_sql_preserve_mcp_results() {
+    use serde_json::json;
+    let w = Workspace::new();
+    w.write("src/app.py", "def first(): return 1\n");
+    w.write("docs/contract.md", "# Contract\n\nA documented contract.\n");
+    w.write("other/contract.md", "# Outside\n\nAnother contract.\n");
+    w.build();
+    let mut m = Mcp::new(&w);
+    let catalog = m.request_value("tools/list", json!({}));
+    let tools = catalog["result"]["tools"].as_array().unwrap();
+    for (name, canonical, aliases) in [
+        ("get_doc", "path_or_id", vec!["path", "selector"]),
+        ("search_docs", "query", vec!["pattern", "path"]),
+        ("ast_grep_search", "pattern", vec!["query"]),
+        ("code_map_search", "pattern", vec!["query"]),
+        ("code_map_analyze", "target", vec!["path", "selector"]),
+    ] {
+        let schema = &tools.iter().find(|tool| tool["name"] == name).unwrap()["inputSchema"];
+        assert!(
+            !schema["required"]
+                .as_array()
+                .is_some_and(|required| required.contains(&json!(canonical))),
+            "{name} requires canonical field despite its aliases: {schema}"
+        );
+        for alias in aliases {
+            assert!(
+                schema["properties"][alias].is_object(),
+                "{name} omits {alias}: {schema}"
+            );
+        }
+    }
+    for (tool, canonical, alternatives) in [
+        (
+            "search_docs",
+            json!({"query":"contract","component":"docs","include_excerpt":true}),
+            vec![json!({"pattern":"contract","path":"docs","include_excerpt":true})],
+        ),
+        (
+            "get_doc",
+            json!({"path_or_id":"docs/contract.md","detail":"compact"}),
+            vec![
+                json!({"path":"docs/contract.md","detail":"compact"}),
+                json!({"selector":"docs/contract.md","detail":"compact"}),
+            ],
+        ),
+        (
+            "code_map_analyze",
+            json!({"target":"src/app.py"}),
+            vec![
+                json!({"path":"src/app.py"}),
+                json!({"selector":"src/app.py"}),
+            ],
+        ),
+        ("code_map_analyze", json!({"target":""}), vec![json!({})]),
+        (
+            "ast_grep_search",
+            json!({"pattern":"def first():","language":"python","path":"src"}),
+            vec![json!({"query":"def first():","language":"python","path":"src"})],
+        ),
+        (
+            "code_map_query",
+            json!({"operation":"inspect","selector":"src/app.py:first"}),
+            vec![json!({"operation":"inspect","query":"src/app.py:first"})],
+        ),
+        (
+            "code_map_query",
+            json!({"operation":"sql","selector":"SELECT count(*) FROM nodes"}),
+            vec![
+                json!({"sql":"SELECT count(*) FROM nodes"}),
+                json!({"query":"SELECT count(*) FROM nodes"}),
+                json!({"operation":"sql","query":"SELECT count(*) FROM nodes"}),
+                json!({"operation":"SELECT count(*) FROM nodes"}),
+                json!({"query":"SELECT\tcount(*) FROM nodes"}),
+                json!({"operation":"SELECT\r\ncount(*) FROM nodes"}),
+                json!({"query":"WITH\titems AS (SELECT * FROM nodes) SELECT count(*) FROM items"}),
+                json!({"operation":"WITH\r\nitems AS (SELECT * FROM nodes) SELECT count(*) FROM items"}),
+            ],
+        ),
+    ] {
+        let expected = m.ok(tool, canonical);
+        for arguments in alternatives {
+            assert_eq!(
+                m.ok(tool, arguments.clone()),
+                expected,
+                "{tool}: {arguments}"
+            );
+        }
+    }
+    for arguments in [
+        json!({"sql":"SELECT 1; DROP TABLE nodes"}),
+        json!({"query":"WITH value AS (SELECT 1) DELETE FROM nodes"}),
+        json!({"operation":"SELECT 1; DROP TABLE nodes"}),
+    ] {
+        let (_, response) = m.call("code_map_query", arguments.clone());
+        assert!(
+            response["error"].is_object() || response["result"]["isError"] == true,
+            "write SQL was admitted: {arguments}: {response}"
+        );
+    }
+    for (tool, arguments) in [
+        (
+            "get_doc",
+            json!({"path":"docs/contract.md","selector":"docs/contract.md"}),
+        ),
+        (
+            "search_docs",
+            json!({"query":"contract","pattern":"contract"}),
+        ),
+        (
+            "search_docs",
+            json!({"query":"contract","component":"docs","path":"docs"}),
+        ),
+        (
+            "ast_grep_search",
+            json!({"pattern":"def first():","query":"def first():","language":"python"}),
+        ),
+        (
+            "code_map_search",
+            json!({"pattern":"first","query":"first"}),
+        ),
+        (
+            "code_map_analyze",
+            json!({"target":"src/app.py","path":"src/app.py"}),
+        ),
+    ] {
+        m.err(tool, arguments, "duplicate field");
+    }
+    let expected = m.ok(
+        "code_map_query",
+        json!({"sql":"SELECT count(*) FROM nodes"}),
+    );
+    for sql in [
+        "SELECT\tcount(*) FROM nodes",
+        "SELECT\r\ncount(*) FROM nodes",
+        "WITH\titems AS (SELECT * FROM nodes) SELECT count(*) FROM items",
+        "WITH\r\nitems AS (SELECT * FROM nodes) SELECT count(*) FROM items",
+    ] {
+        let output = run_cli_json(&w, &["query", "run", sql]);
+        assertions::assert_command_succeeded(&output);
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(result["rows"]["items"], expected["rows"]["items"]);
+    }
+}
+
+#[test]
 fn ergonomic_search_parameters_preserve_scope_and_paging() {
     use serde_json::json;
     let w = Workspace::new();

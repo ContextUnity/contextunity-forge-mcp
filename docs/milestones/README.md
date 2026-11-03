@@ -46,6 +46,9 @@ Active commitments migrate to the `TAG-NNN` standard; archived milestone files a
 
 - **`LS-002`**: [SQL schema and query indexing, deterministic entrypoint classification, 1-hop directory boundary slices, and module topology](LS-002-sql-schema-indexing-entrypoints-and-topology-slices.md) (`active`).
 - **`PF-001`**: [Cold-build performance, RSS bound, HTML endpoint resolution repair, and Cargo workspace split](PF-001-cold-build-rss-bound-and-linker-diet.md) (`planned`) — Cold-build throughput and HTML resolution repair, plus splitting the Cargo Workspace into 3 independent crates (`forge-core`, `forge-index`, and `forge-tasks`).
+- **`IN-001`**: [Seamless installer, multi-flavor distribution, macOS POSIX parity, and ACDD onboarding](IN-001-installer-distribution-and-acdd-onboarding.md) (`planned`) — Zero-dependency POSIX installer, multi-platform release CI/CD, Darwin `/private/var` and APFS case handling, and automated skill/adapter onboarding.
+- **`UX-002`**: [Autonomous command gates, lean verification diagnostics, profile output schemas, and unified layered `forge_read`](UX-002-lean-verification-and-forge-read.md) (`planned`) — Wire `execute_command_gate` into zero-arg `task_submit` and `task verify` with worktree-confined conditional trace logs, profile-driven command output parsing (`commands.<id>.output`), pre/post write-scope guards, and layered `forge_read` (`snippet`, graph-enriched `outline`, `lines`, `raw`, `delta`, `output_file`).
+- **`AC-003`**: [Headless CLI lifecycle orchestrator, role runner subagent execution, and rejection routing](AC-003-headless-orchestrator-and-role-runners.md) (`planned`) — Autonomous headless task and milestone execution directly from the CLI (`task run` / `milestone run`), subagent process spawning (`role.runner`), rejection routing feedback loops, and wave orchestration.
 
 ---
 

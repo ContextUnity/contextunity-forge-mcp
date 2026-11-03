@@ -9,6 +9,7 @@ pub enum BlackboardAction {
     /// Post one message.
     Post,
     /// Read a bounded page of message summaries.
+    #[serde(alias = "get", alias = "list")]
     Read,
     /// Inspect one message including its payload.
     Inspect,
@@ -101,9 +102,10 @@ fn active_milestones(registry: &Registry) -> Result<Vec<(&workspaces::Workspace,
     Ok(active)
 }
 
-fn in_progress_tasks<'a>(
+fn blackboard_tasks<'a>(
     registry: &'a Registry,
     filter: Option<(&workspaces::Workspace, &str)>,
+    status: &str,
 ) -> Result<Vec<(&'a workspaces::Workspace, Task)>> {
     let mut tasks = Vec::new();
     for workspace in registry.selected(Some("all"))? {
@@ -116,7 +118,7 @@ fn in_progress_tasks<'a>(
         let milestone = filter.map(|(_, reference)| reference);
         tasks.extend(
             store
-                .list(milestone, "in_progress", None)?
+                .list(milestone, status, None)?
                 .into_iter()
                 .map(|task| (workspace, task)),
         );
@@ -128,8 +130,14 @@ fn unique_in_progress_task<'a>(
     registry: &'a Registry,
     filter: Option<(&workspaces::Workspace, &str)>,
 ) -> Result<(&'a workspaces::Workspace, Task)> {
-    let mut tasks = in_progress_tasks(registry, filter)?;
+    let candidates = blackboard_tasks(registry, filter, "all")?;
+    let candidate_count = candidates.len();
+    let mut tasks = candidates
+        .into_iter()
+        .filter(|(_, task)| task.status == "in_progress")
+        .collect::<Vec<_>>();
     match tasks.len() {
+        0 if candidate_count > 1 => bail!("TASK_BLACKBOARD_AMBIGUOUS_TASK"),
         0 => bail!("TASK_BLACKBOARD_NO_ACTIVE_TASK"),
         1 => tasks.pop().context("active task missing"),
         _ => bail!("TASK_BLACKBOARD_AMBIGUOUS_TASK"),
@@ -227,7 +235,7 @@ fn resolve_blackboard_context(
 
     match inferred_scope {
         None => {
-            let mut tasks = in_progress_tasks(registry, None)?;
+            let mut tasks = blackboard_tasks(registry, None, "in_progress")?;
             match tasks.len() {
                 1 => {
                     let (workspace, task) = tasks.pop().context("active task missing")?;
@@ -425,8 +433,8 @@ fn blackboard_schema_hint(
         .collect::<Vec<_>>()
         .join("; ");
     let gates = profile
-        .gates
-        .iter()
+        .executable_gates()
+        .into_iter()
         .map(|gate| gate.id.as_str())
         .collect::<Vec<_>>();
     let example_gate = gates.first().copied().unwrap_or("contract");
@@ -470,7 +478,12 @@ fn validate_blackboard_schema(
             }
         }
         if let Some(gate) = request.gate.as_deref() {
-            if !profile.gates.iter().any(|definition| definition.id == gate) {
+            if !profile
+                .executable_gates()
+                .into_iter()
+                .any(|definition| definition.id == gate)
+                && crate::engine::claim::cursor_for_stage(profile, gate).is_err()
+            {
                 bail!(
                     "{}",
                     blackboard_schema_hint(

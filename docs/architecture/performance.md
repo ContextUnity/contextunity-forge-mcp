@@ -176,25 +176,25 @@ better request latency.
 ### 6. Cross-Worktree Content-Addressed Binary Extraction Cache
 - **Extraction Cache v3**: `src/db/writer/cache.rs` provides cross-worktree AST and typed-facts reuse for unmodified files.
 - **Cache Key Identity**: Keys are strictly derived from source SHA-256 digest, relative path, Tree-sitter grammar ID, `INDEX_SEMANTICS_VERSION`, and `effective_ruleset_hash` (including bundled framework manifests via `build.rs` and `src/engine/languages/dependency_registry.rs`).
-- **Direct Binary Codecs**: [`BinaryEncode`](../../src/db/writer/cache.rs) and [`BinaryDecode`](../../src/db/writer/cache.rs) encode borrowed record fields without intermediate cloned DTOs. V4 cache frames carry the extraction key, payload length, checksum, and typed facts; non-V4 or corrupt entries are cache misses and are re-extracted.
+- **Direct Binary Codecs**: [`BinaryEncode`](../../crates/forge-index/src/db/writer/cache.rs) and [`BinaryDecode`](../../crates/forge-index/src/db/writer/cache.rs) encode borrowed record fields without intermediate cloned DTOs. V4 cache frames carry the extraction key, payload length, checksum, and typed facts; non-V4 or corrupt entries are cache misses and are re-extracted.
 - **Empirical Impact**: On warm re-indexing of 3,990 files, user CPU drops by **63%** (`44.49s` $\to$ `16.34s`, CPU load `374%` $\to$ `215%`) and wall-clock time drops to **`8.57s`** at `746 MB` Peak RSS.
 
 ### 7. Single-Pass AST Extraction and Native Typed Sidecar Facts
-- **Incremental Lexical Route Binding**: [`RouteContextBuilder`](../../src/engine/ast/routes.rs) and [`SinglePassExtractor`](../../src/engine/ast/visitor.rs) collect lexical bindings, string/list/dict tables, and Python write assignments directly inside the primary `visitor::walk` pass instead of running a standalone `collect_lexical_bindings` pre-pass or recursive subtree walks per file.
-- **Native Typed Fact Stores**: [`SemanticStore`](../../src/core/typed_facts.rs) and [`FlowStore`](../../src/core/typed_facts.rs) hold [`SemanticFact`](../../src/core/semantic.rs) and [`ValueFlowFacts`](../../src/core/semantic.rs) in native Rust structs (`TypedFacts`) during extraction and [`SymbolCatalog`](../../src/core/semantic.rs) linking. The local extraction cache stores typed facts directly in its V4 binary frame; public JSON projection remains a separate storage boundary.
-- **Optional Scope Storage**: [`FrameworkScopeFacts`](../../src/core/semantic.rs) groups less common framework, template and collection vectors in an optional box. [`NodeSemanticEntry`](../../src/core/typed_facts.rs) holds admitted bindings, rebindings and parameter types natively. Public JSON remains flat, retains parameter order and preserves malformed raw metadata.
-- **Single-Pass Linker Post-Processing**: [`link_compact_with_typed_registry`](../../src/engine/linker.rs) fuses value-flow propagation, uncertainty collection, and fault aggregation into a single pass over `all.values()`.
+- **Incremental Lexical Route Binding**: [`RouteContextBuilder`](../../crates/forge-index/src/ast/routes.rs) and [`SinglePassExtractor`](../../crates/forge-index/src/ast/visitor.rs) collect lexical bindings, string/list/dict tables, and Python write assignments directly inside the primary `visitor::walk` pass instead of running a standalone `collect_lexical_bindings` pre-pass or recursive subtree walks per file.
+- **Native Typed Fact Stores**: [`SemanticStore`](../../crates/forge-core/src/typed_facts.rs) and [`FlowStore`](../../crates/forge-core/src/typed_facts.rs) hold [`SemanticFact`](../../crates/forge-core/src/semantic.rs) and [`ValueFlowFacts`](../../crates/forge-core/src/semantic.rs) in native Rust structs (`TypedFacts`) during extraction and [`SymbolCatalog`](../../crates/forge-core/src/semantic.rs) linking. The local extraction cache stores typed facts directly in its V4 binary frame; public JSON projection remains a separate storage boundary.
+- **Optional Scope Storage**: [`FrameworkScopeFacts`](../../crates/forge-core/src/semantic.rs) groups less common framework, template and collection vectors in an optional box. [`NodeSemanticEntry`](../../crates/forge-core/src/typed_facts.rs) holds admitted bindings, rebindings and parameter types natively. Public JSON remains flat, retains parameter order and preserves malformed raw metadata.
+- **Single-Pass Linker Post-Processing**: [`link_compact_with_typed_registry`](../../crates/forge-index/src/linker/mod.rs) fuses value-flow propagation, uncertainty collection, and fault aggregation into a single pass over `all.values()`.
 
 ### 8. Shared Rule-IR Dispatch and Zero-Allocation Proof Lookups
-- **Workspace-Scoped `Arc<LanguageContext>`**: [`DependencyRegistry`](../../src/engine/languages/dependency_registry.rs) builds [`LanguageContext`](../../src/engine/languages/mod.rs) per effective workspace/manifest scope and shares it via `Arc` across files without cloning `Vec<SyntaxRule>` per file. Python [`prepare_file`](../../src/engine/languages/python/syntax_operations.rs) prepares per-file render/import candidates while borrowing that shared context.
-- **Grammar-Sized Tables**: [`CompiledSyntaxGrammar`](../../src/engine/languages/mod.rs) and [`CompiledRuleIR`](../../src/engine/languages/manifests.rs) dispatch by numeric kind ID through vectors sized by the actual grammar's node-kind count. Warm parser reuse also covers Vue script islands and HTML JavaScript fragment import scans through [`with_warm_parser`](../../src/engine/languages/mod.rs).
-- **Indexed AST Kind & Callee Dispatch**: [`extract_projections`](../../src/engine/languages/typescript/projections.rs) and [`prepare`](../../src/engine/languages/python/projections.rs) pre-index declarative projection rules by AST node `kind` (`call_expression`, `jsx_Element`, `pair`, `decorator`) and callee/member name instead of scanning all rules linearly on every AST node.
-- **Zero-Allocation Proof Maps**: Python projection proofs in [`observe_import`](../../src/engine/languages/python/projections.rs) and [`prepare`](../../src/engine/languages/python/projections.rs) store imported statement lines as `HashMap<String, HashSet<usize>>` and constructors as `HashMap<usize, HashMap<String, Constructor>>` so per-call and per-attribute `Proof::imported` / `Proof::api` checks query borrowed `&str` keys without allocating `String`s on the heap.
+- **Workspace-Scoped `Arc<LanguageContext>`**: [`DependencyRegistry`](../../crates/forge-index/src/languages/dependency_registry.rs) builds [`LanguageContext`](../../crates/forge-index/src/languages/mod.rs) per effective workspace/manifest scope and shares it via `Arc` across files without cloning `Vec<SyntaxRule>` per file. Python [`prepare_file`](../../crates/forge-index/src/languages/python/syntax_operations.rs) prepares per-file render/import candidates while borrowing that shared context.
+- **Grammar-Sized Tables**: [`CompiledSyntaxGrammar`](../../crates/forge-index/src/languages/mod.rs) and [`CompiledRuleIR`](../../crates/forge-index/src/languages/manifests.rs) dispatch by numeric kind ID through vectors sized by the actual grammar's node-kind count. Warm parser reuse also covers Vue script islands and HTML JavaScript fragment import scans through [`with_warm_parser`](../../crates/forge-index/src/languages/mod.rs).
+- **Indexed AST Kind & Callee Dispatch**: [`extract_projections`](../../crates/forge-index/src/languages/typescript/projections.rs) and [`prepare`](../../crates/forge-index/src/languages/python/projections.rs) pre-index declarative projection rules by AST node `kind` (`call_expression`, `jsx_Element`, `pair`, `decorator`) and callee/member name instead of scanning all rules linearly on every AST node.
+- **Zero-Allocation Proof Maps**: Python projection proofs in [`observe_import`](../../crates/forge-index/src/languages/python/projections.rs) and [`prepare`](../../crates/forge-index/src/languages/python/projections.rs) store imported statement lines as `HashMap<String, HashSet<usize>>` and constructors as `HashMap<usize, HashMap<String, Constructor>>` so per-call and per-attribute `Proof::imported` / `Proof::api` checks query borrowed `&str` keys without allocating `String`s on the heap.
 
 ### 9. Language-Gated Linker Resolution and Semantic Context Memoization
-- **Per-File Language Context Binding**: [`resolve`](../../src/engine/linker/resolution/mod.rs) binds `file_language_context = dependency_registry.language_context_for_path(path)` once at the top of the per-file `all.par_iter()` closure and reuses it across all candidate resolutions in that file.
-- **Strict Language Profile Gating**: HTML template rule vectors and builtin template evidence construction in [`phase_value_flow`](../../src/engine/linker/resolution/value_flow_phase.rs) are gated on the active HTML profile so non-HTML files and non-HTML references incur no template-rule preparation or evidence formatting.
-- **Shared Semantic Context Rule Tables**: [`Context`](../../src/engine/linker/semantic_context.rs) memoizes `Arc<ReceiverTypes>`, `Arc<ArgumentFactories>`, and `implicit_builtins` (`Arc<ImplicitBuiltinMap>`) per `(Arc::as_ptr(&rules), language)` key and Python `hierarchy_results` per `Arc::as_ptr(&rules)` (retaining pinned `Arc<LanguageContext>` clones for the pass lifetime to prevent ABA pointer reuse) instead of rescanning `syntax_rules` and cloning `HashMap<String, String>` for every file path in the workspace.
+- **Per-File Language Context Binding**: [`resolve`](../../crates/forge-index/src/linker/resolution/mod.rs) binds `file_language_context = dependency_registry.language_context_for_path(path)` once at the top of the per-file `all.par_iter()` closure and reuses it across all candidate resolutions in that file.
+- **Strict Language Profile Gating**: HTML template rule vectors and builtin template evidence construction in [`phase_value_flow`](../../crates/forge-index/src/linker/resolution/value_flow_phase.rs) are gated on the active HTML profile so non-HTML files and non-HTML references incur no template-rule preparation or evidence formatting.
+- **Shared Semantic Context Rule Tables**: [`Context`](../../crates/forge-index/src/linker/semantic_context.rs) memoizes `Arc<ReceiverTypes>`, `Arc<ArgumentFactories>`, and `implicit_builtins` (`Arc<ImplicitBuiltinMap>`) per `(Arc::as_ptr(&rules), language)` key and Python `hierarchy_results` per `Arc::as_ptr(&rules)` (retaining pinned `Arc<LanguageContext>` clones for the pass lifetime to prevent ABA pointer reuse) instead of rescanning `syntax_rules` and cloning `HashMap<String, String>` for every file path in the workspace.
 - **Single Codegen Unit Release Profile**: `Cargo.toml` configures `[profile.release]` with `codegen-units = 1` and `lto = "thin"` so hot loops across `ast`, `languages`, and `linker` inline across module boundaries.
 
 ### 10. Pipeline Hot-Path and Peak-RSS Optimizations
@@ -235,70 +235,70 @@ Autonomous agents, builders, and language models modifying Forge indexing or sto
 >
 > In `src/engine/pipeline.rs` (`run_cold_pipeline`) and `src/core/semantic.rs` (`SymbolCatalog::insert_typed`), encode full storage facts into compressed `PreparedCatalogStorage` within extraction workers. Pass `retain_storage = false` for cold catalog admission to remove storage-only details and omit duplicate storage payloads. Preserve native binding metadata and typed flows required for linking; retain no additional workspace-wide full-facts copy.
 
-- INV-PERF-CATALOG-FACT-STRIPPING: Remove storage-only details and duplicate storage payloads during cold catalog admission while retaining typed resolution facts. [`run_cold_pipeline`](../../src/engine/pipeline.rs) [`SymbolCatalog`](../../src/core/semantic.rs).
+- INV-PERF-CATALOG-FACT-STRIPPING: Remove storage-only details and duplicate storage payloads during cold catalog admission while retaining typed resolution facts. [`run_cold_pipeline`](../../src/engine/pipeline.rs) [`SymbolCatalog`](../../crates/forge-core/src/semantic.rs).
 
 > [!IMPORTANT]
 > Invariant: Bounded Chunk Persistence and Allocator Trimming
 >
 > In `src/db/writer.rs` (`populate_owned`), keep `StagedFilePayload.storage_rows` Zstandard-compressed during staging; `prepare_catalog_storage` uses compression level -3. Ingestion must process files in bounded batches of at most 500 rows (`MAX_MULTI_VALUE_BATCH_ROWS = 500`), removing payloads from memory prior to database insertion. Agents must preserve the explicit calls to `trim_allocator` (`libc::malloc_trim(0)`) after extraction and after persistence to prevent glibc multi-arena fragmentation from exceeding the 800 MB RSS ceiling.
 
-- INV-PERF-BOUNDED-STAGING-AND-TRIM: Keep staged file rows Zstandard-compressed, drain payloads in bounded batches, and invoke `trim_allocator` at extraction and persistence boundaries to stay within the 800 MB RSS budget. [`StagedFilePayload`](../../src/db/writer.rs) [`populate_owned`](../../src/db/writer.rs).
+- INV-PERF-BOUNDED-STAGING-AND-TRIM: Keep staged file rows Zstandard-compressed, drain payloads in bounded batches, and invoke `trim_allocator` at extraction and persistence boundaries to stay within the 800 MB RSS budget. [`StagedFilePayload`](../../crates/forge-index/src/db/writer.rs) [`populate_owned`](../../crates/forge-index/src/db/writer.rs).
 
 > [!IMPORTANT]
 > Invariant: Tree-Sitter AST Traversal Loop Integrity
 >
 > In `src/engine/ast/visitor.rs` (`walk`), tree traversal must remain a flat iterative loop over `tree_sitter::TreeCursor` (`goto_first_child`, `goto_next_sibling`, `goto_parent`). Agents must not replace `walk()` with `tree_sitter::QueryCursor` or introduce per-node FFI guards like `named_child_count() == 0`. The traversal must yield balanced `(node, entering)` events required by `SinglePassExtractor` and `ScopeAnalysis`.
 
-- INV-PERF-FLAT-TREE-CURSOR-WALK: Traverse syntax trees with a flat iterative `TreeCursor` loop yielding balanced `(node, entering)` events without `QueryCursor` state machines or per-node `named_child_count` FFI pre-checks. [`walk`](../../src/engine/ast/visitor.rs) [`SinglePassExtractor`](../../src/engine/ast/visitor.rs).
+- INV-PERF-FLAT-TREE-CURSOR-WALK: Traverse syntax trees with a flat iterative `TreeCursor` loop yielding balanced `(node, entering)` events without `QueryCursor` state machines or per-node `named_child_count` FFI pre-checks. [`walk`](../../crates/forge-index/src/ast/visitor.rs) [`SinglePassExtractor`](../../crates/forge-index/src/ast/visitor.rs).
 
 > [!IMPORTANT]
 > Invariant: Single-Pass AST Extraction Without Pre-Pass Walks
 >
 > In `src/engine/ast/visitor.rs` (`SinglePassExtractor`) and `src/engine/ast/routes.rs` (`RouteContextBuilder`, `RouteContext`), lexical route bindings, string/list/dict tables, and local write targets must be accumulated incrementally during the primary `visitor::walk` pass and finalized on exit via `RouteContextBuilder::finish`. Agents must never introduce standalone full-file AST pre-passes or recursive subtree walks per file or per node.
 
-- INV-PERF-SINGLE-PASS-AST-EXTRACTION: Accumulate lexical route bindings and local write targets incrementally inside `SinglePassExtractor` via `RouteContextBuilder` rather than running separate full-tree AST pre-passes. [`SinglePassExtractor`](../../src/engine/ast/visitor.rs) [`RouteContextBuilder`](../../src/engine/ast/routes.rs) [`RouteContext`](../../src/engine/ast/routes.rs).
+- INV-PERF-SINGLE-PASS-AST-EXTRACTION: Accumulate lexical route bindings and local write targets incrementally inside `SinglePassExtractor` via `RouteContextBuilder` rather than running separate full-tree AST pre-passes. [`SinglePassExtractor`](../../crates/forge-index/src/ast/visitor.rs) [`RouteContextBuilder`](../../crates/forge-index/src/ast/routes.rs) [`RouteContext`](../../crates/forge-index/src/ast/routes.rs).
 
 > [!IMPORTANT]
 > Invariant: Native Typed Sidecar Facts Without Intermediate JSON
 >
 > In `src/core/typed_facts.rs` (`SemanticStore`, `FlowStore`, `TypedFacts`), keep semantic and value-flow facts in native typed stores during extraction and linking. Preserve the existing V3 JSON-value overlays at the binary cache boundary in `src/db/writer/cache.rs` and hydrate typed stores when loading. Public and legacy compatibility views retain their existing serialization and malformed-evidence behavior.
 
-- INV-PERF-TYPED-SIDECAR-FACTS: Use native typed stores for in-memory extraction and linking, preserving the V3 cache and public compatibility boundaries. [`SemanticStore`](../../src/core/typed_facts.rs) [`FlowStore`](../../src/core/typed_facts.rs) [`TypedFacts`](../../src/core/typed_facts.rs).
+- INV-PERF-TYPED-SIDECAR-FACTS: Use native typed stores for in-memory extraction and linking, preserving the V3 cache and public compatibility boundaries. [`SemanticStore`](../../crates/forge-core/src/typed_facts.rs) [`FlowStore`](../../crates/forge-core/src/typed_facts.rs) [`TypedFacts`](../../crates/forge-core/src/typed_facts.rs).
 
 > [!IMPORTANT]
 > Invariant: Shared Workspace Rule-IR Context and Indexed AST Dispatch
 >
 > Share effective rule tables through `Arc<LanguageContext>` per workspace/manifest scope and index declarative candidates by AST kind and callee/member name. Keep source-dependent render/import preparation per file through `prepare_file`. Reuse the shared rule vectors rather than cloning `Vec<SyntaxRule>` per file or scanning all rules on every AST node.
 
-- INV-PERF-SHARED-RULE-CONTEXT-AND-DISPATCH: Share compiled rule tables via `Arc<LanguageContext>` per workspace scope and index declarative projection rules by AST node kind and callee/member name instead of scanning all rules per node. [`DependencyRegistry`](../../src/engine/languages/dependency_registry.rs) [`LanguageContext`](../../src/engine/languages/mod.rs) [`extract_projections`](../../src/engine/languages/typescript/projections.rs).
+- INV-PERF-SHARED-RULE-CONTEXT-AND-DISPATCH: Share compiled rule tables via `Arc<LanguageContext>` per workspace scope and index declarative projection rules by AST node kind and callee/member name instead of scanning all rules per node. [`DependencyRegistry`](../../crates/forge-index/src/languages/dependency_registry.rs) [`LanguageContext`](../../crates/forge-index/src/languages/mod.rs) [`extract_projections`](../../crates/forge-index/src/languages/typescript/projections.rs).
 
 > [!IMPORTANT]
 > Invariant: Zero-Allocation Projection Proof Lookups
 >
 > In `src/engine/languages/python/projections.rs` (`observe_import`, `prepare`), per-call and per-attribute projection proofs (`Proof::imported`, `Proof::api`) must query two-level borrowed-key maps (`HashMap<String, HashSet<usize>>` for statement lines and `HashMap<usize, HashMap<String, Constructor>>` for constructors) and pre-indexed import heads. Agents must never allocate temporary owned `String` keys (`to_owned()`, `format!`) inside per-node or per-reference proof predicates.
 
-- INV-PERF-ZERO-ALLOC-PROJECTION-PROOFS: Query two-level borrowed-key maps (`HashMap<String, HashSet<usize>>` and `HashMap<usize, HashMap<String, Constructor>>`) in extractor proof predicates without allocating owned `String` keys per call or reference. [`observe_import`](../../src/engine/languages/python/projections.rs) [`prepare`](../../src/engine/languages/python/projections.rs).
+- INV-PERF-ZERO-ALLOC-PROJECTION-PROOFS: Query two-level borrowed-key maps (`HashMap<String, HashSet<usize>>` and `HashMap<usize, HashMap<String, Constructor>>`) in extractor proof predicates without allocating owned `String` keys per call or reference. [`observe_import`](../../crates/forge-index/src/languages/python/projections.rs) [`prepare`](../../crates/forge-index/src/languages/python/projections.rs).
 
 > [!IMPORTANT]
 > Invariant: Language-Gated Linker Resolution and Memoized Semantic Context
 >
 > In `src/engine/linker/resolution/mod.rs` (`resolve`) and `resolution/value_flow_phase.rs` (`phase_value_flow`), `src/engine/languages/dependency_registry.rs` (`language_context_for_path`), `src/engine/linker/semantic_context.rs` (`Context`), and `src/engine/linker.rs` (`link_compact_with_typed_registry`), the registry and linker must memoize `language_context_for_path` per directory scope, bind contexts once per file, avoid reconstructing package-scope keys per reference, gate language-specific template rules and evidence builders behind the active language profile, memoize `ReceiverTypes`, `ArgumentFactories`, and `implicit_builtins` per shared `Arc<LanguageContext>` (retaining pinned `Arc<LanguageContext>` clones for the pass lifetime), and fuse post-resolution `all.values()` passes.
 
-- INV-PERF-LANGUAGE-GATED-LINKER-RESOLUTION: Memoize `language_context_for_path` per directory scope in `DependencyRegistry`, bind contexts once per file in `resolve`, gate HTML template rule vectors and `template_evidence` behind active HTML guards, memoize `Context` rule tables per pinned `Arc<LanguageContext>`, and fuse post-resolution `all.values()` passes in `link_compact_with_typed_registry`. [`DependencyRegistry`](../../src/engine/languages/dependency_registry.rs) [`resolve`](../../src/engine/linker/resolution/mod.rs) [`phase_value_flow`](../../src/engine/linker/resolution/value_flow_phase.rs) [`Context`](../../src/engine/linker/semantic_context.rs) [`link_compact_with_typed_registry`](../../src/engine/linker.rs).
+- INV-PERF-LANGUAGE-GATED-LINKER-RESOLUTION: Memoize `language_context_for_path` per directory scope in `DependencyRegistry`, bind contexts once per file in `resolve`, gate HTML template rule vectors and `template_evidence` behind active HTML guards, memoize `Context` rule tables per pinned `Arc<LanguageContext>`, and fuse post-resolution `all.values()` passes in `link_compact_with_typed_registry`. [`DependencyRegistry`](../../crates/forge-index/src/languages/dependency_registry.rs) [`resolve`](../../crates/forge-index/src/linker/resolution/mod.rs) [`phase_value_flow`](../../crates/forge-index/src/linker/resolution/value_flow_phase.rs) [`Context`](../../crates/forge-index/src/linker/semantic_context.rs) [`link_compact_with_typed_registry`](../../crates/forge-index/src/linker/mod.rs).
 
 > [!IMPORTANT]
 > Invariant: Single Codegen Unit Release Optimization
 >
 > In `Cargo.toml` (`[profile.release]`), production builds must keep `codegen-units = 1` and `lto = "thin"` enabled so cross-module hot paths in `SinglePassExtractor`, `DependencyRegistry`, and `resolution::resolve` inline fully. Increasing `codegen-units` degrades cold-build indexing throughput and inflates CPU cycles across AST and linker loops.
 
-- INV-PERF-RELEASE-SINGLE-CGU: Keep `codegen-units = 1` and `lto = "thin"` in `[profile.release]` so cross-module AST extraction and linker resolution loops inline in release binaries. [`run_cold_pipeline`](../../src/engine/pipeline.rs) [`resolve`](../../src/engine/linker/resolution/mod.rs).
+- INV-PERF-RELEASE-SINGLE-CGU: Keep `codegen-units = 1` and `lto = "thin"` in `[profile.release]` so cross-module AST extraction and linker resolution loops inline in release binaries. [`run_cold_pipeline`](../../src/engine/pipeline.rs) [`resolve`](../../crates/forge-index/src/linker/resolution/mod.rs).
 
 > [!IMPORTANT]
 > Invariant: SQLite Ingestion PRAGMAs and WAL Restoration Order
 >
 > In `src/db/writer.rs` (`prepare_pipeline_schema` and `populate_owned`), cold-indexing candidate databases must initialize with `journal_mode = MEMORY; synchronous = OFF; temp_store = MEMORY; cache_spill = ON;` and defer secondary index creation until after row ingestion (`sqlite_ingestion.mode = deferred-index-batched`). Before atomic publication, the writer must restore `journal_mode = WAL; synchronous = NORMAL;` and execute `PRAGMA wal_checkpoint(TRUNCATE);`. Changing pragma ordering or omitting WAL restoration causes reader lockouts and database corruption.
 
-- INV-PERF-SQLITE-INGESTION-PRAGMAS: Initialize staged SQLite databases with in-memory journal and deferred secondary indexes during bulk ingestion, then restore `WAL` mode and checkpoint before atomic publication. [`prepare_pipeline_schema`](../../src/db/writer.rs) [`populate_owned`](../../src/db/writer.rs).
+- INV-PERF-SQLITE-INGESTION-PRAGMAS: Initialize staged SQLite databases with in-memory journal and deferred secondary indexes during bulk ingestion, then restore `WAL` mode and checkpoint before atomic publication. [`prepare_pipeline_schema`](../../crates/forge-index/src/db/writer.rs) [`populate_owned`](../../crates/forge-index/src/db/writer.rs).
 
 > [!IMPORTANT]
 > Invariant: Deterministic 17-Domain Merkle Commitments
@@ -312,49 +312,49 @@ Autonomous agents, builders, and language models modifying Forge indexing or sto
 >
 > In `src/db/writer/cache.rs` (`ExtractionCache`) and `src/engine/languages/dependency_registry.rs`, cache keys must strictly bind source SHA-256 digest, normalized relative path, Tree-sitter grammar ID, `INDEX_SEMANTICS_VERSION`, and `effective_ruleset_hash` (which incorporates bundled framework manifests via `build.rs`). Agents must never omit the ruleset hash or grammar identity from the cache key, as doing so leads to stale, invalid extraction across manifest or grammar upgrades.
 
-- INV-PERF-CACHE-KEY-BINDING: Bind `ExtractionCache` keys to source SHA-256, normalized path, Tree-sitter grammar ID, `INDEX_SEMANTICS_VERSION`, and `effective_ruleset_hash`. [`ExtractionCache`](../../src/db/writer/cache.rs) [`DependencyRegistry`](../../src/engine/languages/dependency_registry.rs).
+- INV-PERF-CACHE-KEY-BINDING: Bind `ExtractionCache` keys to source SHA-256, normalized path, Tree-sitter grammar ID, `INDEX_SEMANTICS_VERSION`, and `effective_ruleset_hash`. [`ExtractionCache`](../../crates/forge-index/src/db/writer/cache.rs) [`DependencyRegistry`](../../crates/forge-index/src/languages/dependency_registry.rs).
 
 > [!IMPORTANT]
 > Invariant: Interned Linker Keys Preserve Semantic Proof
 >
 > Build one borrowed `LinkerInterner` per linking pass. Use its `SymbolId` and `PathId` keys in prepared semantic tables and restore canonical strings when emitting graph results. Preserve declared-package activation and lexical import proof; file-import presence does not replace dependency activation.
 
-- INV-PERF-INTERNER-KEYS: Preserve canonical graph identities and semantic proof while interning prepared linker keys. [`LinkerInterner`](../../src/engine/linker/interner.rs).
+- INV-PERF-INTERNER-KEYS: Preserve canonical graph identities and semantic proof while interning prepared linker keys. [`LinkerInterner`](../../crates/forge-index/src/linker/interner.rs).
 
 > [!IMPORTANT]
 > Invariant: Binary Catalog Storage and Reference Occurrences Without JSON Round-Trips
 >
 > In `src/db/writer.rs` (`PreparedCatalogStorage`) and `src/core/semantic.rs` (`SymbolCatalog::insert_typed`, `decode_catalog_references`), persisted catalog payloads and reference occurrence blobs must use compact binary encoding (`encode_references` / `decode_references`) compressed with Zstd rather than `serde_json::to_vec` / `serde_json::from_slice`.
 
-- INV-PERF-BINARY-CATALOG-STORAGE: Encode `PreparedCatalogStorage` and `SymbolCatalog` reference occurrences in binary format before Zstd compression instead of round-tripping through `serde_json`. [`SymbolCatalog`](../../src/core/semantic.rs) [`encode_references`](../../src/db/writer/cache.rs) [`decode_references`](../../src/db/writer/cache.rs).
+- INV-PERF-BINARY-CATALOG-STORAGE: Encode `PreparedCatalogStorage` and `SymbolCatalog` reference occurrences in binary format before Zstd compression instead of round-tripping through `serde_json`. [`SymbolCatalog`](../../crates/forge-core/src/semantic.rs) [`encode_references`](../../crates/forge-index/src/db/writer/cache.rs) [`decode_references`](../../crates/forge-index/src/db/writer/cache.rs).
 
 > [!IMPORTANT]
 > Invariant: Bounded Rust Receiver and Module Proof
 >
 > Resolve Rust receivers and module imports through indexed declarations, visible imports and bounded value flow. Explicit standard-wrapper projections and proven nominal `Deref::Target` implementations retain their own contracts. Missing, ambiguous, cyclic, inaccessible or exhausted proofs remain uncertain; imports and receiver names alone do not establish exact edges.
 
-- INV-PERF-BOUNDED-RUST-PROOF: Preserve visibility, uniqueness and exhaustion boundaries for Rust receiver and module resolution. [`RustMembers`](../../src/engine/languages/rust/linker.rs) [`resolve_type`](../../src/engine/languages/rust/linker.rs).
+- INV-PERF-BOUNDED-RUST-PROOF: Preserve visibility, uniqueness and exhaustion boundaries for Rust receiver and module resolution. [`RustMembers`](../../crates/forge-index/src/languages/rust/linker.rs) [`resolve_type`](../../crates/forge-index/src/languages/rust/linker.rs).
 
 > [!IMPORTANT]
 > Invariant: No Nested Parallel Iterators Inside Chunked Pipelines
 >
 > In `src/db/writer.rs` (`prepare_catalog_rows`), file chunks are already dispatched across Rayon worker threads. Agents must never nest Rayon parallel iterators (`.par_iter()`) inside individual chunk workers. Inner loops must use standard sequential iteration (`.iter()`) to avoid thread pool starvation, thread parking, futex contention, and massive system CPU spikes.
 
-- INV-PERF-NO-NESTED-PAR-ITER: Never nest Rayon `.par_iter()` inside already parallelized pipeline chunks; use sequential `.iter()` within worker tasks. [`prepare_catalog_rows`](../../src/db/writer.rs) [`persist_catalog_files`](../../src/db/ingest.rs).
+- INV-PERF-NO-NESTED-PAR-ITER: Never nest Rayon `.par_iter()` inside already parallelized pipeline chunks; use sequential `.iter()` within worker tasks. [`prepare_catalog_rows`](../../crates/forge-index/src/db/writer.rs) [`persist_catalog_files`](../../crates/forge-index/src/db/ingest.rs).
 
 > [!IMPORTANT]
 > Invariant: Zero-Clone Ingestion for Navigation Details
 >
 > In `src/db/ingest.rs` (`flush_node_batch`), database batch writes must never clone `Node` instances or allocate intermediate JSON maps to strip transient fields (`"doc"`, `"docstring"`). Filter fields on-the-fly during serialization through borrowed adapters (`NavigationDetails`) directly referencing source nodes.
 
-- INV-PERF-ZERO-NODE-CLONES-ON-INGEST: Filter navigation details during serialization through borrowed wrappers without cloning `Node` instances in batch write loops. [`flush_node_batch`](../../src/db/ingest.rs) [`NavigationDetails`](../../src/core/models.rs).
+- INV-PERF-ZERO-NODE-CLONES-ON-INGEST: Filter navigation details during serialization through borrowed wrappers without cloning `Node` instances in batch write loops. [`flush_node_batch`](../../crates/forge-index/src/db/ingest.rs) [`NavigationDetails`](../../crates/forge-core/src/models.rs).
 
 > [!IMPORTANT]
 > Invariant: Manifest Syntax Rule Interning
 >
 > In `src/engine/linker/interner.rs` (`LinkerInterner`) and `src/engine/linker.rs`, declarative framework manifest rules must be interned once per language context rather than re-evaluating or cloning rules on every file path in the workspace.
 
-- INV-PERF-MANIFEST-SYNTAX-INTERNING: Intern manifest syntax rules at language context scope instead of re-evaluating or allocating rules per file. [`LinkerInterner`](../../src/engine/linker/interner.rs).
+- INV-PERF-MANIFEST-SYNTAX-INTERNING: Intern manifest syntax rules at language context scope instead of re-evaluating or allocating rules per file. [`LinkerInterner`](../../crates/forge-index/src/linker/interner.rs).
 
 > [!IMPORTANT]
 > Invariant: Host Performance Profile and Governor Precondition
@@ -368,77 +368,77 @@ Autonomous agents, builders, and language models modifying Forge indexing or sto
 >
 > In `src/engine/pipeline.rs` (`consume_pipeline_results`) and `src/db/writer.rs` (`populate_owned`), cold-build extraction payloads (`encoded_facts` and `storage_rows`) must be spooled directly to stage-private temporary disk storage (`payloads.bin` under `.forge-stage-*`) during consumer ingestion rather than accumulated in heap memory as raw byte vectors (`StagedFilePayload`). `StagedFilePayload` retains only lightweight offset/length references (`StagedPayloadBlob`), releasing 50–60 MB of heap memory during the cross-file linker phase. The final persistence pass reads blobs sequentially in bounded 500-file chunks, preserving route composition invalidation, Merkle leaf commitments, and atomic stage cleanup.
 
-- INV-PERF-STAGE-PAYLOAD-SPOOLING: Spool extraction payload blobs to stage-private disk storage during consumer ingestion and read by chunk during persistence to keep heap memory bounded during linking. [`consume_pipeline_results`](../../src/engine/pipeline.rs) [`populate_owned`](../../src/db/writer.rs).
+- INV-PERF-STAGE-PAYLOAD-SPOOLING: Spool extraction payload blobs to stage-private disk storage during consumer ingestion and read by chunk during persistence to keep heap memory bounded during linking. [`consume_pipeline_results`](../../src/engine/pipeline.rs) [`populate_owned`](../../crates/forge-index/src/db/writer.rs).
 
 > [!IMPORTANT]
 > Invariant: Zero-Clone Ingestion for Batched Node Attributes
 >
 > In `src/db/ingest.rs` (`persist_files_impl`), `node_batch` rows must borrow string attributes (`id`, `kind`, `name`, `qualname`, `language`) as `&str` (`BorrowedSqlValue::Text`) directly from the active loaded chunk rather than allocating owned `String`s (`BorrowedSqlValue::OwnedText`). The lifetime of `node_batch` is strictly bounded by the loaded chunk, flushing before the chunk is dropped to eliminate hundreds of thousands of heap string clones while keeping dynamic details in `BorrowedSqlValue::OwnedJsonText`.
 
-- INV-PERF-ZERO-CLONE-BATCHED-NODES: Borrow node string attributes directly from loaded file chunks in batch insertion loops without heap-cloning strings. [`persist_files_impl`](../../src/db/ingest.rs) [`BorrowedSqlValue`](../../src/db/batch.rs).
+- INV-PERF-ZERO-CLONE-BATCHED-NODES: Borrow node string attributes directly from loaded file chunks in batch insertion loops without heap-cloning strings. [`persist_files_impl`](../../crates/forge-index/src/db/ingest.rs) [`BorrowedSqlValue`](../../crates/forge-index/src/db/batch.rs).
 
 > [!IMPORTANT]
 > Invariant: Deferred Transient Node Paths Cache
 >
 > In `src/db/writer.rs` (`populate_owned`) and `src/db/delta.rs` (`persist_delta`), the `node_paths` lookup cache must be constructed immediately before `persist_graph` using `Cow<'a, str>` borrowed keys from in-memory facts rather than cloning owning `String` node IDs across the entire workspace. The cache must be explicitly dropped immediately after graph persistence to reclaim memory before index and Merkle sealing.
 
-- INV-PERF-DEFERRED-TRANSIENT-NODE-PATHS: Construct the `node_paths` cache immediately before graph persistence with borrowed `Cow<'a, str>` keys and drop it immediately after use. [`populate_owned`](../../src/db/writer.rs) [`persist_graph`](../../src/db/ingest.rs).
+- INV-PERF-DEFERRED-TRANSIENT-NODE-PATHS: Construct the `node_paths` cache immediately before graph persistence with borrowed `Cow<'a, str>` keys and drop it immediately after use. [`populate_owned`](../../crates/forge-index/src/db/writer.rs) [`persist_graph`](../../crates/forge-index/src/db/ingest.rs).
 
 > [!IMPORTANT]
 > Invariant: Edge Occurrence Endpoint Hash Reuse
 >
 > In `src/db/ingest.rs` (`persist_graph`, `persist_dependencies`), resolved endpoint hashes `(src_target, dst_target)` computed during the occurrence pass must be retained in an occurrence-aligned vector (`resolved_edge_paths`) and forwarded directly to `persist_dependencies`. Dependencies must reuse these pre-resolved endpoint path hashes rather than repeating `graph_endpoint_hashes` lookups or executing redundant SQLite queries.
 
-- INV-PERF-OCCURRENCE-ENDPOINT-HASH-REUSE: Reuse resolved endpoint hashes from edge occurrence passes in dependency persistence to eliminate redundant hash-map lookups. [`persist_graph`](../../src/db/ingest.rs) [`persist_dependencies`](../../src/db/ingest.rs).
+- INV-PERF-OCCURRENCE-ENDPOINT-HASH-REUSE: Reuse resolved endpoint hashes from edge occurrence passes in dependency persistence to eliminate redundant hash-map lookups. [`persist_graph`](../../crates/forge-index/src/db/ingest.rs) [`persist_dependencies`](../../crates/forge-index/src/db/ingest.rs).
 
 > [!IMPORTANT]
 > Invariant: In-Memory File Language Fallback for Coverage
 >
 > In `src/db/ingest.rs` (`persist_graph`), resolution coverage owner languages must be resolved from known in-memory file entries (`known_file_entries`) before falling back to SQLite queries. Cold builds must avoid round-tripping missing owners through JSON serialization and SQLite `json_each(?1)` subqueries whenever file metadata is available in memory.
 
-- INV-PERF-IN-MEMORY-FILE-LANGUAGE-FALLBACK: Resolve coverage owner languages from in-memory file entries to eliminate JSON-encoded SQLite subqueries. [`persist_graph`](../../src/db/ingest.rs).
+- INV-PERF-IN-MEMORY-FILE-LANGUAGE-FALLBACK: Resolve coverage owner languages from in-memory file entries to eliminate JSON-encoded SQLite subqueries. [`persist_graph`](../../crates/forge-index/src/db/ingest.rs).
 
 > [!IMPORTANT]
 > Invariant: Compact Edge and Coverage Models with Shared Paths and Tags
 >
 > In `src/core/models/compact_graph.rs`, internal `Edge` and `Coverage` graph models must store file paths as shared `Arc<str>` handles and evidence as `CompactTag` (with static strings for recurring diagnostics such as `"exact"`, `"inferred"`, `"references"`). Graph construction must share a single `path_arc` across all edges and coverage generated within each file resolver to eliminate millions of redundant heap string allocations while preserving public model representations, sort ordering, and bit-for-bit Merkle commitments.
 
-- INV-PERF-COMPACT-EDGE-COVERAGE-MODELS: Compact internal edge and coverage models with shared `Arc<str>` paths and `CompactTag` evidence. [`Edge`](../../src/core/models/compact_graph.rs) [`Coverage`](../../src/core/models/compact_graph.rs).
+- INV-PERF-COMPACT-EDGE-COVERAGE-MODELS: Compact internal edge and coverage models with shared `Arc<str>` paths and `CompactTag` evidence. [`Edge`](../../crates/forge-core/src/models/compact_graph.rs) [`Coverage`](../../crates/forge-core/src/models/compact_graph.rs).
 
 > [!IMPORTANT]
 > Invariant: Content-Keyed Path Pooling during Compact Graph Restoration
 >
 > In `src/engine/linker/compact.rs` (`GraphPart::into_graph`), restoring packed compressed graph parts must use a local content-keyed path pool (`HashMap<&str, Arc<str>>`) to reconstruct shared `Arc<str>` handles without re-allocating duplicate path strings across decoded edge and coverage records.
 
-- INV-PERF-COMPACT-GRAPH-PATH-POOLING: Pool restored path strings into shared `Arc<str>` handles when unpacking compressed graph parts. [`GraphPart::into_graph`](../../src/engine/linker/compact.rs).
+- INV-PERF-COMPACT-GRAPH-PATH-POOLING: Pool restored path strings into shared `Arc<str>` handles when unpacking compressed graph parts. [`GraphPart::into_graph`](../../crates/forge-index/src/linker/compact.rs).
 
 > [!IMPORTANT]
 > Invariant: Normalized Vector Storage for Node Binding Indexes
 >
 > In `src/engine/linker.rs` and downstream resolution modules, `NodeBindingIndex` must store per-node symbol identifiers in a sorted, deduplicated `Vec<SymbolId>` rather than separate heap hash tables (`hashbrown::HashSet<SymbolId>`). Membership checks must perform binary searches (`binary_search(&id).is_ok()`). Normalization (`sort_unstable()` and `dedup()`) must occur once after collecting declarations, Python flow bindings, and branch joins before publishing immutable indexes.
 
-- INV-PERF-NORMALIZED-NODE-BINDING-VECTORS: Store per-node binding identifiers in sorted, deduplicated vectors with binary search membership checks. [`NodeBindingIndex`](../../src/engine/linker.rs) [`has_indexed_symbol_id`](../../src/engine/linker/typescript/resolution.rs).
+- INV-PERF-NORMALIZED-NODE-BINDING-VECTORS: Store per-node binding identifiers in sorted, deduplicated vectors with binary search membership checks. [`NodeBindingIndex`](../../crates/forge-index/src/linker/mod.rs) [`has_indexed_symbol_id`](../../crates/forge-index/src/linker/typescript/resolution.rs).
 
 > [!IMPORTANT]
 > Invariant: Borrowed Map Keys in Package Export Indexing
 >
 > In `src/engine/linker/traits.rs` (`LanguageLinker::package_exports_borrowed`) and `src/engine/linker/indexing.rs`, package export indexing across language linkers must accept borrowed map references (`&BTreeMap<&'a str, &'a Facts>`), eliminating redundant cloning of all workspace file paths into temporary maps.
 
-- INV-PERF-BORROWED-MAP-KEY-EXPORT-INDEXING: Accept borrowed map keys in borrowed package export indexing to avoid workspace path string cloning. [`LanguageLinker::package_exports_borrowed`](../../src/engine/linker/traits.rs) [`package_exports`](../../src/engine/linker/indexing.rs).
+- INV-PERF-BORROWED-MAP-KEY-EXPORT-INDEXING: Accept borrowed map keys in borrowed package export indexing to avoid workspace path string cloning. [`LanguageLinker::package_exports_borrowed`](../../crates/forge-index/src/linker/traits.rs) [`package_exports`](../../crates/forge-index/src/linker/indexing.rs).
 
 > [!IMPORTANT]
 > Invariant: Zero-Clone Parallel File Module Resolution
 >
 > In `src/engine/linker/resolution/mod.rs`, extracting file module qualified names for `FileResolver` must borrow `&'a str` directly (`Cow::Borrowed`) when a `"module"` node is present, allocating an owned string (`Cow::Owned`) only in dynamic fallback branches.
 
-- INV-PERF-ZERO-CLONE-PARALLEL-MODULE-NAME: Borrow module names directly from module nodes without heap allocation during parallel file resolution. [`resolve`](../../src/engine/linker/resolution/mod.rs).
+- INV-PERF-ZERO-CLONE-PARALLEL-MODULE-NAME: Borrow module names directly from module nodes without heap allocation during parallel file resolution. [`resolve`](../../crates/forge-index/src/linker/resolution/mod.rs).
 
 > [!IMPORTANT]
 > Invariant: Zero-Clone Dictionary Bulk Ingestion
 >
 > In `src/db/dictionary.rs`, `PathDictionaryCache::bulk_insert` must accept `impl IntoIterator<Item = &'a str>` and push `BorrowedSqlValue::Text(path_ref)` into multi-value insertion batches, cloning strings only once for the in-memory dictionary cache.
 
-- INV-PERF-BORROWED-PATH-DICTIONARY-BULK-INSERT: Borrow path string references in dictionary bulk insertion batches to avoid duplicate SQL string cloning. [`PathDictionaryCache::bulk_insert`](../../src/db/dictionary.rs).
+- INV-PERF-BORROWED-PATH-DICTIONARY-BULK-INSERT: Borrow path string references in dictionary bulk insertion batches to avoid duplicate SQL string cloning. [`PathDictionaryCache::bulk_insert`](../../crates/forge-index/src/db/dictionary.rs).
 
 > [!IMPORTANT]
 > Invariant: Strict Cargo Workspace Boundaries

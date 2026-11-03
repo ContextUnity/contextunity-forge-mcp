@@ -833,9 +833,17 @@ pub enum QueryCommand {
         /// The target value.
         target: String,
     },
+    /// Execute a read-only SELECT/WITH SQL statement against the code graph.
+    Sql {
+        /// Read-only SELECT or WITH SQL statement.
+        sql: String,
+        #[arg(long, default_value_t = 100)]
+        /// The limit value.
+        limit: usize,
+    },
     /// Represents the run case.
     Run {
-        /// The operation value.
+        /// The operation value ('sql', 'untested', 'implementations', 'slice', 'unwired', or a direct SELECT/WITH statement).
         operation: String,
         /// Optional selector value.
         selector: Option<String>,
@@ -929,9 +937,12 @@ fn command_presentation(command: &Command) -> (OperationKind, &'static str, Opti
         Command::Checkpoint { .. } => (OperationKind::Checkpoint, "session_checkpoint", None),
         Command::Ast { .. } => (OperationKind::Navigation, "ast_grep_search", None),
         Command::Query {
+            command: QueryCommand::Sql { .. },
+        } => (OperationKind::Sql, "code_map_query", None),
+        Command::Query {
             command: QueryCommand::Run { operation, .. },
         } => (
-            if operation == "sql" {
+            if operation == "sql" || looks_like_sql(operation) {
                 OperationKind::Sql
             } else {
                 OperationKind::Navigation
@@ -964,7 +975,9 @@ fn command_presentation(command: &Command) -> (OperationKind, &'static str, Opti
             QueryCommand::Remove { .. } => {
                 (OperationKind::Navigation, "code_map_prove_removal", None)
             }
-            QueryCommand::Analyze { .. } | QueryCommand::Run { .. } => unreachable!(),
+            QueryCommand::Analyze { .. }
+            | QueryCommand::Run { .. }
+            | QueryCommand::Sql { .. } => unreachable!(),
         },
         Command::Docs { command } => match command {
             DocsCommand::Search { .. } => (OperationKind::Navigation, "search_docs", None),
@@ -997,13 +1010,9 @@ fn command_discovery(command: &Command) -> Option<format::DiscoveryKind> {
 }
 
 fn looks_like_sql(value: &str) -> bool {
-    let value = value.trim_start().to_ascii_lowercase();
-    value.starts_with("select ")
-        || value.starts_with("select\n")
-        || value == "select"
-        || value.starts_with("with ")
-        || value.starts_with("with\n")
-        || value == "with"
+    value.split_whitespace().next().is_some_and(|keyword| {
+        keyword.eq_ignore_ascii_case("select") || keyword.eq_ignore_ascii_case("with")
+    })
 }
 
 fn cli_page(limit: usize) -> Result<QueryOptions> {
@@ -1328,24 +1337,44 @@ impl Cli {
                     QueryCommand::Analyze { target } => {
                         reader::analyze_paged(&conn, &target, None, &cli_page(100)?)?
                     }
+                    QueryCommand::Sql { sql, limit } => traversal::query_with_path_options(
+                        &conn,
+                        "sql",
+                        Some(sql.as_str()),
+                        None,
+                        &traversal::GraphQueryOptions {
+                            depth: 2,
+                            direction: None,
+                            coverage: CoverageOptions::default(),
+                            page: &cli_page(limit)?,
+                        },
+                    )?,
                     QueryCommand::Run {
                         operation,
                         selector,
                         path,
                         depth,
                         limit,
-                    } => traversal::query_with_path_options(
-                        &conn,
-                        &operation,
-                        selector.as_deref(),
-                        path.as_deref(),
-                        &traversal::GraphQueryOptions {
-                            depth,
-                            direction: None,
-                            coverage: CoverageOptions::default(),
-                            page: &cli_page(limit)?,
-                        },
-                    )?,
+                    } => {
+                        let (effective_op, effective_selector) =
+                            if selector.is_none() && looks_like_sql(&operation) {
+                                ("sql", Some(operation.as_str()))
+                            } else {
+                                (operation.as_str(), selector.as_deref())
+                            };
+                        traversal::query_with_path_options(
+                            &conn,
+                            effective_op,
+                            effective_selector,
+                            path.as_deref(),
+                            &traversal::GraphQueryOptions {
+                                depth,
+                                direction: None,
+                                coverage: CoverageOptions::default(),
+                                page: &cli_page(limit)?,
+                            },
+                        )?
+                    }
                 }
             }
             Command::Docs { command } => {

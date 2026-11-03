@@ -1,5 +1,5 @@
-use crate::store::Task;
 use crate::engine::workspaces::Workspace;
+use crate::store::Task;
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use std::{
@@ -45,7 +45,7 @@ fn query_indexed_adrs(conn: &rusqlite::Connection, scope: &[String]) -> Vec<Valu
         Ok(scope) => scope,
         Err(_) => return Vec::new(),
     };
-    let sql = "WITH scope_nodes(hash) AS (SELECT DISTINCT target.node_hash FROM nodes target JOIN path_dictionary tp ON tp.path_id=target.path_id WHERE EXISTS(SELECT 1 FROM json_each(?1) s WHERE tp.path=trim(s.value,'/') OR substr(tp.path,1,length(trim(s.value,'/'))+1)=trim(s.value,'/')||'/')), governed_paths(path) AS (SELECT DISTINCT d.path FROM edges e JOIN nodes n ON n.node_hash=e.src_hash JOIN path_dictionary p ON p.path_id=n.path_id JOIN doc_sections d ON d.doc_id=json_extract(n.details,'$.document_id') JOIN scope_nodes s ON s.hash=e.dst_hash WHERE e.kind='governs' AND (p.path LIKE 'docs/adr/%' OR p.path LIKE 'docs/architecture/%')) SELECT d.path,d.section_title,d.content,n.details FROM governed_paths g JOIN doc_sections d ON d.path=g.path JOIN nodes n ON n.id=d.doc_id ORDER BY d.path,d.rowid LIMIT 200";
+    let sql = "WITH scope_nodes(hash) AS (SELECT DISTINCT target.node_hash FROM nodes target JOIN path_dictionary tp ON tp.path_id=target.path_id WHERE EXISTS(SELECT 1 FROM json_each(?1) s WHERE tp.path=trim(s.value,'/') OR substr(tp.path,1,length(trim(s.value,'/'))+1)=trim(s.value,'/')||'/')), governed_paths(path,direct_doc_id) AS (SELECT DISTINCT d.path,d.doc_id FROM edges e JOIN nodes n ON n.node_hash=e.src_hash JOIN doc_sections d ON ((e.kind='governs' AND d.doc_id=json_extract(n.details,'$.document_id')) OR (e.kind='documents' AND d.doc_id=n.id)) JOIN scope_nodes s ON s.hash=e.dst_hash WHERE e.kind IN ('governs','documents') AND n.kind IN ('document','invariant') AND d.doc_type != 'contract' AND d.path NOT LIKE 'archive/%' AND d.path NOT LIKE '%/archive/%' AND d.path NOT LIKE 'docs/milestones/%' AND d.path NOT LIKE '%/docs/milestones/%' AND d.path NOT LIKE 'docs/contracts/%' AND d.path NOT LIKE '%/docs/contracts/%') SELECT d.path,d.section_title,d.content,n.details,EXISTS(SELECT 1 FROM governed_paths gp WHERE gp.path=d.path AND gp.direct_doc_id=d.doc_id) AS is_direct_section FROM (SELECT DISTINCT path FROM governed_paths) g JOIN doc_sections d ON d.path=g.path JOIN nodes n ON n.id=d.doc_id ORDER BY d.path,d.rowid LIMIT 200";
     let mut statement = match conn.prepare(sql) {
         Ok(statement) => statement,
         Err(_) => return Vec::new(),
@@ -56,6 +56,7 @@ fn query_indexed_adrs(conn: &rusqlite::Connection, scope: &[String]) -> Vec<Valu
             row.get::<_, String>(1)?,
             row.get::<_, String>(2)?,
             row.get::<_, String>(3)?,
+            row.get::<_, bool>(4)?,
         ))
     }) {
         Ok(rows) => rows,
@@ -63,9 +64,11 @@ fn query_indexed_adrs(conn: &rusqlite::Connection, scope: &[String]) -> Vec<Valu
     };
     let mut documents = BTreeMap::<String, Value>::new();
     let mut navigation_counts = BTreeMap::<String, usize>::new();
+    let mut section_counts = BTreeMap::<String, usize>::new();
     for row in rows.flatten() {
-        let (path, title, content, details) = row;
+        let (path, title, content, details, is_direct_section) = row;
         let navigation_count = navigation_counts.entry(path.clone()).or_default();
+        let section_count = section_counts.entry(path.clone()).or_default();
         let details = serde_json::from_str::<Value>(&details).unwrap_or(Value::Null);
         let document = documents.entry(path.clone()).or_insert_with(|| {
             json!({
@@ -79,6 +82,7 @@ fn query_indexed_adrs(conn: &rusqlite::Connection, scope: &[String]) -> Vec<Valu
         let Some(summary) = document["invariants_summary"].as_array_mut() else {
             continue;
         };
+        let mut kept_in_section = false;
         for line in content
             .lines()
             .map(str::trim)
@@ -91,11 +95,21 @@ fn query_indexed_adrs(conn: &rusqlite::Connection, scope: &[String]) -> Vec<Valu
             let decision_section = title.trim().eq_ignore_ascii_case("decision");
             let navigation_rule = line.contains("INV-") || line.contains("Invariant:");
             let keep = decision || decision_section || (navigation_rule && *navigation_count < 5);
-            if keep && !summary.iter().any(|item| item.as_str() == Some(line)) {
-                summary.push(json!(line));
-                if !decision && !decision_section && navigation_rule {
-                    *navigation_count += 1;
+            if keep {
+                kept_in_section = true;
+                if !summary.iter().any(|item| item.as_str() == Some(line)) {
+                    summary.push(json!(line));
+                    if !decision && !decision_section && navigation_rule {
+                        *navigation_count += 1;
+                    }
                 }
+            }
+        }
+        if is_direct_section && !kept_in_section && !title.trim().is_empty() && *section_count < 5 {
+            let section = json!(format!("Section: {}", title.trim()));
+            if !summary.contains(&section) {
+                summary.push(section);
+                *section_count += 1;
             }
         }
     }
@@ -111,38 +125,63 @@ fn governing_invariants_for_scope(conn: &rusqlite::Connection, scope: &[String])
     let scope_json = serde_json::to_string(scope)?;
     let scope_nodes = "WITH scope_nodes(hash) AS (SELECT DISTINCT n.node_hash FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE EXISTS(SELECT 1 FROM json_each(?1) s WHERE p.path=trim(s.value,'/') OR substr(p.path,1,length(trim(s.value,'/'))+1)=trim(s.value,'/')||'/'))";
     let mut stmt = conn.prepare(&format!("{scope_nodes} SELECT DISTINCT n.name, json_extract(n.details,'$.rule'), p.path, n.line FROM edges e JOIN scope_nodes s ON s.hash=e.dst_hash JOIN nodes n ON n.node_hash=e.src_hash JOIN path_dictionary p ON p.path_id=n.path_id WHERE e.kind='governs' ORDER BY n.name, p.path, n.line LIMIT ?2"))?;
-    let direct_rows = stmt.query_map(rusqlite::params![&scope_json, &(DIRECT_LIMIT as i64)], |row| {
-        let name: String = row.get(0)?;
-        let rule: Option<String> = row.get(1)?;
-        let path: String = row.get(2)?;
-        let line: i64 = row.get(3)?;
-        Ok(json!({
-            "id": name,
-            "rule": rule,
-            "source": { "path": path, "line": line }
-        }))
-    })?.filter_map(Result::ok).collect::<Vec<_>>();
+    let direct_rows = stmt
+        .query_map(
+            rusqlite::params![&scope_json, &(DIRECT_LIMIT as i64)],
+            |row| {
+                let name: String = row.get(0)?;
+                let rule: Option<String> = row.get(1)?;
+                let path: String = row.get(2)?;
+                let line: i64 = row.get(3)?;
+                Ok(json!({
+                    "id": name,
+                    "rule": rule,
+                    "source": { "path": path, "line": line }
+                }))
+            },
+        )?
+        .filter_map(Result::ok)
+        .collect::<Vec<_>>();
 
     let neighbors = "neighbors(hash) AS (SELECT e.src_hash FROM edges e JOIN scope_nodes s ON s.hash=e.dst_hash WHERE e.kind IN('calls','possible_calls') UNION SELECT e.dst_hash FROM edges e JOIN scope_nodes s ON s.hash=e.src_hash WHERE e.kind IN('calls','possible_calls'))";
     let mut stmt = conn.prepare(&format!("{scope_nodes}, {neighbors}, direct AS (SELECT DISTINCT e.src_hash FROM edges e JOIN scope_nodes s ON s.hash=e.dst_hash WHERE e.kind='governs') SELECT DISTINCT n.name, json_extract(n.details,'$.rule'), p.path, n.line FROM edges e JOIN neighbors g ON g.hash=e.dst_hash JOIN nodes n ON n.node_hash=e.src_hash JOIN path_dictionary p ON p.path_id=n.path_id WHERE e.kind='governs' AND NOT EXISTS(SELECT 1 FROM direct d WHERE d.src_hash=e.src_hash) ORDER BY n.name, p.path, n.line LIMIT ?2"))?;
-    let transitive_rows = stmt.query_map(rusqlite::params![&scope_json, &(TRANSITIVE_LIMIT as i64)], |row| {
-        let name: String = row.get(0)?;
-        let _rule: Option<String> = row.get(1)?;
-        let path: String = row.get(2)?;
-        let line: i64 = row.get(3)?;
-        Ok((name.clone(), json!({ "id": name, "source": { "path": path, "line": line } })))
-    })?.filter_map(Result::ok).collect::<Vec<_>>();
+    let transitive_rows = stmt
+        .query_map(
+            rusqlite::params![&scope_json, &(TRANSITIVE_LIMIT as i64)],
+            |row| {
+                let name: String = row.get(0)?;
+                let _rule: Option<String> = row.get(1)?;
+                let path: String = row.get(2)?;
+                let line: i64 = row.get(3)?;
+                Ok((
+                    name.clone(),
+                    json!({ "id": name, "source": { "path": path, "line": line } }),
+                ))
+            },
+        )?
+        .filter_map(Result::ok)
+        .collect::<Vec<_>>();
 
-    let transitive_ids = transitive_rows.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>();
-    let omitted_sources = transitive_rows.iter().map(|(_, src)| src.clone()).collect::<Vec<_>>();
+    let transitive_ids = transitive_rows
+        .iter()
+        .map(|(id, _)| id.clone())
+        .collect::<Vec<_>>();
+    let omitted_sources = transitive_rows
+        .iter()
+        .map(|(_, src)| src.clone())
+        .collect::<Vec<_>>();
 
     let count_nodes = format!("{scope_nodes}, direct AS (SELECT DISTINCT e.src_hash FROM edges e JOIN scope_nodes s ON s.hash=e.dst_hash WHERE e.kind='governs') SELECT count(*) FROM direct");
     let mut count_stmt = conn.prepare(&count_nodes)?;
-    let direct_total: usize = count_stmt.query_row(rusqlite::params![&scope_json], |row| row.get(0)).unwrap_or(direct_rows.len());
+    let direct_total: usize = count_stmt
+        .query_row(rusqlite::params![&scope_json], |row| row.get(0))
+        .unwrap_or(direct_rows.len());
 
     let count_transitive = format!("{scope_nodes}, {neighbors}, direct AS (SELECT DISTINCT e.src_hash FROM edges e JOIN scope_nodes s ON s.hash=e.dst_hash WHERE e.kind='governs'), transitive AS (SELECT DISTINCT e.src_hash FROM edges e JOIN neighbors n ON n.hash=e.dst_hash WHERE e.kind='governs' AND NOT EXISTS(SELECT 1 FROM direct d WHERE d.src_hash=e.src_hash)) SELECT count(*) FROM transitive");
     let mut count_stmt2 = conn.prepare(&count_transitive)?;
-    let transitive_total: usize = count_stmt2.query_row(rusqlite::params![&scope_json], |row| row.get(0)).unwrap_or(transitive_rows.len());
+    let transitive_total: usize = count_stmt2
+        .query_row(rusqlite::params![&scope_json], |row| row.get(0))
+        .unwrap_or(transitive_rows.len());
 
     Ok(json!({
         "direct": direct_rows,
@@ -188,6 +227,7 @@ fn query_scope_symbols(workspace_root: &Path, root: &Path, scope: &[String]) -> 
         Err(_) => return Vec::new(),
     };
 
+    let mut documentation = conn.prepare("SELECT DISTINCT d.path || '#' || d.section_title FROM edges e JOIN nodes target ON target.node_hash=e.dst_hash JOIN path_dictionary tp ON tp.path_id=target.path_id JOIN nodes doc_node ON doc_node.node_hash=e.src_hash JOIN doc_sections d ON ((e.kind='documents' AND d.doc_id=doc_node.id) OR (e.kind='governs' AND d.doc_id=json_extract(doc_node.details,'$.document_id'))) WHERE e.kind IN ('documents','governs') AND doc_node.kind IN ('document','invariant') AND d.doc_type != 'contract' AND d.path NOT LIKE 'archive/%' AND d.path NOT LIKE '%/archive/%' AND d.path NOT LIKE 'docs/milestones/%' AND d.path NOT LIKE '%/docs/milestones/%' AND tp.path=?1 AND target.name=?2 AND target.line=?3 ORDER BY d.path,d.rowid LIMIT 5").ok();
     let mut symbols = Vec::new();
     for scope_path in scope {
         let (sql, param) = if scope_path.ends_with('/') {
@@ -216,13 +256,28 @@ fn query_scope_symbols(workspace_root: &Path, root: &Path, scope: &[String]) -> 
                             .and_then(|s| s.as_str())
                             .map(|s| truncate_chars(s, 200))
                     });
-                Ok(json!({
+                let docs = documentation
+                    .as_mut()
+                    .and_then(|statement| {
+                        statement
+                            .query_map(rusqlite::params![&path, &name, line], |row| {
+                                row.get::<_, String>(0)
+                            })
+                            .ok()
+                            .map(|rows| rows.filter_map(Result::ok).collect::<Vec<_>>())
+                    })
+                    .unwrap_or_default();
+                let mut symbol = json!({
                     "name": name,
                     "kind": kind,
                     "path": path,
                     "line": line,
                     "signature": signature,
-                }))
+                });
+                if !docs.is_empty() {
+                    symbol["documented_by"] = json!(docs);
+                }
+                Ok(symbol)
             });
             if let Ok(iter) = rows {
                 for item in iter.flatten() {
@@ -489,8 +544,7 @@ fn linked_milestone_context(
         let archived = manifest_path
             .components()
             .any(|component| component.as_os_str() == "archive");
-        let status =
-            crate::tasks::Milestone::status_from_frontmatter(&manifest_text, archived)?;
+        let status = crate::tasks::Milestone::status_from_frontmatter(&manifest_text, archived)?;
         let milestone_id = manifest_text
             .strip_prefix("---\n")
             .and_then(|frontmatter| frontmatter.split_once("\n---\n"))
@@ -838,7 +892,7 @@ pub(super) fn context_bundle(
                (?2 IS NOT NULL AND milestone_ref = ?2 AND task_id IS NULL) OR \
                (?3 IS NOT NULL AND substr(task_id,1,length(?3)) = ?3)) \
               AND (recipient_task_id IS NULL OR recipient_task_id = ?1) \
-             AND (gate IS NULL OR gate = ?4) \
+             AND (gate IS NULL OR gate = ?4 OR topic IN ('decisions', 'findings', 'blockers')) \
              ORDER BY created_at DESC, id DESC LIMIT 15",
         )?;
             let mut msgs = stmt
@@ -891,9 +945,32 @@ pub(super) fn context_bundle(
     };
 
     // 5. Gate-aware workflow guidance and subtask DoD
-    let requested_tools = active_gate
+    let mut requested_tools = active_gate
         .map(|gate| gate.tools.clone())
         .unwrap_or_else(|| profile.completed.tools.clone());
+    if requested_tools.is_empty()
+        && matches!(
+            proof_kind,
+            Some(
+                crate::tasks::profile::ProofKind::Contract
+                    | crate::tasks::profile::ProofKind::Command
+                    | crate::tasks::profile::ProofKind::Review
+            )
+        )
+    {
+        requested_tools = [
+            "code_map_overview",
+            "code_map_search",
+            "code_map_inspect",
+            "get_code_snippet",
+            "search_docs",
+            "get_doc",
+            "task_blackboard",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    }
     let recommended_tools = crate::tasks::catalog::filter_subsystem_tools(
         requested_tools.iter().map(String::as_str),
         &modules,
@@ -922,6 +999,74 @@ pub(super) fn context_bundle(
             .cloned()
             .unwrap_or_else(|| json!([]));
         guidance_map.insert("stage".into(), json!(stage));
+        if let Some((role_id, role)) = active_gate
+            .and_then(|gate| gate.role.as_deref())
+            .and_then(|id| profile.roles.get(id).map(|role| (id, role)))
+            .filter(|(_, role)| role.runner.is_some() || role.prompt_template.is_some())
+        {
+            let model = role.models.first();
+            let bindings = [
+                ("task_id", task_id),
+                ("stage", stage),
+                ("role", role_id),
+                ("worktree", details["worktree"].as_str().unwrap_or_default()),
+                (
+                    "model",
+                    model.map(|model| model.model.as_str()).unwrap_or_default(),
+                ),
+                (
+                    "reasoning",
+                    model
+                        .and_then(|model| model.reasoning.as_deref())
+                        .unwrap_or_default(),
+                ),
+                (
+                    "role_guidance",
+                    guidance_map
+                        .get("role_guide")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default(),
+                ),
+                ("goal", details["goal"].as_str().unwrap_or_default()),
+            ];
+            let render = |template: &str| {
+                // Expand only original template slots; inserted values remain literal.
+                let mut rendered = String::new();
+                let mut remaining = template;
+                while let Some(start) = remaining.find('{') {
+                    rendered.push_str(&remaining[..start]);
+                    remaining = &remaining[start..];
+                    let Some(end) = remaining.find('}') else {
+                        break;
+                    };
+                    if let Some((_, value)) =
+                        bindings.iter().find(|(key, _)| *key == &remaining[1..end])
+                    {
+                        rendered.push_str(value);
+                    } else {
+                        rendered.push_str(&remaining[..=end]);
+                    }
+                    remaining = &remaining[end + 1..];
+                }
+                rendered.push_str(remaining);
+                rendered
+            };
+            if role.runner.is_some() || role.prompt_template.is_some() {
+                let runner = role.runner.as_deref().map(render);
+                let rendered_prompt = render(role.prompt_template.as_deref().unwrap_or(
+                    "Execute role {role} for task {task_id} at stage {stage} in {worktree}. Inspect the claimed gate context, verify scope and invariants, and submit evidence via task_submit. Goal: {goal}. {role_guidance}",
+                ));
+                guidance_map.insert(
+                    "role_runner".into(),
+                    json!({
+                        "role": role_id,
+                        "mode": role.effective_mode(),
+                        "runner": runner,
+                        "rendered_prompt": rendered_prompt,
+                    }),
+                );
+            }
+        }
         guidance_map.insert("recommended_tools".into(), json!(recommended_tools));
         guidance_map.insert("actionable_steps".into(), steps);
         let subtask_dod = workspace
@@ -1132,6 +1277,7 @@ pub(super) fn context_bundle(
     obj.remove("adrs");
     obj.remove("scope_symbols");
     obj.remove("covering_tests");
+    obj.remove("authority_snapshot");
 
     // Retain bounded blackboard and contract essentials at root
     obj.insert("depends_on".into(), depends_on);

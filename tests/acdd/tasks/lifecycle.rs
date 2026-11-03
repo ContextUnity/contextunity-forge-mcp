@@ -376,6 +376,7 @@ fn task_cli_submit_accepts_json_object_and_persists_gate_evidence() {
             command: command.into(),
             timeout_seconds: Some(5),
             description: Some("Run the zero-argument CLI proof fixture".into()),
+            scope_args_by_pattern: Default::default(),
         },
     );
     profile_override
@@ -1375,6 +1376,94 @@ fn contract_readmission_and_reset_fence_old_evidence() {
 }
 
 #[test]
+fn review_claim_requires_an_independent_agent_session() {
+    const CHILD: &str = "FORGE_TEST_SESSION_INDEPENDENCE";
+    if std::env::var_os(CHILD).is_none() {
+        for key in [
+            "FORGE_AGENT_SESSION_ID",
+            "CODEX_THREAD_ID",
+            "AGY_CONVERSATION_ID",
+            "CLAUDE_SESSION_ID",
+        ] {
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            for variable in [
+                "FORGE_AGENT_SESSION_ID",
+                "CODEX_THREAD_ID",
+                "AGY_CONVERSATION_ID",
+                "CLAUDE_SESSION_ID",
+            ] {
+                command.env_remove(variable);
+            }
+            let output = command
+                .args([
+                    "--exact",
+                    "acdd::tasks::lifecycle::review_claim_requires_an_independent_agent_session",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .env(key, "independence-test-session")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{key}: {}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        }
+        return;
+    }
+    let (root, mut store, milestone) = fixture();
+    let id = milestone.task_id(&milestone.tasks[0]);
+    for stage in ["contract", "build"] {
+        let claimed = store
+            .claim(&id, stage, "builder", root.0.to_str().unwrap())
+            .unwrap();
+        store
+            .submit(&id, stage, &evidence(&claimed), "pass", None)
+            .unwrap();
+    }
+    let error = store
+        .claim(&id, "review", "renamed-reviewer", root.0.to_str().unwrap())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("TASK_REVIEW_NOT_INDEPENDENT"), "{error}");
+    assert!(error.contains("same agent session fingerprint"), "{error}");
+    assert_eq!(store.inspect(&id).unwrap().status, "ready");
+}
+
+#[test]
+fn review_submit_rejects_matching_persisted_session_fingerprints() {
+    let (root, mut store, milestone) = fixture();
+    let id = milestone.task_id(&milestone.tasks[0]);
+    for stage in ["contract", "build"] {
+        let claimed = store
+            .claim(&id, stage, "builder", root.0.to_str().unwrap())
+            .unwrap();
+        store
+            .submit(&id, stage, &evidence(&claimed), "pass", None)
+            .unwrap();
+    }
+    let claimed = store
+        .claim(&id, "review", "reviewer", root.0.to_str().unwrap())
+        .unwrap();
+    // Claims admitted before session validation still fail closed at submission.
+    store.connection.execute(
+        "UPDATE task_claims SET session_fingerprint='persisted-builder-session' WHERE task_id=?1",
+        [&id],
+    ).unwrap();
+    let mut review = evidence(&claimed);
+    review.proof = passing_review_proof();
+    let error = store
+        .submit(&id, "review", &review, "pass", None)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("TASK_REVIEW_NOT_INDEPENDENT"), "{error}");
+    assert_eq!(store.inspect(&id).unwrap().status, "in_progress");
+}
+
+#[test]
 fn review_rejection_retains_findings_and_requires_a_new_build() {
     let (root, mut store, milestone) = fixture();
     root.write(
@@ -1390,13 +1479,10 @@ fn review_rejection_retains_findings_and_requires_a_new_build() {
             .submit(&id, stage, &evidence(&claimed), "pass", None)
             .unwrap();
     }
-    let claimed = store
+    let error = store
         .claim(&id, "review", "builder", root.0.to_str().unwrap())
-        .unwrap();
-    let mut review = evidence(&claimed);
-    review.proof = passing_review_proof();
-    assert!(store.submit(&id, "review", &review, "pass", None).is_err());
-    store.reset(&id).unwrap();
+        .unwrap_err();
+    assert!(error.to_string().contains("TASK_REVIEW_NOT_INDEPENDENT"));
     let claimed = store
         .claim(&id, "review", "reviewer", root.0.to_str().unwrap())
         .unwrap();
@@ -3600,10 +3686,8 @@ gates:
 
     tasks::manage(
         &root.0,
-        serde_json::from_value(
-            json!({"action": "sync", "milestone_ref": "docs/010-atomic.md"}),
-        )
-        .unwrap(),
+        serde_json::from_value(json!({"action": "sync", "milestone_ref": "docs/010-atomic.md"}))
+            .unwrap(),
     )
     .unwrap();
 
@@ -3655,13 +3739,11 @@ gates:
         .expect("claim checkpoint must not be deleted by concurrent attacker");
 
     assert_eq!(
-        sample_checkpoint.state_payload["task_id"],
-        task_id,
+        sample_checkpoint.state_payload["task_id"], task_id,
         "checkpoint must retain engine task_id"
     );
     assert_eq!(
-        sample_checkpoint.state_payload["claim_revision"],
-        claim_res["claim_revision"],
+        sample_checkpoint.state_payload["claim_revision"], claim_res["claim_revision"],
         "checkpoint must retain engine claim_revision"
     );
 

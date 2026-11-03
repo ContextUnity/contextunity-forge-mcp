@@ -589,3 +589,75 @@ fn cancelled_milestone_blackboard_pruning_is_project_scoped() {
     assert_eq!(selected_rows, 0);
     assert_eq!(linked_rows, 1);
 }
+
+#[test]
+fn blackboard_accepts_nested_task_gates_read_aliases_and_unique_in_progress_task() {
+    use contextunity_forge_mcp::engine::tasks as engine_tasks;
+
+    let root = ScopedWorkspace::new("forge_blackboard_nested_gates");
+    root.write(".gitignore", ".forge/\n");
+    root.write("forge-mcp.yaml", "tasks_db: .forge/tasks.sqlite\n");
+    root.write(
+        ".forge/acdd/profile.yaml",
+        r#"gates:
+  - id: "contract_synthesis"
+    role: "architect"
+    proof: "contract"
+  - tasks:
+      gates:
+        - id: "contract"
+          role: "contract_author"
+          proof: "contract"
+        - id: "build"
+          role: "builder"
+          command: "test"
+          proof: "command"
+        - id: "review"
+          role: "independent_reviewer"
+          proof: "review"
+        - id: "deliver"
+          role: "independent_reviewer"
+          proof: "delivery"
+          receipt: true
+"#,
+    );
+    let manifest = "---\nid: m-nested-bb\ntitle: Nested blackboard\ndoc_type: contract\nstatus: active\n---\n# Nested blackboard\n```yaml\ntask_ref: first\ntarget: First task\nproof_policy: seam-test-first\nscope: [src/]\n```\n```yaml\ntask_ref: second\ntarget: Second task\nproof_policy: seam-test-first\nscope: [docs/]\n```\n";
+    root.write("docs/milestones/010-nested-bb.md", manifest);
+    let milestone = Milestone::parse(manifest, "forge-mcp").unwrap();
+    let database = root.0.join(".forge/tasks.sqlite");
+    let mut store = TasksStore::open(&database).unwrap();
+    store
+        .sync(&milestone, "docs/milestones/010-nested-bb.md", &root.0)
+        .unwrap();
+    let first = milestone.task_id(&milestone.tasks[0]);
+    let second = milestone.task_id(&milestone.tasks[1]);
+    store
+        .claim(&first, "contract", "worker-one", root.0.to_str().unwrap())
+        .unwrap();
+    store.reset(&first).unwrap();
+    store
+        .claim(&second, "contract", "worker-two", root.0.to_str().unwrap())
+        .unwrap();
+
+    let call =
+        |args| engine_tasks::blackboard(&root.0, serde_json::from_value(args).unwrap(), "test");
+    let posted = call(json!({
+        "action": "post",
+        "gate": "build",
+        "topic": "draft",
+        "payload": "handoff to nested build gate"
+    }))
+    .unwrap();
+    let msg_id = posted["id"].as_u64().unwrap();
+
+    for alias in ["get", "list", "read"] {
+        let page = call(json!({
+            "action": alias,
+            "gate": "build"
+        }))
+        .unwrap();
+        assert_eq!(page["messages"].as_array().unwrap().len(), 1, "alias: {alias}");
+        assert_eq!(page["messages"][0]["id"], msg_id);
+        assert_eq!(page["messages"][0]["task_id"], second);
+    }
+}

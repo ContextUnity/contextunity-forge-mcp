@@ -52,7 +52,7 @@ fn bound_task_response(mut value: Value) -> Value {
     }
     // Remove whole fields, never partial authority text. Preserve claim identity
     // and proof templates ahead of optional context, including duplicate copies.
-    fn largest_field(value: &Value, prefix: &str) -> Option<(bool, usize, String)> {
+    fn largest_field(value: &Value, prefix: &str) -> Option<(u8, usize, String)> {
         value
             .as_object()?
             .iter()
@@ -60,11 +60,7 @@ fn bound_task_response(mut value: Value) -> Value {
                 let path = format!("{prefix}/{}", key.replace('~', "~0").replace('/', "~1"));
                 if matches!(
                     key.as_str(),
-                    "context_bundle"
-                        | "contract"
-                        | "guidance"
-                        | "workflow_guidance"
-                        | "authority_snapshot"
+                    "context_bundle" | "contract" | "guidance" | "workflow_guidance"
                 ) && child.as_object().is_some_and(|object| !object.is_empty())
                 {
                     return largest_field(child, &path);
@@ -84,7 +80,28 @@ fn bound_task_response(mut value: Value) -> Value {
                         | "latest_snapshot"
                         | "proof_schema"
                 );
-                Some((optional, task_response_bytes(child) + key.len(), path))
+                let priority_tier = if path.starts_with("/context_bundle/guidance/")
+                    || matches!(
+                        path.as_str(),
+                        "/context_bundle/blackboard"
+                            | "/context_bundle/blackboard_info"
+                            | "/context_bundle/linked_milestones"
+                            | "/workflow_guidance/linked_milestones"
+                            | "/workflow_guidance/actionable_steps"
+                            | "/authority_snapshot"
+                    ) {
+                    3
+                } else if matches!(
+                    path.as_str(),
+                    "/context_bundle/scope_symbols"
+                        | "/context_bundle/covering_tests"
+                        | "/context_bundle/external_callers"
+                ) {
+                    2
+                } else {
+                    u8::from(optional)
+                };
+                Some((priority_tier, task_response_bytes(child) + key.len(), path))
             })
             .max()
     }

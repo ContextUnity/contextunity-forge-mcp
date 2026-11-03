@@ -35,12 +35,11 @@ external prerequisite, rather than a bundled companion. Verify that
 `~/.agents/skills/review-authority/SKILL.md` is present before invoking
 `close-review-findings`.
 
-To make these skills globally available to your agent (e.g., in Claude Desktop, Cursor, or CLI agents):
+To make these skills globally available to your agent (Antigravity/Gemini, Codex, Claude, Cursor):
 
 ```bash
-# Example: Copy skills to your global agent skills directory
-mkdir -p ~/.agents/skills
-cp -r skills/* ~/.agents/skills/
+# Sync all bundled skills to ~/.agents/skills and link/update detected agent directories:
+./skills/install.sh
 ```
 
 In your repository's `AGENTS.md`, reference the required skills as described in [skills/contextunity-forge/references/agents.md.example](contextunity-forge/references/agents.md.example).

@@ -54,10 +54,21 @@ where
                         (&doc.doc_id, &target_doc.doc_id, "cites_doc"),
                         (&target_doc.doc_id, &doc.doc_id, "cited_by_doc"),
                     ] {
-                        graph.push_edge(path, src.clone(), dst.clone(), kind, line, target, "exact");
+                        graph.push_edge(
+                            path,
+                            src.clone(),
+                            dst.clone(),
+                            kind,
+                            line,
+                            target,
+                            "exact",
+                        );
                     }
                 }
             }
+        }
+        if path.starts_with("archive/") || path.contains("/archive/") {
+            continue;
         }
         let claims = document_details
             .and_then(|details| details.get("symbol_claims"))
@@ -128,21 +139,26 @@ where
             .and_then(serde_json::Value::as_array)
         {
             for claim in claims {
-                let (Some(name), Some(target_path)) =
-                    (claim["name"].as_str(), claim["target_path"].as_str())
-                else {
+                let Some(name) = claim["name"].as_str() else {
                     continue;
                 };
-                if target_path.split('/').any(|component| component == "..") {
+                let explicit_path = claim["explicit_path"].as_bool().unwrap_or(false);
+                let path_filter = if explicit_path {
+                    claim["target_path"].as_str()
+                } else {
+                    None
+                };
+                if explicit_path && path_filter.is_none()
+                    || path_filter.is_some_and(|path| path.split('/').any(|part| part == ".."))
+                {
                     continue;
                 }
-                let target_path = target_path.to_owned();
                 let normalized = name.replace("::", ".");
                 let Some(candidates) = document_symbol_candidates(
                     &normalized,
                     name,
                     path,
-                    Some(&target_path),
+                    path_filter,
                     by_qual,
                     by_name,
                     by_suffix,
@@ -156,7 +172,11 @@ where
                 let invariant_nodes = facts
                     .nodes
                     .iter()
-                    .filter(|node| node.kind == "invariant" && node.line == claim_line)
+                    .filter(|node| {
+                        node.kind == "invariant"
+                            && claim_line >= node.line
+                            && claim_line <= node.end_line.max(node.line)
+                    })
                     .collect::<Vec<_>>();
                 for invariant in invariant_nodes {
                     for (src, dst, kind) in [

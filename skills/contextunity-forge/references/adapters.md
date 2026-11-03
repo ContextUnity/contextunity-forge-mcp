@@ -9,3 +9,11 @@ Without an adapter file, Forge scans `.` respecting `.gitignore`, excludes commo
 For Git-linked worktrees, relative `tasks_db` paths resolve from the primary worktree root and share task state. Standalone repositories remain independent unless explicitly configured to share a store. Worktree selector precedence for MCP is described in the [tool catalog](tool-catalog.md#discovery-and-search).
 
 The starter adapter demonstrates roots, documentation/milestone/plan paths, ignores, optional linked workspaces and linked task guidance, task identity, response limits, and the optional ACDD profile path. Its sample linked workspace uses sibling path `../shared-core`, with `src` roots and task milestone/guidance paths.
+
+Include both source roots when indexing a multi-crate workspace:
+
+```yaml
+roots:
+  - src
+  - crates # Include crates for multi-crate workspaces.
+```

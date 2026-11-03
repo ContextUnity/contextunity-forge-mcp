@@ -22,21 +22,21 @@ Deferred workspace-split target: [Milestone PF-001](../milestones/PF-001-cold-bu
 
 | Файл | Поточний розмір (рядків) | Приріст у `022` vs `main` | Головна проблема (Діагноз) |
 | :--- | ---: | ---: | :--- |
-| [`src/engine/linker/value_flow.rs`](../../src/engine/linker/value_flow.rs) | 3,558 | +601 | Надскладний процедурний двигун потоків значень; `ScopeTypeEnv` доданий, але не підключений у гарячий шлях `lookup_tracked`, жоден рядок старих евристик не видалений; 540 рядків unit-тестів лежать у тому ж файлі. |
-| [`src/engine/linker/semantic_context.rs`](../../src/engine/linker/semantic_context.rs) | 3,522 | +2,150 | Гігантські монолітні методи: `prepare_component_environments` (530 рядків), `visible` (550 рядків), `member` (342 рядки), `resolve_symbol` (380 рядків) із сотнями `String`-алокацій. |
-| [`src/engine/linker/resolution.rs`](../../src/engine/linker/resolution.rs) | 2,805 | +573 | **Одна функція `resolve` на 2,645 рядків** (рядки 99–2743) із двічі скопійованим блоком ланцюжкового обходу полів `for field in fields.split('.')` (рядки 1089–1136 та 2008–2080). |
-| [`src/engine/languages/dependency_registry.rs`](../../src/engine/languages/dependency_registry.rs) | 2,584 | +578 | Диспетчеризація правил побудована на рядкових `HashMap<String, Vec<usize>>` замість числових `node.kind_id(): u16` та бітової маски імпортів. |
-| [`src/engine/ast/visitor.rs`](../../src/engine/ast/visitor.rs) | 2,028 | +515 | Змішані загальний обхідник `SinglePassExtractor` та специфічні для мов гілки. |
-| [`src/core/semantic.rs`](../../src/core/semantic.rs) | 1,926 | +868 | Величезні DTO-структури `ValueFlowFacts` (16 векторів на кожен скоуп) та `SemanticFactRole`. |
-| [`src/engine/ast/routes.rs`](../../src/engine/ast/routes.rs) | 1,606 | +1,318 | Ручний процедурний аналізатор маршрутів замість декларативних примітивів. |
-| [`src/engine/languages/typescript/frameworks.rs`](../../src/engine/languages/typescript/frameworks.rs) | 1,529 | +1,378 | Окремий процедурний інтерпретатор TS/Vue/React фреймворк-правил, що дублює логіку Python-екстрактора. |
-| [`src/core/typed_facts.rs`](../../src/core/typed_facts.rs) | 1,377 | +947 | Ручне перекладання 16 масивів `ValueFlowFacts` між `Node.details` JSON, `FlowStore` та `SemanticStore`. |
-| [`src/db/writer/cache.rs`](../../src/db/writer/cache.rs) | 1,324 | +918 | Проміжні `FactsDto`, `NodeDto`, `FlowEntryDto`, `SemanticEntryDto`, `BinaryValue` + 700+ рядків ручного побайтового кодування кожного поля. |
-| [`src/engine/linker/framework_relations.rs`](../../src/engine/linker/framework_relations.rs) | 1,297 | +1,239 | Кастомна логіка зв'язування фреймворк-відношень у лінкері. |
-| [`src/engine/languages/python/render_context.rs`](../../src/engine/languages/python/render_context.rs) | 1,223 | +1,205 | Окремий процедурний рушій під Django `render()` / `get_context_data()`. |
-| [`src/engine/languages/python/projections.rs`](../../src/engine/languages/python/projections.rs) | 1,153 | +1,153 | Окремий процедурний рушій проекцій Python-фреймворків. |
-| [`src/db/writer.rs`](../../src/db/writer.rs) | 809 | +208 | Нагромадження `PreparedCatalogStorage` та подвійне кодування фактів (`encode_facts_ms` → JSON у `nodes.details`). |
-| [`src/engine/linker/interner.rs`](../../src/engine/linker/interner.rs) | 357 | +357 | `LinkerInterner`, `SymbolId(u32)`, `PathId(u32)` написані, але **ніде не підключені** до таблиць лінкера (використовується лише `file_import_mask`). |
+| [`src/engine/linker/value_flow.rs`](../../crates/forge-index/src/linker/value_flow.rs) | 3,558 | +601 | Надскладний процедурний двигун потоків значень; `ScopeTypeEnv` доданий, але не підключений у гарячий шлях `lookup_tracked`, жоден рядок старих евристик не видалений; 540 рядків unit-тестів лежать у тому ж файлі. |
+| [`src/engine/linker/semantic_context.rs`](../../crates/forge-index/src/linker/semantic_context.rs) | 3,522 | +2,150 | Гігантські монолітні методи: `prepare_component_environments` (530 рядків), `visible` (550 рядків), `member` (342 рядки), `resolve_symbol` (380 рядків) із сотнями `String`-алокацій. |
+| [`src/engine/linker/resolution.rs`](../../crates/forge-index/src/linker/resolution/mod.rs) | 2,805 | +573 | **Одна функція `resolve` на 2,645 рядків** (рядки 99–2743) із двічі скопійованим блоком ланцюжкового обходу полів `for field in fields.split('.')` (рядки 1089–1136 та 2008–2080). |
+| [`src/engine/languages/dependency_registry.rs`](../../crates/forge-index/src/languages/dependency_registry.rs) | 2,584 | +578 | Диспетчеризація правил побудована на рядкових `HashMap<String, Vec<usize>>` замість числових `node.kind_id(): u16` та бітової маски імпортів. |
+| [`src/engine/ast/visitor.rs`](../../crates/forge-index/src/ast/visitor.rs) | 2,028 | +515 | Змішані загальний обхідник `SinglePassExtractor` та специфічні для мов гілки. |
+| [`src/core/semantic.rs`](../../crates/forge-core/src/semantic.rs) | 1,926 | +868 | Величезні DTO-структури `ValueFlowFacts` (16 векторів на кожен скоуп) та `SemanticFactRole`. |
+| [`src/engine/ast/routes.rs`](../../crates/forge-index/src/ast/routes.rs) | 1,606 | +1,318 | Ручний процедурний аналізатор маршрутів замість декларативних примітивів. |
+| `src/engine/languages/typescript/frameworks.rs` | 1,529 | +1,378 | Окремий процедурний інтерпретатор TS/Vue/React фреймворк-правил, що дублює логіку Python-екстрактора. |
+| [`src/core/typed_facts.rs`](../../crates/forge-core/src/typed_facts.rs) | 1,377 | +947 | Ручне перекладання 16 масивів `ValueFlowFacts` між `Node.details` JSON, `FlowStore` та `SemanticStore`. |
+| [`src/db/writer/cache.rs`](../../crates/forge-index/src/db/writer/cache.rs) | 1,324 | +918 | Проміжні `FactsDto`, `NodeDto`, `FlowEntryDto`, `SemanticEntryDto`, `BinaryValue` + 700+ рядків ручного побайтового кодування кожного поля. |
+| [`src/engine/linker/framework_relations.rs`](../../crates/forge-index/src/linker/framework_relations.rs) | 1,297 | +1,239 | Кастомна логіка зв'язування фреймворк-відношень у лінкері. |
+| `src/engine/languages/python/render_context.rs` | 1,223 | +1,205 | Окремий процедурний рушій під Django `render()` / `get_context_data()`. |
+| [`src/engine/languages/python/projections.rs`](../../crates/forge-index/src/languages/python/projections.rs) | 1,153 | +1,153 | Окремий процедурний рушій проекцій Python-фреймворків. |
+| [`src/db/writer.rs`](../../crates/forge-index/src/db/writer.rs) | 809 | +208 | Нагромадження `PreparedCatalogStorage` та подвійне кодування фактів (`encode_facts_ms` → JSON у `nodes.details`). |
+| [`src/engine/linker/interner.rs`](../../crates/forge-index/src/linker/interner.rs) | 357 | +357 | `LinkerInterner`, `SymbolId(u32)`, `PathId(u32)` написані, але **ніде не підключені** до таблиць лінкера (використовується лише `file_import_mask`). |
 
 ---
 
@@ -44,14 +44,14 @@ Deferred workspace-split target: [Milestone PF-001](../milestones/PF-001-cold-bu
 
 Наступні 4 підсистеми є фундаментом швидкодії та коректності — їхні контракти та алгоритми змінювати **заборонено**:
 
-1. **Двофазна публікація SQLite та читацька ізоляція ([`src/db/writer.rs`](../../src/db/writer.rs), [`src/db/reader.rs`](../../src/db/reader.rs))**:
+1. **Двофазна публікація SQLite та читацька ізоляція ([`src/db/writer.rs`](../../crates/forge-index/src/db/writer.rs), [`src/db/reader.rs`](../../crates/forge-index/src/db/reader.rs))**:
    - Побудова у тимчасовий candidate-файл із `PRAGMA journal_mode = MEMORY; synchronous = OFF; temp_store = MEMORY; cache_spill = ON;`, відкладене створення вторинних індексів (`deferred-index-batched`) після пакетної вставки, перемикання у `WAL` + `PRAGMA wal_checkpoint(TRUNCATE)` перед атомарним `fs::rename`.
-2. **Гібридний 17-доменний in-memory Merkle sealing ([`src/db/writer/seal.rs`](../../src/db/writer/seal.rs), [`src/core/commitments.rs`](../../src/core/commitments.rs))**:
+2. **Гібридний 17-доменний in-memory Merkle sealing ([`src/db/writer/seal.rs`](../../crates/forge-index/src/db/writer/seal.rs), [`src/core/commitments.rs`](../../crates/forge-core/src/commitments.rs))**:
    - In-memory хешування 13 логічних доменів та C-API FTS5 токенізація 4 пошукових доменів у канонічному порядку `(term, docid, col, pos)`, що гарантує побітову еквівалентність `cold build == incremental delta` (`forge-owner-sha256-v2`).
-3. **Крос-ворктрі бінарний кеш екстракції ([`ExtractionCache`](../../src/db/writer/cache.rs))**:
+3. **Крос-ворктрі бінарний кеш екстракції ([`ExtractionCache`](../../crates/forge-index/src/db/writer/cache.rs))**:
    - Контент-адресований ключ `SHA-256(source) + relative_path + grammar_id + INDEX_SEMANTICS_VERSION + effective_ruleset_hash` з атомарним `write-temp-fsync-rename` та `O_NOFOLLOW`.
-4. **Однопрохідний ітеративний обхід `TreeCursor` ([`walk`](../../src/engine/ast/visitor.rs)), мемоізація `Arc<LanguageContext>` та повернення арен `libc::malloc_trim(0)`**:
-   - Плоский обхід AST за один прохід, кешування `Arc<LanguageContext>` на воркснейс-скоуп у [`DependencyRegistry`](../../src/engine/languages/dependency_registry.rs) та виклики `libc::malloc_trim(0)` на фазових границях пайплайну ([`src/engine/pipeline.rs`](../../src/engine/pipeline.rs), [`src/db/writer.rs`](../../src/db/writer.rs)), які примусово повертають вільні сторінки потоків екстракції/лінкування ядру ОС і тримають RSS у межах бюджету.
+4. **Однопрохідний ітеративний обхід `TreeCursor` ([`walk`](../../crates/forge-index/src/ast/visitor.rs)), мемоізація `Arc<LanguageContext>` та повернення арен `libc::malloc_trim(0)`**:
+   - Плоский обхід AST за один прохід, кешування `Arc<LanguageContext>` на воркснейс-скоуп у [`DependencyRegistry`](../../crates/forge-index/src/languages/dependency_registry.rs) та виклики `libc::malloc_trim(0)` на фазових границях пайплайну ([`src/engine/pipeline.rs`](../../src/engine/pipeline.rs), [`src/db/writer.rs`](../../crates/forge-index/src/db/writer.rs)), які примусово повертають вільні сторінки потоків екстракції/лінкування ядру ОС і тримають RSS у межах бюджету.
 
 ---
 
@@ -64,22 +64,22 @@ Deferred workspace-split target: [Milestone PF-001](../milestones/PF-001-cold-bu
 ### Блок 1: Декларативний бінарний кодек (`BinaryCodec`) замість ручних DTO у `cache.rs`, `typed_facts.rs` та `writer.rs`
 
 #### 1.1. Для чого це робити
-У [`src/db/writer/cache.rs`](../../src/db/writer/cache.rs) (1,324 рядки) та [`src/db/writer.rs`](../../src/db/writer.rs) (809 рядків) написані проміжні клон-структури (`FactsDto`, `NodeDto`, `FlowEntryDto`, `SemanticEntryDto`, `UncertaintyEntryDto`, `BinaryValue`), які спочатку клонують усі рядки й вектори з `TypedFacts` у DTO (`facts_to_dto`), а потім вручну по одному полю записують їх у `Vec<u8>`. Це:
+У [`src/db/writer/cache.rs`](../../crates/forge-index/src/db/writer/cache.rs) (1,324 рядки) та [`src/db/writer.rs`](../../crates/forge-index/src/db/writer.rs) (809 рядків) написані проміжні клон-структури (`FactsDto`, `NodeDto`, `FlowEntryDto`, `SemanticEntryDto`, `UncertaintyEntryDto`, `BinaryValue`), які спочатку клонують усі рядки й вектори з `TypedFacts` у DTO (`facts_to_dto`), а потім вручну по одному полю записують їх у `Vec<u8>`. Це:
 - створює зайву хвилю алокацій на кожному файлі при записі/читанні кешу;
 - займає ~850 рядків однотипного бойлерплейту `write_*` / `read_*`.
 
 #### 1.2. Що ВИДАЛИТИ
-1. У [`src/db/writer/cache.rs`](../../src/db/writer/cache.rs):
+1. У [`src/db/writer/cache.rs`](../../crates/forge-index/src/db/writer/cache.rs):
    - **Видалити** проміжні структури `FactsDto`, `NodeDto`, `FlowEntryDto`, `SemanticEntryDto`, `UncertaintyEntryDto` (рядки 211–258).
    - **Видалити** функції перекладання `facts_to_dto` та `dto_to_facts` (рядки 478–562).
    - **Видалити** ручні функції `write_dto`, `read_dto`, `write_flow_facts`, `read_flow_facts`, `write_semantic_fact`, `read_semantic_fact`, `write_value_expr`, `read_value_expr`, `write_type_expr`, `read_type_expr`, `write_receiver_hint`, `read_receiver_hint` (рядки 328–477 та 679–1115 — сумарно **~580 рядків**).
-2. У [`src/db/writer.rs`](../../src/db/writer.rs):
+2. У [`src/db/writer.rs`](../../crates/forge-index/src/db/writer.rs):
    - **Видалити** ручні функції `encode_prepared_storage`, `decode_prepared_storage`, `write_u32`, `write_str`, `write_string_slice`, `read_u32`, `read_string`, `read_string_vec` (рядки 676–868 — **192 рядки**), які дублюють примітиви з `cache.rs`.
-3. У [`src/core/typed_facts.rs`](../../src/core/typed_facts.rs):
+3. У [`src/core/typed_facts.rs`](../../crates/forge-core/src/typed_facts.rs):
    - **Видалити** поштучне перекладання 16 полів у `FlowStore::merge_classic` (рядки 845–910) та `scope_fact_count` (рядки 430–450), замінивши їх єдиним макросом переліку полів `for_each_scope_fact_vec!`.
 
 #### 1.3. Що ДОДАТИ / ЗАМІНИТИ
-1. У [`src/db/writer/cache.rs`](../../src/db/writer/cache.rs) ввести два компактні трейти та декларативний макрос `impl_binary_codec!`:
+1. У [`src/db/writer/cache.rs`](../../crates/forge-index/src/db/writer/cache.rs) ввести два компактні трейти та декларативний макрос `impl_binary_codec!`:
    ```rust
    pub(crate) trait BinaryEncode {
        fn encode(&self, buf: &mut Vec<u8>);
@@ -108,16 +108,16 @@ Deferred workspace-split target: [Milestone PF-001](../milestones/PF-001-cold-bu
 Заміна рядкового диспатчу на масив фіксованого розміру за числовим `node.kind_id(): u16` (O(1) індексація без хешування) та побітовий префільтр `(file_import_mask & rule.import_mask) == rule.import_mask` перед запуском правил відсікають 95% правил за 1 такт CPU.
 
 #### 2.2. Що ВИДАЛИТИ
-1. У [`src/engine/languages/manifests/syntax.rs`](../../src/engine/languages/manifests/syntax.rs) та [`src/engine/languages/dependency_registry.rs`](../../src/engine/languages/dependency_registry.rs):
+1. У [`src/engine/languages/manifests/syntax.rs`](../../crates/forge-index/src/languages/manifests/syntax.rs) та [`src/engine/languages/dependency_registry.rs`](../../crates/forge-index/src/languages/dependency_registry.rs):
    - **Видалити** рядкову індексацію `by_node_kind: HashMap<String, Vec<usize>>` для AST-диспатчу в гарячому циклі.
-2. У [`src/engine/languages/python/projections.rs`](../../src/engine/languages/python/projections.rs) (рядки 260–420) та [`src/engine/languages/typescript/frameworks.rs`](../../src/engine/languages/typescript/frameworks.rs) (рядки 95–260):
+2. У [`src/engine/languages/python/projections.rs`](../../crates/forge-index/src/languages/python/projections.rs) (рядки 260–420) та `src/engine/languages/typescript/frameworks.rs` (рядки 95–260):
    - **Видалити** повторні перевірки присутності пакетів через ітерацію імпортів на кожному виклику функції/декоратора, коли бітова маска файлу не містить бітів відповідного пакета.
 
 #### 2.3. Що ДОДАТИ / ЗАМІНИТИ
-1. У [`src/engine/languages/manifests/syntax.rs`](../../src/engine/languages/manifests/syntax.rs) додати в скомпільований `SyntaxRule` / `CompiledRuleSet`:
-   - `pub(crate) import_mask: u64` (обчислений через [`package_mask`](../../src/engine/linker/interner.rs) під час компіляції маніфесту);
+1. У [`src/engine/languages/manifests/syntax.rs`](../../crates/forge-index/src/languages/manifests/syntax.rs) додати в скомпільований `SyntaxRule` / `CompiledRuleSet`:
+   - `pub(crate) import_mask: u64` (обчислений через [`package_mask`](../../crates/forge-index/src/linker/interner.rs) під час компіляції маніфесту);
    - `pub(crate) kind_table: Box<[SmallVec<[u16; 2]>; 512]>` — плоска таблиця, індексована за `tree_sitter::Language::id_for_node_kind(kind, true) as usize`.
-2. У [`src/engine/ast/visitor.rs`](../../src/engine/ast/visitor.rs) (`SinglePassExtractor`):
+2. У [`src/engine/ast/visitor.rs`](../../crates/forge-index/src/ast/visitor.rs) (`SinglePassExtractor`):
    - Підтримувати `file_import_mask: u64` у `FileContext` (оновлювати при кожному `imports` референсі через `package_mask(module_head)`).
    - На кожному вузлі брати `let kind_id = node.kind_id() as usize;` і звертатися до `kind_table[kind_id]` за O(1), пропускаючи правило за 1 такт, якщо `(self.file.import_mask & rule.import_mask) != rule.import_mask`.
 
@@ -130,18 +130,18 @@ Deferred workspace-split target: [Milestone PF-001](../milestones/PF-001-cold-bu
 ### Блок 3: Реальне підключення `LinkerInterner` (`SymbolId(u32)`, `PathId(u32)`) у таблиці лінкера
 
 #### 3.1. Для чого це робити
-Зараз [`src/engine/linker/interner.rs`](../../src/engine/linker/interner.rs) існує ізольовано (`#[allow(dead_code)]`), а лінкер у [`src/engine/linker.rs`](../../src/engine/linker.rs), [`src/engine/linker/semantic_context.rs`](../../src/engine/linker/semantic_context.rs), [`src/engine/linker/framework_relations.rs`](../../src/engine/linker/framework_relations.rs) та [`src/engine/linker/named_bindings.rs`](../../src/engine/linker/named_bindings.rs) створює мільйони тимчасових `String` та `BTreeSet<String>` ключів (`(String, String)`, `OccurrenceKey`), витрачаючи зайвий CPU та пам'ять під час фази лінкування. (`libc::malloc_trim(0)` на фазових переходах обов'язково **залишаємо**, щоб разом із інтернером ще сильніше знизити піковий RSS).
+Зараз [`src/engine/linker/interner.rs`](../../crates/forge-index/src/linker/interner.rs) існує ізольовано (`#[allow(dead_code)]`), а лінкер у [`src/engine/linker.rs`](../../crates/forge-index/src/linker/mod.rs), [`src/engine/linker/semantic_context.rs`](../../crates/forge-index/src/linker/semantic_context.rs), [`src/engine/linker/framework_relations.rs`](../../crates/forge-index/src/linker/framework_relations.rs) та [`src/engine/linker/named_bindings.rs`](../../crates/forge-index/src/linker/named_bindings.rs) створює мільйони тимчасових `String` та `BTreeSet<String>` ключів (`(String, String)`, `OccurrenceKey`), витрачаючи зайвий CPU та пам'ять під час фази лінкування. (`libc::malloc_trim(0)` на фазових переходах обов'язково **залишаємо**, щоб разом із інтернером ще сильніше знизити піковий RSS).
 
 #### 3.2. Що ВИДАЛИТИ
-1. У [`src/engine/linker/interner.rs`](../../src/engine/linker/interner.rs):
+1. У [`src/engine/linker/interner.rs`](../../crates/forge-index/src/linker/interner.rs):
    - **Видалити** `#[allow(dead_code)]` з усіх методів `LinkerInterner`, `SymbolId`, `PathId`.
-2. У [`src/engine/linker/framework_relations.rs`](../../src/engine/linker/framework_relations.rs):
+2. У [`src/engine/linker/framework_relations.rs`](../../crates/forge-index/src/linker/framework_relations.rs):
    - **Видалити** зберігання клонованих `String` та `BTreeSet<String>` у `OccurrenceValue = (String, BTreeSet<String>, bool, bool)` (рядки 32–38), замінивши `BTreeSet<String>` для цільових вузлів на `SmallVec<[SymbolId; 2]>` або інтерновані ID.
-3. У [`src/engine/linker/semantic_context.rs`](../../src/engine/linker/semantic_context.rs):
+3. У [`src/engine/linker/semantic_context.rs`](../../crates/forge-index/src/linker/semantic_context.rs):
    - **Видалити** рядкові ключі `(String, String)` у внутрішніх таблицях `ComponentEnvironment`, `CallableAliases` та `RegistryBindings`, замінивши їх на `(PathId, SymbolId)`.
 
 #### 3.3. Що ДОДАТИ / ЗАМІНИТИ
-1. У [`src/engine/linker.rs`](../../src/engine/linker.rs) (`link_compact_with_typed_registry`):
+1. У [`src/engine/linker.rs`](../../crates/forge-index/src/linker/mod.rs) (`link_compact_with_typed_registry`):
    - Ініціалізувати `let interner = interner::LinkerInterner::from_catalog(&all);` на старті фази лінкування.
    - Передати `interner: &LinkerInterner<'a>` у `ResolutionInput`, `semantic_context::Context`, `PreparedSemanticFacts::build` та `named_bindings`.
 2. Перевести ключі пошуку в `PreparedSemanticFacts`, `OccurrenceTable` та `semantic_context::Context` на `(PathId, SymbolId)` (`Copy`, 8 байтів разом).
@@ -156,16 +156,16 @@ Deferred workspace-split target: [Milestone PF-001](../milestones/PF-001-cold-bu
 ### Блок 4: Прибирання подвійного зберігання JSON у `nodes.details` в SQLite
 
 #### 4.1. Для чого це робити
-У поточному пайплайні ([`src/db/writer/ingest.rs`](../../src/db/writer/ingest.rs) та [`src/db/writer.rs`](../../src/db/writer.rs)) кожен вузол має `node.details`, куди під час запису в таблицю `nodes` через `encode_facts(node, flows, semantic)` серіалізуються повні JSON-масиви `value_flow` (16 масивів) та `semantic_facts`. Водночас:
+У поточному пайплайні ([`src/db/writer/ingest.rs`](../../crates/forge-index/src/db/ingest.rs) та [`src/db/writer.rs`](../../crates/forge-index/src/db/writer.rs)) кожен вузол має `node.details`, куди під час запису в таблицю `nodes` через `encode_facts(node, flows, semantic)` серіалізуються повні JSON-масиви `value_flow` (16 масивів) та `semantic_facts`. Водночас:
 - для інкрементального дельта-реіндексу файлові факти все одно зберігаються окремо в таблиці `local_facts` (бінарний Zstd-блоб);
 - жоден MCP-інструмент (`code_map_search`, `code_map_inspect`, `code_map_impact`, `code_map_explain`, `code_map_tests`) ніколи не читає `value_flow` чи `semantic_facts` із колонки `nodes.details` таблиці `nodes`!
 
 Вони використовують у `nodes.details` лише навігаційні скалярні поля (`signature`, `visibility`, `return_type`, `param_types`, `doc`, `invariants`, `overload`, `is_stub`, `is_static`, `method_kind`, `macro_kind`).
 
 #### 4.2. Що ВИДАЛИТИ
-1. У [`src/db/writer.rs`](../../src/db/writer.rs):
+1. У [`src/db/writer.rs`](../../crates/forge-index/src/db/writer.rs):
    - **Видалити** проміжний буфер `PreparedCatalogStorage::details_json: Vec<String>`, який тримає в RAM сотні мегабайтів JSON-рядків для всіх вузлів перед вставкою в SQLite.
-2. У [`src/core/typed_facts.rs`](../../src/core/typed_facts.rs):
+2. У [`src/core/typed_facts.rs`](../../crates/forge-core/src/typed_facts.rs):
    - Розділити публічну серіалізацію `Facts` (для unit-тестів AST та `local_facts`) і серіалізацію колонки `nodes.details` для таблиці `nodes` у SQLite, якщо тести не вимагають присутності `value_flow` безпосередньо в `SELECT details FROM nodes` (перевірити контракти у `tests/core/fact_persistence.rs` та `tests/commitment_integrity/`).
    - Якщо `seal::file_domain_leaves` хешує `details` для домену `nodes`, обчислювати хеш та `nodes.details` напряму з `DetailsView` потоково у `persist_files` без подвійного збереження у `PreparedCatalogStorage`.
 
@@ -179,12 +179,12 @@ Deferred workspace-split target: [Milestone PF-001](../milestones/PF-001-cold-bu
 
 #### 5.1. Для чого це робити
 Це головне джерело роздуття гілки `022`:
-- [`src/engine/linker/resolution.rs`](../../src/engine/linker/resolution.rs) (2,805 рядків) складається з **однієї функції `resolve` на 2,645 рядків**, де один і той самий код ланцюжкового резолву полів (`for field in fields.split('.')`) і виклику `lookup_member` скопійований двічі (рядки 1089–1136 та 2008–2080).
-- [`src/engine/linker/value_flow.rs`](../../src/engine/linker/value_flow.rs) (3,558 рядків) містить `ScopeTypeEnv`, який взагалі не підключений у `lookup_tracked`, плюс 540 рядків unit-тестів наприкінці файлу.
-- [`src/engine/languages/python/projections.rs`](../../src/engine/languages/python/projections.rs) (1,153 рядки), [`src/engine/languages/python/render_context.rs`](../../src/engine/languages/python/render_context.rs) (1,223 рядки) та [`src/engine/languages/typescript/frameworks.rs`](../../src/engine/languages/typescript/frameworks.rs) (1,529 рядків) вручну реалізують одні й ті самі 4 операції (`EmitRoute`, `EmitEdge`, `BindReceiverType`, `ProjectContextKey`).
+- [`src/engine/linker/resolution.rs`](../../crates/forge-index/src/linker/resolution/mod.rs) (2,805 рядків) складається з **однієї функції `resolve` на 2,645 рядків**, де один і той самий код ланцюжкового резолву полів (`for field in fields.split('.')`) і виклику `lookup_member` скопійований двічі (рядки 1089–1136 та 2008–2080).
+- [`src/engine/linker/value_flow.rs`](../../crates/forge-index/src/linker/value_flow.rs) (3,558 рядків) містить `ScopeTypeEnv`, який взагалі не підключений у `lookup_tracked`, плюс 540 рядків unit-тестів наприкінці файлу.
+- [`src/engine/languages/python/projections.rs`](../../crates/forge-index/src/languages/python/projections.rs) (1,153 рядки), `src/engine/languages/python/render_context.rs` (1,223 рядки) та `src/engine/languages/typescript/frameworks.rs` (1,529 рядків) вручну реалізують одні й ті самі 4 операції (`EmitRoute`, `EmitEdge`, `BindReceiverType`, `ProjectContextKey`).
 
 #### 5.2. Що ВИДАЛИТИ та РЕФАКТОРИТИ
-1. **У [`src/engine/linker/resolution.rs`](../../src/engine/linker/resolution.rs) (Ціль: з 2,805 до ≤ 1,600 рядків)**:
+1. **У [`src/engine/linker/resolution.rs`](../../crates/forge-index/src/linker/resolution/mod.rs) (Ціль: з 2,805 до ≤ 1,600 рядків)**:
    - **Видалити дубль** рядків 1089–1136 та 2008–2080, винісши єдину функцію `resolve_chained_member_target(receiver, member_chain, owner, path, at, value_flow, semantic_context, active_profile)`.
    - **Видалити дубль** класифікації `origin` для вбудованих типів (`logging.Logger`, `sqlite3.Connection`, `Web.Response`, `typed_dom_receiver`), винісши в `builtin_member_origin(receiver, active_profile, default_origin)`.
    - Декомпозувати 2,645-рядкову `resolve` на 5 компактних функцій:
@@ -193,14 +193,14 @@ Deferred workspace-split target: [Milestone PF-001](../milestones/PF-001-cold-bu
      3. `resolve_explicit_hint_reference` (рядки 1245–1705)
      4. `resolve_receiver_and_member_reference` (рядки 1820–2150)
      5. `resolve_lexical_and_module_reference` (рядки 2155–2700)
-2. **У [`src/engine/linker/value_flow.rs`](../../src/engine/linker/value_flow.rs) (Ціль: з 3,558 до ≤ 2,400 рядків)**:
+2. **У [`src/engine/linker/value_flow.rs`](../../crates/forge-index/src/linker/value_flow.rs) (Ціль: з 3,558 до ≤ 2,400 рядків)**:
    - **Підключити `ScopeTypeEnv::resolve_fast`** безпосередньо на початок `ValueFlowIndex::lookup_tracked`: якщо змінна не має локальних переприсвоєнь (`!self.has_local_write(owner, name)`) і має явну анотацію типу в сигнатурі або прямий конструктор у скоупі — повертати тип за O(1) без обходу графа досяжності `reaching` та епох `ReadTrace`.
    - **Винести 540 рядків unit-тестів** (рядки 3019–3558) із продакшн-файлу `src/engine/linker/value_flow.rs` в інтеграційний тестовий модуль `tests/linker/`.
    - Злити дубльовані гілки обчислення колекцій та JS/Python викликів у `evaluate_tracked` та `build_initialized`.
-3. **У [`src/engine/linker/semantic_context.rs`](../../src/engine/linker/semantic_context.rs) (Ціль: з 3,522 до ≤ 2,300 рядків)**:
+3. **У [`src/engine/linker/semantic_context.rs`](../../crates/forge-index/src/linker/semantic_context.rs) (Ціль: з 3,522 до ≤ 2,300 рядків)**:
    - Скоротити 530-рядковий `prepare_component_environments` (рядки 473–1003) та 550-рядковий `visible` (рядки 1204–1754), об'єднавши спільні перевірки видимості імпортів і модульних скоупів для Python/TS/Rust.
-4. **У [`src/engine/languages/python/projections.rs`](../../src/engine/languages/python/projections.rs), [`src/engine/languages/python/render_context.rs`](../../src/engine/languages/python/render_context.rs) та [`src/engine/languages/typescript/frameworks.rs`](../../src/engine/languages/typescript/frameworks.rs) (Ціль: сумарно -800..1,100 рядків)**:
-   - Винести спільні примітиви емісії `SemanticFact` (`EmitRoute`, `EmitEdge`, `BindReceiverType`, `ProjectContextKey`) та нормалізації HTTP-методів / шаблонів шляхів у [`src/engine/languages/manifests/semantic.rs`](../../src/engine/languages/manifests/semantic.rs), видаливши їхні копії з `projections.rs`, `render_context.rs` та `typescript/frameworks.rs`.
+4. **У [`src/engine/languages/python/projections.rs`](../../crates/forge-index/src/languages/python/projections.rs), `src/engine/languages/python/render_context.rs` та `src/engine/languages/typescript/frameworks.rs` (Ціль: сумарно -800..1,100 рядків)**:
+   - Винести спільні примітиви емісії `SemanticFact` (`EmitRoute`, `EmitEdge`, `BindReceiverType`, `ProjectContextKey`) та нормалізації HTTP-методів / шаблонів шляхів у [`src/engine/languages/manifests/semantic.rs`](../../crates/forge-index/src/languages/manifests/semantic.rs), видаливши їхні копії з `projections.rs`, `render_context.rs` та `typescript/frameworks.rs`.
 
 #### 5.3. Як ПЕРЕВІРИТИ
 - `wc -l src/engine/linker/resolution.rs src/engine/linker/value_flow.rs src/engine/linker/semantic_context.rs src/engine/languages/python/projections.rs src/engine/languages/python/render_context.rs src/engine/languages/typescript/frameworks.rs` — перевірити зменшення сумарного обсягу щонайменше на **2,500–3,500 рядків**.
@@ -234,20 +234,20 @@ Deferred workspace-split target: [Milestone PF-001](../milestones/PF-001-cold-bu
 
 #### 6.2. Що ДОДАТИ / ЗАМІНИТИ (Точні місця в коді)
 1. **Розгортання `Result<T, E>` / `Option<T>` через `?`, `.unwrap()`, `.expect()`, `.as_ref()`, `.as_deref()`, `.cloned()`, `.copied()`**:
-   - У [`src/engine/languages/rust/value_flow.rs`](../../src/engine/languages/rust/value_flow.rs):
+   - У [`src/engine/languages/rust/value_flow.rs`](../../crates/forge-index/src/languages/rust/value_flow.rs):
      - Під час екстракції `try_expression` (`expr?`) не відкидати вираз як `Unknown`, а зберігати внутрішній вираз або прозоро розгортати конструктор/виклик;
-     - Для методів-розгортачів (`.unwrap()`, `.expect()`, `.as_ref()`, `.as_mut()`, `.as_deref()`, `.cloned()`, `.copied()`, `.ok()`, `.into_iter()`, `.iter()`) на виразі `recv.unwrap()` зберігати тип приймача `recv`, розгортаючи generic-обгортку `Result<T, E> -> T` та `Option<T> -> T` у [`src/engine/linker/value_flow.rs`](../../src/engine/linker/value_flow.rs) (`return_type_tracked` / `evaluate_tracked`) та [`src/engine/languages/rust.rs`](../../src/engine/languages/rust.rs) (`return_type_name`).
+     - Для методів-розгортачів (`.unwrap()`, `.expect()`, `.as_ref()`, `.as_mut()`, `.as_deref()`, `.cloned()`, `.copied()`, `.ok()`, `.into_iter()`, `.iter()`) на виразі `recv.unwrap()` зберігати тип приймача `recv`, розгортаючи generic-обгортку `Result<T, E> -> T` та `Option<T> -> T` у [`src/engine/linker/value_flow.rs`](../../crates/forge-index/src/linker/value_flow.rs) (`return_type_tracked` / `evaluate_tracked`) та [`src/engine/languages/rust.rs`](../../crates/forge-index/src/languages/rust/mod.rs) (`return_type_name`).
 2. **Резолв `Self::assoc_fn()`, `Type::assoc_fn()` та `mod_name::func()` у Rust**:
-   - У [`src/engine/languages/rust/linker.rs`](../../src/engine/languages/rust/linker.rs) та [`src/engine/linker/resolution.rs`](../../src/engine/linker/resolution.rs):
+   - У [`src/engine/languages/rust/linker.rs`](../../crates/forge-index/src/languages/rust/linker.rs) та [`src/engine/linker/resolution.rs`](../../crates/forge-index/src/linker/resolution/mod.rs):
      - Коли вираз має вигляд `Self::member`, знаходити найближчий enclosing `impl` вузол для `owner` (через `impl_target_by_owner`) і резолвити `member` як асоційовану функцію/метод цього типу;
      - Коли вираз має вигляд `Prefix::member` або `a::b::member`:
        1. Перевіряти, чи `Prefix` є типом у поточному модулі / імпортах / `use super::*;`, і шукати `member` у `RustMembers` цього типу;
        2. Якщо `Prefix` — це підмодуль (`mod prefix;` у поточному чи батьківському файлі або імпортований модуль), переходити за шляхом модуля у `RustForwarding` і шукати `member` серед публічних функцій/типів цього модуля.
 3. **Повне транзитивне замикання `use super::*;` та `pub use` у `RustForwarding`**:
-   - У [`src/engine/languages/rust/linker.rs`](../../src/engine/languages/rust/linker.rs) (`RustForwarding::build`):
+   - У [`src/engine/languages/rust/linker.rs`](../../crates/forge-index/src/languages/rust/linker.rs) (`RustForwarding::build`):
      - Замикати `use super::*;` та `pub use ...::*;` на всі символи й імпорти батьківського модуля (включно з ланцюжками `child.rs -> mod.rs -> parent.rs`), щоб файли з `use super::*;` бачили всі типи, структури та функції батьківського модуля.
 4. **Підтримка `impl Deref<Target = T>` для Rust-структур**:
-   - У [`src/engine/languages/rust.rs`](../../src/engine/languages/rust.rs) (`RustMembers`):
+   - У [`src/engine/languages/rust.rs`](../../crates/forge-index/src/languages/rust/mod.rs) (`RustMembers`):
      - При зустрічі `impl std::ops::Deref for Foo { type Target = Bar; }` (або `impl Deref for Foo`) записувати `deref_targets: HashMap<TypeName, TargetTypeName>`, щоб звернення `typed_facts.nodes` на `TypedFacts` автоматично знаходило поля та методи `Facts`!
 
 #### 6.3. Як ПЕРЕВІРИТИ (Критерій приймання Блоку 6)
@@ -276,11 +276,11 @@ Deferred workspace-split target: [Milestone PF-001](../milestones/PF-001-cold-bu
 
 #### 7.2. П'ять конкретних механізмів зниження тиску на алокатор
 
-1. **Ліквідація подвійного клонування `facts_to_dto` при записі в `ExtractionCache` ([`src/db/writer/cache.rs`](../../src/db/writer/cache.rs))**:
+1. **Ліквідація подвійного клонування `facts_to_dto` при записі в `ExtractionCache` ([`src/db/writer/cache.rs`](../../crates/forge-index/src/db/writer/cache.rs))**:
    - **Що видалити**: функцію `facts_to_dto(facts)` (рядки 478–545), яка робить повний `.clone()` усіх вузлів, ребер, референсів, документації та потоків у проміжний `FactsDto` перед записом у `Vec<u8>`.
    - **Що додати**: прямий прохід `BinaryEncode::encode(facts, &mut payload)` за посиланням `&TypedFacts` (0 проміжних клонів).
 
-2. **Перевикористання воркер-локальних буферів (`source_buf`, `encode_buf`, `Parser`, `zstd::bulk::Compressor`) у [`src/engine/pipeline.rs`](../../src/engine/pipeline.rs), [`src/core/semantic.rs`](../../src/core/semantic.rs) та [`src/db/writer.rs`](../../src/db/writer.rs)**:
+2. **Перевикористання воркер-локальних буферів (`source_buf`, `encode_buf`, `Parser`, `zstd::bulk::Compressor`) у [`src/engine/pipeline.rs`](../../src/engine/pipeline.rs), [`src/core/semantic.rs`](../../crates/forge-core/src/semantic.rs) та [`src/db/writer.rs`](../../crates/forge-index/src/db/writer.rs)**:
    - **Що видалити**:
      - По-файлове створення `let mut source = String::new();` у `extract_candidate` (`src/engine/pipeline.rs:447`);
      - По-файлове створення `tree_sitter::Parser::new()` у C-купі на кожен файл;
@@ -288,15 +288,15 @@ Deferred workspace-split target: [Milestone PF-001](../milestones/PF-001-cold-bu
    - **Що додати**:
      - Структуру `WorkerScratch` (або `thread_local!` буфери воркера), яка тримає `source_buf: String` (`.clear()` між файлами), `encode_buf: Vec<u8>`, кеш `tree_sitter::Parser` по мові та багаторазовий `zstd::bulk::Compressor` / `Decompressor`.
 
-3. **Компактизація `ValueFlowFacts` із 432 байтів до ~120 байтів ([`src/core/semantic.rs`](../../src/core/semantic.rs))**:
+3. **Компактизація `ValueFlowFacts` із 432 байтів до ~120 байтів ([`src/core/semantic.rs`](../../crates/forge-core/src/semantic.rs))**:
    - **Що змінити**: зараз структура `ValueFlowFacts` містить **16 полів `Vec<...>`** (`16 * 24 = 384` байти + `return_type`), хоча для 95% звичайних функцій заповнені лише `bindings`, `fields`, `immutable_initializers`, `branch_joins`.
    - **Що додати**: винести 12 рідкісних фреймворк/шаблонних векторів (`symbol_attachments`, `factory_results`, `named_bindings`, `endpoint_requests`, `component_macros`, `rule_origins`, `component_configurations`, `template_contexts`, `type_only_imports`, `annotation_references`, `vue_slots`, `collection_elements`) у вкладений `pub framework: Option<Box<FrameworkScopeFacts>>` (з прозорими аксесорами або `#[serde(flatten)]`), зменшивши базовий розмір кожного `ValueFlowFacts` у 3.5 раза.
 
-4. **Винесення `bindings`, `rebindings`, `param_types` із `node.details: serde_json::Value` у типізований сайдкар ([`src/core/models.rs`](../../src/core/models.rs), [`src/engine/ast/visitor.rs`](../../src/engine/ast/visitor.rs), [`src/engine/linker.rs`](../../src/engine/linker.rs))**:
+4. **Винесення `bindings`, `rebindings`, `param_types` із `node.details: serde_json::Value` у типізований сайдкар ([`src/core/models.rs`](../../crates/forge-core/src/models.rs), [`src/engine/ast/visitor.rs`](../../crates/forge-index/src/ast/visitor.rs), [`src/engine/linker.rs`](../../crates/forge-index/src/linker/mod.rs))**:
    - **Що видалити**: запис `node.details["bindings"] = json!(...)`, `node.details["rebindings"] = json!(...)` та `node.details["param_types"] = json!(...)` під час AST-екстракції, де кожен ідентифікатор загортається в окремий `serde_json::Value::String` всередині `BTreeMap<String, Value>`, а потім на вході лінкера знову парситься.
    - **Що додати**: зберігати `bindings: Vec<String>`, `rebindings: Vec<String>`, `param_types: Vec<(String, String)>` у типізованому сайдкарі `TypedFacts` (або безпосередньо на `Node`), залишаючи `node.details = Value::Null` для простих вузлів (0 алокацій `BTreeMap` для звичайних функцій/методів).
 
-5. **Усунення дубльованих рядкових алокацій `kind` / `language` / `path` / `source` ([`src/core/models.rs`](../../src/core/models.rs))**:
+5. **Усунення дубльованих рядкових алокацій `kind` / `language` / `path` / `source` ([`src/core/models.rs`](../../crates/forge-core/src/models.rs))**:
    - Для полів із фіксованим словником (`Node.kind`, `Node.language`, `Reference.kind`, `Edge.kind`, `Edge.confidence`) та повторюваних у межах файлу/скоупу ідентифікаторів (`Node.path`, `Reference.source`) мінімізувати клонування через інтернування в лінкері (`PathId`, `SymbolId`) та спільні буфери під час екстракції.
 
 #### 7.3. Як ПЕРЕВІРИТИ
@@ -711,9 +711,9 @@ Block 1's three-file total (`cache.rs`, `writer.rs`, `typed_facts.rs`) is 3,468 
 
 Попередній етап декомпозиції застосував механічне розрізання коду (*code slicing*) замість спрощення архітектури:
 1. **Бойлерплейт розрізання замість зменшення логіки**:
-   - Функція `resolve_import_reference` у [`src/engine/linker/resolution/imports.rs`](../../src/engine/linker/resolution/imports.rs) приймає **10 параметрів** через `#[allow(clippy::too_many_arguments)]`.
+   - Функція `resolve_import_reference` у [`src/engine/linker/resolution/imports.rs`](../../crates/forge-index/src/linker/resolution/imports.rs) приймає **10 параметрів** через `#[allow(clippy::too_many_arguments)]`.
    - Для повернення локального стану створено проміжний DTO `ImportBindings` (три хешмапи), що створює зайвий інтерфейсний клей.
-   - Головний файл [`src/engine/linker/resolution/mod.rs`](../../src/engine/linker/resolution/mod.rs) залишився монолітом на **2,065 рядків** (усередині однієї паралельної Rayon-лямбди змішано імпорти, виклики, шаблони, роути та документацію).
+   - Головний файл [`src/engine/linker/resolution/mod.rs`](../../crates/forge-index/src/linker/resolution/mod.rs) залишився монолітом на **2,065 рядків** (усередині однієї паралельної Rayon-лямбди змішано імпорти, виклики, шаблони, роути та документацію).
 2. **Роздуття Блоку 1 (`cache.rs`) на +818 рядків**:
    - Перехід на прямий бінарний кодек `MAGIC_V4` замість Serde DTO реалізовано через масивний ручний опис макросів `struct_codec!` для кожного типу фактів ядра. Це дало 0 heap-алокацій, але роздуло `src/db/writer/cache.rs` до 1,600+ рядків.
 
@@ -793,7 +793,7 @@ Block 1's three-file total (`cache.rs`, `writer.rs`, `typed_facts.rs`) is 3,468 
   ##### 6.2.3.4. Компактизація та очищення бінарного кодека `cache.rs` та ліквідація JSON у `local_facts`
   - **Що усунути**:
     - Ручний 100-рядковий енкодер `serde_json::Value` (lines 339–404), невикористану гілку `default` у `struct_codec!`, та надлишкові перевантаження кодеків у `cache.rs`.
-    - Непотрібну зворотну сумісність із JSON у SQLite `local_facts` ([`src/core/typed_facts.rs`](../../src/core/typed_facts.rs)): видалити fallback `serde_json::from_reader` у `decode_facts`.
+    - Непотрібну зворотну сумісність із JSON у SQLite `local_facts` ([`src/core/typed_facts.rs`](../../crates/forge-core/src/typed_facts.rs)): видалити fallback `serde_json::from_reader` у `decode_facts`.
   - **Архітектурне рішення**:
     - Звести виклики `struct_codec!` у серійну макрогрупу для доменних структур (`Edge`, `Reference`, `DocSection`, `Diagnostic`, `ScopeFact`).
     - Оскільки ефемерний кеш фактів екстракції (`MAGIC_V4`) та таблиця `local_facts` повністю відновлюються переіндексацією за 2–4 секунди, формат не потребує версіонування застарілих JSON-схем.
@@ -939,7 +939,7 @@ Block 1's three-file total (`cache.rs`, `writer.rs`, `typed_facts.rs`) is 3,468 
 ### Review finding: value-flow test relocation
 
 - [`tests/AGENTS.md`](../../tests/AGENTS.md) keeps private reducer implementation checks beside their source and public value-flow cases in [`tests/linker/value_flow.rs`](../../tests/linker/value_flow.rs).
-- Five public value-flow cases now live in `tests/linker/value_flow.rs`. The private merge-summary and borrowed-key checks remain in [`src/engine/linker/value_flow/tests.rs`](../../src/engine/linker/value_flow/tests.rs), as required by the source boundary.
+- Five public value-flow cases now live in `tests/linker/value_flow.rs`. The private merge-summary and borrowed-key checks remain in [`src/engine/linker/value_flow/tests.rs`](../../crates/forge-index/src/linker/value_flow/tests.rs), as required by the source boundary.
 - The strict-order helper test is removed after its boundary cases were added to the public replay test. The unit-level awaited-promise test is removed because [`awaited_promise_parameters_and_aliases_survive_index_readback`](../../tests/linker/method_semantics.rs) proves that contract through the persisted linker path.
 - The §4 Step 4 estimate of about 540 LOC is not a reason to move private implementation checks across the test boundary. The public cases are partitioned; do not claim that the literal LOC transfer target is complete.
 
@@ -958,10 +958,10 @@ Block 1's three-file total (`cache.rs`, `writer.rs`, `typed_facts.rs`) is 3,468 
 
 ### Review finding: revised storage recommendations
 
-- Cache codec tests use private framing and binary traits. They now live in the source-owned child module [`cache/tests.rs`](../../src/db/writer/cache/tests.rs); moving them into an external integration target would require widening private APIs. `cache.rs` contains the 253-line production module.
-- [`NodeSemanticEntry::ingest`](../../src/core/typed_facts/semantic_store.rs#L55) moves admitted fields out of `Node.details` with `remove` into `native_semantic`; the binary `Node` codec persists that typed state, and the borrowed [`NodeDetailsDto`](../../src/core/typed_facts/presentation.rs#L235) projects it back when requested. Restoring duplicate JSON fields would reverse the memory reduction, and the proposed destructive `drain` is not present in the current implementation.
-- [`decode_facts`](../../src/core/typed_facts.rs#L49) already rejects non-binary local-facts data. The generic `serde_json::Value` codec in [`binary.rs`](../../src/core/typed_facts/binary.rs#L162) remains necessary for arbitrary `Node.details` and preserved invalid raw evidence; it is not a JSON-cache fallback. The [`enum_codec!`](../../src/core/typed_facts/binary.rs#L254) identity arm is used by unvalidated enum codecs, and `FrameworkFact` already uses the tuple-enum codec at [binary.rs](../../src/core/typed_facts/binary.rs#L346).
-- The remaining `SemanticState`/`FlowState` serialization in [presentation.rs](../../src/core/typed_facts/presentation.rs#L22) preserves original raw values and classic field ordering around the derived borrowed `NodeDetailsDto`; deleting it without equivalent views would change observable output. [`FlowStore::merge_uncertainties`](../../src/core/typed_facts/flow_store.rs#L174) enforces bounded groups, unknown-key collapse, and invalid-carrier fault behavior, so replacing it with a generic `BTreeSet` helper does not support the proposed 250-line reduction.
+- Cache codec tests use private framing and binary traits. They now live in the source-owned child module [`cache/tests.rs`](../../crates/forge-index/src/db/writer/cache/tests.rs); moving them into an external integration target would require widening private APIs. `cache.rs` contains the 253-line production module.
+- [`NodeSemanticEntry::ingest`](../../crates/forge-core/src/typed_facts/semantic_store.rs) moves admitted fields out of `Node.details` with `remove` into `native_semantic`; the binary `Node` codec persists that typed state, and the borrowed [`NodeDetailsDto`](../../crates/forge-core/src/typed_facts/presentation.rs) projects it back when requested. Restoring duplicate JSON fields would reverse the memory reduction, and the proposed destructive `drain` is not present in the current implementation.
+- [`decode_facts`](../../crates/forge-core/src/typed_facts.rs) already rejects non-binary local-facts data. The generic `serde_json::Value` codec in [`binary.rs`](../../crates/forge-core/src/typed_facts/binary.rs) remains necessary for arbitrary `Node.details` and preserved invalid raw evidence; it is not a JSON-cache fallback. The [`enum_codec!`](../../crates/forge-core/src/typed_facts/binary.rs) identity arm is used by unvalidated enum codecs, and `FrameworkFact` already uses the tuple-enum codec at [binary.rs](../../crates/forge-core/src/typed_facts/binary.rs).
+- The remaining `SemanticState`/`FlowState` serialization in [presentation.rs](../../crates/forge-core/src/typed_facts/presentation.rs) preserves original raw values and classic field ordering around the derived borrowed `NodeDetailsDto`; deleting it without equivalent views would change observable output. [`FlowStore::merge_uncertainties`](../../crates/forge-core/src/typed_facts/flow_store.rs) enforces bounded groups, unknown-key collapse, and invalid-carrier fault behavior, so replacing it with a generic `BTreeSet` helper does not support the proposed 250-line reduction.
 
 ### Review finding: Block 1 file-path LOC criterion
 

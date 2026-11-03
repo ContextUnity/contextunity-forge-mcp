@@ -499,8 +499,8 @@ task_depends_on: [m-upstream:producer]
         serde_yaml::Value::String("search_docs".to_owned()),
         serde_yaml::Value::String("code_map_inspect".to_owned()),
     ]);
-    let tool_profile = serde_yaml::to_string(&tool_profile)
-        .expect("the tool context profile should serialize");
+    let tool_profile =
+        serde_yaml::to_string(&tool_profile).expect("the tool context profile should serialize");
     root.write(".forge/acdd/tool-profile.yaml", &tool_profile);
     root.write(
         "forge-mcp.yaml",
@@ -522,34 +522,42 @@ task_depends_on: [m-upstream:producer]
         "unexpected minimal-profile result: {minimal_error:#}"
     );
 
-    root.write(
-        "forge-mcp.yaml",
-        "profile: minimal\nroots: [src]\ndocs: [docs]\nmilestones: [docs/milestones]\ntasks_db: .forge/tasks.sqlite\n",
-    );
-    let minimal_context = contextunity_forge_mcp::engine::tasks::manage(
-        &root.0,
-        serde_json::from_value(serde_json::json!({
-            "action": "context",
-            "task_id": "forge-mcp/m-consumer:consumer",
-        }))
-        .expect("context action should deserialize"),
-    )
-    .expect("a gate without disabled tool requirements should run under minimal");
-    assert!(minimal_context["context_bundle"]["adrs"].is_null());
-    assert!(minimal_context["context_bundle"]["scope_symbols"].is_null());
-    assert!(minimal_context["context_bundle"]["covering_tests"].is_null());
-    assert!(minimal_context["context_bundle"]["external_callers"].is_null());
-    assert!(minimal_context["blackboard"].is_null());
-    assert!(minimal_context["blackboard_info"].is_null());
-    assert!(minimal_context["workflow_guidance"]["blackboard_messages"].is_null());
-    assert!(minimal_context["workflow_guidance"]["recommended_tools"]
-        .as_array()
-        .is_some_and(Vec::is_empty));
-    let minimal_guidance = minimal_context["workflow_guidance"].to_string();
-    assert!(
-        !minimal_guidance.contains("task_blackboard"),
-        "disabled blackboard guidance leaked: {minimal_guidance}"
-    );
+    for (preset, expected_tools) in [
+        ("minimal", serde_json::json!([])),
+        ("orchestrator", serde_json::json!(["task_blackboard"])),
+    ] {
+        root.write(
+            "forge-mcp.yaml",
+            &format!("profile: {preset}\nroots: [src]\ndocs: [docs]\nmilestones: [docs/milestones]\ntasks_db: .forge/tasks.sqlite\n"),
+        );
+        let context = contextunity_forge_mcp::engine::tasks::manage(
+            &root.0,
+            serde_json::from_value(serde_json::json!({
+                "action": "context",
+                "task_id": "forge-mcp/m-consumer:consumer",
+            }))
+            .expect("context action should deserialize"),
+        )
+        .expect("default gates must work with navigation disabled");
+        assert!(context["context_bundle"]["adrs"].is_null());
+        assert!(context["context_bundle"]["scope_symbols"].is_null());
+        assert!(context["context_bundle"]["covering_tests"].is_null());
+        assert!(context["context_bundle"]["external_callers"].is_null());
+        assert_eq!(
+            context["workflow_guidance"]["recommended_tools"],
+            expected_tools
+        );
+        if preset == "minimal" {
+            assert!(context["blackboard"].is_null());
+            assert!(context["blackboard_info"].is_null());
+            assert!(context["workflow_guidance"]["blackboard_messages"].is_null());
+            let guidance = context["workflow_guidance"].to_string();
+            assert!(
+                !guidance.contains("task_blackboard"),
+                "disabled blackboard guidance leaked: {guidance}"
+            );
+        }
+    }
 
     root.write(
         "forge-mcp.yaml",

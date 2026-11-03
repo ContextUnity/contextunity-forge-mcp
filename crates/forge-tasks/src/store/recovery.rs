@@ -172,6 +172,8 @@ pub struct ActiveCheckpoint {
     /// Maximum allocated revision, including revoked reservations.
     pub max_revision: u64,
     claims: Vec<(u64, String, String, i64, bool)>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    claim_session_fingerprints: BTreeMap<u64, String>,
     gates: Vec<(String, u64, String, Option<String>)>,
     findings: Vec<(u64, String)>,
     scopes: Vec<(String, String, bool)>,
@@ -1203,6 +1205,7 @@ fn states(
             version: 1, repository: authority.repository.clone(), project: authority.project.clone(), milestone_id: authority.milestone_id.clone(),
             task_id: id.clone(), workspace, task: Some(task), max_revision,
             claims: connection.prepare("SELECT revision,worker_id,worktree,claimed_at,ended FROM task_claims WHERE task_id=?1 ORDER BY revision")?.query_map([&id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?.collect::<rusqlite::Result<_>>()?,
+            claim_session_fingerprints: connection.prepare("SELECT revision,session_fingerprint FROM task_claims WHERE task_id=?1 AND session_fingerprint IS NOT NULL ORDER BY revision")?.query_map([&id], |r| Ok((r.get(0)?,r.get(1)?)))?.collect::<rusqlite::Result<_>>()?,
             gates: connection.prepare("SELECT gate,revision,state,evidence FROM task_gates WHERE task_id=?1 ORDER BY revision,gate")?.query_map([&id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?.collect::<rusqlite::Result<_>>()?,
             findings: connection.prepare("SELECT revision,findings FROM task_findings WHERE task_id=?1 ORDER BY revision")?.query_map([&id], |r| Ok((r.get(0)?,r.get(1)?)))?.collect::<rusqlite::Result<_>>()?,
             dependencies: connection.prepare("SELECT dependency_id,satisfied FROM task_dependencies WHERE task_id=?1 ORDER BY dependency_id")?.query_map([&id], |r| Ok((r.get(0)?,r.get(1)?)))?.collect::<rusqlite::Result<_>>()?,
@@ -1533,6 +1536,7 @@ impl ManagedTransaction<'_> {
                 task: None,
                 max_revision: revision.unwrap_or(0),
                 claims: Vec::new(),
+                claim_session_fingerprints: BTreeMap::new(),
                 gates: Vec::new(),
                 findings: Vec::new(),
                 scopes: Vec::new(),
@@ -1858,10 +1862,8 @@ impl TasksStore {
                             && evidence
                                 .as_ref()
                                 .and_then(|evidence| {
-                                    serde_json::from_str::<crate::tasks::gates::Evidence>(
-                                        evidence,
-                                    )
-                                    .ok()
+                                    serde_json::from_str::<crate::tasks::gates::Evidence>(evidence)
+                                        .ok()
                                 })
                                 .is_some_and(|evidence| {
                                     evidence.contract_revision == task.contract_revision
@@ -2028,10 +2030,8 @@ impl TasksStore {
                             && evidence
                                 .as_ref()
                                 .and_then(|evidence| {
-                                    serde_json::from_str::<crate::tasks::gates::Evidence>(
-                                        evidence,
-                                    )
-                                    .ok()
+                                    serde_json::from_str::<crate::tasks::gates::Evidence>(evidence)
+                                        .ok()
                                 })
                                 .as_ref()
                                 == Some(&submitted.evidence)
@@ -2090,8 +2090,8 @@ impl TasksStore {
             }
             for (revision, worker, worktree, at, ended) in &state.claims {
                 tx.execute(
-                    "INSERT INTO task_claims VALUES(?1,?2,?3,?4,?5,?6)",
-                    params![state.task_id, revision, worker, worktree, at, ended],
+                    "INSERT INTO task_claims(task_id,revision,worker_id,worktree,claimed_at,ended,session_fingerprint) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                    params![state.task_id, revision, worker, worktree, at, ended, state.claim_session_fingerprints.get(revision)],
                 )?;
             }
             for (gate, revision, status, evidence) in &state.gates {

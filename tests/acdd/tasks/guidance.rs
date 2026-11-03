@@ -1,6 +1,160 @@
 use super::*;
 
 #[test]
+fn claim_context_intersects_documentation_across_repository_paths() {
+    let (root, store, milestone) = fixture();
+    drop(store);
+    root.write(".gitignore", CANONICAL_FORGE_GITIGNORE);
+    root.write(
+        ".agents/skills/contextunity-forge/SKILL.md",
+        "# ContextUnity Forge\n",
+    );
+    root.write("forge-mcp.yaml", "roots: [src]\ndocs: [docs, README.md, AGENTS.md, TESTS.md, nested/docs]\ntasks_db: .forge/tasks.sqlite\n");
+    let paths = [
+        "README.md",
+        "AGENTS.md",
+        "TESTS.md",
+        "docs/testing/guide.md",
+        "docs/runbooks/guide.md",
+    ];
+    for path in paths.into_iter().chain([
+        "docs/milestones/archive/old.md",
+        "docs/plans/archive/old.md",
+        "nested/docs/milestones/archive/old.md",
+        "docs/milestones/010-active.md",
+    ]) {
+        // Resolve the same source claim from each document's directory.
+        let depth = std::path::Path::new(path)
+            .parent()
+            .unwrap()
+            .components()
+            .count();
+        root.write(path, &format!("# Task guidance\nLoad the contextunity-forge skill.\nInvariant: [`example`]({}src/lib.rs) stays callable.\n", "../".repeat(depth)));
+    }
+    writer::build(&root.0, &root.0.join(".forge/code-map.sqlite"), None).unwrap();
+    let id = milestone.task_id(&milestone.tasks[0]);
+    let claim = tasks::claim(
+        &root.0,
+        tasks::Claim {
+            task_id: id,
+            stage: "contract".into(),
+            worker_id: "documentation-author".into(),
+            worktree: root.0.to_string_lossy().into_owned(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let bundle = &claim["context_bundle"];
+    let documents = bundle["adrs"].as_array().unwrap();
+    for path in paths {
+        assert!(
+            documents.iter().any(|document| document["path"] == path),
+            "missing {path}: {documents:?}"
+        );
+    }
+    assert!(!documents.iter().any(|document| {
+        let p = document["path"].as_str().unwrap();
+        p.contains("/archive/") || p.contains("docs/milestones/")
+    }));
+    let symbols = bundle["scope_symbols"].as_array().unwrap();
+    let example = symbols
+        .iter()
+        .find(|symbol| symbol["name"] == "example")
+        .unwrap();
+    let documented_by = example["documented_by"].as_array().unwrap();
+    assert!(documented_by
+        .iter()
+        .any(|path| path.as_str().unwrap().starts_with("README.md#")));
+    assert!(!documented_by.iter().any(|path| {
+        let p = path.as_str().unwrap();
+        p.contains("/archive/") || p.contains("docs/milestones/")
+    }));
+}
+
+#[test]
+fn role_runner_templates_render_active_claim_context() {
+    for (mode, runner, prompt) in [
+        (
+            "subagent",
+            Some("launch {task_id} {stage} {role} {worktree} {model} {reasoning}"),
+            Some("{goal}|{role_guidance}|{task_id}|{stage}|{role}|{worktree}|{model}|{reasoning}"),
+        ),
+        ("inline", None, Some("{task_id}: {goal}")),
+        ("subagent", Some("launch {task_id}"), None),
+        ("subagent", None, None),
+    ] {
+        let (root, store, milestone) = fixture();
+        drop(store);
+        root.write(".gitignore", CANONICAL_FORGE_GITIGNORE);
+        root.write(
+            "AGENTS.md",
+            "# Guidance\nLoad the contextunity-forge skill.\n",
+        );
+        root.write(
+            ".agents/skills/contextunity-forge/SKILL.md",
+            "# ContextUnity Forge\n",
+        );
+        root.write("forge-mcp.yaml", "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\nacdd_profile: custom_profile.yaml\n");
+        let mut definition = json!({"mode":mode,"models":[{"model":"test-model","reasoning":"high"}],"guidance":"Verify the admitted scope."});
+        if let Some(runner) = runner {
+            definition["runner"] = json!(runner);
+        }
+        if let Some(prompt) = prompt {
+            definition["prompt_template"] = json!(prompt);
+        }
+        root.write(
+            "custom_profile.yaml",
+            &serde_yaml::to_string(&json!({"roles":{"contract_author":definition}})).unwrap(),
+        );
+        let profile =
+            contextunity_forge_mcp::core::tasks::profile::load_for_workspace(&root.0).unwrap();
+        let role = &profile.roles["contract_author"];
+        assert_eq!(role.runner.as_deref(), runner);
+        assert_eq!(role.prompt_template.as_deref(), prompt);
+        let id = milestone.task_id(&milestone.tasks[0]);
+        let claim = tasks::claim(
+            &root.0,
+            tasks::Claim {
+                task_id: id.clone(),
+                stage: "contract".into(),
+                worker_id: "template-author".into(),
+                worktree: root.0.to_string_lossy().into_owned(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let assembled = &claim["workflow_guidance"]["role_runner"];
+        if runner.is_none() && prompt.is_none() {
+            assert!(
+                assembled.is_null(),
+                "default role without runner or prompt_template must omit role_runner: {assembled}"
+            );
+            continue;
+        }
+        assert_eq!(assembled["role"], "contract_author");
+        assert_eq!(assembled["mode"], mode);
+        if runner.is_some() {
+            assert!(assembled["runner"].as_str().unwrap().contains(&id));
+        } else {
+            assert!(assembled["runner"].is_null());
+        }
+        let rendered = assembled["rendered_prompt"].as_str().unwrap();
+        assert!(rendered.contains(&id), "{rendered}");
+        assert!(!rendered.contains("{goal}"));
+        if prompt.is_none() {
+            assert!(rendered.contains("task_submit"));
+        }
+        if runner.is_some_and(|runner| runner.contains("{model}")) {
+            assert!(assembled["runner"]
+                .as_str()
+                .unwrap()
+                .ends_with("test-model high"));
+            assert!(rendered.contains("Verify the admitted scope."));
+        }
+    }
+}
+
+#[test]
 fn task_guidance_follows_agent_metadata_workspace_config_and_active_stage() {
     let specification = |agent_type: &str| {
         format!(
@@ -772,6 +926,56 @@ fn task_blackboard_gate_targeting_and_schema_hint() {
 }
 
 #[test]
+fn task_context_preserves_cross_gate_decisions_findings_and_blockers() {
+    let (root, store, milestone) = fixture();
+    let task_id = milestone.task_id(&milestone.tasks[0]);
+    drop(store);
+
+    let mut persistent_ids = Vec::new();
+    for topic in ["decisions", "findings", "blockers", "notes"] {
+        let posted = tasks::blackboard(
+            &root.0,
+            serde_json::from_value(json!({
+                "action": "post",
+                "task_id": task_id,
+                "gate": "review",
+                "topic": topic,
+                "payload": format!("Cross-gate {topic}")
+            }))
+            .unwrap(),
+            "cross-gate-test",
+        )
+        .unwrap();
+        if topic != "notes" {
+            persistent_ids.push(posted["id"].as_u64().unwrap());
+        }
+    }
+
+    let claim = tasks::claim(
+        &root.0,
+        tasks::Claim {
+            task_id,
+            stage: "contract".into(),
+            worker_id: "cross-gate-test".into(),
+            worktree: root.0.to_string_lossy().into_owned(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    for board in [&claim["blackboard"], &claim["context_bundle"]["blackboard"]] {
+        let messages = board
+            .as_array()
+            .expect("context carries blackboard messages");
+        assert_eq!(messages.len(), persistent_ids.len());
+        for id in &persistent_ids {
+            assert!(messages.iter().any(|message| {
+                message["id"].as_u64() == Some(*id) && message["gate"] == "review"
+            }));
+        }
+    }
+}
+
+#[test]
 fn declarative_profile_compiles_defaults_and_respects_role_overrides() {
     use contextunity_forge_mcp::core::tasks::profile::{
         compiled, load_for_workspace, parse_profile, validate_profile_document, RoleDef,
@@ -952,10 +1156,9 @@ fn declarative_profile_compiles_defaults_and_respects_role_overrides() {
     .is_err());
 
     // The documented reference profile example loads and validates cleanly
-    let example_profile_text = std::fs::read_to_string(
-        "skills/contextunity-forge/references/acdd_profile.yaml.example",
-    )
-    .expect("example profile file must exist");
+    let example_profile_text =
+        std::fs::read_to_string("skills/contextunity-forge/references/acdd_profile.yaml.example")
+            .expect("example profile file must exist");
     let parsed_example = parse_profile(&example_profile_text)
         .expect("example profile must parse and validate without error");
     assert!(!parsed_example.roles.is_empty());

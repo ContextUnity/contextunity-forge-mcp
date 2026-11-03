@@ -17,6 +17,30 @@ fn inbound() -> String {
     "inbound".into()
 }
 
+fn aliased_value<'a>(
+    canonical: Option<&'a str>,
+    aliases: &[Option<&'a str>],
+    name: &str,
+) -> anyhow::Result<Option<&'a str>> {
+    let mut values = canonical
+        .into_iter()
+        .chain(aliases.iter().copied().flatten());
+    let value = values.next();
+    anyhow::ensure!(values.next().is_none(), "duplicate field `{name}`");
+    Ok(value)
+}
+
+fn aliased_string<'a>(
+    canonical: &'a str,
+    aliases: &[Option<&'a str>],
+    name: &str,
+) -> anyhow::Result<&'a str> {
+    Ok(
+        aliased_value((!canonical.is_empty()).then_some(canonical), aliases, name)?
+            .unwrap_or(canonical),
+    )
+}
+
 // An empty schema object accepts any JSON value and stays valid for MCP clients.
 fn checkpoint_content_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
     serde_json::Map::new().into()
@@ -238,8 +262,10 @@ impl Explain {
 /// Represents search symbols data.
 pub struct SearchSymbols {
     /// Symbol pattern; query is accepted as an alias. Use '*' with a path or kind scope to list all symbols in that scope.
-    #[serde(alias = "query")]
+    #[serde(default)]
     pub pattern: String,
+    /// Alternative to pattern; provide exactly one of pattern or query.
+    pub query: Option<String>,
     /// Match only the complete symbol name or qualified name, without full-text search.
     #[serde(default)]
     pub exact: bool,
@@ -259,6 +285,11 @@ pub struct SearchSymbols {
     #[serde(flatten)]
     /// The page value.
     pub page: PageInput,
+}
+impl SearchSymbols {
+    pub(super) fn pattern(&self) -> anyhow::Result<&str> {
+        aliased_string(&self.pattern, &[self.query.as_deref()], "pattern")
+    }
 }
 #[derive(Deserialize, JsonSchema)]
 /// Represents tests data.
@@ -298,12 +329,21 @@ pub struct Impact {
     pub page: PageInput,
 }
 #[derive(Deserialize, JsonSchema)]
-/// Represents query data.
+/// Bounded graph or read-only SQL query. SQL uses the compact canonical tables;
+/// join nodes to path_dictionary on path_id and edges to nodes on node_hash.
 pub struct Query {
-    /// The operation value.
+    /// Query operation: 'sql' (default when 'sql' is provided), 'untested', 'implementations', 'slice', or 'unwired'.
+    #[serde(default)]
     pub operation: String,
-    /// Exact symbol ID or name; path forms include path:name, path:known_kind:name, path:line, and path#Lline.
+    /// Exact symbol ID or name (path:name, path:known_kind:name, path:line, path#Lline), or the read-only SELECT/WITH SQL statement when operation='sql'.
     pub selector: Option<String>,
+    /// Read-only SELECT/WITH SQL statement; implies operation='sql' when operation is omitted.
+    /// Schema: nodes(node_id, id, kind, name, qualname, path_id, line, end_line, is_test, language, generated, details, node_hash, owner_path_id); path_dictionary(path_id, path); edges(src_hash, kind, dst_hash, path_id, line, evidence_id, confidence_id, occurrence_count); files(path, status, digest, size, language, is_test, generated, path_hash); doc_sections(doc_id, path, section_title, doc_type, content, invariants, referenced_symbols, is_invariant).
+    /// Paths: FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id.
+    /// Endpoints: FROM edges e JOIN nodes src ON e.src_hash=src.node_hash JOIN nodes dst ON e.dst_hash=dst.node_hash.
+    pub sql: Option<String>,
+    /// Alias for selector (or SQL query when operation='sql').
+    pub query: Option<String>,
     /// File or directory scope for the untested operation; cannot conflict with selector or path.
     pub target: Option<String>,
     /// Restrict selector resolution to a workspace-relative file or directory.
@@ -323,8 +363,13 @@ pub struct Query {
 #[derive(Deserialize, JsonSchema)]
 /// Represents analyze data.
 pub struct Analyze {
-    /// The target value.
+    /// File or directory target; accepts unified 'path' and 'selector' aliases. Omit target for workspace totals.
+    #[serde(default)]
     pub target: String,
+    /// Alternative to target for a file, directory, or read-only SQL statement.
+    pub path: Option<String>,
+    /// Alternative to target or path; omit all three for workspace totals.
+    pub selector: Option<String>,
     /// Whether include cycles applies.
     pub include_cycles: Option<bool>,
     /// Read stored syntax diagnostics only; does not run a linter or reparse source.
@@ -334,12 +379,25 @@ pub struct Analyze {
     /// The page value.
     pub page: PageInput,
 }
+impl Analyze {
+    pub(super) fn target(&self) -> anyhow::Result<&str> {
+        Ok(aliased_value(
+            (!self.target.is_empty()).then_some(self.target.as_str()),
+            &[self.path.as_deref(), self.selector.as_deref()],
+            "target",
+        )?
+        .unwrap_or(""))
+    }
+}
 #[derive(Deserialize, JsonSchema)]
 /// Represents ast data.
 pub struct Ast {
-    /// The pattern value.
+    /// AST pattern; accepts 'query' as a unified alias.
+    #[serde(default)]
     pub pattern: String,
-    /// The language value (e.g. 'python', 'rust', 'typescript'). Optional if 'path' has a recognized file extension.
+    /// Alternative to pattern; provide exactly one of pattern or query.
+    pub query: Option<String>,
+    /// REQUIRED unless 'path' is a single file with a recognized extension (e.g. 'src/lib.rs'). Always pass 'language' (e.g. 'rust', 'python', 'typescript') when 'path' is omitted or is a directory. The language value (e.g. 'python', 'rust', 'typescript'). Optional if 'path' has a recognized file extension.
     pub language: Option<String>,
     /// Optional path value.
     pub path: Option<String>,
@@ -347,32 +405,69 @@ pub struct Ast {
     /// The page value.
     pub page: PageInput,
 }
+impl Ast {
+    pub(super) fn pattern(&self) -> anyhow::Result<&str> {
+        aliased_string(&self.pattern, &[self.query.as_deref()], "pattern")
+    }
+}
 #[derive(Deserialize, JsonSchema)]
 /// Represents search docs data.
 pub struct SearchDocs {
-    /// The query value.
+    /// Documentation query; accepts 'pattern' as a unified alias.
+    #[serde(default)]
     pub query: String,
+    /// Alternative to query for documentation search terms.
+    pub pattern: Option<String>,
     /// Optional doc type value.
     pub doc_type: Option<String>,
-    /// Optional component value.
+    /// Optional documentation component or directory prefix filter; accepts 'path' as a unified alias.
     pub component: Option<String>,
-    /// Include a short match-centered content excerpt in each result.
+    /// Alternative to component for a documentation component or directory prefix.
+    pub path: Option<String>,
+    /// Include a short match-centered content excerpt in each result (recommended: true for zero-round-trip triage).
     #[serde(default)]
     pub include_excerpt: bool,
     #[serde(flatten)]
     /// The page value.
     pub page: PageInput,
 }
+impl SearchDocs {
+    pub(super) fn query(&self) -> anyhow::Result<&str> {
+        aliased_string(&self.query, &[self.pattern.as_deref()], "query")
+    }
+
+    pub(super) fn component(&self) -> anyhow::Result<Option<&str>> {
+        aliased_value(
+            self.component.as_deref(),
+            &[self.path.as_deref()],
+            "component",
+        )
+    }
+}
 #[derive(Deserialize, JsonSchema)]
 /// Represents get doc data.
 pub struct GetDoc {
-    /// The path or id value.
+    /// Document path or ID; accepts unified 'path' and 'selector' aliases.
+    #[serde(default)]
     pub path_or_id: String,
-    /// Optional section value.
+    /// Alternative to path_or_id for an indexed document path or ID.
+    pub path: Option<String>,
+    /// Alternative to path_or_id or path; provide exactly one document selector.
+    pub selector: Option<String>,
+    /// Optional exact section title. Omit with detail='compact' to inspect the document outline before reading a section.
     pub section: Option<String>,
     #[serde(flatten)]
     /// The page value.
     pub page: PageInput,
+}
+impl GetDoc {
+    pub(super) fn path_or_id(&self) -> anyhow::Result<&str> {
+        aliased_string(
+            &self.path_or_id,
+            &[self.path.as_deref(), self.selector.as_deref()],
+            "path_or_id",
+        )
+    }
 }
 #[derive(Deserialize, JsonSchema)]
 /// Represents guide data.

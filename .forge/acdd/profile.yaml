@@ -52,6 +52,10 @@ guidance:
   milestone.synthesis:
     description: "MANDATORY ARCHITECTURAL AUDIT & CONTRACT SYNTHESIS GATE — DO NOT BYPASS"
     criteria:
+      - "NO DEAD RE-EXPORT SHIMS: Do not retain pub mod wrappers when pub use crate_name::module; suffices."
+      - "CRATE EXTRACTION CLEANUP: Check git status and module-tree reachability after extraction; delete orphaned source files inside admitted scope."
+      - "AST SEARCH LANGUAGE: Always supply language to ast_grep_search when path is omitted or has no file extension, including directory paths."
+      - "REVIEW REJECTION BOUNDARY: Reject only for contract failure, scope violation, invariant breach, or a genuine functional or architectural defect. Never reject over doc-comment wording or non-regression stylistic nitpicks."
       - "ARCHITECTURAL EXTENSION POINTS: Inspect existing parser and linker registries using code_map_* and ctx_read. Identify natural extension seams and data flow. Do NOT invent parallel systems or touch protected files (Cargo.toml, build.rs, .forge/**)."
       - "FORMAL ARCHITECTURAL BLUEPRINT: Synthesize an architectural decision covering type invariants, data flow, error states, and impact perimeters."
       - "DOMAIN SEAM TEST: Author a compiling runtime-red seam test in the appropriate domain test module (in tests/) proving the unfulfilled contract. Author dedicated test functions with descriptive names rather than appending to monolithic test functions."
@@ -70,6 +74,10 @@ guidance:
   task.review:
     description: "INDEPENDENT REVIEW CORE INVARIANTS & ENGINEERING PRINCIPLES"
     criteria:
+      - "NO DEAD RE-EXPORT SHIMS: Do not retain pub mod wrappers when pub use crate_name::module; suffices."
+      - "CRATE EXTRACTION CLEANUP: Check git status and module-tree reachability after extraction; delete orphaned source files inside admitted scope."
+      - "AST SEARCH LANGUAGE: Always supply language to ast_grep_search when path is omitted or has no file extension, including directory paths."
+      - "REVIEW REJECTION BOUNDARY: Reject only for contract failure, scope violation, invariant breach, or a genuine functional or architectural defect. Never reject over doc-comment wording or non-regression stylistic nitpicks."
       - "BROAD ARCHITECTURAL EXPLORATION: Never evaluate diffs in isolation. Thoroughly inspect subsystem integration and extension points using Forge MCP (code_map_inspect, code_map_impact, ast_grep_search, code_map_overview) and ctx_read."
       - "STRICT REJECTION OF HACKS & HEURISTICS: Actively detect and REJECT superficial workarounds, ad-hoc string heuristics (e.g. path shape guesses, magical substring checks), hardcoded parallel lookup lists, or patches designed merely to turn a test green. Require durable, authentic root-cause fixes in the typed data model."
       - "TEST HYGIENE & ANTI-MONOLITH: Reject diffs that append tests, review probes, or heavy integration fixtures into existing unit test functions. Enforce domain decomposition into focused, parallelizable test functions."
@@ -81,6 +89,10 @@ guidance:
   milestone.review:
     description: "MILESTONE INTEGRATION REVIEW & BOUNDED VERIFICATION"
     criteria:
+      - "NO DEAD RE-EXPORT SHIMS: Do not retain pub mod wrappers when pub use crate_name::module; suffices."
+      - "CRATE EXTRACTION CLEANUP: Check git status and module-tree reachability after extraction; delete orphaned source files inside admitted scope."
+      - "AST SEARCH LANGUAGE: Always supply language to ast_grep_search when path is omitted or has no file extension, including directory paths."
+      - "REVIEW REJECTION BOUNDARY: Reject only for contract failure, scope violation, invariant breach, or a genuine functional or architectural defect. Never reject over doc-comment wording or non-regression stylistic nitpicks."
       - "SYSTEM-LEVEL COHESION: Review overall milestone diff against target base for holistic architecture alignment, zero dangling abstractions, and clean module boundaries."
       - "PERFORMANCE INVARIANTS: Verify full alignment with docs/architecture/performance.md with authentic benchmark proof and no memory or latency regressions."
       - "CONSTRUCTIVE & DURABLE: Enforce authentic root-cause fixes; reject superficial workarounds or duplicate mechanisms without blocking beneficial improvements."
@@ -93,11 +105,15 @@ commands:
     scope_args_by_pattern:
       "src/main.rs": "--bin contextunity-forge-mcp"
       "src/**/*.rs": "--lib"
+      "crates/forge-core/**/*.rs": "--package forge-core --lib"
+      "crates/forge-index/**/*.rs": "--package forge-index --lib"
+      "crates/forge-tasks/**/*.rs": "--package forge-tasks --lib"
       "tests/*.rs": "--test {file_stem}"
       "tests/acdd/**/*.rs": "--test acdd"
       "tests/common/**/*.rs": "--all-targets"
       "tests/commitment_integrity/**/*.rs": "--test commitment_integrity"
       "tests/core/**/*.rs": "--test core"
+      "tests/framework_manifests/**/*.rs": "--test framework_manifests"
       "tests/incremental/**/*.rs": "--test incremental"
       "tests/languages/**/*.rs": "--test languages"
       "tests/linker/**/*.rs": "--test linker"
@@ -163,6 +179,7 @@ gates:
       gates:
         - id: contract
           role: contract_author
+          tools: [get_code_snippet, search_docs, get_doc]
           guidance: [task.contract, hitl.pro]
           proof: contract
           expected_failure:
@@ -173,6 +190,7 @@ gates:
 
         - id: build
           role: builder
+          tools: [get_code_snippet, search_docs, get_doc]
           guidance: [task.code, hitl.pro]
           command: rust-check-and-test
           proof: command
@@ -182,6 +200,7 @@ gates:
 
         - id: review
           role: independent_reviewer
+          tools: [get_code_snippet, search_docs, get_doc]
           guidance: [task.review, hitl.pro]
           policy: default_review
           proof: review
