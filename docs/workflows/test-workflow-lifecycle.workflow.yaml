@@ -1,0 +1,54 @@
+# =============================================================================
+# TEST WORKFLOW: Pure Workflow Model E2E Verification
+# Purpose: Autonomous verification of Model 1 (pure gate graph without tasks).
+# Invariants:
+#   1. save: log (emits structured run logs into .forge/runs/)
+#   2. Zero task table rows, zero task claims.
+#   3. Forward/cyclic rejection routing: verify (reject_to: polish) -> polish -> review.
+# =============================================================================
+
+version: 2
+inherit: none
+
+save: log
+
+roles:
+  builder:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:medium'
+
+  independent_reviewer:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:xhigh'
+
+commands:
+  check_full_repo:
+    command: "cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets"
+    timeout_seconds: 600
+
+policies:
+  default_review:
+    independent_worker: true
+    require_all_contours: true
+
+gates:
+  - id: verify
+    command: check_full_repo
+    fail: polish
+
+  - id: polish
+    role: builder
+    command: check_full_repo
+    pass: review
+
+  - id: review
+    role: independent_reviewer
+    policy: default_review
+    independent_from: polish
+    fail: polish
+    save:
+      immutable: true

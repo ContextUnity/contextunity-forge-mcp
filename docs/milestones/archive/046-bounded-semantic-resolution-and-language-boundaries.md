@@ -66,7 +66,7 @@ handoff:
 
 Deliver a more modular static resolver with bounded candidate evidence, honest uncertainty, compile-time language feature decoupling, and proven sub-11.5s cold build performance on the control repository (`commerce-release-update`).
 
-This milestone follows [043](archive/043-test-suite-architecture-and-domain-consolidation.md). It operates independently of installer distribution packaging (Milestone 044). All language feature isolation and decoupling previously slated for distribution are directly owned by this milestone to ensure clean modularity of language profiles. All skill distribution, packaging, and installation into user home directories (`~/.agents`, `~/.gemini`, `~/.claude`) or repository-local agent directories are strictly owned by Milestone 044; this milestone does not touch or distribute skills.
+This milestone follows [043](043-test-suite-architecture-and-domain-consolidation.md). It operates independently of installer distribution packaging (Milestone 044). All language feature isolation and decoupling previously slated for distribution are directly owned by this milestone to ensure clean modularity of language profiles. All skill distribution, packaging, and installation into user home directories (`~/.agents`, `~/.gemini`, `~/.claude`) or repository-local agent directories are strictly owned by Milestone 044; this milestone does not touch or distribute skills.
 
 Owner authorization covers preparation of this manifest. Proposed changes to ADR 0008 are explicit decision work in task 1. Downstream candidate inference in tasks 4, 5, and 6 is strictly conditional on owner approval of that decision. If the decision is declined, the system retains current fail-closed semantics (conditional branches and reassignments truncate inference without generating candidates), and downstream task contracts formalize those fail-closed truncation boundaries.
 
@@ -74,7 +74,7 @@ Owner authorization covers preparation of this manifest. Proposed changes to ADR
 
 Source: ContextUnity/contextunity-forge-mcp. The source checkout was inspected directly.
 
-Before execution, load `contextunity-forge` and [root instructions](../../AGENTS.md). Run `code_map_overview` against the actual worktree. Record workspace, generation, admitted roots, language capabilities, skipped/partial files, and current source revision in task evidence. For every changed symbol use search → inspect → explain → impact(depth=1) → tests → digest-checked snippet. Use the returned generation for pagination. Reconcile baseline drift through contract_revision before claiming a changed contract.
+Before execution, load `contextunity-forge` and [root instructions](../../../AGENTS.md). Run `code_map_overview` against the actual worktree. Record workspace, generation, admitted roots, language capabilities, skipped/partial files, and current source revision in task evidence. For every changed symbol use search → inspect → explain → impact(depth=1) → tests → digest-checked snippet. Use the returned generation for pagination. Reconcile baseline drift through contract_revision before claiming a changed contract.
 
 ### Existing mechanisms to retain
 
@@ -94,15 +94,15 @@ The graph is stored in SQLite; FTS5 supplies text retrieval, not semantic resolu
 
 ## Architectural constraints and decision delta
 
-[ADR 0008](../adr/0008-bounded-static-value-flow.md) currently ends inference at conditional branches and reassignments. The proposed extension permits finite candidate evidence for explicitly supported, complete local branch joins only. Unknown or unsupported alternatives retain unknown state; they cannot be dropped to manufacture a unique result. Keep arbitrary dynamic dispatch, mutation, and macro expansion outside exact-call inference.
+[ADR 0008](../../adr/0008-bounded-static-value-flow.md) currently ends inference at conditional branches and reassignments. The proposed extension permits finite candidate evidence for explicitly supported, complete local branch joins only. Unknown or unsupported alternatives retain unknown state; they cannot be dropped to manufacture a unique result. Keep arbitrary dynamic dispatch, mutation, and macro expansion outside exact-call inference.
 
 The contract strictly distinguishes:
 1. `MAX_VALUE_FLOW_TYPE_DEPTH` (existing AST/expression evaluation depth limit).
 2. `MAX_CANDIDATE_BRANCH_JOINS` ($K=8$, maximum candidate set cardinality across local joins). Overflow beyond $K$ widens explicitly to `Unknown/Incomplete` rather than truncating silently.
 
-[ADR 0018](../adr/0018-layer-dependency-boundaries-and-core-leaf-isolation.md) explicitly permits cohesive multi-pass algorithms to remain intact. Split by responsibility rather than file length. Preserve existing core/engine/db boundaries and avoid generic plugin infrastructure without a concrete consumer.
+[ADR 0018](../../adr/0018-layer-dependency-boundaries-and-core-leaf-isolation.md) explicitly permits cohesive multi-pass algorithms to remain intact. Split by responsibility rather than file length. Preserve existing core/engine/db boundaries and avoid generic plugin infrastructure without a concrete consumer.
 
-[ADR 0010](../adr/0010-incremental-delta-transitive-dirtying.md) and [ADR 0012](../adr/0012-zero-regression-serialization-and-cold-build-latency.md) govern incremental consistency, lean projections, compressed facts, and evidence-led performance. Keep unchanged outputs stable; version intentional changes and reject incompatible indexes through existing admission/rebuild paths.
+[ADR 0010](../../adr/0010-incremental-delta-transitive-dirtying.md) and [ADR 0012](../../adr/0012-zero-regression-serialization-and-cold-build-latency.md) govern incremental consistency, lean projections, compressed facts, and evidence-led performance. Keep unchanged outputs stable; version intentional changes and reject incompatible indexes through existing admission/rebuild paths.
 
 > [!IMPORTANT]
 > Invariant: `LanguageLinker` returns a distinction between not-applicable, blocked/unknown, unique and multiple-candidate outcomes. A blocked result cannot fall through to a weaker name match and become exact.
@@ -881,7 +881,7 @@ cargo test --test commitment_integrity && cargo clippy --all-targets --all-featu
 
 ## Verification and completion
 
-Follow [TESTS.md](../../TESTS.md). Tasks declaring `seam-test-first` record a real failing contract seam at contract gate and passing build; tasks declaring `direct-proof` validate existing structural or compilation invariants directly with exit code 0; task declaring `deferred-final-test` validates full end-to-end integration and non-regression benchmarks. Verify that a filtered test executed at least one test. Run `cargo clippy --all-targets --all-features -- -D warnings` for Rust builds. Reviewer evidence uses the candidate snapshot and actual commands/results; do not manufacture receipts or reuse results from another tree.
+Follow [TESTS.md](../../../TESTS.md). Tasks declaring `seam-test-first` record a real failing contract seam at contract gate and passing build; tasks declaring `direct-proof` validate existing structural or compilation invariants directly with exit code 0; task declaring `deferred-final-test` validates full end-to-end integration and non-regression benchmarks. Verify that a filtered test executed at least one test. Run `cargo clippy --all-targets --all-features -- -D warnings` for Rust builds. Reviewer evidence uses the candidate snapshot and actual commands/results; do not manufacture receipts or reuse results from another tree.
 
 The final handoff command records this verification string only after it has actually run:
 

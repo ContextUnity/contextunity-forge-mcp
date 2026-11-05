@@ -284,6 +284,7 @@ gates:
           role: architect
           guidance: [task.contract, hitl.pro]
           proof: contract
+          command: check_task
           expected_failure:
             exit_codes: [1, 101, 134]
             stderr_contains: "assertion failed"
@@ -318,38 +319,46 @@ gates:
           guidance: [hitl.pro]
           proof: delivery
           receipt: true
-          review_sources:
-            - review
+          need: [review]
           independent_from: build
-          reject_to: build
-          persistence:
+          fail: build
+          save:
             immutable: true
             post: commit
             git_commit_note: telemetry
 
-milestone_verification:
-  id: milestone_verification
-  gates:
-    - id: verify
-      command: check_full_repo
-      proof: command
-    - id: review
-      role: independent_reviewer
-      policy: default_review
-      guidance: [milestone.review]
-      proof: review
-      contours: guidance.contours
-      independent_from: verify
-      persistence:
-        immutable: true
-  fallback:
-    use: build_review_cycle
+  - id: verify
     command: check_full_repo
-    guidance: [milestone.polish]
     max_attempts: 2
-  deliver:
-    proof: delivery
-    receipt: true
-    persistence:
+    pass: documentation
+    fail: polish
+
+  - id: polish
+    role: architect
+    guidance: [milestone.polish, hitl]
+    pass: milestone_review
+    save:
+      pre: snapshot
+      post: snapshot
+
+  - id: milestone_review
+    role: independent_reviewer
+    policy: default_review
+    guidance: [milestone.review]
+    contours: guidance.contours
+    independent_from: polish
+    pass: verify
+    fail: polish
+    save:
       immutable: true
-      post: commit
+
+  - id: documentation
+    role: doc_writer
+    when: doc
+    guidance: [milestone.doc]
+    pass: handoff
+
+  - id: handoff
+    receipt: true
+    absorb: true
+    save: commit

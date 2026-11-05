@@ -315,9 +315,9 @@ Every local depends_on edge has at least one seam_dependency row. Rows start at
 revision 1 with status synthesized; revision increases only when the owning
 contract changes, and status becomes verified after its seam is checked. The
 model and validator are
-[MilestoneContractMatrix](../../src/core/tasks/mod.rs#L61),
-[AcddErrorCode](../../src/core/tasks/mod.rs#L71), and
-[verify_contract_matrix_parity](../../src/engine/milestones/mod.rs#L32).
+`MilestoneContractMatrix` (`src/core/tasks/mod.rs#L61`),
+`AcddErrorCode` (`src/core/tasks/mod.rs#L71`), and
+`verify_contract_matrix_parity` (`src/engine/milestones/mod.rs#L32`).
 
 | Source task | Target task | Type | Contract reference |
 | :--- | :--- | :--- | :--- |

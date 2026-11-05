@@ -44,11 +44,13 @@ commands:
       "frontend/**/*.{ts,tsx,vue}": "cd frontend && npm run typecheck && npm test -- {scope_target}"
       "infra/**/*.{tf,yaml}": "cd infra && terraform fmt -check && terraform validate"
     timeout_seconds: 90
+    output: { require_counts: false }
 
   # Cross-repository live contract & integration check
   verify_cross_repo_e2e:
     command: "./scripts/run-cross-service-integration.sh --env test --headless"
     timeout_seconds: 300
+    output: { require_counts: false }
 
   # Full repository sanity check
   check_all_services:
@@ -113,6 +115,7 @@ gates:
       - id: contract
         role: lead_architect
         proof: contract
+        command: test
 
       # 2.2 In-Repo Implementation & Local Verification
       - id: implement
@@ -124,19 +127,20 @@ gates:
 
           - id: verify_service
             command: check_task
-            reject_to: code
+            fail: code
 
       # 2.3 Cross-Repo Integration Verification
       - id: umbrella_integration_verify
         command: verify_cross_repo_e2e
         proof: command
-        reject_to: implement
+        fail: implement
 
       # 2.4 Final Coordinated Verification
       - id: full_umbrella_verify
         command: check_all_services
         proof: command
-        reject_to: implement
+        fail: implement
+        save: snapshot
 
       # 2.5 Service Review
       - id: review
@@ -144,7 +148,7 @@ gates:
         policy: umbrella_review
         proof: review
         contours: guidance.contours
-        reject_to: implement
+        fail: implement
 
       # 2.6 Service Delivery
       - id: deliver
@@ -152,9 +156,9 @@ gates:
         policy: umbrella_delivery
         proof: delivery
         receipt: true
-        review_sources:
+        need:
           - review
-        reject_to: implement
-        persistence:
+        fail: implement
+        save:
           immutable: true
           post: commit

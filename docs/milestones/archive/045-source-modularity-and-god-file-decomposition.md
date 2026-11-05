@@ -37,7 +37,7 @@ handoff:
 
 ## Outcome and purpose
 
-Follow [ADR 0018](../adr/0018-layer-dependency-boundaries-and-core-leaf-isolation.md). The task titles are the contract.
+Follow [ADR 0018](../../adr/0018-layer-dependency-boundaries-and-core-leaf-isolation.md). The task titles are the contract.
 
 Task 1 and task 2 share no files. Task 3 follows task 2. Tasks 4 and 5 follow task 1.
 
@@ -505,5 +505,5 @@ Before delivering each task and closing this milestone:
 1. Run the focused test seam for the admitted change.
 2. Run `cargo test --test <affected-target>` with no filter.
 3. Run `cargo clippy --all-targets --all-features -- -D warnings` with zero warnings.
-4. Before handoff, run the command from [TESTS.md](../../TESTS.md): `cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets`.
+4. Before handoff, run the command from [TESTS.md](../../../TESTS.md): `cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets`.
 5. Confirm `src/core` imports no module from `src/engine`, `src/db`, `src/mcp`, or `src/cli`, and `src/core/commitments` still uses `rusqlite`.

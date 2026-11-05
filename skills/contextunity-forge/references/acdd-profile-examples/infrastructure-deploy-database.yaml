@@ -37,30 +37,37 @@ commands:
   check_infra_syntax:
     command: "terraform fmt -check && terraform validate"
     timeout_seconds: 60
+    output: { require_counts: false }
 
   check_migration_dry_run:
     command: "python manage.py makemigrations --check --dry-run && python manage.py migrate --plan"
     timeout_seconds: 60
+    output: { require_counts: false }
 
   backup_state_checkpoint:
     command: "./scripts/backup-db-snapshot.sh --target .forge/db_pre_deploy.sql"
     timeout_seconds: 180
+    output: { require_counts: false }
 
   apply_db_migrations:
     command: "python manage.py migrate --no-input"
     timeout_seconds: 300
+    output: { require_counts: false }
 
   deploy_rolling_containers:
     command: "./scripts/deploy.sh --mode rolling --env production"
     timeout_seconds: 300
+    output: { require_counts: false }
 
   verify_smoke_healthcheck:
     command: "./scripts/healthcheck.sh --endpoint https://api.commerce.internal/healthz --synthetic-order"
     timeout_seconds: 90
+    output: { require_counts: false }
 
   rollback_deployment_and_db:
     command: "./scripts/rollback.sh && ./scripts/restore-db-snapshot.sh --source .forge/db_pre_deploy.sql"
     timeout_seconds: 300
+    output: { require_counts: false }
 
 # =============================================================================
 # 3. GUIDANCE CATALOG (`guidance`)
@@ -132,22 +139,25 @@ gates:
       # Step 3.2: Forward Migration Execution
       - id: execute_migrations
         command: apply_db_migrations
-        reject_to: snapshot_checkpoint
+        fail: rollback
 
       # Step 3.3: Rolling Deployment
       - id: apply_containers
         command: deploy_rolling_containers
-        reject_to: snapshot_checkpoint
+        fail: rollback
 
       # Step 3.4: Automated Synthetic Smoke Healthcheck
       - id: smoke_validation
         command: verify_smoke_healthcheck
-        reject_to: snapshot_checkpoint
+        pass: release_audit
+        fail: rollback
+        save: snapshot
 
-    # Fallback Subgraph: Triggered autonomously if migration or smoke check fails!
-    fallback:
-      command: rollback_deployment_and_db
-      max_attempts: 1
+      # Rollback Gate: Triggered autonomously if deployment or smoke check fails
+      - id: rollback
+        command: rollback_deployment_and_db
+        pass: snapshot_checkpoint
+        fail: live_deployment
 
   # Gate 4: Independent Operational Review & Release Seal
   - id: release_audit
@@ -160,9 +170,9 @@ gates:
     role: release_reviewer
     proof: delivery
     receipt: true
-    review_sources:
+    need:
       - release_audit
-    reject_to: live_deployment
-    persistence:
+    fail: live_deployment
+    save:
       immutable: true
       post: commit

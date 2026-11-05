@@ -98,8 +98,23 @@ reader and response budgets. `mode` accepts `auto` (default), `lines`, `raw`,
 `search`, `delta`, `outline`, and `snippet`. Auto selects snippet when `selector`
 is present, search when `pattern` is present, and lines otherwise.
 
+Always prefer `selector` (e.g. `forge_read(path="src/lib.rs", selector="MyStruct")`
+or `forge_read(selector="src/lib.rs:MyStruct")`) to read entire functions, structs,
+or classes directly with verified digest and complete body source.
+
 Core text modes work with `profile: minimal` and create no code index.
 `start_line` is one-based; `line_count` defaults to 200 and accepts 1–10,000.
+Argument tolerance and aliasing:
+- `end_line`: computes the inclusive line count from `start_line` (default 1). Zero or an end before the start rejects with an error.
+- `lines`: accepts a range string (e.g. `"100-200"`, `"100..200"`) parsed into `start_line` and `line_count`, or an integer line count.
+- `max_lines`: alias for `line_count`.
+- `file_path`: alias for `path`.
+- `query`: alias for `pattern`.
+- Absolute path tolerance: paths starting with the workspace root automatically strip the workspace root prefix to resolve as relative workspace paths.
+- Enclosing symbol hint: reading lines inside an indexed function, method, or struct includes a helpful hint in the output footer (`💡 Enclosing symbol: 'fn <name>'...`) pointing directly to the exact `selector`.
+- Unrecognized parameter hints: invalid or unrecognized arguments emit informative schema errors explicitly listing supported parameter names and suggesting closest matches.
+- Batch reads: `paths: [...]` with `mode: "outline"` inspects subsystem admission across all supplied paths.
+
 Lines include source line numbers; raw preserves the returned text, including
 line endings. Search requires `pattern`, uses substring matching by default,
 and accepts `regex: true` and `context` (default 2, capped at 100). Search starts

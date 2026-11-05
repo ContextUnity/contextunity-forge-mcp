@@ -1,0 +1,56 @@
+# =============================================================================
+# ACDD PROFILE EXAMPLE: Pure Workflow (Zero Tasks)
+#
+# ADR 0021 Work Model 1: Workflow is a direct gate graph without tasks.
+# There is NO `tasks:` block. Gates execute sequentially, cyclically, or reactively
+# directly against repository state (e.g. CI/CD, polish loops, PR audits).
+# =============================================================================
+
+version: 2
+inherit: none
+
+# Workflows use `save: log` as their primary persistence artifact:
+# Emits run traces into `.forge/runs/<workflow-run-id>.json` and SQLite gate_execution_traces.
+save: log
+
+roles:
+  builder:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:medium'
+
+  independent_reviewer:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:xhigh'
+
+commands:
+  check_full_repo:
+    command: "cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets"
+    timeout_seconds: 600
+
+policies:
+  default_review:
+    independent_worker: true
+    require_all_contours: true
+
+# Pure gate graph: NO `tasks:` container!
+gates:
+  - id: verify
+    command: check_full_repo
+    fail: polish
+
+  - id: polish
+    role: builder
+    pass: review
+
+  - id: review
+    role: independent_reviewer
+    policy: default_review
+    independent_from: polish
+    pass: verify
+    fail: polish
+    save:
+      immutable: true

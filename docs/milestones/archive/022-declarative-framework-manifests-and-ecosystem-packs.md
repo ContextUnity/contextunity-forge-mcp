@@ -115,10 +115,10 @@ guardrails preserve existing indexing and storage contracts; they do not admit
 additional engine features or import unrelated changes from `main`.
 
 Source snapshot: `main` at `2c06defd57c80503ad18bd73137a4f3ef084f9b0`,
-[performance guidance](../architecture/performance.md),
-[indexing architecture](../architecture/indexing.md),
-[modularity](../architecture/modularity.md), and
-[ADR 0012](../adr/0012-zero-regression-serialization-and-cold-build-latency.md).
+[performance guidance](../../architecture/performance.md),
+[indexing architecture](../../architecture/indexing.md),
+[modularity](../../architecture/modularity.md), and
+[ADR 0012](../../adr/0012-zero-regression-serialization-and-cold-build-latency.md).
 The rules below retain that snapshot's requirements even when the current branch
 does not contain its newer pipeline/cache owners. Record an inherited gap
 explicitly; absence of an owner is not proof of conformance or authority to add
@@ -252,10 +252,10 @@ Completed finding **PERF-022-01**: `RouteContext` collects lexical binding and
 Python write summaries before observing buffered route candidates.
 `receiver_binding` reuses those summaries instead of collecting a scope for each
 assignment or prefix provider. The accepted generic-task proofs preserve lexical
-shadowing and exact-target admission; [route extraction](../../src/engine/ast/routes.rs)
+shadowing and exact-target admission; route extraction in `src/engine/ast/routes.rs`
 owns the implementation. Its wall-clock impact is not measured.
 
-Coverage evidence: the accepted revision-5 [real-control SQL report](../../.forge/evidence/m022-final-framework-data-accepted-bdfcdbb/m022-final-framework-data-build/report.md)
+Coverage evidence: the accepted revision-5 real-control SQL report in `.forge/evidence/m022-final-framework-data-accepted-bdfcdbb/m022-final-framework-data-build/report.md`
 binds retained Commerce and Library baselines and candidates by source inventory,
 configuration, binary and database SHA-256, with complete R/A/U/E, per-language and
 fixed framework-cohort comparisons. Keep exact rule attribution separate from

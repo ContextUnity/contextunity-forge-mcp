@@ -1,0 +1,164 @@
+# =============================================================================
+# ACDD PROFILE EXAMPLE: Full Milestone Profile (Level 0 Boundaries + Tasks Container)
+#
+# ADR 0021 Work Model 3: Milestone contains Level 0 preflight (contract_synthesis),
+# the per-task execution container (`tasks:` executed via DAG waves), and Level 0
+# closure (milestone_verification with autonomous verify, polish, and handoff).
+# =============================================================================
+
+version: 2
+
+# Milestones execute in isolated worktrees and use `persistence: commit` (commits + receipts + snapshots + logs):
+save: commit
+
+roles:
+  architect:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:xhigh'
+
+  contract_author:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:xhigh'
+
+  builder:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:medium'
+
+  independent_reviewer:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:xhigh'
+
+commands:
+  rust-check-and-test:
+    command: "cargo clippy --all-targets --all-features -- -D warnings && cargo test"
+    timeout_seconds: 120
+
+  check_full_repo:
+    command: "cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets"
+    timeout_seconds: 600
+
+policies:
+  default_review:
+    independent_worker: true
+    require_all_contours: true
+
+gates:
+  # ---------------------------------------------------------------------------
+  # Level 0 Preflight Gate (Executed ONCE at Milestone Start by Architect)
+  # ---------------------------------------------------------------------------
+  - id: contract_synthesis
+    role: architect
+    proof: contract
+    expected_failure:
+      exit_codes: [1, 101, 134]
+      stderr_contains: "assertion failed"
+    save:
+      pre: snapshot
+      post: snapshot
+
+  # ---------------------------------------------------------------------------
+  # Per-Task Execution Container (Executed per Task in DAG Wave Order)
+  # ---------------------------------------------------------------------------
+  - tasks:
+      gates:
+        - id: contract
+          role: contract_author
+          proof: contract
+          command: test
+          expected_failure:
+            exit_codes: [1, 101, 134]
+            stderr_contains: "assertion failed"
+          save:
+            post: snapshot
+
+        - id: build
+          role: builder
+          command: rust-check-and-test
+          proof: command
+          save:
+            pre: snapshot
+            post: snapshot
+
+        - id: review
+          role: independent_reviewer
+          policy: default_review
+          independent_from: build
+          fail: build
+          loop:
+            scope: build
+            symbols: contract
+          save:
+            immutable: true
+
+        - id: seam
+          when: seam
+          gates:
+            - id: integrate
+              role: builder
+              command: rust-check-and-test
+              save:
+                pre: snapshot
+                post: snapshot
+            - id: review
+              role: independent_reviewer
+              policy: default_review
+              independent_from: integrate
+              fail: integrate
+              save:
+                immutable: true
+
+        - id: deliver
+          role: independent_reviewer
+          receipt: true
+          need:
+            - review
+          independent_from: build
+          fail: build
+          save:
+            immutable: true
+            post: commit
+
+  # ---------------------------------------------------------------------------
+  # Milestone Verification & Closure Pipeline (LangGraph Transitions: pass, fail)
+  # ---------------------------------------------------------------------------
+  - id: verify
+    command: check_full_repo
+    max_attempts: 2
+    pass: documentation
+    fail: polish
+
+  - id: polish
+    role: architect
+    pass: milestone_review
+    save:
+      pre: snapshot
+      post: snapshot
+
+  - id: milestone_review
+    role: independent_reviewer
+    policy: default_review
+    independent_from: polish
+    pass: verify
+    fail: polish
+    save:
+      immutable: true
+
+  - id: documentation
+    role: doc_writer
+    when: doc
+    pass: handoff
+
+  - id: handoff
+    receipt: true
+    absorb: true
+    save:
+      post: commit
+      git_commit_note: telemetry

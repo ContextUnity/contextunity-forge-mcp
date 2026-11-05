@@ -12,7 +12,7 @@ depends_on: []
 # Milestone 022 Architectural De-bloat, Zero-Allocation Linker, and Resolution Health Overhaul
 
 Admitted target branch: `milestone/022-declarative-framework-manifests-and-ecosystem-packs` (`.worktrees/022-declarative-framework-manifests-and-ecosystem-packs`).
-Deferred workspace-split target: [Milestone PF-001](../milestones/PF-001-cold-build-rss-bound-and-linker-diet.md) (`PF-001-T05: split-cargo-workspace-into-independent-crates`).
+Deferred workspace-split target: [Milestone PF-001](../milestones/archive/PF-001-cold-build-rss-bound-and-linker-diet.md) (`PF-001-T05: split-cargo-workspace-into-independent-crates`).
 
 ---
 
@@ -814,12 +814,12 @@ Block 1's three-file total (`cache.rs`, `writer.rs`, `typed_facts.rs`) is 3,468 
 #### Крок 6.2.5: Архітектурна декомпозиція тестових монолітів без оверкіла (Modular Test Decomposition)
 - **Діагноз проблеми**:
   У тестовій системі ядра двигуна утворилися гігантські монолітні файли по 1,500–3,600 рядків, у яких неможливо ефективно орієнтуватися і де дублюються сотні рядків однакових хелперів:
-  1. [`tests/languages/manifests.rs`](../../tests/languages/manifests.rs) — **3,605 LOC** (усі 15 фреймворків в одному файлі!).
-  2. [`tests/languages/typescript/frameworks.rs`](../../tests/languages/typescript/frameworks.rs) — **2,916 LOC** (NestJS, Nuxt, Vue в купі).
-  3. [`tests/languages/html/framework_relations.rs`](../../tests/languages/html/framework_relations.rs) — **2,177 LOC** (HTML-зв'язки для всіх бекендів разом).
-  4. [`tests/languages/html/templates.rs`](../../tests/languages/html/templates.rs) — **1,829 LOC**.
-  5. [`tests/receivers/rust_value_flow.rs`](../../tests/receivers/rust_value_flow.rs) — **1,564 LOC**.
-  6. [`tests/receivers/python_value_flow.rs`](../../tests/receivers/python_value_flow.rs) — **1,441 LOC**.
+  1. `tests/languages/manifests.rs` — **3,605 LOC** (усі 15 фреймворків в одному файлі!).
+  2. `tests/languages/typescript/frameworks.rs` — **2,916 LOC** (NestJS, Nuxt, Vue в купі).
+  3. `tests/languages/html/framework_relations.rs` — **2,177 LOC** (HTML-зв'язки для всіх бекендів разом).
+  4. `tests/languages/html/templates.rs` — **1,829 LOC**.
+  5. `tests/receivers/rust_value_flow.rs` — **1,564 LOC**.
+  6. `tests/receivers/python_value_flow.rs` — **1,441 LOC**.
   7. Перші 200–250 рядків у кожному такому файлі — це скопійований однаковий SQL-бойлерплейт (`assert_edge_canonical`, `coverage_status`, `query_rows`, `write_files`).
 
 - **Дворівнева архітектура тестів (Рішення БЕЗ оверкіла)**:
@@ -876,7 +876,7 @@ Block 1's three-file total (`cache.rs`, `writer.rs`, `typed_facts.rs`) is 3,468 
     cargo test --test linker value_flow::
     ```
   - Час загальної лінковки не зростає, оскільки кількість важких бінарників у `tests/` залишається мінімальною (+1 для маніфестів).
-  - Каталог тестів і команди запуску оновлено в [`tests/AGENTS.md`](../../tests/AGENTS.md) та [`docs/testing/README.md`](../testing/README.md).
+  - Каталог тестів і команди запуску оновлено в [`tests/AGENTS.md`](../../tests/AGENTS.md) та `docs/testing/README.md`.
 
 #### Крок 6.2.6: Повна нормалізація кваліфікованих шляхів Rust (`super::`, `super::super::`, `crate::`, `self::`) та зняття штучних обмежень покриття
 - **Діагноз проблеми**:

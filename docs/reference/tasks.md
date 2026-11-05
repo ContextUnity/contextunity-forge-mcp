@@ -180,12 +180,12 @@ and the two detail flags are mutually exclusive within one invocation. See the
 | `task_blackboard` | `action` is `post`, `read`, or `inspect`. Optional `scope` selects `milestone`, `task`, or `subtask`; `milestone_ref`, `task_id`, and `subtask_ref` identify or constrain that context. Post requires canonical `topic` and `payload`, accepts `author` and optional active-profile `gate`, and returns an ID. Read accepts `topic`, optional active-profile `gate`, `limit` (default 10, maximum 50), and `offset`; it returns newest-first summaries and pagination metadata without payload. Inspect with `message_id` returns that message including payload and gate, ignoring optional `scope`, `task_id`, and `milestone_ref`; without `message_id`, inspect returns the scoped read page. |
 
 CLI `task submit` without `--evidence` and MCP `task_submit` without `evidence`
-compile claim-bound evidence for Contract and Command proof gates. Forge reuses
+compile claim-bound evidence for Contract, Command, and SeamTest proof gates. Forge reuses
 a fresh completed execution trace matching the current candidate fingerprint;
 otherwise it runs the gate's registered command in the claimed worktree. It then
 uses the regular submit validation path. Delivery proof is compiled from the
 accepted candidate snapshot and its baseline without executing a command.
-Review, seam-test, and schema-defined proof gates require typed evidence. Explicit evidence uses
+Review and schema-defined proof gates require typed evidence. Explicit evidence uses
 the existing validation path. Direct engine callers use
 `engine::tasks::submit_zero_arg` or `submit_zero_arg_with_timeout`.
 
@@ -312,6 +312,7 @@ agents should deepen the active task using **subtasks**.
 - **Post-Delivery Immutability**: Subtasks are strictly operational execution artifacts. Once a task passes its terminal delivery gate
   (`status: completed`), its subtasks and receipt are frozen. Calling `subtask_add` or `subtask_update` on a completed or cancelled task
   fails closed with `TASK_TERMINAL`.
+- **Delivery Subtask Completion Guard**: During the terminal `deliver` gate, Forge mechanically enforces that all declared subtasks are either `completed` or `cancelled`. If any subtask remains in an unfinished status (`ready`, `in_progress`, `blocked`, `pending`), submission fails closed with `TASK_SUBTASKS_INCOMPLETE`. If any `completed` subtask lacks non-empty verification evidence, submission fails closed with `TASK_SUBTASK_EVIDENCE_MISSING`.
 - **Digest Independence**: Contract digests exclude `spec.subtasks`. Adding, updating, or completing subtasks
   never triggers `AUTHORITY_GAP` or forces contract re-admission.
 - **Sync behavior**: When the task contract digest is unchanged, `task sync` updates subtask titles from Markdown
@@ -387,7 +388,7 @@ with the contract seam or indexed covering-test targets, while
   "worktree": "/absolute/claimed/worktree",
   "proof": {
     "command_proof": {
-      "command": "cargo test --test acdd tasks::completed_task_reopen",
+      "command": "rust-check-and-test",
       "exit_code": 0,
       "tests_passed": 1,
       "tests_failed": 0
@@ -397,6 +398,20 @@ with the contract seam or indexed covering-test targets, while
 ```
 
 Contract proof has the form `{"contract_proof":{"seam_test_ref":"tests/...::test_name","red_exit_code":101}}`. `red_exit_code` may be 0 when `proof_policy` is `direct-proof` or `deferred-final-test`.
+Contract, command, and seam-test passes require a SQLite execution observation for the active
+claim, candidate, registered command plan, and output policy. Execute the gate
+through `task_manage(action="verify")` or its runner before submitting typed proof.
+Supplied seam references, exit codes, and command counts must match that observation.
+For `proof: seam_test`, every `seam_test_refs` entry must match a durably observed
+passing test; aggregate counts alone do not establish coverage. The engine extracts
+individual test identities and outcomes according to declarative `commands.output.tests`
+rules configured in the active profile, without language or framework hardcoding in the core.
+References use `<target_source_path>::<test_name>` (e.g. `tests/runner_fixture.rs::seam_test`
+or member-qualified paths like `member/tests/runner_fixture.rs::seam_test`).
+Ignored and filtered tests do not count. Mixed executable test targets, count discrepancies
+(which fail closed against injected stdout lines), and executions without matching test
+identities reject rather than infer passing tests. Configure a supported registered command
+and execute it again.
 Build proof is wrapped in `command_proof`; on pass it requires a nonempty command,
 exit code 0 and zero failures. A positive passing-test count is required unless
 the command's [output rules](profiles.md) set `require_counts: false`. An optional `log` is
@@ -454,7 +469,10 @@ Standard commit message is derived from task target and completed subtasks, and 
 If the commit fails (e.g. pre-commit hook failure), the SQLite transaction rolls back atomically,
 leaving the task uncompleted at `deliver` with an explicit error (`TASK_DELIVERY_COMMIT_FAILED`), allowing the deliverer to reject
 back to `reject_to` (e.g. `build`) or retry. The task receipt created at delivery records the created commit SHA from `auto_commit` (or the developer's delivery commit when `auto_commit: false`), contract revision,
-RFC3339 `passed_at`, command proof, review proof, and decision. Its rollup retains
+RFC3339 `passed_at`, command proof, review proof, and decision. Qualified
+`delivery_gate` and `candidate_gate` fields preserve the selected task track through
+sync, recovery, and handoff. Legacy receipts without those fields are accepted only
+when delivery selection is unambiguous. Its rollup retains
 verified invariants and review summary. Task blackboard `decisions` and `deferred`
 are stored as topic-labelled strings in the existing `architectural_notes` vector
 (for example, `decisions: <payload>`), preserving historical receipt bytes and
@@ -618,6 +636,7 @@ contextunity-forge-mcp milestone init --plan docs/plans/proposal.md [--dir docs/
 contextunity-forge-mcp milestone list [--archive] [--status planned|active|completed|cancelled|all]
 contextunity-forge-mcp milestone show <id-or-number> [--full]
 contextunity-forge-mcp milestone handoff-context <id-or-number> --target-base <git-selector>
+contextunity-forge-mcp milestone verify <id-or-number> --target-base <git-selector>
 contextunity-forge-mcp milestone handoff <id-or-number> [--commit <git-selector>] --evidence-file <external-review.json>
 ```
 
@@ -645,6 +664,14 @@ Git proof objects, and returns `binding`, resolved `target_base`, and diagnostic
 `commit`. Obtain an independent review of the combined delta against this base
 and run the repository verification from [TESTS.md](../../TESTS.md). The reviewer
 must differ from every worker listed in `binding.builders`.
+`milestone verify` runs the first applicable command gate from the profile's root
+gate graph once and records its ordinary command trace. It reports whether that
+command passed; it does not create a separate build, review, repair, or delivery
+lifecycle and is not required before handoff. Handoff validates every task as
+completed with its accepted receipt or cancelled, then checks the current content
+binding, independent passing review, and successful repository verification in
+`IntegrationEvidence`. Changes to the candidate or target-base binding require fresh
+integration evidence; no milestone verification checkpoint is required.
 
 Handoff validates the manifest's original task scope separately from operational
 scope extensions. The stored effective scope must equal the original scope plus
@@ -746,13 +773,15 @@ For rolled-back SQL, it restores the journal-bound source needed for validation 
 rewinds only structurally valid intents anchored by the journal's exact terminal
 tasks and their operation token. Reservations remain burned; dependent task claims
 remain unchanged. Direct handoff retry requires no separate `db-recover` step.
-A valid post-prune archive permits repeat cleanup without gate rows or reverse relocation.
+A valid post-prune archive permits repeat cleanup without task gate rows, root
+verification checkpoints, or reverse relocation. Retry validates the supplied
+integration evidence against the archived binding, candidate, and target base.
 Malformed or altered journals reject recovery without changing files. Invalid or foreign
-authority leaves both files unchanged. A tombstone without a local archive returns
-`MILESTONE_ALREADY_HANDED_OFF` with merge/pull guidance. With neither local file,
-a matching valid archive in `HEAD` permits repeat cleanup; otherwise the same
-diagnostic applies. A completed archived handoff is an idempotent success, including
-project-level pruning opt-out after relocation.
+authority leaves both files unchanged. With neither local file, a matching valid
+archive in `HEAD` uses the same evidence, candidate, and target-base validation before
+cleanup. Missing archive authority returns `HANDOFF_ARCHIVE_INVALID` with recovery
+guidance. A completed archived handoff with valid integration evidence is an idempotent
+success, including project-level pruning opt-out after relocation.
 
 The milestone Engineering Telemetry Passport is persisted in `handoff.passport`.
 It contains duration, task counts,

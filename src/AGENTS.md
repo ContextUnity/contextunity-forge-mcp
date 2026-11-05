@@ -40,7 +40,7 @@ The codebase operates on a 5-layer hierarchy:
 
 - **`src/core`**: Foundational domain models, cryptographic commitments, response pagination budgets, and OS/filesystem primitives. Strict leaf.
 - **`src/db`**: SQLite persistence, schema migrations, reader snapshot isolation, FTS5 symbol indexing, and graph traversal caches. Depends on `src/core`. Legacy imports from `src/engine` are frozen.
-- **`src/engine`**: AST fact extraction ([`engine/languages/AGENTS.md`](engine/languages/AGENTS.md)), language profiles, cross-file symbol linking ([`engine/linker/AGENTS.md`](engine/linker/AGENTS.md)), filesystem scanner, and ACDD task/milestone execution policies. Depends on `src/core` and `src/db`.
+- **`src/engine`**: AST fact extraction, language profiles, cross-file symbol linking, filesystem scanner, and ACDD task/milestone execution policies. Depends on `src/core` and `src/db`.
 - **`src/mcp`**: JSON-RPC Model Context Protocol server, tool dispatch, and schema generation. Depends on `src/engine`, `src/db`, and `src/core`.
 - **`src/cli`**: Command-line entry points and subcommand routing. Depends on `src/engine`, `src/db`, and `src/core`.
 

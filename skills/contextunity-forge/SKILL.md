@@ -73,10 +73,9 @@ signature, docstring, and compact call summary; use `code_map_explain` for paged
 incoming/outgoing relationships. Request `include_coverage=true` when resolution
 evidence matters.
 
-Use `forge_read(selector="path:Symbol")` for complete symbol bodies. Use
-`forge_read(path="notes.txt", mode="lines", start_line=1, line_count=100)` for
-text, `mode="search"` with `pattern` for literal/regex search, `mode="delta"`
-for Git changes, and `mode="outline"` for Markdown or code declarations.
+**Symbol reads via `selector`**: ALWAYS prefer `forge_read(path="...", selector="Symbol")` or `forge_read(selector="path:Symbol")` to read entire functions, structs, or classes directly. It returns the complete symbol body with verified digest and enclosure context in one call.
+
+For arbitrary line bounds, `forge_read` accepts `start_line` and `line_count`, plus ergonomic variations: `end_line` computes the inclusive `line_count` from `start_line` (default 1) and rejects zero or an end before the start, `lines="100-200"` parses range bounds into `start_line` and `line_count`, `lines=50` or `max_lines=50` aliases `line_count`, `file_path` aliases `path`, and `query` aliases `pattern`. Workspace-root absolute paths are automatically stripped to relative workspace paths. When reading lines enclosed inside an indexed function, struct, or method, `forge_read` emits an enclosing symbol hint in the output footer with the copy-ready `selector` call. Use `mode="search"` with `pattern` for literal/regex search, `mode="delta"` for Git changes, and `mode="outline"` for Markdown or code declarations.
 CLI parity is `contextunity-forge-mcp read notes.txt --mode lines`. Snippets default to the complete symbol within the
 serialized byte budget; `max_body_lines` sets an explicit smaller bound. Inspect
 and explain retain configured preview defaults. Core text reads work without codemap. Respect `sensitive` path blocking and
@@ -183,12 +182,22 @@ workflow must run with navigation disabled.
 Claim the current gate, stay within admitted scope, and use `extend_scope`
 before expanding it. Run iterative checks with `task_manage(action="verify", task_id="...")`
 or CLI `task verify <TASK_ID>`; omit submit evidence to execute or reuse fresh
-claim-bound command proof. Command output schemas declare regex counts, noise,
-errors, and seam extraction under `commands.<id>.output`. Passing runs and short
+claim-bound command proof.
+Typed contract and command proof also require that observation and must match its
+seam reference, exit code, and counts. `milestone verify` is an optional one-shot
+run of the first applicable root command gate from the profile; it reports pass or
+fail and records its command trace without creating a separate milestone repair or
+review lifecycle. Milestone handoff validates the current content binding, completed
+task receipts or cancelled task states, independent passing review, and successful
+verification supplied in `IntegrationEvidence`. Refresh integration evidence after
+changing the candidate. Handoff retries validate the accepted archive and evidence
+without requiring a root verification checkpoint.
+Command output schemas declare regex counts, noise, errors, and seam extraction
+under `commands.<id>.output`. Passing runs and short
 failures stay inline; truncated failures link worktree-confined trace logs.
 Preserve candidate immutability after review and during
 delivery; let `task_submit` manage receipts. `task_manage(action="next")` claims
-eligible work atomically; CLI milestone init/list/show/handoff-context/handoff
+eligible work atomically; CLI milestone init/list/show/handoff-context/verify/handoff
 owns milestone operations. For schemas, recovery, delivery, and handoff, consult
 the [task reference](https://github.com/ContextUnity/contextunity-forge-mcp/blob/main/docs/reference/tasks.md).
 On `TASK_CHECKPOINT_PENDING`, use `milestone db-recover` and obtain a fresh claim;

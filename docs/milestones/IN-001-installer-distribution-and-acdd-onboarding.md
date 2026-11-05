@@ -79,8 +79,9 @@ task_ref: agent-skills-and-acdd-onboarding
 target: "Automate global and local agent skill installation and project-tailored ACDD adapter scaffolding"
 proof_policy: seam-test-first
 contract_revision: 4
+depends_on:
+  - installer-script-and-distribution-automation
 scope:
-  - install.sh
   - skills/
   - src/cli/guide.rs
   - docs/reference/configuration.md
@@ -151,7 +152,6 @@ scope:
   - build.rs
   - src/core/paths.rs
   - crates/forge-core/src/
-  - crates/forge-tasks/src/
 status: planned
 subtasks:
   - subtask_ref: canonical-workspace-root-and-symlinks

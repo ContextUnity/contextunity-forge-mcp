@@ -40,20 +40,22 @@ commands:
   scan_docs_graph_drift:
     command: "python3 -c 'import os, glob; [print(f) for f in glob.glob(\"docs/**/*.md\", recursive=True)]' > .forge/docs_inventory.txt"
     timeout_seconds: 30
+    output: { require_counts: false }
 
   verify_no_code_tampering:
     # Documentation tasks are strictly bounded to docs/, skills/, and READMEs.
     # Any modification to production source or test files fails closed.
-    command: "! git diff --name-only | grep -E '^(src/|tests/|crates/|app/|lib/)'"
+    command: "! git status --short | grep -E '(src/|tests/|crates/|app/|lib/)'"
     timeout_seconds: 15
+    output: { require_counts: false }
 
   verify_markdown_links_and_anchors:
-    # Verifies that markdown file:/// links and relative references resolve on disk.
-    command: "test -f docs/AGENTS.md && test -f README.md"
+    command: "contextunity-forge-mcp docs check"
     timeout_seconds: 30
+    output: { require_counts: false }
 
   verify_full_documentation_suite:
-    command: "cargo test --doc 2>/dev/null || pytest tests/docs/ 2>/dev/null || true"
+    command: "cargo test --doc"
     timeout_seconds: 60
 
 # =============================================================================
@@ -137,13 +139,14 @@ gates:
       - id: guard_code_untouched
         command: verify_no_code_tampering
         proof: command
-        reject_to: write_docs
+        fail: write_docs
 
       # Step 2c: Autonomous Link and Anchor Verification
       - id: verify_links
         command: verify_markdown_links_and_anchors
         proof: command
-        reject_to: write_docs
+        fail: write_docs
+        save: snapshot
 
   # ---------------------------------------------------------------------------
   # Gate 3: Independent Cognitive Review (Agent)
@@ -152,7 +155,7 @@ gates:
     role: docs_reviewer
     policy: docs_review_policy
     proof: review
-    reject_to: implement
+    fail: implement
 
   # ---------------------------------------------------------------------------
   # Gate 4: Autonomous Delivery (Zero-Token Commit)
@@ -161,9 +164,9 @@ gates:
     role: docs_reviewer
     proof: delivery
     receipt: true
-    review_sources:
+    need:
       - review
-    reject_to: implement
-    persistence:
+    fail: implement
+    save:
       immutable: true
       post: commit

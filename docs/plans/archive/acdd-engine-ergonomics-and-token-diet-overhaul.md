@@ -8,11 +8,11 @@ depends_on: []
 
 # ACDD Profile Ergonomics, Forge Engine Remediation, and Token-Diet Overhaul
 
-Return to the [plans index](README.md).
+Return to the [plans index](../README.md).
 
 ## 1. Empirical Post-Mortem Baseline (`PF-001` & `LS-001`)
 
-Telemetry extracted from `.forge/command-log-debug--2026-10-30..11-03.jsonl` across milestones `PF-001` ([021-framework-indexing-regression-repair.md](../milestones/archive/021-framework-indexing-regression-repair.md)) and `LS-001` ([022-rust-ecosystem-pack-and-trait-resolution.md](../milestones/archive/022-rust-ecosystem-pack-and-trait-resolution.md)) establishes the following verified baseline:
+Telemetry extracted from `.forge/command-log-debug--2026-10-30..11-03.jsonl` across milestones `PF-001` (`docs/milestones/archive/PF-001-cold-build-rss-bound-and-linker-diet.md`) and `LS-001` (`docs/milestones/archive/LS-001-rust-ecosystem-pack-and-trait-resolution.md`) establishes the following verified baseline:
 
 - **Total tool invocations**: `3,343` calls (`2,994` MCP + `349` CLI).
 - **Total serialized output**: `25,511,180` bytes (**~6.38M tokens** at 4 chars/token).
@@ -147,7 +147,7 @@ To remediate all findings without merge conflicts, work is partitioned into four
   1. **Exclude Archives by Default (`archive/%` and `%/archive/%`)**: Archived documents (`docs/milestones/archive/**`, `docs/plans/archive/**`, or `**/archive/**`) are excluded from default `search_docs`, `documentation_hubs`, `phase_documentation` (`documents`/`references_doc`/`governs`/`governed_by` edges), `affected_docs`, and task context (`query_indexed_adrs`, `query_scope_symbols`).
   2. **Semantic `doc_type != 'contract'` Rule in Task Context (`crates/forge-tasks/src/engine/context.rs`, `crates/forge-index/src/docs.rs`)**: Instead of hardcoded directory lists or path exclusions, `docs/milestones/**` and `docs/contracts/**` default to `doc_type = "contract"` when frontmatter omits `doc_type`, and `query_indexed_adrs` / `query_scope_symbols` filter by `d.doc_type != 'contract'` (plus `archive/` exclusion), matching all non-contract documentation (`README.md`, `AGENTS.md`, `TESTS.md`, `docs/adr/**`, `docs/architecture/**`, `docs/reference/**`, `docs/testing/**`, `docs/runbooks/**`, `docs/plans/**`, etc.) while keeping contracts in `context_bundle.contract` and `context_bundle.governing_invariants`.
   3. **Relaxed `governs` Resolution & Link Repair**: `phase_documentation` resolves `governs` / `governed_by` edges across the full line span of an `INV-*` node (`node.line..=node.end_line`) using the same unique workspace symbol resolution tier as `documents` edges when `explicit_path` is false, and all stale pre-crate-split links across `docs/` (`../../src/engine/...` -> `../../crates/forge-index/src/...`) are repaired.
-  4. **ADR Governance**: Recorded in [ADR 0016](../adr/0016-lean-stage-tailored-task-context-bundles.md), [ADR 0019](../adr/0019-mcp-markdown-output-and-dead-metadata-compaction.md), and [ADR 0020](../adr/0020-hierarchical-acdd-gates-and-milestone-orchestration.md).
+  4. **ADR Governance**: Recorded in [ADR 0016](../../adr/0016-lean-stage-tailored-task-context-bundles.md), [ADR 0019](../../adr/0019-mcp-markdown-output-and-dead-metadata-compaction.md), and [ADR 0020](../../adr/0020-hierarchical-acdd-gates-and-milestone-orchestration.md).
 
 ### 7.2. Compact SQL Schema Hints (`crates/forge-index/src/db/reader.rs`, `src/cli/guide.rs`, `src/mcp/tools/inputs.rs`)
 - Preserve the compact integer-keyed SQLite schema (`nodes.path_id -> path_dictionary.path_id`, `edges.src_hash/dst_hash -> nodes.node_hash`, zero SQL views per `tests/core/compact_schema.rs`).

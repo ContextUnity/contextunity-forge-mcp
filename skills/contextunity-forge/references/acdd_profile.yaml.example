@@ -188,6 +188,11 @@ commands:
       noise: ['^\s*(Compiling|Downloading|Finished)\b']
       errors: ['^error(\[E\d+\])?:', 'panicked at', '^FAIL ']
       seam_ref_pattern: '--test\s+([^\s]+)'
+      tests:
+        target: '(?m)(?:^\s*Running\s+(?:unittests\s+)?|"kind":\s*\[[^\]]*"test"[^\]]*\].*?"src_path":\s*"|--test\s+)([^\s"\\)]+)'
+        passed: '(?m)^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+ok\b'
+        failed: '(?m)^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+FAILED\b'
+        ignored: '(?m)^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+ignored\b'
   check_full_repo:
     by_pattern:
       "**/*.py": "pytest"
@@ -340,6 +345,7 @@ gates:
       gates:
         - id: "contract"
           role: "contract_author"
+          command: "test"
           guidance: [task.contract, hitl.pro]
           proof: "contract"
           expected_failure:
@@ -364,7 +370,7 @@ gates:
           proof: "review"
           contours: "guidance.contours"
           independent_from: "build"
-          reject_to: "build"
+          fail: "build"
           reject_routing:
             scope: "build"
             symbols: "contract"
@@ -388,7 +394,7 @@ gates:
               proof: "review"
               contours: "guidance.contours"
               independent_from: "integrate"
-              reject_to: "integrate"
+              fail: "integrate"
               persistence:
                 immutable: true
 
@@ -400,36 +406,46 @@ gates:
           review_sources:
             - "review"
           independent_from: "build"
-          reject_to: "build"
+          fail: "build"
           persistence:
             immutable: true
             post: commit
             git_commit_note: telemetry
 
-# Milestone verification workflow
-milestone_verification:
-  id: "milestone_verification"
-  gates:
-    - id: "verify"
-      command: "check_full_repo"
-      proof: "command"
-    - id: "review"
-      role: "independent_reviewer"
-      policy: "default_review"
-      guidance: [milestone.review]
-      proof: "review"
-      contours: "guidance.contours"
-      independent_from: "verify"
-      persistence:
-        immutable: true
-  fallback:
-    use: "build_review_cycle"
+  - id: "verify"
     command: "check_full_repo"
-    guidance: [milestone.polish]
     max_attempts: 2
-  deliver:
-    proof: "delivery"
-    receipt: true
+    pass: "documentation"
+    fail: "polish"
+
+  - id: "polish"
+    role: "architect"
+    guidance: [milestone.polish, hitl]
+    pass: "milestone_review"
+    persistence:
+      pre: snapshot
+      post: snapshot
+
+  - id: "milestone_review"
+    role: "independent_reviewer"
+    policy: "default_review"
+    guidance: [milestone.review]
+    contours: "guidance.contours"
+    independent_from: "polish"
+    pass: "verify"
+    fail: "polish"
     persistence:
       immutable: true
+
+  - id: "documentation"
+    role: "doc_writer"
+    when: "doc"
+    guidance: [milestone.doc]
+    pass: "handoff"
+
+  - id: "handoff"
+    receipt: true
+    absorb_working_tree: true
+    persistence:
       post: commit
+      git_commit_note: telemetry

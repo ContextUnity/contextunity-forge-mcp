@@ -202,8 +202,8 @@ Keep new SQL, topology, and search capabilities in
 Use the existing production paths, repository verification commands, and shared
 test suites. This milestone introduces no custom benchmark scripts or additional
 measurement procedure. Run benchmarks only when explicitly requested by the user.
-Follow [ADR 0012](../adr/0012-zero-regression-serialization-and-cold-build-latency.md)
-and the [performance architecture](../architecture/performance.md).
+Follow [ADR 0012](../../adr/0012-zero-regression-serialization-and-cold-build-latency.md)
+and the [performance architecture](../../architecture/performance.md).
 
 Broader framework rule unification, parameterized route trie indexing across
 all client languages, Tree-sitter kind-id dispatch, and linker symbol interning
@@ -649,6 +649,6 @@ receipt:
 ## Shared verification
 
 Review the performance repairs and workspace split together and run affected
-existing suites as one batch, following [TESTS.md](../../TESTS.md). Keep
+existing suites as one batch, following [TESTS.md](../../../TESTS.md). Keep
 implementation changes out of task planning and preserve the five existing
 LS-002 feature contracts. Static ACDD seam verification belongs to AC-001.

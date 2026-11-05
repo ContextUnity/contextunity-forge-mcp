@@ -101,6 +101,9 @@ to code symbols in the SQLite code map. Follow these structural standards:
    add a heading fragment when the link is meant to identify one specific
    indexed section. Check configured roots before treating an existing but
    unadmitted file as a broken filesystem link.
+   In historical plans and audits, write file paths as inline code relative to
+   the repository root, for example `docs/reference/tasks.md`, instead of links.
+   After archiving a document, verify its links and links to its former path.
 
 ## Planning and documentation alignment
 

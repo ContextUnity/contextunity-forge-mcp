@@ -1,0 +1,67 @@
+# =============================================================================
+# TEST WORKFLOW: Plan Model In-Place Execution & Archive E2E Verification
+# Purpose: Autonomous verification of Model 2 (tasks container without Level 0 gates).
+# Invariants:
+#   1. persistence: snapshot (captures in-flight state in refs/forge/snapshots/, NO auto-commits)
+#   2. In-place execution on current branch without worktree spawning.
+#   3. Zero Level 0 gates (no contract_synthesis preflight, no handoff closure).
+#   4. Archiving via `plan archive` relocates document and prunes SQLite + snapshot refs.
+# =============================================================================
+
+version: 2
+
+persistence: snapshot
+
+roles:
+  builder:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:medium'
+
+  independent_reviewer:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:xhigh'
+
+commands:
+  rust-check-and-test:
+    command: "cargo clippy --all-targets --all-features -- -D warnings && cargo test"
+    timeout_seconds: 180
+
+policies:
+  default_review:
+    independent_worker: true
+    require_all_contours: true
+
+# Plan model topology: strictly the tasks: container
+gates:
+  - tasks:
+      gates:
+        - id: build
+          role: builder
+          command: rust-check-and-test
+          proof: command
+          persistence:
+            pre: snapshot
+            post: snapshot
+
+        - id: review
+          role: independent_reviewer
+          policy: default_review
+          independent_from: build
+          fail: build
+          save:
+            immutable: true
+
+        - id: deliver
+          role: independent_reviewer
+          receipt: true
+          need:
+            - review
+          independent_from: build
+          fail: build
+          save:
+            immutable: true
+            post: snapshot

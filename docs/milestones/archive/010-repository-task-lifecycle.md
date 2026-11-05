@@ -29,13 +29,13 @@ related_plans:
 Implement lightweight task coordination connecting Git milestone specifications,
 isolated worktrees, verified delivery gates, and durable completion receipts.
 The implementation is admitted by the October 2, 2026 owner request. Registered
-interfaces are described in the [MCP reference](../reference/mcp-tools.md).
+interfaces are described in the [MCP reference](../../reference/mcp-tools.md).
 
 The owner request admits implementation and verification in the task-lifecycle
 worktree. Final receipts and completed status wait for the owner's separate
 commit command. This file owns the task workflow; the
-[architecture plan](../plans/architecture-and-modularity.md) and
-[performance plan](../plans/tool-performance-and-db-optimization.md) retain their
+architecture plan `docs/plans/architecture-and-modularity.md` and
+performance plan `docs/plans/tool-performance-and-db-optimization.md` retain their
 independent commitments.
 
 ## Git specifications and evolving commitments
@@ -256,7 +256,7 @@ YAML or JSON files binding task ID, versioned gate, claim/contract revisions,
 worker, canonical worktree, implementation commit, and proof. Accepted retries
 return the stored result. An amended task specifies a larger `contract_revision`
 before sync resets its gates and revokes ownership. Frozen scope roots remain
-unchanged by ordinary extensions. Use the [task reference](../reference/tasks.md)
+unchanged by ordinary extensions. Use the [task reference](../../reference/tasks.md)
 for wire fields, receipt shape, and administration.
 
 The implementation admits five independent-review security contours: path and
@@ -450,7 +450,7 @@ does not accept the sixth task or supply the milestone's final delivery review.
 The owner request admits `multi-workspace-and-linked-repository-tasks`, including
 CLI parity and the shared workspace registry in `src/engine/tasks/workspaces.rs`.
 The task remains in_progress pending a tested implementation commit and final
-receipt acceptance. The [task reference](../reference/tasks.md#linked-repository-tasks)
+receipt acceptance. The [task reference](../../reference/tasks.md#linked-repository-tasks)
 defines its registered configuration and selectors.
 
 Linked task configuration is opt-in. Synchronization selects a workspace by name,

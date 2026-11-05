@@ -11,7 +11,7 @@ depends_on: []
 
 # Universal AST search and path-scoped code navigation
 
-Admitted contract: [Milestone 042](../milestones/042-universal-ast-search-and-tool-navigation.md).
+Admitted contract: [Milestone 042](../milestones/archive/042-universal-ast-search-and-tool-navigation.md).
 
 Keep grammar-specific fragment handling behind the extensible `LanguageProfile`
 capability contract and the shared `src/engine/ast` search pipeline. Carry a caller's path

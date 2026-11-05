@@ -1,0 +1,50 @@
+# =============================================================================
+# STANDALONE WORKFLOW EXAMPLE: Code Quality & Polish Loop
+#
+# ADR 0021 Work Model 1: Pure gate graph without tasks.
+# Planned for AC-003: `contextunity-forge-mcp workflow run docs/workflows/code-quality-and-polish.workflow.yaml`
+# Autonomous dispatch and run logs are not yet available.
+# =============================================================================
+
+version: 2
+inherit: none
+
+roles:
+  builder:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:medium'
+
+  independent_reviewer:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:xhigh'
+
+commands:
+  check_full_repo:
+    command: "cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets"
+    timeout_seconds: 600
+
+policies:
+  default_review:
+    independent_worker: true
+    require_all_contours: true
+
+# Pure gate sequence with cyclic repair:
+gates:
+  - id: verify
+    command: check_full_repo
+    fail: polish
+
+  - id: polish
+    role: builder
+    command: check_full_repo
+    pass: review
+
+  - id: review
+    role: independent_reviewer
+    policy: default_review
+    independent_from: polish
+    fail: polish

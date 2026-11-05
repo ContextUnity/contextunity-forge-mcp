@@ -1,0 +1,158 @@
+# =============================================================================
+# TEST WORKFLOW: Milestone Full 3-Tier Lifecycle E2E Verification
+# Purpose: Autonomous verification of Model 3 (Level 0 boundaries + tasks: container).
+# Invariants:
+#   1. persistence: commit (atomic Git delivery commits with receipts in isolated worktrees).
+#   2. Level 0 preflight (contract_synthesis) executes ONCE at bootstrap and NEVER leaks into tasks.
+#   3. Tasks execute in topological wave DAG order through their own task gates.
+#   4. Level 0 closure: autonomous zero-trust test gate `verify` executes `check_full_repo`.
+#   5. Handoff prunes completed SQLite state and relocates manifest to archive.
+# =============================================================================
+
+version: 2
+
+persistence: commit
+
+roles:
+  architect:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:xhigh'
+
+  contract_author:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:xhigh'
+
+  builder:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:medium'
+
+  independent_reviewer:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:xhigh'
+
+commands:
+  rust-check-and-test:
+    command: "cargo clippy --all-targets --all-features -- -D warnings && cargo test"
+    timeout_seconds: 180
+
+  check_full_repo:
+    command: "cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets"
+    timeout_seconds: 1800
+
+policies:
+  default_review:
+    independent_worker: true
+    require_all_contours: true
+
+gates:
+  # ---------------------------------------------------------------------------
+  # 1. Milestone Initiation Boundary (Level 0 — Executed ONCE at bootstrap)
+  # ---------------------------------------------------------------------------
+  - id: contract_synthesis
+    role: architect
+    proof: contract
+    expected_failure:
+      exit_codes: [1, 101, 134]
+      stderr_contains: "assertion failed"
+    persistence:
+      pre: snapshot
+      post: snapshot
+
+  # ---------------------------------------------------------------------------
+  # 2. Per-Task Lifecycle Container (Executed for each task in DAG waves)
+  # ---------------------------------------------------------------------------
+  - tasks:
+      gates:
+        - id: contract
+          role: contract_author
+          proof: contract
+          expected_failure:
+            exit_codes: [1, 101, 134]
+            stderr_contains: "assertion failed"
+          persistence:
+            post: snapshot
+
+        - id: build
+          role: builder
+          command: rust-check-and-test
+          proof: command
+          persistence:
+            pre: snapshot
+            post: snapshot
+
+        - id: review
+          role: independent_reviewer
+          policy: default_review
+          proof: review
+          independent_from: build
+          reject_to: build
+          reject_routing:
+            scope: build
+            symbols: contract
+          persistence:
+            immutable: true
+
+        - id: seam
+          when: seam
+          gates:
+            - id: integrate
+              role: builder
+              command: rust-check-and-test
+              proof: seam_test
+              persistence:
+                pre: snapshot
+                post: snapshot
+            - id: review
+              role: independent_reviewer
+              proof: review
+              independent_from: integrate
+              reject_to: integrate
+              persistence:
+                immutable: true
+
+        - id: deliver
+          role: independent_reviewer
+          proof: delivery
+          receipt: true
+          review_sources:
+            - review
+          independent_from: build
+          reject_to: build
+          persistence:
+            immutable: true
+            post: commit
+
+  # ---------------------------------------------------------------------------
+  # 3. Milestone Closure Boundary (Verification, Polish & Terminal Handoff)
+  # ---------------------------------------------------------------------------
+  - id: verify
+    command: check_full_repo
+    pass: milestone_review
+    fail: polish
+
+  - id: polish
+    role: builder
+    command: check_full_repo
+    pass: milestone_review
+
+  - id: milestone_review
+    role: independent_reviewer
+    policy: default_review
+    independent_from: polish
+    pass: handoff
+    fail: polish
+    save:
+      immutable: true
+
+  - id: handoff
+    receipt: true
+    absorb: true
+    save: commit

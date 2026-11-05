@@ -42,6 +42,7 @@ commands:
     # Validates YAML frontmatter, schema types, and task definitions in docs/milestones/
     command: "test -d docs/milestones && find docs/milestones -name \"*.md\" | xargs grep -l '^doc_type: contract' > /dev/null"
     timeout_seconds: 30
+    output: { require_counts: false }
 
   verify_dag_acyclicity:
     # Autonomous python check confirming depends_on references form a valid acyclic graph
@@ -71,16 +72,19 @@ commands:
       print("Milestone dependency DAG verified: 0 cycles detected.")
       '
     timeout_seconds: 30
+    output: { require_counts: false }
 
   guard_source_code_untouched:
     # Planning workflows must never modify production source code or test harnesses
     command: "! git diff --name-only | grep -E '^(src/|tests/|crates/|app/|lib/)'"
     timeout_seconds: 15
+    output: { require_counts: false }
 
   verify_plan_admission_traceability:
     # Confirms that migrated plans in docs/plans/ have status: admitted and link to their milestones
     command: "grep -l 'status: admitted' docs/plans/*.md > /dev/null 2>&1 || true"
     timeout_seconds: 15
+    output: { require_counts: false }
 
 # =============================================================================
 # 3. POLICIES CATALOG (`policies`)
@@ -165,19 +169,20 @@ gates:
       - id: guard_code_untouched
         command: guard_source_code_untouched
         proof: command
-        reject_to: author_manifests
+        fail: author_manifests
 
       # Step 2c: Validate YAML frontmatter and milestone schema syntax
       - id: check_manifest_syntax
         command: validate_manifest_syntax
         proof: command
-        reject_to: author_manifests
+        fail: author_manifests
 
       # Step 2d: Validate global DAG acyclicity across all milestone dependencies
       - id: check_dag_acyclicity
         command: verify_dag_acyclicity
         proof: command
-        reject_to: author_manifests
+        fail: author_manifests
+        save: snapshot
 
   # ---------------------------------------------------------------------------
   # Gate 3: Governance & Invariant Review (Independent Agent)
@@ -186,7 +191,7 @@ gates:
     role: governance_auditor
     policy: migration_review_policy
     proof: review
-    reject_to: implement
+    fail: implement
 
   # ---------------------------------------------------------------------------
   # Gate 4: Autonomous Delivery (Zero-Token Commit)
@@ -195,9 +200,9 @@ gates:
     role: governance_auditor
     proof: delivery
     receipt: true
-    review_sources:
+    need:
       - review
-    reject_to: implement
-    persistence:
+    fail: implement
+    save:
       immutable: true
       post: commit

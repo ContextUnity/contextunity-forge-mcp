@@ -39,6 +39,7 @@ commands:
   freeze_baseline_inventory:
     command: "pytest --collect-only -q {scope_target} > .forge/baseline_test_inventory.txt 2>&1 || cargo test --test {scope_target} -- --list > .forge/baseline_test_inventory.txt"
     timeout_seconds: 30
+    output: { require_counts: false }
 
   verify_scoped_refactor:
     command: "pytest -v {scope_target} || cargo test --test {scope_target} -- --nocapture"
@@ -47,6 +48,7 @@ commands:
   verify_suite_parity_and_linter:
     command: "ruff check {scope_target} && basedpyright {scope_target} || cargo clippy --test {scope_target} -- -D warnings"
     timeout_seconds: 90
+    output: { require_counts: false }
 
   verify_full_test_harness:
     command: "pytest tests/ || cargo test --all-targets"
@@ -115,18 +117,19 @@ gates:
           # Command Gate: Verify all refactored tests compile and pass green (0 tokens)
           - id: verify_green_tests
             command: verify_scoped_refactor
-            reject_to: consolidate_and_type
+            fail: consolidate_and_type
 
           # Command Gate: Verify strict typing and linter standards (0 tokens)
           - id: verify_typing
             command: verify_suite_parity_and_linter
-            reject_to: consolidate_and_type
+            fail: consolidate_and_type
 
       # Step 3: Full Test Suite Verification (Autonomous Command Gate - 0 tokens)
       - id: full_suite_verify
         command: verify_full_test_harness
         proof: command
-        reject_to: refactor_cycle
+        fail: refactor_cycle
+        save: snapshot
 
       # Step 4: Independent Coverage Preservation Audit
       - id: coverage_audit
@@ -134,16 +137,16 @@ gates:
         policy: strict_audit
         proof: review
         contours: guidance.contours
-        reject_to: refactor_cycle
+        fail: refactor_cycle
 
       # Step 5: Atomic Delivery
       - id: deliver
         role: coverage_auditor
         proof: delivery
         receipt: true
-        review_sources:
+        need:
           - coverage_audit
-        reject_to: refactor_cycle
-        persistence:
+        fail: refactor_cycle
+        save:
           immutable: true
           post: commit

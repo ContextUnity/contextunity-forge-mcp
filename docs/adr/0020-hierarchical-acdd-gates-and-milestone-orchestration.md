@@ -14,6 +14,9 @@ informed:
 
 # ADR 0020: Hierarchical ACDD Gates, Modular Catalogs, and Milestone Orchestration
 
+> [!NOTE]
+> This ADR describes the accepted architecture. Root verify and handoff operations exist, but Round 4 identified gaps in root graph execution and observed proof enforcement; see the [audit plan](../plans/gate-engine-bugs-and-coverage-audit.md). Autonomous multi-agent role dispatch and headless execution are planned for [AC-003](../milestones/AC-003-headless-orchestrator-and-role-runners.md). Statements below specify the target where those gaps remain.
+
 ## Context
 
 ACDD task and milestone workflows use one gate model. Task gates consume profile commands and proofs; milestone gates coordinate task dependency waves, checkpoints, verification, and handoff. The same lifecycle state must remain consistent across SQLite, milestone manifests, command evidence, and reviewer decisions.
@@ -49,39 +52,51 @@ We establish the **Universal Hierarchical Gate Architecture**: **Everything is a
 │                            │  1. contract (role: architect)                  │  │
 │                            │  2. build (role: builder, command: check_task)   │  │
 │                            │  3. review (role: reviewer, contours,           │  │
-│                            │             reject_routing: {scope: build,      │  │
-│                            │                              symbols: contract})│  │
-│                            │  4. deliver (autonomous: persistence.post: commit, 0 tokens) │  │
+│                            │             loop: {scope: build,                │  │
+│                            │                    symbols: contract}           │  │
+│                            │  4. deliver (autonomous: save: commit, 0 tokens)          │  │
 │                            └────────────────────────┬────────────────────────┘  │
 │                                                     │                           │
 │                                                     ▼                           │
-│  [ gate: milestone_verification ] ◄─────────────────┘                           │
-│   ├─ verify (command: check_full_repo)                                          │
-│   ├─ review (role: reviewer, cross-milestone integrity)                         │
-│   ├─ fallback: { use: build_review_cycle, command: check_full_repo,             │
-│   │              max_attempts: 2 }                                              │
-│   └─ deliver:  (autonomous: persistence.post: commit, creates polish commit if repaired)     │
-│                               │                                                 │
-│                               ▼ (on PASS)                                       │
-│  [ gate: documentation ] ───────────────────────► [ gate: handoff ]             │
-│   (role: doc_writer, runs on 100% green code)      (role: architect, final seal)│
+│  [ gate: verify ] ◄─────────────────────────────────┘                           │
+│   (command: check_full_repo, max_attempts: 2)                                   │
+│   ├─ pass ──────────────────────────────► [ gate: documentation ] (when: doc)   │
+│   │                                                     │                       │
+│   │                                                     ▼ (pass)                │
+│   │                                             [ gate: handoff ]               │
+│   │                                              (post: commit, 0 tokens)       │
+│   ▼ (fail)                                                                      │
+│  [ gate: polish ] ───(pass)───► [ gate: review ] ───(pass)───► [ verify ]       │
+│   (role: architect)              (role: reviewer)                               │
+│         ▲                               │ (fail)                                │
+│         └───────────────────────────────┘                                       │
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-### Pillar 1: Universal Gate Polymorphism
+### Pillar 1: Universal Gate Polymorphism & Transition Primitives
 
-Every node in the lifecycle is a `GateDef`. Its execution mechanism is inferred directly from its driver fields:
+Every node in the lifecycle is a `GateDef`. Structural driver selection is distinguished from proof-kind selection and determined by declarative fields:
 
-| Gate Kind | Execution Mechanism | Valid Fields | Invalid Fields |
+| Driver Kind | Execution Mechanism | Supported Fields | Structural Exclusions |
 | :--- | :--- | :--- | :--- |
-| **Agent Gate** | Dispatched to an LLM agent via `task claim` | `role`, `guidance`, `proof`, `command` (optional) | `gates` |
-| **Command Gate** | Executed autonomously by the platform shell (0 tokens) | `command`, `timeout_seconds`, `reject_to` | `role`, `guidance`, `gates` |
-| **Delivery Gate** | Executed autonomously by platform (0 tokens: git commit + receipt) | `proof: delivery`, `persistence: { post: commit }` | `role`, `guidance`, `gates` |
-| **Container Gate**| Nests child gates recursively, expands templates, or handles fallback | `gates`, `use`, `tasks`, `when`, `fallback`, `deliver` | `command`, `role` |
+| **Agent Gate** | Dispatched to an LLM agent via `task claim` / role runner | `role`, `command`, `guidance`, `tools`, `when`, `pass`, `fail`, `save` | `gates`, `tasks`, `use` |
+| **Command Gate** | Executed autonomously by platform shell (0 tokens) | `command`, `max_attempts`, `when`, `pass`, `fail`, `save` | `role`, `guidance`, `gates` |
+| **Delivery Gate** | Executed autonomously or supervised (0 tokens: git commit + receipt) | `receipt: true`, `role`, `save: commit`, `when`, `pass`, `fail`, `need` | `gates`, `tasks`, `use` |
+| **Container Gate**| Nests child gates recursively, expands templates, or organizes tasks | `gates`, `use`, `tasks`, `when`, `pass`, `fail` | `role`, `command` |
 
-*Precedence*: If `role` is specified, it is an Agent Gate. If `command` is specified without `role`, it is a Command Gate. If `gates`, `tasks`, or `use` is specified, it is a Container Gate.
+*Precedence*: If `role` is specified, it is dispatched to the agent runner (with optional registered command pre-validation). If `command` is specified without `role`, it is an autonomous Command Gate (command timeouts are owned by command definitions in `commands:`). If `gates`, `tasks`, or `use` is specified, it is a Container Gate. If `receipt: true` is specified, it marks terminal task delivery or milestone handoff.
+
+#### Transition Primitives: `when`, `pass`, `fail`, `loop`
+1. **`when:` (Entry Guard)**: Closed set of typed conditions (`code`, `doc`, `db_migration`, `seam`, `public_api`). `code`, `doc`, and `db_migration` inspect task scope; `seam` selects Speculative or Parallel concurrency; `public_api` detects an AST public callable export in scope. If evaluated to false, the gate is skipped (pass-through to next node).
+2. **`pass:` (Success Edge)**: Target gate ID executed when this gate succeeds (exit code 0 / review approved / task delivered). If omitted, falls through to the next sequential gate in `gates:`.
+3. **`fail:` (Failure Edge)**: Target gate ID executed when this gate fails (exit non-zero / review rejected). If omitted, retries the current gate in `ready` state (or halts if `max_attempts` is exhausted).
+
+4. **`loop:` (Classified Failure Edges)**: Maps a finding class such as `scope` or `symbols` to its target gate.
+
+#### Modular Catalogs: Reusable Templates (`gate_templates:`)
+Templates in `gate_templates:` define reusable subgraphs (e.g. `build_review_cycle`). Any container gate can instantiate a template using `use: <template_id>`, binding its entry and exit edges (`pass:`, `fail:`).
 
 #### First-Class Task Lifecycle Container (`tasks:`)
 Rather than relying on generic imperative loop annotations like `for_each: tasks`, task execution is represented by the first-class declarative block `- tasks:`:
@@ -102,15 +117,36 @@ gates:
           when: seam
         - id: deliver
 
-  - id: milestone_verification
-    gates: [...]
+  - id: verify
+    command: check_full_repo
+    pass: documentation
+    fail: polish
+
+  - id: polish
+    role: architect
+    pass: milestone_review
+
+  - id: milestone_review
+    role: independent_reviewer
+    pass: verify
+    fail: polish
+
+  - id: documentation
+    role: doc_writer
+    when: doc
+    pass: handoff
+
+  - id: handoff
+    receipt: true
+    save:
+      post: commit
 ```
 
 **Benefits for Sub-Profiles and Modular Composition**:
 1. **Zero-Overhead Single-Task & In-Place Execution**: When a single task specifies a custom profile (`task.profile: <id>`) or runs in-place, the task engine extracts and executes strictly the `tasks:` block, effortlessly ignoring milestone-level preflight (`contract_synthesis`) and post-verification (`handoff`) gates.
 2. **Cardinality Flexibility (1 or Several `tasks:` Blocks)**:
    - **Single Universal Track**: A profile can declare exactly one `tasks:` block containing multiple child gates (`contract`, `build`, `review`, `seam`, `deliver`), where child gates optionally use granular `when:` conditions (e.g., `when: code` or `when: doc`).
-   - **Multiple Specialized Tracks**: A profile can declare multiple independent `tasks:` blocks partitioned by condition (e.g., `- tasks: { when: code, gates: [...] }` alongside `- tasks: { when: doc, gates: [...] }`). The engine matches each admitted task to its corresponding `tasks:` block by `task.type`.
+   - **Multiple Specialized Tracks**: A profile can declare multiple independent `tasks:` blocks partitioned by condition (e.g., `- tasks: { when: code, gates: [...] }` alongside `- tasks: { when: doc, gates: [...] }`). The engine matches each admitted task to its corresponding `tasks:` block by the applicable scope condition.
 3. **Multiple Gates Inside Each `tasks:`**: Inside any `tasks:` block, `gates:` defines the ordered progression for matching tasks, maintaining clear separation of concerns without deeply nested or synthetic wrapper structures.
 
 #### Command Gate Polymorphism & Multi-Language Dispatch (`by_pattern`)
@@ -125,12 +161,21 @@ commands:
     timeout_seconds: 60
 ```
 - **Automatic Scope Inspection**: Forge matches files in the active task's `scope` against the glob patterns.
-- **Polyglot Execution**: If files match a single pattern, that command executes. If a task touches multiple languages (e.g. both Python backend and TypeScript frontend), matching commands execute sequentially; any failure halts and triggers `reject_to`.
+- **Polyglot Execution**: If files match a single pattern, that command executes. If a task touches multiple languages (e.g. both Python backend and TypeScript frontend), matching commands execute sequentially; any failure halts and triggers `fail`.
 - **Task Manifest Override**: An individual task in the milestone manifest can explicitly specify `command: <catalog_id>` to override the gate default (e.g. for e2e tests or specialized linters).
 - **Zero Language Hardcoding Invariant (`INV-UNIVERSAL-PROFILE-ZERO-LANGUAGE-HARDCODE`)**: The embedded default profile (`acdd.default.yaml`) and compiled internal profile templates must remain strictly language-agnostic. Gate definitions, step instructions, and proof validators must never hardcode language-specific binaries (such as `cargo clippy`, `cargo test`, `pytest`, or `npm`). All verification commands must use either pattern-based multi-language dispatch (`by_pattern`) or project-level configuration. Guidance texts must not mention specific languages or compilers.
 
-#### Modular Catalog: Declarative Proofs (`proofs:`) & Automated Evidence Envelope Compilation
-Proofs are NOT hardcoded enums in the Rust engine. Instead, they are defined declaratively in the profile (`proofs:` catalog) with JSON Schema validation. The built-in embedded default profile provides standard definitions (`contract`, `command`, `review`, `seam_test`, `delivery`), and projects can extend or define custom proofs without recompiling Forge:
+#### Built-in Typed Proof Dispatch & Automated Evidence Envelope Compilation
+The Forge engine dispatches proofs via built-in typed proof kinds (`ProofKind` enum: `Contract`, `Command`, `Review`, `Delivery`, `SeamTest`, `None`) with JSON Schema validation and engine-level execution verification:
+
+- **Automatic Proof Inference Invariant (`INV-PROOF-TYPED-INFERENCE`)**:
+  When `proof:` is omitted on a gate definition, the engine automatically infers the required proof kind during profile normalization strictly from typed structural fields:
+  1. `expected_failure` present $\implies$ `ProofKind::Contract`
+  2. `command` present $\implies$ `ProofKind::Command`
+  3. `policy` or `contours` present $\implies$ `ProofKind::Review`
+  4. `receipt: true` (with `role` or `need` or task-level delivery) $\implies$ `ProofKind::Delivery`
+  5. Otherwise $\implies$ `ProofKind::None` (freeform execution traces, blackboard notes, platform closure)
+  The engine strictly forbids string heuristics on gate IDs (`id == "contract"`, etc.); gates may be assigned arbitrary domain-specific tokens. Explicit `proof:` declarations always take precedence.
 
 ```yaml
 proofs:
@@ -158,11 +203,11 @@ proofs:
     description: "Independent cognitive review sign-off across focus lenses"
     schema:
       type: object
-      required: [verdict, reviewer]
+      required: [decision, contours]
       properties:
-        verdict: { type: string, enum: ["approved", "rejected"] }
+        decision: { type: string, enum: ["pass", "reject"] }
         reviewer: { type: string }
-        contours_reviewed: { type: array, items: { type: string } }
+        contours: { type: array, items: { type: string } }
         notes: { type: string }
 
   seam_test:
@@ -211,7 +256,7 @@ policies:
     audit_extended_scope: true        # Explicit review proof required if extended_scope is present
 
   default_delivery:
-    persistence:
+    save:
       post: commit                    # Engine creates atomic git commit and receipt via single persistence hook
     enforce_clean_worktree: true      # Working tree must be completely clean before delivery
 
@@ -271,7 +316,7 @@ Checkpoints are now **native SQLite entities (`gate_checkpoints`) keyed directly
 where:
 - `repository` and `project`: workspace namespace components, e.g. `forge-mcp/forge-mcp`
 - `milestone_id`: e.g. `AC-001-hierarchical-acdd-gates-and-milestone-orchestration`
-- `gate_path`: dot-delimited path down the gate tree, e.g. `tasks` or `milestone_verification`
+- `gate_path`: dot-delimited path down the gate tree, e.g. `tasks` or `gates`
 - `task_ref`: specific task slug (e.g. `sqlite-gate-transitions-and-trace-persistence`) or `milestone` for top-level gates
 - `stage_id`: specific active leaf gate ID (e.g. `contract`, `build`, `review`, `deliver`)
 
@@ -289,75 +334,17 @@ where:
 
 ---
 
-### Pillar 4: Zero-Argument State-Driven Transitions, Autonomous Command Runners & Seam Engine
+### Pillar 4: Command Observation and Typed Proofs
 
-1. **Autonomous Command Gates (`command:`)**:
-   Executed 100% autonomously by the Forge daemon runner (0 LLM tokens).
-   On failure, the runner logs raw execution streams to `.forge/execution_traces/<timestamp>_<gate_id>_attempt<N>.log` (retaining full diagnostics on disk without blowing up database size). Passing runs (`exit_code == 0`) do not leave persistent trace logs on disk.
-   The runner evaluates:
-   ```text
-   advance  := attempt_id matches active cursor
-               AND status = 'completed'
-               AND exit_code = 0
-               AND duration_ms <= timeout
-   reject   := otherwise (timeout, spawn_error, exit_code != 0), auto-routing to reject_to
-   ```
-   On failure, the alert includes the exact clickable link to the full on-disk log file (`file://.../.forge/execution_traces/...log`).
+Command and contract proofs must consume engine-observed execution bound to the claim, candidate, command plan, and output policy. A runtime-red contract must prove the declared seam and failure signature; a successful build must verify the candidate. Reviewers submit typed `decision` (`pass` or `reject`) and `contours` (a list of strings), with `extended_scope_review` when needed. `task submit` can compile evidence from traces, but Round 4 found that typed submissions can bypass observation (R4-01 and R4-02). The common acceptance path must enforce the same proof binding for all submission surfaces.
 
-2. **Seam Engine: Autonomous Red-to-Green Contract Validation**:
-   - The **Contract Gate** retains its essential architectural responsibility: static analysis of boundary callers (`capture_baseline_boundary_callers`), verifying topological reachability from `seam_test_ref` into `scope` (`TASK_SEAM_DISCONNECTED`), and defining additive seam parameterizations.
-   - However, the mechanical execution proof is fully automated by Forge's Seam Engine:
-     - On contract proof submission, the engine verifies the Red baseline (runtime assertion failure matching configured `expected_failure.exit_codes`, e.g. 101 for Rust, 1 for Python, 134 for C/C++, with optional `stderr_contains` pattern) directly from execution trace records.
-     - During the `build` cycle, the runner autonomously proves that the same seam test transitions from Red to Green (exit 0) alongside strict linter checks.
-     - For automated gates (any gate configured with `proof: command`, `proof: contract`, or `proof: delivery`), `task submit` auto-compiles proofs from SQLite execution traces without requiring manual argument crafting. Cognitive review gates (`proof: review`) strictly require typed review judgments (`verdict`, `reviewer`, `contours_reviewed`, `extended_scope_review`).
-
-3. **In-Place Lifecycle Execution (`--in-place` / `worktree: "."`)**:
-   - Creating isolated `.worktrees/` directories is no longer mandatory for every task or milestone.
-   - The engine provides native In-Place execution mode (`--in-place`), allowing agents to execute tasks directly in the developer's active workspace or current branch without spawning extra worktrees or git branches.
-   - **Decoupled Plan Execution (`doc_type: plan`)**: While AC-001 establishes the universal in-place gate runner, native admission and execution of plans from `docs/plans/*.md` is cleanly decoupled into milestone `AC-003` (inheriting directly from AC-001), keeping AC-001 strictly focused on the core gate AST, SQLite persistence, and milestone orchestration.
-
-4. **Silent Engine Telemetry (Zero-Blackboard Status Spam)**:
-   - All gate transitions, timestamps, git SHAs, worker IDs, and execution trace references are automatically persisted by the Forge engine into `gate_transitions` and `gate_execution_traces`.
-   - Agents are strictly forbidden from posting routine progress updates, state changes, or step acknowledgments to `task_blackboard`.
-   - `task_blackboard` is reserved exclusively for genuine cross-agent blockers, human clarifications, and `extend_scope` authorization discussions.
-
-5. **Builder Code Delivery (`task submit`)**:
-   Builders run `task submit` with zero arguments. Forge verifies that modified files are strictly within `scope` + `extended_scope`, runs pre-review checks, and advances to the next subgate.
-
-6. **Flexible & Unstructured Proofs (Text / Hints / Evidence)**:
-   Proofs are not limited to rigid JSON structures. A proof payload in `gate_transitions` can be:
-   - Typed structured evidence (seam references, review contour judgments, receipt hashes).
-   - Opaque text / benchmark notes / agent reasoning hints (e.g. cold-build latency measurements: `"Cold graph build completed in 412ms, 0 cycles, Merkle root verified"`).
-   - `none` for simple barrier gates.
-
-7. **Review Gate (`role: reviewer`)**:
-   Reviewers submit typed review judgments (`verdict`, `reviewer`, `contours_reviewed`, and explicit `extended_scope_review` approval if `extended_scope` is non-empty). Proofs cannot be fabricated by zero-argument defaults.
+Task execution can use a selected working tree. Native Plan execution, autonomous multi-agent role dispatch, and the headless runner are planned for AC-003. Run logs for that runner are likewise planned.
 
 ---
 
-### Pillar 5: Milestone Lifecycle, Preflight Initialization & Verification Container
+### Pillar 5: Milestone Lifecycle and Verification
 
-1. **Command Architecture: `milestone draft` vs `milestone init`**:
-   - **`milestone draft`**: Scaffolds a new numbered markdown manifest file (`docs/milestones/<TAG>-<NNN>-<slug>.md`) from flags (`--num`, `--slug`, `--title`, `--desc`, `--plan`). This renames and decouples the purely documentary template generation from operational execution.
-   - **`milestone init <manifest_path>`**: Operational preflight lifecycle initialization executed BEFORE any agent is dispatched:
-     - *Host Skill Preflight*: Validates that all skills declared in `required_skills:` are installed in `~/.agents/skills/` or `.agents/skills/`; fails fast with `MILESTONE_PREFLIGHT_FAILED` if missing.
-     - *Multi-Repo Validation*: Validates all repository paths and target branches declared under `repositories:`.
-     - *Automated Base Worktree Scaffolding*: When not executing `--in-place`, automatically creates base branches (`milestone/<id>`) and base worktrees (`.worktrees/<id>`) across all participant repositories.
-     - *SQLite Admission*: Registers milestone tasks and initializes root `gate_transitions` state in `.forge/tasks.sqlite`.
-
-2. **Branch Integration**: Once all concurrent tasks in `tasks_delivery` are delivered, the milestone engine merges task branches into the milestone worktree.
-3. **Verification Container (`milestone_verification`)**:
-  Encapsulates the complete two-stage check:
-  - `verify`: Autonomous command gate (`check_full_repo` on all targets with 0 LLM tokens).
-  - `review`: Cognitive reviewer evaluating cross-milestone integrity and invariants.
-   [`run_milestone_check`](../../crates/forge-tasks/src/milestones/integration.rs) stores complete combined command output in a confined `.forge/task-traces/` log and records its path with the bounded SQLite snippet for successful, failed, timed-out, and spawn-error runs.
-4. **Fallback Polish Subgraph (`fallback: { use: build_review_cycle, command: check_full_repo, max_attempts: 2 }`)**:
-  If either check fails, the container activates its fallback subgraph directly on the milestone branch (architect fixes seam defects $\rightarrow$ verifies $\rightarrow$ reviewer signs off).
-  If unresolved after `max_attempts` (default: 2), it halts with a fail-closed `> [!CAUTION] BLOCKER`.
-5. **Autonomous Delivery (`deliver: { proof: delivery, persistence: { post: commit } }`)**:
-  Upon successful verification (or approved polish), Forge autonomously records the milestone receipt and creates the integration commit via `persistence.post: commit` (0 LLM tokens, no dummy agent role needed).
-6. **Documentation Bounds**:
-  The `documentation` gate is restricted to docs and manifests (`docs/`, `README.md`, etc.). Modifying source files under `src/` triggers `TASK_CANDIDATE_OUT_OF_SCOPE`.
+Milestone initialization admits tasks and performs structural preflight. The accepted root `gates:` graph specifies synthesis, the task DAG, verification, repair, independent review, and handoff. Existing root verify and handoff operations provide verification, binding, and archival primitives, but Round 4 found that their phase-driven implementation does not enforce the declared graph or mandatory observed verification (R4-03, R4-05, R4-06, R4-19). Root operations must share the admitted graph and its actual transitions before those guarantees are complete. Handoff binds the final content and target base, records evidence, archives the manifest, and prunes completed task state under its applicable checks.
 
 ---
 
@@ -443,7 +430,7 @@ To avoid circular dependencies, type drift between parallel builder sessions, an
      - Queries codebase impact radius via `code_map_impact` and Tree-sitter AST to identify potential file overlap across tasks.
      - **Reshuffles and DAG-optimizes tasks into deterministic parallel waves (`Wave 0`, `Wave 1`, `Wave 2...`)**, setting fine-grained `task_depends_on` blockers across linked milestones.
      - Synthesizes the global cross-task data contract matrix, standardizes shared error variants, and freezes disjoint file scopes upfront.
-     - **Safety Net**: Uses `persistence.pre: snapshot` to capture a pristine restore point of the manifest and repository before any rewrite, and `persistence.post: commit` once the optimized plan is proven.
+     - **Safety Net**: Uses `save.pre: snapshot` to capture a pristine restore point of the manifest and repository before any rewrite, and `save.post: commit` once the optimized plan is proven.
 
 2. **Deterministic Topological Execution Waves**:
    Tasks are grouped into strictly ordered execution waves:
@@ -495,26 +482,26 @@ To avoid circular dependencies, type drift between parallel builder sessions, an
      The coordinated delivery barrier applies strictly to concurrent or speculative tasks on a shared seam (`mode: speculative` or intra-wave parallel tasks). In contrast, strictly sequential dependencies (Task A blocking Task B where Task B cannot start until A delivers) do NOT deadlock: Task A delivers immediately once its own individual `review` passes, unblocking Task B without waiting for B.
    - **Task `type:` Model & Universal `when:` Condition Model**:
      Tasks in the manifest declare an optional `type: [code | doc | db | frontend | api | observer | ...]` (or shorthand `type: doc`, `type: code`), defaulting strictly to `type: ["code"]` when omitted (ensuring 0 boilerplate for 95% of standard code tasks).
-     `when:` conditions evaluate against `task.type` and the topological graph:
-     - `when: code`: evaluates to `true` if `task.type` contains `"code"`.
-     - `when: doc`: evaluates to `true` if `task.type` contains `"doc"`.
-     - `when: db`: evaluates to `true` if `task.type` contains `"db"`.
-     - `when: seam`: **Pure topological property of the DAG**. Evaluates to `true` if and only if the task participates in an active dependency relationship (either has `task_depends_on` / `depends_on` or is depended upon by other active tasks in the DAG), regardless of task type (e.g. `code` + `code`, `code` + `doc`, `doc` + `doc`, or `code` + `observer`).
+     `when:` conditions evaluate against the admitted task scope and concurrency:
+     - `when: code`: evaluates to `true` if any scoped path is not documentation.
+     - `when: doc`: evaluates to `true` if scope is nonempty and every path is documentation.
+     - `when: db_migration`: matches scoped SQL files or paths in a migrations directory.
+     - `when: seam`: evaluates to `true` for Speculative or Parallel concurrency.
    - **Conditional Child Gates within `seam`**:
      Inside the `seam` container, child gates specify their own conditions:
      - `integrate`: specifies `when: code`. Code tasks execute `check_task` and validate `seam_test_refs`. Non-code tasks (such as `doc` or `observer` tasks) skip test compilation and proceed directly to documentation review, seam event logging, or telemetry dispatch.
      - `review`: evaluates the cross-task changes (code changes, doc sync, or contract alignment).
    - **Targeted `when:` Condition Catalog**:
      To prevent arbitrary procedural scripting while addressing real production workflows without Ansible-style complexity, Forge supports a closed set of typed conditions in `GateCondition`:
-     - `when: seam`: Pure topological DAG property (interdependent tasks).
-     - `when: code`: Triggers when `task.type` contains `"code"`.
-     - `when: doc`: Triggers when `task.type` contains `"doc"`.
-     - `when: db`: Triggers when `task.type` contains `"db"` or touches migration files.
-     - `when: public_api`: Triggers when AST analysis detects modified public API exports, MCP tool signatures, or CLI interfaces. Evaluated during milestone integration verification.
+     - `when: seam`: Speculative or Parallel concurrency.
+     - `when: code`: Triggers when any scoped path is not documentation.
+     - `when: doc`: Triggers when all scoped paths are documentation and scope is nonempty.
+     - `when: db_migration`: Triggers for scoped SQL files or paths in a migrations directory.
+     - `when: public_api`: Triggers when AST analysis detects a public callable export in task scope.
    - **Fail-Closed Migration Verification**:
      `verify_migration` must never contain loose `**/*: echo 'No migration verification required'` fallbacks. If a task touches migrations, verification commands must be explicitly configured or fail closed.
    - **Milestone-Level SemVer Bumping**:
-     SemVer version incrementation (`api_version_bump`) and release notes generation are moved out of per-task gates and placed into the milestone integration container (`milestone_verification`), avoiding per-task candidate immutability conflicts and version churn.
+     SemVer version incrementation (`api_version_bump`) and release notes generation are moved out of per-task gates and placed into the milestone integration pipeline (after verification before handoff), avoiding per-task candidate immutability conflicts and version churn.
    - **`seam.integrate` (`proof: seam_test`)**:
      - When `when: seam` activates on a code task, the builder executes `seam.integrate` using guidance `task.deferred_final_test` (loading `test-suite-refactor` and `test-contract-seam`).
      - The agent audits test reachability across task boundaries, replaces synthetic mocks with real production callers, and cleans up duplicate stubs.
@@ -526,7 +513,7 @@ To avoid circular dependencies, type drift between parallel builder sessions, an
      - The engine validates element-by-element that every single test reference in `seam_test_refs` actually executed and passed in the captured trace.
    - **`seam.review` (`proof: review`)**:
      - An independent reviewer (`independent_from: seam.integrate`) inspects the reconciled seam diff, verifying that stubs and mocks were safely eliminated without dropping production assertions or introducing regressions.
-     - If defects are found, `seam.review` rejects back to `seam.integrate` (`reject_to: integrate`) or `build`.
+     - If defects are found, `seam.review` rejects back to `seam.integrate` (`fail: integrate`) or `build`.
    - **Simultaneous `deliver`**:
      - Once both individual `review` and joint `seam.review` pass across the dependency contour, Forge opens the coordinated delivery barrier for speculative/parallel tasks, landing candidate snapshots atomically into the milestone branch HEAD.
 
@@ -598,9 +585,9 @@ To eliminate the recurring `Output exceeds the response byte limit` failures ide
 
 ---
 
-### Pillar 11: Unified Persistence Policy (`persistence:`) & Overflow-Guarded Git Commit Notes
+### Pillar 11: Unified Persistence Policy (`save:`) & Overflow-Guarded Git Commit Notes
 
-To decouple snapshots, commits, and immutability from rigid hardcoded stage names (e.g. `sha_snapshot` only on `build` and `auto_commit` only on `deliver`), gates declare a unified, composable `persistence` schema with built-in `git_commit_note` and explicit payload overflow limits:
+To decouple snapshots, commits, and immutability from rigid hardcoded stage names (e.g. `sha_snapshot` only on `build` and `auto_commit` only on `deliver`), gates declare a unified, composable `save` schema with built-in `git_commit_note` and explicit payload overflow limits:
 
 ```yaml
 # Global or profile-level defaults:
@@ -608,7 +595,7 @@ git_commit_note:
   limits:
     max_bytes: 2048          # Hard overflow limit (default 2048 bytes / 2 KiB)
 
-persistence:
+save:
   pre: snapshot              # snapshot | commit (omitted = None). Captured on claim/entry.
   post: commit               # snapshot | commit (omitted = None). Captured/landed on pass/exit.
   immutable: true            # bool (default false). Enforces zero working tree deviation from snapshot.
@@ -618,7 +605,7 @@ persistence:
 Or fully specified with per-gate limit override:
 
 ```yaml
-persistence:
+save:
   post: commit
   git_commit_note:
     command: benchmark       # Named command from commands catalog whose structured output is captured
@@ -696,7 +683,7 @@ To eliminate runtime crashes during `task claim` or `task sync` caused by malfor
 #### 1. Document Auto-Detection & Targeted Inspection
 - **Profile Validation (`validate <path_to_profile.yaml>`)**:
   - Parses profile AST and validates against the hierarchical gate schema.
-  - Verifies reachability of all `reject_to` and `independent_from` gate path references.
+  - Verifies reachability of all `fail` and `independent_from` gate path references.
   - Checks that all referenced roles, commands, guidance keys, and review contours are defined in their respective catalogs.
   - Validates `when:` conditions against the closed typed catalog (`code`, `doc`, `db_migration`, `seam`, `public_api`). Normalized aliases: `docs` -> `doc`, `db` -> `db_migration`.
 - **Milestone Manifest Validation (`validate docs/milestones/<slug>.md`)**:
@@ -784,7 +771,7 @@ CREATE INDEX IF NOT EXISTS task_blackboard_recipient_idx ON task_blackboard (mil
 
 ---
 
-### Pillar 13: Two-Loop ACDD Governance: `symbols:`, `scope:`, and `reject_routing` (Anti-Drift Confinement)
+### Pillar 13: Two-Loop ACDD Governance: `symbols:`, `scope:`, and `loop:` (Anti-Drift Confinement)
 
 To eliminate unadmitted architectural improvisation by builder agents while avoiding human micromanagement, ACDD formalizes the **Two-Loop Execution Model**:
 
@@ -828,12 +815,12 @@ To eliminate unadmitted architectural improvisation by builder agents while avoi
   - Builder is strictly prohibited from creating unadmitted public symbols or altering unlisted public signatures (`UNADMITTED_SYMBOL_EXPANSION`).
   - Private helpers, local variables, and unexported module details inside scoped files remain fully unconstrained for builder agility.
 
-#### 2. Declarative Review Reject Routing (`reject_routing`)
-In gate definitions (e.g. `review`), `reject_to` is generalized into symmetrical `reject_routing`:
+#### 2. Declarative Review Reject Routing (`loop:`)
+In gate definitions (e.g. `review`), reject rewind is declared concisely via `loop:`:
 ```yaml
-reject_routing:
-  scope: build         # Target gate ID (or role shorthand `builder`) for unadmitted files or implementation defects
-  symbols: contract    # Target gate ID (or role shorthand `architect`) for interface mutations or architectural drift
+loop:
+  scope: build         # Target gate ID for unadmitted files or implementation defects
+  symbols: contract    # Target gate ID for interface mutations or architectural drift
 ```
 - By default, standard verification failures (test assertions, compilation errors, linter warnings) route to the build gate (`build`, role `builder`).
 - Scope boundary violations route to the build gate (`build`) to either revert unneeded file modifications or run `task extend-scope`.
