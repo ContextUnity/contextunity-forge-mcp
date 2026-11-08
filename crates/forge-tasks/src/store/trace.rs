@@ -44,6 +44,8 @@ pub struct CommandExecutionProof {
     pub passed: Option<u64>,
     pub failed: Option<u64>,
     pub seam_ref: Option<String>,
+    #[serde(default)]
+    pub passed_tests: std::collections::BTreeSet<String>,
     pub output_spec: Option<crate::tasks::profile::CommandOutputSpec>,
     pub expected_signature: Option<String>,
     pub scope_violations: Vec<String>,
@@ -279,7 +281,8 @@ pub(super) fn prune_milestone_gate_records(
         [milestone_identity],
     )?;
     connection.execute(
-        "DELETE FROM gate_transitions WHERE milestone_id=?1",
+        "DELETE FROM gate_transitions WHERE milestone_id=?1
+         AND id NOT IN (SELECT transition_id FROM gate_checkpoints WHERE milestone_id=?1 AND transition_id IS NOT NULL)",
         [milestone_identity],
     )?;
     Ok(())
@@ -300,7 +303,7 @@ impl TasksStore {
     ) -> Result<()> {
         let (milestone_id, gate_path, subject) = checkpoint_identity(&self.namespace, breadcrumb)?;
         if is_engine_owned_checkpoint(&subject, &gate_path) {
-            bail!("TASK_CHECKPOINT_OWNED: milestone verification checkpoints are engine-owned");
+            bail!("TASK_CHECKPOINT_OWNED: milestone checkpoints are engine-owned");
         }
         if state_payload.get("task_id").is_some() || state_payload.get("claim_revision").is_some() {
             bail!("TASK_CHECKPOINT_OWNED: on-demand checkpoints cannot define task lifecycle identity");
@@ -382,7 +385,7 @@ impl TasksStore {
             );
         }
         if checkpoint.transition_id.is_none() && is_engine_owned_checkpoint(&subject, &gate_path) {
-            bail!("TASK_CHECKPOINT_OWNED: milestone verification checkpoints are engine-owned");
+            bail!("TASK_CHECKPOINT_OWNED: milestone checkpoints are engine-owned");
         }
         for (field, value) in [
             ("breadcrumb", checkpoint.breadcrumb.as_str()),
@@ -484,7 +487,7 @@ impl TasksStore {
     pub fn delete_checkpoint(&self, breadcrumb: &str) -> Result<bool> {
         let (milestone_id, gate_path, subject) = checkpoint_identity(&self.namespace, breadcrumb)?;
         if is_engine_owned_checkpoint(&subject, &gate_path) {
-            bail!("TASK_CHECKPOINT_OWNED: milestone verification checkpoints are engine-owned");
+            bail!("TASK_CHECKPOINT_OWNED: milestone checkpoints are engine-owned");
         }
         let changed = self.connection.execute(
             "DELETE FROM gate_checkpoints
@@ -566,8 +569,8 @@ fn checkpoint_identity(namespace: &str, breadcrumb: &str) -> Result<(String, Str
     ))
 }
 
-fn is_engine_owned_checkpoint(subject: &str, gate_path: &str) -> bool {
-    subject == "milestone" && gate_path == "milestone_verification"
+fn is_engine_owned_checkpoint(subject: &str, _gate_path: &str) -> bool {
+    subject == "milestone"
 }
 
 fn transition_from_row(row: &Row<'_>) -> rusqlite::Result<GateTransition> {

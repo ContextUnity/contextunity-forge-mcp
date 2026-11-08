@@ -180,7 +180,9 @@ pub fn persist_delta(
     }
     changed_edge_batch.flush()?;
     drop(changed_edge_batch);
-    tx.execute_batch("CREATE TEMP TABLE replaced_nodes(id TEXT PRIMARY KEY,node_hash INTEGER NOT NULL);")?;
+    tx.execute_batch(
+        "CREATE TEMP TABLE replaced_nodes(id TEXT PRIMARY KEY,node_hash INTEGER NOT NULL);",
+    )?;
     tx.execute("INSERT OR IGNORE INTO replaced_nodes SELECT n.id,n.node_hash FROM nodes n JOIN path_dictionary owner ON owner.path_id=n.owner_path_id WHERE owner.path IN(SELECT value FROM json_each(?1))", [serde_json::to_string(&replace_files)?])?;
     super::entrypoints::prepare_candidates(&tx)?;
     super::entrypoints::add_delta_candidates(&tx, replace_files)?;

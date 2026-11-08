@@ -117,6 +117,12 @@ roles:
     models:
       - 'sol-6.1:xhigh'
     guidance: "Use a reviewer worker independent from the builder. Conduct a broad architectural audit and verify performance and quality invariants. Reject superficial workarounds, ad-hoc string heuristics (e.g. magic substring/path checks), parallel hardcoded lists, or patches designed merely to appease a test. Reject implementations that dump tests into monolithic functions instead of domain-decomposed tests. If an implementation requires repeated duct-tape fixes across review rounds, reject the architecture and require root-cause redesign. Submit review proof across contours, then claim and submit deliver in the same reviewer session."
+  doc_writer:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:high'
+    guidance: "Reconcile documentation with live code and tests across admitted scope."
   architect:
     mode: subagent
     reuse_on_reject: true
@@ -124,11 +130,16 @@ roles:
       - 'sol-6.1:high'
     guidance: "As Architect, lead architectural contract synthesis and arbitration. Conduct a comprehensive architectural audit of codebase extension points and subsystem data flows before coding. Ensure task contracts define durable architectural blueprints, invariant specifications, and implementation steps, where tests serve as verification seams. Verify scope integrity without touching protected repository files. Establish compiling red tests and record explicit architectural decisions for the implementation plan."
 
-scope_args_by_pattern:
-  "crates/forge-core/**/*.rs": "--package forge-core --lib"
-  "crates/forge-index/**/*.rs": "--package forge-index --lib"
-  "crates/forge-tasks/**/*.rs": "--package forge-tasks --lib"
-  "tests/framework_manifests/**/*.rs": "--test framework_manifests"
+polish_scope:
+  - ".forge/**"
+  - "docs/**"
+  - "skills/**"
+  - "AGENTS.md"
+  - "**/AGENTS.md"
+  - "README.md"
+  - ".gitignore"
+
+scope_args_by_pattern: {}
 
 commands:
   rust-check-and-test:
@@ -140,9 +151,14 @@ commands:
       noise: ['^\s*(Compiling|Downloading|Finished|Checking)\b', '^✔']
       errors: ['^error(\[E\d+\])?:', 'panicked at', '^FAIL ']
       seam_ref_pattern: '(?:--seam-ref\s+)(\S+)'
+      tests:
+        target: '(?m)(?:^\s*Running\s+(?:unittests\s+)?|"kind":\s*\[[^\]]*"test"[^\]]*\].*?"src_path":\s*"|--test\s+)([^\s"\\)]+)'
+        passed: '(?m)^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+ok\b'
+        failed: '(?m)^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+FAILED\b'
+        ignored: '(?m)^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+ignored\b'
     by_pattern:
       "**/*.rs": "cargo clippy --all-targets --all-features -- -D warnings && cargo test"
-    description: "Run strict Rust checks followed by the repository's test suite. Append --test <target> to focus the test command."
+    description: "Run strict repository checks followed by the test suite."
   check_full_repo:
     output: *test_output
     by_pattern:
@@ -287,79 +303,112 @@ gate_templates:
         independent_from: "build"
 
 gates:
-  - id: "contract"
-    role: "contract_author"
-    tools: []
-    guidance: [task.contract, hitl.pro]
-    proof: "contract"
+  - id: contract_synthesis
+    role: architect
+    guidance: [milestone.synthesis, hitl]
+    tools:
+      - code_map_inspect
+      - code_map_impact
+      - code_map_overview
+      - code_map_search
+      - ast_grep_search
+      - forge_read
+      - task_blackboard
+    steps:
+      - "1. ARCHITECTURAL AUDIT: Inspect existing codebase extension points using code_map_* and forge_read. Do NOT assume build manifest or parser changes are needed."
+      - "2. SCOPE VERIFICATION: Verify all implementation files are inside allowed_write_scope. Protected repository files must NOT be edited."
+      - "3. SEAM TEST: Strengthen existing domain seam tests additively in tests/ with a cleanly compiling test that triggers runtime assertion failure (e.g. exit 101/1/134)."
+      - "4. BLACKBOARD RECORD: Post architectural synthesis decision to task_blackboard (topic: decisions) detailing the chosen implementation path."
+      - "5. SUBMIT: Submit contract proof with seam_test_ref and red_exit_code."
     expected_failure:
       exit_codes: [1, 101, 134]
       stderr_contains: "assertion failed"
-    persistence:
-      post: snapshot
-
-  - id: "build"
-    role: "builder"
-    tools: []
-    guidance: [task.code, hitl.pro]
-    command: "rust-check-and-test"
-    proof: "command"
-    persistence:
+    save:
       pre: snapshot
       post: snapshot
 
-  - id: "review"
-    role: "independent_reviewer"
-    tools: []
-    guidance: [task.review, hitl.pro]
-    policy: "default_review"
-    proof: "review"
-    contours: "guidance.contours"
-    independent_from: "build"
-    reject_to: "build"
-    reject_routing:
-      scope: "build"
-      symbols: "contract"
-    persistence:
-      immutable: true
+  - tasks:
+      gates:
+        - id: "contract"
+          role: contract_author
+          command: test
+          tools: []
+          guidance: [task.contract, hitl.pro]
+          expected_failure:
+            exit_codes: [1, 101, 134]
+            stderr_contains: "assertion failed"
+          save: snapshot
 
-  - id: "deliver"
-    role: "independent_reviewer"
-    guidance: [hitl.pro]
-    proof: "delivery"
-    receipt: true
-    review_sources:
-      - "review"
-    independent_from: "build"
-    reject_to: "build"
-    persistence:
-      immutable: true
-      post: commit
-      git_commit_note: telemetry
+        - id: build
+          role: builder
+          tools: []
+          guidance: [task.code, hitl.pro]
+          command: rust-check-and-test
+          save:
+            pre: snapshot
+            post: snapshot
 
-milestone_verification:
-  id: "milestone_verification"
-  gates:
-    - id: "verify"
-      command: "check_full_repo"
-      proof: "command"
-    - id: "review"
-      role: "independent_reviewer"
-      policy: "default_review"
-      guidance: [milestone.review]
-      proof: "review"
-      contours: "guidance.contours"
-      independent_from: "verify"
-      persistence:
-        immutable: true
-  fallback:
-    use: "build_review_cycle"
-    command: "check_full_repo"
-    guidance: [milestone.polish]
+        - id: review
+          role: independent_reviewer
+          tools: []
+          guidance: [task.review, hitl.pro]
+          policy: default_review
+          contours: guidance.contours
+          independent_from: build
+          fail: build
+          loop:
+            scope: build
+            symbols: "contract"
+          save:
+            immutable: true
+
+        - id: deliver
+          role: independent_reviewer
+          guidance: [hitl.pro]
+          receipt: true
+          need:
+            - review
+          independent_from: build
+          fail: build
+          save:
+            immutable: true
+            post: commit
+            git_commit_note: telemetry
+
+  - id: verify
+    command: check_full_repo
     max_attempts: 2
-  deliver:
-    proof: "delivery"
-    receipt: true
-    persistence:
+    pass: documentation
+    fail: polish
+
+  - id: polish
+    role: architect
+    guidance: [milestone.polish, hitl]
+    tools: [forge_read, search_docs, get_doc, task_blackboard]
+    pass: milestone_review
+    save:
+      pre: snapshot
+      post: snapshot
+
+  - id: milestone_review
+    role: independent_reviewer
+    policy: default_review
+    guidance: [milestone.review]
+    contours: guidance.contours
+    independent_from: polish
+    pass: verify
+    fail: polish
+    save:
       immutable: true
-      post: commit
+
+  - id: documentation
+    role: doc_writer
+    when: doc
+    guidance: [milestone.doc]
+    tools: [forge_read, search_docs, get_doc]
+    pass: handoff
+
+  - id: handoff
+    receipt: true
+    absorb: true
+    save: commit

@@ -2,14 +2,11 @@ use super::{
     named_bindings, semantic_context,
     value_flow::{SemanticResolver, Symbol, SymbolRole, TypeTarget},
 };
+use crate::languages::dependency_registry::DependencyRegistry;
 use forge_core::{
-    models::{
-        Node,
-        compact_graph::Graph,
-    },
+    models::{compact_graph::Graph, Node},
     semantic::{NamedBindingRole, StaticString, SymbolOperand, ValueFlowFacts},
 };
-use crate::languages::dependency_registry::DependencyRegistry;
 use hashbrown::HashMap;
 
 fn declaration(symbol: Symbol<'_>) -> Result<Option<&Node>, ()> {

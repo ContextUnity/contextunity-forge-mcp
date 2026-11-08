@@ -36,12 +36,7 @@ pub fn generation(conn: &Connection, options: &QueryOptions) -> Result<String> {
 }
 
 /// Encodes paginated query items and pagination metadata into a JSON Value.
-pub fn value(
-    items: Vec<Value>,
-    total: usize,
-    options: &QueryOptions,
-    generation: &str,
-) -> Value {
+pub fn value(items: Vec<Value>, total: usize, options: &QueryOptions, generation: &str) -> Value {
     let next = options.offset.saturating_add(items.len());
     let has_more = next < total;
     json!({

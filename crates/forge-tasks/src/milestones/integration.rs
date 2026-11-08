@@ -56,18 +56,6 @@ pub struct IntegrationReview {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-/// Content-bound review submitted after the milestone verification command passes.
-pub struct MilestoneVerificationReview {
-    /// Exact handoff binding reviewed by the independent reviewer.
-    pub binding: HandoffBinding,
-    /// Explicit target base against which the bound candidate was prepared.
-    pub target_base: String,
-    /// Independent review outcome.
-    pub review: IntegrationReview,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 /// Verification performed externally against the bound implementation.
 pub struct IntegrationVerification {
     /// Exact repository verification command.
@@ -133,97 +121,16 @@ pub(super) fn digest(value: &(impl Serialize + ?Sized)) -> Result<String> {
 
 #[derive(Debug, Serialize)]
 pub(super) struct CommandObservation {
-    selection: String,
-    command: String,
-    exit_code: i32,
+    pub(super) selection: String,
+    pub(super) command: String,
+    pub(super) exit_code: i32,
     #[serde(skip_serializing_if = "Option::is_none")]
-    stdout_digest: Option<String>,
+    pub(super) stdout_digest: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    stderr_digest: Option<String>,
+    pub(super) stderr_digest: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    reused_verification: Option<bool>,
-    implementation_digest: String,
-}
-
-pub(super) fn observe_or_reuse_project_command(
-    root: &Path,
-    selection: &str,
-    binding: &HandoffBinding,
-    verification: &IntegrationVerification,
-    sha: &str,
-) -> Result<CommandObservation> {
-    let profile = crate::core::tasks::profile::load_for_workspace(root)?;
-    let registered_command = profile
-        .commands
-        .get(selection)
-        .with_context(|| {
-            let available: Vec<_> = profile.commands.keys().map(String::as_str).collect();
-            format!(
-                "HANDOFF_COMMAND_UNREGISTERED: '{selection}' is not a registered project command in profile (available: {available:?})"
-            )
-        })?
-        .command();
-    // Handoff validates this content binding against the selected commit before
-    // collecting telemetry. Bind reuse to HEAD as well; the binding deliberately
-    // contains content digests rather than navigation commit identities.
-    if verification.exit_code == 0
-        && verification.tests_failed == 0
-        && verification.command.trim() == registered_command.trim()
-        && resolve_commit(root, "HEAD")? == sha
-    {
-        return Ok(CommandObservation {
-            selection: selection.to_owned(),
-            command: registered_command.to_owned(),
-            exit_code: 0,
-            stdout_digest: None,
-            stderr_digest: None,
-            reused_verification: Some(true),
-            implementation_digest: binding.implementation_digest.clone(),
-        });
-    }
-    observe_command(root, selection, binding)
-}
-
-/// Execute only an explicitly selected, registered project command.
-pub(super) fn observe_command(
-    root: &Path,
-    selection: &str,
-    binding: &HandoffBinding,
-) -> Result<CommandObservation> {
-    let profile = crate::core::tasks::profile::load_for_workspace(root)?;
-    let command = profile
-        .commands
-        .get(selection)
-        .with_context(|| {
-            let available: Vec<_> = profile.commands.keys().map(String::as_str).collect();
-            format!(
-                "HANDOFF_COMMAND_UNREGISTERED: '{selection}' is not a registered project command in profile (available: {available:?})"
-            )
-        })?
-        .command();
-    let output = std::process::Command::new("sh")
-        .args(["-c", command])
-        .current_dir(root)
-        .output()?;
-    let observation = CommandObservation {
-        selection: selection.to_owned(),
-        command: command.to_owned(),
-        exit_code: output.status.code().unwrap_or(-1),
-        stdout_digest: Some(hex::encode(Sha256::digest(&output.stdout))),
-        stderr_digest: Some(hex::encode(Sha256::digest(&output.stderr))),
-        reused_verification: None,
-        implementation_digest: binding.implementation_digest.clone(),
-    };
-    if !output.status.success() {
-        bail!(
-            "HANDOFF_VERIFICATION_FAILED: selected command '{}' exited {}:\n--- STDOUT ---\n{}\n--- STDERR ---\n{}",
-            selection,
-            observation.exit_code,
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    Ok(observation)
+    pub(super) reused_verification: Option<bool>,
+    pub(super) implementation_digest: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -242,7 +149,126 @@ pub(super) struct VerificationCheck {
 
 impl VerificationCheck {
     pub fn passed(&self) -> bool {
-        self.status == "completed" && self.exit_code == Some(0)
+        self.status == "completed" && self.exit_code == Some(0) && self.tests_failed == 0
+    }
+}
+
+#[cfg(test)]
+mod verification_check_tests {
+    use super::{
+        run_milestone_check, CommandDef, HandoffBinding, IntegrationEvidence, IntegrationReview,
+        IntegrationVerification, TasksStore, VerificationCheck,
+    };
+
+    #[test]
+    fn handoff_rejects_zero_exit_verification_with_failed_tests() {
+        let binding = HandoffBinding {
+            version: 1,
+            repository: "repo".into(),
+            project: "project".into(),
+            milestone: "milestone".into(),
+            authority_digest: "authority".into(),
+            implementation_digest: "implementation".into(),
+            target_base_digest: "base".into(),
+            builders: vec!["builder".into()],
+        };
+        let evidence = IntegrationEvidence {
+            binding: binding.clone(),
+            target_base: "main".into(),
+            review: IntegrationReview {
+                worker_id: "reviewer".into(),
+                decision: "pass".into(),
+                summary: "reviewed".into(),
+                scope_findings: Vec::new(),
+                contract_findings: Vec::new(),
+            },
+            verification: IntegrationVerification {
+                command: "cargo test --all-targets".into(),
+                exit_code: 0,
+                tests_passed: 42,
+                tests_failed: 1,
+                lint_command: None,
+                project_command: Some("check_full_repo".into()),
+            },
+        };
+
+        let error = evidence.validate(&binding).unwrap_err();
+
+        assert!(error.to_string().contains("HANDOFF_VERIFICATION_FAILED"));
+    }
+
+    #[test]
+    fn verification_pass_requires_zero_exit_and_no_failed_tests() {
+        let mut check = VerificationCheck {
+            command_id: "verify".into(),
+            command: "test".into(),
+            status: "completed".into(),
+            exit_code: Some(0),
+            tests_passed: 1,
+            tests_failed: 1,
+            stdout_sha256: String::new(),
+            stderr_sha256: String::new(),
+            duration_ms: 0,
+        };
+        assert!(!check.passed());
+        check.tests_failed = 0;
+        assert!(check.passed());
+        check.exit_code = Some(1);
+        assert!(!check.passed());
+        check.exit_code = Some(0);
+        check.status = "output_invalid".into();
+        assert!(!check.passed());
+    }
+
+    #[test]
+    fn milestone_commands_enforce_count_policy_and_failures() {
+        let root = tempfile::tempdir().unwrap();
+        let store = TasksStore::open(&root.path().join("tasks.sqlite")).unwrap();
+        for (attempt, definition, status, exit_code) in [
+            (1, "'true'", "output_invalid", Some(0)),
+            (
+                2,
+                "command: 'true'\noutput:\n  require_counts: false\n",
+                "completed",
+                Some(0),
+            ),
+            (
+                3,
+                "command: 'true'\noutput:\n  require_counts: true\n",
+                "output_invalid",
+                Some(0),
+            ),
+            (4, "'false'", "completed", Some(1)),
+        ] {
+            let command: CommandDef = serde_yaml::from_str(definition).unwrap();
+            let (check, _) = run_milestone_check(
+                root.path(),
+                &store,
+                "r/p/m",
+                attempt,
+                "verify",
+                "check",
+                &command,
+            )
+            .unwrap();
+            assert_eq!(check.status, status, "{definition}");
+            assert_eq!(check.exit_code, exit_code, "{definition}");
+            assert_eq!(
+                check.passed(),
+                status == "completed" && exit_code == Some(0),
+                "{definition}"
+            );
+        }
+
+        let command = CommandDef::Script(
+            "printf 'test result: FAILED. 1 passed; 1 failed; 0 ignored\\n'".into(),
+        );
+        let (check, _) =
+            run_milestone_check(root.path(), &store, "r/p/m", 5, "verify", "check", &command)
+                .unwrap();
+        assert_eq!(check.exit_code, Some(0));
+        assert_eq!(check.tests_failed, 1);
+        assert!(!check.passed());
     }
 }
 
@@ -253,49 +279,72 @@ pub(super) fn run_milestone_check(
     milestone_identity: &str,
     attempt_id: i64,
     gate_path: &str,
+    command_id: &str,
     command: &CommandDef,
 ) -> Result<(VerificationCheck, String)> {
-    let (command_str, timeout) = match command {
-        CommandDef::Script(command) => (command.as_str(), Duration::from_secs(300)),
+    let (commands, timeout) = match command {
+        CommandDef::Script(command) => (vec![command.as_str()], Duration::from_secs(300)),
         CommandDef::Detailed {
             command,
             timeout_seconds,
             ..
         } => (
-            command.as_str(),
+            vec![command.as_str()],
             Duration::from_secs(timeout_seconds.unwrap_or(300).max(1)),
         ),
         CommandDef::Pattern(patterns) => {
-            let cmd = command.command_for_root(root).context(
-                "MILESTONE_VERIFICATION_PROFILE_INVALID: no matching pattern command found for repository root",
-            )?;
+            let commands = command.commands_for_root(root);
+            if commands.is_empty() {
+                bail!("MILESTONE_VERIFICATION_PROFILE_INVALID: no matching pattern command found for repository root");
+            }
             let timeout = Duration::from_secs(patterns.timeout_seconds.unwrap_or(600).max(1));
-            (cmd, timeout)
+            (commands, timeout)
         }
     };
-    let started = Instant::now();
-    let (status, exit_code, stdout, stderr, duration_ms) =
-        match run_shell(root, command_str, timeout) {
-            Ok(output) => (
-                if output.timed_out {
-                    "timeout"
-                } else {
-                    "completed"
+    let command_str = commands.join(" && ");
+    let mut all_stdout = Vec::new();
+    let mut all_stderr = Vec::new();
+    let mut status = "completed".to_owned();
+    let mut exit_code = Some(0);
+    let mut total_duration_ms: i64 = 0;
+
+    for cmd in &commands {
+        let cmd_started = Instant::now();
+        match run_shell(root, cmd, timeout) {
+            Ok(output) => {
+                total_duration_ms += output.duration_ms;
+                if !all_stdout.is_empty() && !output.stdout.is_empty() {
+                    all_stdout.extend_from_slice(b"\n");
                 }
-                .to_owned(),
-                output.status.code(),
-                output.stdout,
-                output.stderr,
-                output.duration_ms,
-            ),
-            Err(error) => (
-                "spawn_error".to_owned(),
-                None,
-                Vec::new(),
-                error.to_string().into_bytes(),
-                i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX),
-            ),
-        };
+                all_stdout.extend_from_slice(&output.stdout);
+                if !all_stderr.is_empty() && !output.stderr.is_empty() {
+                    all_stderr.extend_from_slice(b"\n");
+                }
+                all_stderr.extend_from_slice(&output.stderr);
+                if output.timed_out {
+                    status = "timeout".to_owned();
+                    exit_code = None;
+                    break;
+                }
+                if !output.status.success() {
+                    status = "completed".to_owned();
+                    exit_code = output.status.code().or(Some(1));
+                    break;
+                }
+            }
+            Err(error) => {
+                status = "spawn_error".to_owned();
+                exit_code = None;
+                all_stderr.extend_from_slice(error.to_string().as_bytes());
+                total_duration_ms +=
+                    i64::try_from(cmd_started.elapsed().as_millis()).unwrap_or(i64::MAX);
+                break;
+            }
+        }
+    }
+    let duration_ms = total_duration_ms;
+    let stdout = all_stdout;
+    let stderr = all_stderr;
     let mut combined = stdout.clone();
     if !stderr.is_empty() {
         if !combined.is_empty() {
@@ -305,7 +354,19 @@ pub(super) fn run_milestone_check(
         combined.extend_from_slice(&stderr);
     }
     let output_snippet = bounded_output(&String::from_utf8_lossy(&combined), 2 * 1024);
-    let (tests_passed, tests_failed) = test_counts(&combined);
+    let parsed = super::command_gate::parse_command_output(
+        &String::from_utf8_lossy(&combined),
+        &command_str,
+        command.output(),
+    )?;
+    if command.output().is_none_or(|spec| spec.require_counts)
+        && (parsed.passed.is_none() || parsed.failed.is_none())
+        && status == "completed"
+        && exit_code == Some(0)
+    {
+        status = "output_invalid".to_owned();
+    }
+    let (tests_passed, tests_failed) = (parsed.passed.unwrap_or(0), parsed.failed.unwrap_or(0));
     if status == "timeout" {
         combined.extend_from_slice(
             format!(
@@ -319,13 +380,13 @@ pub(super) fn run_milestone_check(
         root,
         milestone_identity,
         gate_path,
-        "check_full_repo",
+        command_id,
         attempt_id,
         &combined,
     )?;
     let check = VerificationCheck {
-        command_id: "check_full_repo".to_owned(),
-        command: command_str.to_owned(),
+        command_id: command_id.to_owned(),
+        command: command_str,
         status: status.clone(),
         exit_code,
         tests_passed,
@@ -496,30 +557,6 @@ fn bounded_output(output: &str, limit: usize) -> String {
         end -= 1;
     }
     output[..end].to_owned()
-}
-
-fn test_counts(output: &[u8]) -> (u64, u64) {
-    let mut passed = 0_u64;
-    let mut failed = 0_u64;
-    for line in String::from_utf8_lossy(output).lines() {
-        if !line.trim_start().starts_with("test result:") {
-            continue;
-        }
-        for field in line.split(';') {
-            let words = field.split_whitespace().collect::<Vec<_>>();
-            for pair in words.windows(2) {
-                let Some(count) = pair[0].parse::<u64>().ok() else {
-                    continue;
-                };
-                match pair[1] {
-                    "passed" => passed = passed.saturating_add(count),
-                    "failed" => failed = failed.saturating_add(count),
-                    _ => {}
-                }
-            }
-        }
-    }
-    (passed, failed)
 }
 
 pub(super) fn read_passport(

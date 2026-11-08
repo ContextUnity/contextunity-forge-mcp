@@ -16,6 +16,25 @@ use std::{
     sync::Arc,
 };
 
+type ManifestSnapshots = BTreeMap<String, sha2::digest::Output<Sha256>>;
+
+/// A manifest's UTF-8 contents at a canonical workspace-relative path.
+#[derive(Clone, Copy, Debug)]
+pub struct ManifestSource<'a> {
+    /// A dependency filename or `.forge/frameworks/<identity>.{toml,yaml,yml}`.
+    pub path: &'a str,
+    /// The manifest contents, bounded to 4 MiB.
+    pub source: &'a str,
+}
+
+/// An explicit manifest inventory isolated to one workspace.
+pub struct WorkspaceManifestSources<'a> {
+    /// Empty for the primary workspace; otherwise an opaque linked-workspace name.
+    pub name: &'a str,
+    /// Each canonical path occurs once within this workspace.
+    pub manifests: &'a [ManifestSource<'a>],
+}
+
 type LanguageContextKey = (String, Vec<(String, String)>);
 
 #[derive(Clone, Debug)]
@@ -65,6 +84,91 @@ pub struct DependencyRegistry {
 }
 
 impl DependencyRegistry {
+    /// Collects validated rules and dependency scopes without accessing the filesystem.
+    ///
+    /// # Errors
+    ///
+    /// Rejects duplicate workspaces, invalid or duplicate paths, unsupported filenames,
+    /// oversized inputs, and invalid framework rules or cross-workspace policies.
+    pub fn try_collect_from_sources<'a>(
+        workspaces: impl IntoIterator<Item = WorkspaceManifestSources<'a>>,
+    ) -> Result<Self> {
+        let mut registry = Self::default();
+        load_standard_framework_manifests(&mut registry)?;
+        let mut snapshots = ManifestSnapshots::new();
+        for workspace in workspaces {
+            let label = if workspace.name.is_empty() {
+                String::new()
+            } else {
+                format!("[{}]", workspace.name)
+            };
+            anyhow::ensure!(
+                registry.workspaces.insert(label.clone()),
+                "duplicate manifest workspace: {label}"
+            );
+            let prefix = if label.is_empty() {
+                String::new()
+            } else {
+                format!("{label}/")
+            };
+            let mut paths = HashSet::new();
+            for manifest in workspace.manifests {
+                anyhow::ensure!(
+                    super::manifests::semantic::normal_relative_path(manifest.path)
+                        && super::manifests::projections::confined_path(manifest.path, false)
+                        && !manifest.path.starts_with('['),
+                    "invalid manifest source path: {}",
+                    manifest.path
+                );
+                anyhow::ensure!(
+                    paths.insert(manifest.path),
+                    "duplicate manifest source path: {}",
+                    manifest.path
+                );
+                anyhow::ensure!(
+                    manifest.source.len() <= 4 * 1024 * 1024,
+                    "manifest source exceeds the 4 MiB limit: {}",
+                    manifest.path
+                );
+                let path = Path::new(manifest.path);
+                if path.parent() == Some(Path::new(".forge/frameworks"))
+                    && matches!(
+                        path.extension().and_then(|value| value.to_str()),
+                        Some("toml" | "yaml" | "yml")
+                    )
+                {
+                    record_framework_manifest(
+                        &label,
+                        &prefix,
+                        path,
+                        manifest.source,
+                        &mut registry,
+                        &mut snapshots,
+                    )
+                    .with_context(|| {
+                        format!("failed to load framework manifest {}", manifest.path)
+                    })?;
+                } else {
+                    anyhow::ensure!(
+                        is_dependency_manifest_filename(
+                            path.file_name().and_then(|value| value.to_str()).unwrap()
+                        ),
+                        "unsupported manifest source path: {}",
+                        manifest.path
+                    );
+                    record_dependency_manifest(
+                        &prefix,
+                        path,
+                        manifest.source,
+                        &mut registry,
+                        &mut snapshots,
+                    );
+                }
+            }
+        }
+        finish_registry(registry, snapshots)
+    }
+
     pub(crate) fn manifest_entrypoints(&self) -> &[ManifestEntrypoint] {
         &self.manifest_entrypoints
     }
@@ -587,7 +691,6 @@ impl DependencyRegistry {
         let mut visited = HashSet::new();
         let mut snapshots =
             std::collections::BTreeMap::<String, sha2::digest::Output<Sha256>>::new();
-        let mut parsed_families = Vec::with_capacity(profiles.len());
         for (root, prefix, ignored_names) in roots {
             registry
                 .workspaces
@@ -623,203 +726,16 @@ impl DependencyRegistry {
                 let Ok(content) = std::fs::read_to_string(&path) else {
                     continue;
                 };
-                let Some(directory) = path
-                    .parent()
-                    .and_then(|parent| parent.strip_prefix(&root).ok())
-                else {
-                    continue;
-                };
                 let Some(relative_path) = path.strip_prefix(&root).ok() else {
                     continue;
                 };
-                let origin = format!(
-                    "{}{}",
-                    prefix,
-                    relative_path.to_string_lossy().replace('\\', "/")
+                record_dependency_manifest(
+                    &prefix,
+                    relative_path,
+                    &content,
+                    &mut registry,
+                    &mut snapshots,
                 );
-                let mut scope = prefix.clone();
-                scope.push_str(&directory.to_string_lossy().replace('\\', "/"));
-                let scope = scope.trim_end_matches('/').to_owned();
-                if filename == "package.json" {
-                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) {
-                        let mut record = |name: &str, target: &str| {
-                            registry.manifest_entrypoints.push(ManifestEntrypoint {
-                                origin: origin.clone(), scope: scope.clone(),
-                                name: name.to_owned(), target: target.to_owned(), python: false,
-                            });
-                        };
-                        if let Some(target) = value.get("main").and_then(serde_json::Value::as_str) {
-                            record("main", target);
-                        }
-                        if let Some(bin) = value.get("bin") {
-                            if let Some(target) = bin.as_str() {
-                                record("bin:", target);
-                            } else if let Some(bins) = bin.as_object() {
-                                for (name, target) in bins {
-                                    if let Some(target) = target.as_str() { record(&format!("bin:{name}"), target); }
-                                }
-                            }
-                        }
-                        if let Some(name) = value.get("name").and_then(serde_json::Value::as_str) {
-                            registry
-                                .own_packages
-                                .entry(scope.clone())
-                                .or_default()
-                                .insert(name.to_owned());
-                        }
-                    }
-                } else if filename == "pyproject.toml" {
-                    super::toml_manifest::visit_toml_pairs(&content, &mut |key, value| {
-                        if let Some(name) = key.strip_prefix("project.scripts.") {
-                            if let Some(target) = super::toml_manifest::toml_string(value, &content) {
-                                registry.manifest_entrypoints.push(ManifestEntrypoint {
-                                    origin: origin.clone(), scope: scope.clone(),
-                                    name: name.to_owned(), target, python: true,
-                                });
-                            }
-                        }
-                        if matches!(key, "project.name" | "tool.poetry.name") {
-                            if let Some(name) = super::toml_manifest::toml_string(value, &content) {
-                                registry
-                                    .own_packages
-                                    .entry(scope.clone())
-                                    .or_default()
-                                    .insert(name);
-                            }
-                        }
-                    });
-                }
-                #[cfg(feature = "lang-rust")]
-                if filename == "Cargo.toml" && scope == prefix.trim_end_matches('/') {
-                    let mut package_name = None;
-                    let mut library_name = None;
-                    let mut library_path = None;
-                    let mut invalid_library_path = false;
-                    let mut invalid_library_name = false;
-                    let mut invalid_package_name = false;
-                    let mut autolib = None;
-                    let mut autolib_present = false;
-                    let mut invalid_autolib = false;
-                    super::toml_manifest::visit_toml_pairs(&content, &mut |key, value| match key {
-                        "package.name" => {
-                            package_name = super::toml_manifest::toml_string(value, &content);
-                            invalid_package_name = package_name.is_none();
-                        }
-                        "lib.name" => {
-                            library_name = super::toml_manifest::toml_string(value, &content);
-                            invalid_library_name = library_name.is_none();
-                        }
-                        "lib.path" => {
-                            library_path = super::toml_manifest::toml_string(value, &content);
-                            invalid_library_path = library_path.is_none();
-                        }
-                        "package.autolib" => {
-                            autolib_present = true;
-                            autolib =
-                                value.utf8_text(content.as_bytes()).ok().and_then(
-                                    |text| match text.trim() {
-                                        "true" => Some(true),
-                                        "false" => Some(false),
-                                        _ => None,
-                                    },
-                                );
-                            invalid_autolib = autolib.is_none();
-                        }
-                        _ => {}
-                    });
-                    let has_library_table = super::toml_manifest::has_table(&content, "lib");
-                    let autolib_allows_library = match (autolib_present, autolib) {
-                        (false, _) | (true, Some(true)) => true,
-                        (true, Some(false)) => has_library_table,
-                        (true, None) => false,
-                    };
-                    let conventional_library_path = !invalid_library_path
-                        && library_path
-                            .as_deref()
-                            .is_none_or(|path| path == "src/lib.rs");
-                    if autolib_allows_library
-                        && !invalid_autolib
-                        && !invalid_library_name
-                        && !invalid_package_name
-                        && package_name.as_deref().is_some_and(|name| !name.is_empty())
-                        && conventional_library_path
-                    {
-                        if let Some(name) = library_name.or(package_name) {
-                            registry
-                                .rust_libraries
-                                .insert(scope.clone(), name.replace('-', "_"));
-                        }
-                    }
-                }
-                if filename == "package.json" {
-                    registry
-                        .javascript_packages
-                        .record_manifest(&scope, &content);
-                } else if filename == "pnpm-workspace.yaml" {
-                    registry
-                        .javascript_packages
-                        .record_pnpm_workspace(&scope, &content);
-                } else if filename.starts_with("tsconfig") && filename.ends_with(".json") {
-                    registry
-                        .typescript_paths
-                        .record_config(&scope, filename, &content);
-                }
-                snapshots.insert(origin.clone(), Sha256::digest(content.as_bytes()));
-                if filename == "pnpm-workspace.yaml"
-                    || (filename.starts_with("tsconfig") && filename.ends_with(".json"))
-                {
-                    continue;
-                }
-                parsed_families.clear();
-                for profile in profiles.iter().copied().filter(|profile| matches(profile)) {
-                    let family = profile.family();
-                    if parsed_families.contains(&family) {
-                        continue;
-                    }
-                    parsed_families.push(family);
-                    #[cfg(feature = "lang-rust")]
-                    let dependencies =
-                        if filename == "Cargo.toml" && family == LanguageFamily("rust") {
-                            let (crate_name, dependencies) =
-                                super::rust::cargo_manifest_metadata(&content);
-                            if directory.as_os_str().is_empty() {
-                                if let Some(crate_name) = crate_name {
-                                    registry.rust_root_crates.insert(scope.clone(), crate_name);
-                                }
-                            }
-                            dependencies
-                        } else {
-                            profile.extract_manifest_dependencies(filename, &content)
-                        };
-                    #[cfg(not(feature = "lang-rust"))]
-                    let dependencies = profile.extract_manifest_dependencies(filename, &content);
-                    {
-                        let origins = registry
-                            .scoped_origins
-                            .entry(family)
-                            .or_default()
-                            .entry(scope.clone())
-                            .or_default();
-                        for dependency in &dependencies {
-                            let recorded = origins.entry(dependency.clone()).or_default();
-                            if recorded.is_empty() || preferred_manifest(&origin, recorded) {
-                                *recorded = origin.clone();
-                            }
-                        }
-                        registry
-                            .scoped_packages
-                            .entry(family)
-                            .or_default()
-                            .entry(scope.clone())
-                            .or_default()
-                            .extend(dependencies.iter().cloned());
-                    }
-                    registry
-                        .packages
-                        .entry(family)
-                        .or_default()
-                        .extend(dependencies);
-                }
             }
             load_framework_manifests(
                 &root,
@@ -829,23 +745,7 @@ impl DependencyRegistry {
                 &mut snapshots,
             )?;
         }
-        registry.javascript_packages.apply_pnpm_workspaces();
-        registry.typescript_paths.resolve_all();
-        registry.prepare_scoped_policies()?;
-        let mut hasher = Sha256::new();
-        hasher.update(b"forge-dependency-registry-v1\0");
-        let standard_digest = Self::standard_manifests_digest_static();
-        hasher.update((standard_digest.len() as u64).to_be_bytes());
-        hasher.update(standard_digest.as_bytes());
-        for (path, digest) in snapshots {
-            hasher.update((path.len() as u64).to_be_bytes());
-            hasher.update(path.as_bytes());
-            hasher.update(digest);
-        }
-        registry.digest = hex::encode(hasher.finalize());
-        registry.prepare_language_contexts();
-        registry.validate_type_flow_policies()?;
-        Ok(registry)
+        finish_registry(registry, snapshots)
     }
 
     fn validate_type_flow_policies(&self) -> Result<()> {
@@ -1162,6 +1062,288 @@ impl DependencyRegistry {
     }
 }
 
+fn record_dependency_manifest(
+    prefix: &str,
+    relative_path: &Path,
+    content: &str,
+    registry: &mut DependencyRegistry,
+    snapshots: &mut ManifestSnapshots,
+) {
+    let filename = relative_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap();
+    let directory = relative_path.parent().unwrap_or_else(|| Path::new(""));
+    let origin = format!(
+        "{}{}",
+        prefix,
+        relative_path.to_string_lossy().replace('\\', "/")
+    );
+    let mut scope = prefix.to_owned();
+    scope.push_str(&directory.to_string_lossy().replace('\\', "/"));
+    let scope = scope.trim_end_matches('/').to_owned();
+    let profiles: Vec<_> = profiles()
+        .filter(|profile| !profile.manifest_filenames().is_empty())
+        .collect();
+    let matches = |profile: &&dyn LanguageProfile| {
+        profile
+            .manifest_filenames()
+            .iter()
+            .any(|pattern| filename_matches(pattern, filename))
+    };
+    if filename == "package.json" {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(content) {
+            let mut record = |name: &str, target: &str| {
+                registry.manifest_entrypoints.push(ManifestEntrypoint {
+                    origin: origin.clone(),
+                    scope: scope.clone(),
+                    name: name.to_owned(),
+                    target: target.to_owned(),
+                    python: false,
+                });
+            };
+            if let Some(target) = value.get("main").and_then(serde_json::Value::as_str) {
+                record("main", target);
+            }
+            if let Some(bin) = value.get("bin") {
+                if let Some(target) = bin.as_str() {
+                    record("bin:", target);
+                } else if let Some(bins) = bin.as_object() {
+                    for (name, target) in bins {
+                        if let Some(target) = target.as_str() {
+                            record(&format!("bin:{name}"), target);
+                        }
+                    }
+                }
+            }
+            if let Some(name) = value.get("name").and_then(serde_json::Value::as_str) {
+                registry
+                    .own_packages
+                    .entry(scope.clone())
+                    .or_default()
+                    .insert(name.to_owned());
+            }
+        }
+    } else if filename == "pyproject.toml" {
+        super::toml_manifest::visit_toml_pairs(content, &mut |key, value| {
+            if let Some(name) = key.strip_prefix("project.scripts.") {
+                if let Some(target) = super::toml_manifest::toml_string(value, content) {
+                    registry.manifest_entrypoints.push(ManifestEntrypoint {
+                        origin: origin.clone(),
+                        scope: scope.clone(),
+                        name: name.to_owned(),
+                        target,
+                        python: true,
+                    });
+                }
+            }
+            if matches!(key, "project.name" | "tool.poetry.name") {
+                if let Some(name) = super::toml_manifest::toml_string(value, content) {
+                    registry
+                        .own_packages
+                        .entry(scope.clone())
+                        .or_default()
+                        .insert(name);
+                }
+            }
+        });
+    }
+    #[cfg(feature = "lang-rust")]
+    if filename == "Cargo.toml" && scope == prefix.trim_end_matches('/') {
+        let mut package_name = None;
+        let mut library_name = None;
+        let mut library_path = None;
+        let mut invalid_library_path = false;
+        let mut invalid_library_name = false;
+        let mut invalid_package_name = false;
+        let mut autolib = None;
+        let mut autolib_present = false;
+        let mut invalid_autolib = false;
+        super::toml_manifest::visit_toml_pairs(content, &mut |key, value| match key {
+            "package.name" => {
+                package_name = super::toml_manifest::toml_string(value, content);
+                invalid_package_name = package_name.is_none();
+            }
+            "lib.name" => {
+                library_name = super::toml_manifest::toml_string(value, content);
+                invalid_library_name = library_name.is_none();
+            }
+            "lib.path" => {
+                library_path = super::toml_manifest::toml_string(value, content);
+                invalid_library_path = library_path.is_none();
+            }
+            "package.autolib" => {
+                autolib_present = true;
+                autolib =
+                    value
+                        .utf8_text(content.as_bytes())
+                        .ok()
+                        .and_then(|text| match text.trim() {
+                            "true" => Some(true),
+                            "false" => Some(false),
+                            _ => None,
+                        });
+                invalid_autolib = autolib.is_none();
+            }
+            _ => {}
+        });
+        let has_library_table = super::toml_manifest::has_table(content, "lib");
+        let autolib_allows_library = match (autolib_present, autolib) {
+            (false, _) | (true, Some(true)) => true,
+            (true, Some(false)) => has_library_table,
+            (true, None) => false,
+        };
+        let conventional_library_path = !invalid_library_path
+            && library_path
+                .as_deref()
+                .is_none_or(|path| path == "src/lib.rs");
+        if autolib_allows_library
+            && !invalid_autolib
+            && !invalid_library_name
+            && !invalid_package_name
+            && package_name.as_deref().is_some_and(|name| !name.is_empty())
+            && conventional_library_path
+        {
+            if let Some(name) = library_name.or(package_name) {
+                registry
+                    .rust_libraries
+                    .insert(scope.clone(), name.replace('-', "_"));
+            }
+        }
+    }
+    if filename == "package.json" {
+        registry
+            .javascript_packages
+            .record_manifest(&scope, content);
+    } else if filename == "pnpm-workspace.yaml" {
+        registry
+            .javascript_packages
+            .record_pnpm_workspace(&scope, content);
+    } else if filename.starts_with("tsconfig") && filename.ends_with(".json") {
+        registry
+            .typescript_paths
+            .record_config(&scope, filename, content);
+    }
+    snapshots.insert(origin.clone(), Sha256::digest(content.as_bytes()));
+    if filename == "pnpm-workspace.yaml"
+        || (filename.starts_with("tsconfig") && filename.ends_with(".json"))
+    {
+        return;
+    }
+    let mut parsed_families = Vec::with_capacity(profiles.len());
+    for profile in profiles.iter().copied().filter(|profile| matches(profile)) {
+        let family = profile.family();
+        if parsed_families.contains(&family) {
+            continue;
+        }
+        parsed_families.push(family);
+        #[cfg(feature = "lang-rust")]
+        let dependencies = if filename == "Cargo.toml" && family == LanguageFamily("rust") {
+            let (crate_name, dependencies) = super::rust::cargo_manifest_metadata(content);
+            if directory.as_os_str().is_empty() {
+                if let Some(crate_name) = crate_name {
+                    registry.rust_root_crates.insert(scope.clone(), crate_name);
+                }
+            }
+            dependencies
+        } else {
+            profile.extract_manifest_dependencies(filename, content)
+        };
+        #[cfg(not(feature = "lang-rust"))]
+        let dependencies = profile.extract_manifest_dependencies(filename, content);
+        {
+            let origins = registry
+                .scoped_origins
+                .entry(family)
+                .or_default()
+                .entry(scope.clone())
+                .or_default();
+            for dependency in &dependencies {
+                let recorded = origins.entry(dependency.clone()).or_default();
+                if recorded.is_empty() || preferred_manifest(&origin, recorded) {
+                    *recorded = origin.clone();
+                }
+            }
+            registry
+                .scoped_packages
+                .entry(family)
+                .or_default()
+                .entry(scope.clone())
+                .or_default()
+                .extend(dependencies.iter().cloned());
+        }
+        registry
+            .packages
+            .entry(family)
+            .or_default()
+            .extend(dependencies);
+    }
+}
+
+fn finish_registry(
+    mut registry: DependencyRegistry,
+    snapshots: ManifestSnapshots,
+) -> Result<DependencyRegistry> {
+    registry.javascript_packages.apply_pnpm_workspaces();
+    registry.typescript_paths.resolve_all();
+    registry.prepare_scoped_policies()?;
+    let mut hasher = Sha256::new();
+    hasher.update(b"forge-dependency-registry-v1\0");
+    let standard_digest = DependencyRegistry::standard_manifests_digest_static();
+    hasher.update((standard_digest.len() as u64).to_be_bytes());
+    hasher.update(standard_digest.as_bytes());
+    for (path, digest) in snapshots {
+        hasher.update((path.len() as u64).to_be_bytes());
+        hasher.update(path.as_bytes());
+        hasher.update(digest);
+    }
+    registry.digest = hex::encode(hasher.finalize());
+    registry.prepare_language_contexts();
+    registry.validate_type_flow_policies()?;
+    Ok(registry)
+}
+
+fn record_framework_manifest(
+    workspace: &str,
+    origin_prefix: &str,
+    relative_path: &Path,
+    content: &str,
+    registry: &mut DependencyRegistry,
+    snapshots: &mut ManifestSnapshots,
+) -> Result<()> {
+    let extension = relative_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .context("framework manifest extension missing")?;
+    let name = relative_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .context("framework manifest filename must have a UTF-8 identifier")?
+        .to_owned();
+    let manifest = FrameworkManifest::parse(name.clone(), extension, content)?;
+    let manifest = registry
+        .standard_framework_manifests
+        .get(&name)
+        .map_or(manifest.clone(), |bundled| {
+            manifest.with_bundled_rules(bundled)
+        });
+    if registry
+        .framework_manifests
+        .insert((workspace.to_owned(), name.clone()), manifest)
+        .is_some()
+    {
+        bail!("duplicate framework manifest {name} in workspace {workspace}");
+    }
+    let origin = format!(
+        "{}{}",
+        origin_prefix,
+        relative_path.to_string_lossy().replace('\\', "/")
+    );
+    snapshots.insert(origin, Sha256::digest(content.as_bytes()));
+    Ok(())
+}
+
 fn package_identity(family: LanguageFamily, name: &str) -> String {
     #[cfg(feature = "lang-python")]
     if family == LanguageFamily("python") {
@@ -1269,14 +1451,26 @@ const STANDARD_FRAMEWORK_MANIFESTS: &[(&str, &str, &str)] =
 static STANDARD_FRAMEWORK_MANIFESTS_DIGEST: std::sync::OnceLock<String> =
     std::sync::OnceLock::new();
 
+static PARSED_STANDARD_FRAMEWORK_MANIFESTS: std::sync::OnceLock<
+    std::result::Result<HashMap<String, FrameworkManifest>, String>,
+> = std::sync::OnceLock::new();
+
 fn load_standard_framework_manifests(registry: &mut DependencyRegistry) -> Result<()> {
-    for &(name, extension, source) in STANDARD_FRAMEWORK_MANIFESTS {
-        let manifest = FrameworkManifest::parse(name.to_owned(), extension, source)
-            .with_context(|| format!("invalid standard framework manifest {name}"))?;
-        registry
-            .standard_framework_manifests
-            .insert(name.to_owned(), manifest);
-    }
+    let manifests = PARSED_STANDARD_FRAMEWORK_MANIFESTS.get_or_init(|| {
+        STANDARD_FRAMEWORK_MANIFESTS
+            .iter()
+            .map(|&(name, extension, source)| {
+                FrameworkManifest::parse(name.to_owned(), extension, source)
+                    .with_context(|| format!("invalid standard framework manifest {name}"))
+                    .map(|manifest| (name.to_owned(), manifest))
+                    .map_err(|error| format!("{error:#}"))
+            })
+            .collect()
+    });
+    registry.standard_framework_manifests = manifests
+        .as_ref()
+        .map_err(|error| anyhow::anyhow!("{error}"))?
+        .clone();
     Ok(())
 }
 
@@ -1351,7 +1545,7 @@ fn load_framework_manifests(
             )
         })?;
         let path = entry.path();
-        let Some(extension @ ("toml" | "yaml" | "yml")) =
+        let Some("toml" | "yaml" | "yml") =
             path.extension().and_then(|extension| extension.to_str())
         else {
             continue;
@@ -1368,12 +1562,10 @@ fn load_framework_manifests(
         if !file_type.is_file() {
             continue;
         }
-        let name = path
-            .file_stem()
+        path.file_stem()
             .and_then(|stem| stem.to_str())
             .filter(|stem| !stem.is_empty())
-            .context("framework manifest filename must have a UTF-8 identifier")?
-            .to_owned();
+            .context("framework manifest filename must have a UTF-8 identifier")?;
         let metadata = entry
             .metadata()
             .with_context(|| format!("failed to inspect framework manifest {}", path.display()))?;
@@ -1385,21 +1577,6 @@ fn load_framework_manifests(
         }
         let content = fs::read_to_string(&path)
             .with_context(|| format!("failed to read framework manifest {}", path.display()))?;
-        let manifest = FrameworkManifest::parse(name.clone(), extension, &content)
-            .with_context(|| format!("failed to load framework manifest {}", path.display()))?;
-        let manifest = registry
-            .standard_framework_manifests
-            .get(&name)
-            .map_or(manifest.clone(), |bundled| {
-                manifest.with_bundled_rules(bundled)
-            });
-        if registry
-            .framework_manifests
-            .insert((workspace.to_owned(), name.clone()), manifest)
-            .is_some()
-        {
-            bail!("duplicate framework manifest {name} in workspace {workspace}");
-        }
         let relative_path = path.strip_prefix(root).with_context(|| {
             format!(
                 "framework manifest {} escaped its workspace root {}",
@@ -1407,12 +1584,15 @@ fn load_framework_manifests(
                 root.display()
             )
         })?;
-        let origin = format!(
-            "{}{}",
+        record_framework_manifest(
+            workspace,
             origin_prefix,
-            relative_path.to_string_lossy().replace('\\', "/")
-        );
-        snapshots.insert(origin, Sha256::digest(content.as_bytes()));
+            relative_path,
+            &content,
+            registry,
+            snapshots,
+        )
+        .with_context(|| format!("failed to load framework manifest {}", path.display()))?;
     }
     Ok(())
 }
@@ -1448,6 +1628,267 @@ pub fn is_dependency_manifest_filename(filename: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn source_registry(files: &[(&str, &str)]) -> Result<DependencyRegistry> {
+        let manifests: Vec<_> = files
+            .iter()
+            .map(|&(path, source)| ManifestSource { path, source })
+            .collect();
+        DependencyRegistry::try_collect_from_sources([WorkspaceManifestSources {
+            name: "",
+            manifests: &manifests,
+        }])
+    }
+
+    #[test]
+    fn source_inventory_rejects_noncanonical_and_unsupported_paths() {
+        for path in [
+            "",
+            "/package.json",
+            "../package.json",
+            "a/../package.json",
+            "./package.json",
+            "a//package.json",
+            "a/./package.json",
+            "a\\package.json",
+            "[other]/package.json",
+            "a/[other]/package.json",
+            "C:/package.json",
+            "package.json\0",
+            "package.json?x",
+            "unknown.txt",
+            ".forge/frameworks/pack.json",
+            ".forge/frameworks/nested/pack.toml",
+        ] {
+            assert!(source_registry(&[(path, "")]).is_err(), "{path:?}");
+        }
+        for name in ["../other", "[other]", "a/b", "two words", "", "other"] {
+            let inventories = [
+                WorkspaceManifestSources {
+                    name,
+                    manifests: &[],
+                },
+                WorkspaceManifestSources {
+                    name,
+                    manifests: &[],
+                },
+            ];
+            assert!(
+                DependencyRegistry::try_collect_from_sources(inventories).is_err(),
+                "{name:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn source_inventory_rejects_duplicate_paths_and_pack_identities() {
+        for files in [
+            vec![("package.json", "{}"), ("package.json", "{}")],
+            vec![
+                (".forge/frameworks/local.toml", "enabled=false"),
+                (".forge/frameworks/local.yaml", "enabled: false"),
+            ],
+        ] {
+            assert!(source_registry(&files).is_err(), "{files:?}");
+        }
+    }
+
+    #[test]
+    fn source_inventory_enforces_framework_parser_and_byte_limit() {
+        for (extension, source) in [
+            ("toml", "extend=true\nreplace=true"),
+            ("toml", "enabled='false'"),
+            ("toml", "syntax_rules=["),
+            ("yaml", "enabled: 0"),
+            ("yml", "syntax_rules: ["),
+            ("toml", "receivers=[]"),
+        ] {
+            assert!(
+                source_registry(&[(&format!(".forge/frameworks/local.{extension}"), source)])
+                    .is_err(),
+                "{source}"
+            );
+        }
+        for bytes in [4 * 1024 * 1024 - 1, 4 * 1024 * 1024, 4 * 1024 * 1024 + 1] {
+            let source = format!("#{}", "x".repeat(bytes - 1));
+            assert_eq!(
+                source_registry(&[(".forge/frameworks/local.toml", &source)]).is_ok(),
+                bytes <= 4 * 1024 * 1024,
+                "{bytes}"
+            );
+        }
+    }
+
+    #[cfg(feature = "lang-python")]
+    #[test]
+    fn source_scopes_and_local_tombstones_preserve_bundle_activation() {
+        let dependency = ("requirements.txt", "django\n");
+        let bundled = source_registry(&[dependency, ("nested/requirements.txt", "")]).unwrap();
+        let admits = |registry: &DependencyRegistry, path| {
+            registry
+                .framework_manifest_for_path(LanguageFamily("python"), path, "django", "django")
+                .is_some()
+        };
+        assert!(admits(&bundled, "app.py"));
+        assert!(!admits(&bundled, "nested/app.py"));
+        for (extension, disabled, enabled) in [
+            ("toml", "enabled=false", "enabled=true"),
+            ("yaml", "enabled: false", "enabled: true"),
+            ("yml", "enabled: false", "enabled: true"),
+        ] {
+            let path = format!(".forge/frameworks/django.{extension}");
+            let disabled = source_registry(&[dependency, (&path, disabled)]).unwrap();
+            assert!(!admits(&disabled, "app.py"));
+            let restored = source_registry(&[dependency, (&path, enabled)]).unwrap();
+            assert!(admits(&restored, "app.py"));
+            assert_ne!(disabled.digest(), restored.digest());
+            assert!(admits(&bundled, "app.py"));
+            assert!(!admits(&disabled, "app.py"));
+        }
+        let empty = source_registry(&[]).unwrap();
+        assert!(!admits(&empty, "app.py"));
+        let local = source_registry(&[(".forge/frameworks/django.toml", "")]).unwrap();
+        assert!(admits(&local, "app.py"));
+        let deleted = source_registry(&[dependency]).unwrap();
+        assert!(admits(&deleted, "app.py"));
+    }
+
+    #[cfg(feature = "lang-python")]
+    #[test]
+    fn source_local_rules_merge_and_replace_bundled_rules() {
+        let local_rule = "[[route_calls]]\ncallee='LocalRoute'\nmethod='GET'\npath_argument=0\nhandler_argument=1\n";
+        let registry = |mode: &str| {
+            source_registry(&[
+                ("requirements.txt", "django"),
+                (
+                    ".forge/frameworks/django.toml",
+                    &format!("{mode}{local_rule}"),
+                ),
+            ])
+            .unwrap()
+        };
+        let bundled = DependencyRegistry::collect(None);
+        let bundled_count = bundled.standard_framework_manifests["django"]
+            .route_calls
+            .len();
+        let merged = registry("extend=true\n");
+        let replaced = registry("replace=true\n");
+        assert_eq!(
+            merged
+                .effective_framework_manifest("app.py", "django")
+                .unwrap()
+                .route_calls
+                .len(),
+            bundled_count + 1
+        );
+        assert_eq!(
+            replaced
+                .effective_framework_manifest("app.py", "django")
+                .unwrap()
+                .route_calls
+                .len(),
+            1
+        );
+        assert_ne!(merged.digest(), replaced.digest());
+    }
+
+    #[cfg(feature = "lang-python")]
+    #[test]
+    fn source_registries_remain_independent_across_threads() {
+        let mut manifest = "enabled=true".to_owned();
+        let retained = source_registry(&[(".forge/frameworks/django.toml", &manifest)]).unwrap();
+        manifest.replace_range(.., "enabled=false");
+        let changed = source_registry(&[(".forge/frameworks/django.toml", &manifest)]).unwrap();
+        assert!(changed
+            .effective_framework_manifest("app.py", "django")
+            .is_none());
+        std::thread::scope(|scope| {
+            let disabled = scope.spawn(|| {
+                source_registry(&[(".forge/frameworks/django.toml", "enabled=false")]).unwrap()
+            });
+            let enabled = scope.spawn(|| {
+                source_registry(&[(".forge/frameworks/django.toml", "enabled=true")]).unwrap()
+            });
+            assert!(disabled
+                .join()
+                .unwrap()
+                .effective_framework_manifest("app.py", "django")
+                .is_none());
+            assert!(enabled
+                .join()
+                .unwrap()
+                .effective_framework_manifest("app.py", "django")
+                .is_some());
+        });
+        assert!(retained
+            .effective_framework_manifest("app.py", "django")
+            .is_some());
+    }
+
+    #[cfg(feature = "lang-python")]
+    #[test]
+    fn source_registry_digests_bind_paths_and_bytes_without_input_order() {
+        let first = ("requirements.txt", "django\n");
+        let second = ("nested/requirements.txt", "");
+        let registry = source_registry(&[first, second]).unwrap();
+        assert_eq!(
+            registry.digest(),
+            source_registry(&[second, first]).unwrap().digest()
+        );
+        for files in [
+            vec![("requirements.txt", "django\n# changed bytes\n"), second],
+            vec![("other/requirements.txt", "django\n"), second],
+        ] {
+            assert_ne!(registry.digest(), source_registry(&files).unwrap().digest());
+        }
+    }
+
+    #[cfg(all(feature = "lang-python", feature = "lang-typescript"))]
+    #[test]
+    fn source_registry_validates_named_workspace_scope_before_rule_preparation() {
+        let rule = serde_json::json!({"syntax_rules":[{"id":"named","language":"python","operation":{"kind":"named_binding","domain":"paint","binding":{"kind":"call_reference","callee":{"kind":"imported","module":"tablekit","export":"Column"},"key":{"kind":"keyword","name":"renderer"},"provider_scopes":[{"workspace":"frontend","project":"","package":"runtime"}]}}}]});
+        let source = toml::to_string(&rule).unwrap();
+        let main = [ManifestSource {
+            path: ".forge/frameworks/local.toml",
+            source: &source,
+        }];
+        let linked = [ManifestSource {
+            path: "package.json",
+            source: "{\"name\":\"runtime\"}",
+        }];
+        let inventory = |name| WorkspaceManifestSources {
+            name,
+            manifests: &linked,
+        };
+        let primary = || WorkspaceManifestSources {
+            name: "",
+            manifests: &main,
+        };
+        assert!(DependencyRegistry::try_collect_from_sources([primary()]).is_err());
+        let registry =
+            DependencyRegistry::try_collect_from_sources([primary(), inventory("frontend")])
+                .unwrap();
+        let provider = super::super::manifests::projections::NamedProviderScope {
+            workspace: "frontend".into(),
+            project: "".into(),
+            package: "runtime".into(),
+        };
+        assert_eq!(registry.named_provider_scope(&provider), Some("[frontend]"));
+        assert_eq!(
+            registry.digest(),
+            DependencyRegistry::try_collect_from_sources([inventory("frontend"), primary()])
+                .unwrap()
+                .digest()
+        );
+        assert!(registry
+            .framework_manifest_for_path(
+                LanguageFamily("python"),
+                "[frontend]/app.py",
+                "local",
+                "tablekit"
+            )
+            .is_none());
+    }
 
     #[cfg(feature = "lang-python")]
     #[test]
@@ -1738,7 +2179,8 @@ mod tests {
             }
         }
         let mut documented = Vec::new();
-        for block in include_str!("../../../../docs/reference/framework-manifests.md").split("```") {
+        for block in include_str!("../../../../docs/reference/framework-manifests.md").split("```")
+        {
             let Some((extension @ ("toml" | "yaml"), source)) = block.split_once('\n') else {
                 continue;
             };
@@ -2157,7 +2599,6 @@ di_calls:
             _ => failures.push("declared grid-view-spec did not activate its verified GridViewSpec bundle receiver".to_owned()),
         }
         assert!(failures.is_empty(), "{}", failures.join("\n"));
-
     }
 
     #[test]

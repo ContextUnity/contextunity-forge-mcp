@@ -22,14 +22,8 @@ pub use inputs::{
     TaskListInput, TaskManageInput, TaskSubmitInput, Tests,
 };
 
-fn rejected_selector_fields(
-    tool_name: &str,
-    arguments: Option<&serde_json::Map<String, Value>>,
-) -> Vec<String> {
-    let Some(arguments) = arguments else {
-        return Vec::new();
-    };
-    let allowed: &[&str] = match tool_name {
+fn allowed_fields_for_tool(tool_name: &str) -> &'static [&'static str] {
+    match tool_name {
         "code_map_inspect" => &[
             "selector",
             "path",
@@ -48,7 +42,12 @@ fn rejected_selector_fields(
         "forge_read" => &[
             "mode",
             "start_line",
+            "end_line",
+            "lines",
             "line_count",
+            "max_lines",
+            "file_path",
+            "query",
             "pattern",
             "regex",
             "context",
@@ -56,6 +55,7 @@ fn rejected_selector_fields(
             "output_file",
             "selector",
             "path",
+            "paths",
             "show_source",
             "leading_lines",
             "max_body_lines",
@@ -247,14 +247,105 @@ fn rejected_selector_fields(
             "offset",
             "worktree",
         ],
-        _ => return Vec::new(),
+        _ => &[],
+    }
+}
+
+fn rejected_selector_fields(
+    tool_name: &str,
+    arguments: Option<&serde_json::Map<String, Value>>,
+) -> Vec<String> {
+    let Some(arguments) = arguments else {
+        return Vec::new();
     };
+    let allowed = allowed_fields_for_tool(tool_name);
+    if allowed.is_empty() {
+        return Vec::new();
+    }
     arguments
         .keys()
         .filter(|field| field.as_str() != "format" && !allowed.contains(&field.as_str()))
         .take(16)
         .cloned()
         .collect()
+}
+
+fn levenshtein_distance(a: &str, b: &str) -> usize {
+    let a_bytes = a.as_bytes();
+    let b_bytes = b.as_bytes();
+    let mut dp = vec![vec![0; b_bytes.len() + 1]; a_bytes.len() + 1];
+    for (i, row) in dp.iter_mut().enumerate() {
+        row[0] = i;
+    }
+    for (j, val) in dp[0].iter_mut().enumerate() {
+        *val = j;
+    }
+    for (i, &ca) in a_bytes.iter().enumerate() {
+        for (j, &cb) in b_bytes.iter().enumerate() {
+            if ca == cb {
+                dp[i + 1][j + 1] = dp[i][j];
+            } else {
+                dp[i + 1][j + 1] = 1 + dp[i][j].min(dp[i + 1][j]).min(dp[i + 1][j + 1]);
+            }
+        }
+    }
+    dp[a_bytes.len()][b_bytes.len()]
+}
+
+fn find_suggestions<'a>(rejected: &[String], allowed: &[&'a str]) -> Vec<(String, &'a str)> {
+    let mut suggestions = Vec::new();
+    for rej in rejected {
+        let rej_lower = rej.to_lowercase();
+        let mut best: Option<(&'a str, usize)> = None;
+        for &cand in allowed {
+            let cand_lower = cand.to_lowercase();
+            if cand_lower.contains(&rej_lower) || rej_lower.contains(&cand_lower) {
+                let dist = cand_lower.len().abs_diff(rej_lower.len());
+                if best.as_ref().is_none_or(|(_, d)| dist < *d) {
+                    best = Some((cand, dist));
+                }
+            } else {
+                let dist = levenshtein_distance(&rej_lower, &cand_lower);
+                let threshold = (cand.len() / 2).max(2);
+                if dist <= threshold && best.as_ref().is_none_or(|(_, d)| dist < *d) {
+                    best = Some((cand, dist));
+                }
+            }
+        }
+        if let Some((cand, _)) = best {
+            suggestions.push((rej.clone(), cand));
+        }
+    }
+    suggestions
+}
+
+fn rejected_arguments_error(
+    tool_name: &str,
+    fields: &[String],
+    allowed: &[&str],
+) -> CallToolResult {
+    let truncated_fields = fields
+        .iter()
+        .take(16)
+        .map(|field| field.chars().take(128).collect::<String>())
+        .collect::<Vec<_>>();
+    let suggestions = find_suggestions(&truncated_fields, allowed);
+    let suggestion_text = if suggestions.is_empty() {
+        String::new()
+    } else {
+        let items: Vec<String> = suggestions
+            .iter()
+            .map(|(orig, sugg)| format!("'{sugg}' for '{orig}'"))
+            .collect();
+        format!(" Did you mean: {}?", items.join(", "))
+    };
+    let message = format!(
+        "Unrecognized argument(s): {}. Valid supported parameters for '{tool_name}': {}.{suggestion_text}",
+        truncated_fields.join(", "),
+        allowed.join(", ")
+    );
+
+    response::rejected_arguments(fields, Some(message), Some(allowed), &suggestions)
 }
 
 impl Server {
@@ -359,6 +450,7 @@ impl Server {
     fn task_claim(&self, Parameters(p): Parameters<TaskClaimInput>) -> CallToolResult {
         let format = p.format.unwrap_or_default();
         let mut request = p.request;
+        request.session_fingerprint = self.session_fingerprint.clone();
         if !request.worktree.trim().is_empty() {
             request.worktree = self.root.display().to_string();
         }
@@ -369,8 +461,9 @@ impl Server {
     #[tool(
         description = "Pass or reject the claimed gate. Omit evidence on automated contract/command gates to execute the registered command or reuse fresh claim-bound proof. timeout_seconds optionally overrides the command timeout within profile limits and requires omitted evidence. Other gates require the evidence object described by the schema. Passing deliver writes the milestone receipt and clears the blackboard."
     )]
-    fn task_submit(&self, Parameters(p): Parameters<TaskSubmitInput>) -> CallToolResult {
+    fn task_submit(&self, Parameters(mut p): Parameters<TaskSubmitInput>) -> CallToolResult {
         let format = p.format.unwrap_or_default();
+        p.request.session_fingerprint = self.session_fingerprint.clone();
         self.responding(format, OperationKind::Task, "task_submit", |_, _| {
             if p.evidence_provided {
                 anyhow::ensure!(
@@ -386,6 +479,7 @@ impl Server {
                     p.request.action,
                     p.request.findings,
                     p.timeout_seconds,
+                    self.session_fingerprint.as_deref(),
                 )
             }
         })
@@ -396,6 +490,7 @@ impl Server {
     fn task_manage(&self, Parameters(p): Parameters<TaskManageInput>) -> CallToolResult {
         let format = p.format.unwrap_or_default();
         let mut request = p.request;
+        request.session_fingerprint = self.session_fingerprint.clone();
         if request.action == crate::engine::tasks::ManageAction::Next {
             if request
                 .worktree
@@ -506,13 +601,14 @@ impl Server {
     #[tool(
         description = "Read workspace text by path: lines, raw, search (pattern, optional regex/context), or Git delta (optional baseline). Auto selects snippet for selector, search for pattern, otherwise lines. Core reads work without an index. Outline uses docs for Markdown and codemap AST declarations for code; snippet requires codemap and preserves digest-verified complete-symbol paging with source_offset/generation. Optional output_file exports returned content to a confined path. Sensitive patterns, symlinks, traversal and NUL binary input are rejected. Enabled graph/task signals add scope badges and copy-ready Hints."
     )]
-    fn forge_read(&self, Parameters(p): Parameters<Snippet>) -> CallToolResult {
+    fn forge_read(&self, Parameters(mut p): Parameters<Snippet>) -> CallToolResult {
         let format = p.page.output_format();
         self.responding_with_presentation(
             format,
             OperationKind::Navigation,
             "forge_read",
             |adapter, policy| {
+                p.normalize(&self.root)?;
                 let page = p.page.resolve(policy)?;
                 let source = p.source(policy)?;
                 let read = |conn: Option<&rusqlite::Connection>| {
@@ -1149,7 +1245,8 @@ impl ServerHandler for Server {
         let operation = operation_kind(&tool_name, request.arguments.as_ref());
         let rejected = rejected_selector_fields(&request.name, request.arguments.as_ref());
         if !rejected.is_empty() {
-            return Ok(response::rejected_arguments(&rejected).into());
+            let allowed = allowed_fields_for_tool(&request.name);
+            return Ok(rejected_arguments_error(&request.name, &rejected, allowed).into());
         }
         let primary_adapter = scanner::load_adapter(&self.root, None);
         let requested_worktree = request
@@ -1219,15 +1316,27 @@ impl ServerHandler for Server {
                 Ok(response::enforce(result, &policy).into())
             }
             Ok(result) => Ok(result),
-            Err(error) => Ok(response::result_for(
-                Err(anyhow::anyhow!(error.to_string())),
-                &policy,
-                output_format,
-                operation,
-                &tool_name,
-                None,
-            )
-            .into()),
+            Err(error) => {
+                let err_msg = error.to_string();
+                let enhanced = if tool_name == "forge_read" {
+                    let allowed = allowed_fields_for_tool(&tool_name);
+                    format!(
+                        "{err_msg}\nValid supported parameters for '{tool_name}': {}",
+                        allowed.join(", ")
+                    )
+                } else {
+                    err_msg
+                };
+                Ok(response::result_for(
+                    Err(anyhow::anyhow!(enhanced)),
+                    &policy,
+                    output_format,
+                    operation,
+                    &tool_name,
+                    None,
+                )
+                .into())
+            }
         };
         if let Some((tool_name, tool_args)) = debug_request {
             let output_val = match &final_response {

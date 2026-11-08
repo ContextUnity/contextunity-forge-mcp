@@ -191,6 +191,12 @@ pub fn shorten_task_response_commits(_value: &mut serde_json::Value) {}
 #[serde(deny_unknown_fields)]
 /// Represents receipt data.
 pub struct Receipt {
+    /// Qualified delivery gate that accepted this receipt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_gate: Option<String>,
+    /// Qualified accepted snapshot gate supplying the candidate proof.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_gate: Option<String>,
     /// The optional commit value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commit: Option<String>,
@@ -214,6 +220,8 @@ impl Receipt {
     /// decision, contract revision, timestamp, and rollup, ignoring the Git commit pointer.
     pub fn matches_proofs(&self, other: &Self) -> bool {
         self.contract_revision == other.contract_revision
+            && self.delivery_gate == other.delivery_gate
+            && self.candidate_gate == other.candidate_gate
             && self.passed_at == other.passed_at
             && self.decision == other.decision
             && self.evidence == other.evidence

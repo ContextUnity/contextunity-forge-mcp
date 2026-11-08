@@ -1,6 +1,6 @@
 use super::super::resolution::ResolutionInput;
 use super::super::semantic_context::Member;
-use crate::core::models::{Facts, Node, ReceiverHint, Reference, compact_graph::Graph};
+use crate::core::models::{compact_graph::Graph, Facts, Node, ReceiverHint, Reference};
 use crate::core::semantic::ComponentMacroRole;
 use crate::engine::languages::LanguageContext;
 

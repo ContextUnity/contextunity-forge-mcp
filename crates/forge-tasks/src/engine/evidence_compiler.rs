@@ -21,6 +21,15 @@ use std::{
 pub(super) fn compile_evidence_envelope(root: &Path, task_id: &str, stage: &str) -> Result<Value> {
     let store = store_for_task(root, task_id)?;
     let task = store.inspect(task_id)?;
+    compile_evidence_for_task(&store, &task, stage)
+}
+
+pub(super) fn compile_evidence_for_task(
+    store: &crate::store::TasksStore,
+    task: &crate::store::Task,
+    stage: &str,
+) -> Result<Value> {
+    let task_id = task.task_id.as_str();
     if task.status != "in_progress" || task.stage != stage {
         bail!("TASK_STALE_CLAIM: task '{task_id}' is not actively claimed at stage '{stage}'");
     }
@@ -34,10 +43,9 @@ pub(super) fn compile_evidence_envelope(root: &Path, task_id: &str, stage: &str)
         .as_deref()
         .filter(|worktree| !worktree.trim().is_empty())
         .context("TASK_STALE_CLAIM: active worktree is missing")?;
-    let profile = store.profile_for_task(&task)?;
+    let profile = store.profile_for_task(task)?;
     let cursor = crate::engine::claim::cursor_for_stage(&profile, stage)?;
     let gate = &cursor.gate;
-    let gate_path = &cursor.gate_path;
     let worktree_path = Path::new(worktree).canonicalize()?;
     let candidate_head = git_stdout(
         &worktree_path,
@@ -64,7 +72,7 @@ pub(super) fn compile_evidence_envelope(root: &Path, task_id: &str, stage: &str)
     }
     let candidate_fingerprint = candidate_fingerprint(&worktree_path)?;
     let execution_gate_path = format!("tasks.{}", cursor.canonical_stage_id);
-    let mut run = store.latest_claim_bound_execution_run(
+    let run = store.latest_claim_bound_execution_run(
         task_id,
         &execution_gate_path,
         task.claim_revision,
@@ -72,26 +80,6 @@ pub(super) fn compile_evidence_envelope(root: &Path, task_id: &str, stage: &str)
         worker_id,
         &worktree_path.to_string_lossy(),
     )?;
-    if run.is_none() && cursor.canonical_stage_id != cursor.stage_id {
-        run = store.latest_claim_bound_execution_run(
-            task_id,
-            &format!("tasks.{}", cursor.stage_id),
-            task.claim_revision,
-            task.contract_revision,
-            worker_id,
-            &worktree_path.to_string_lossy(),
-        )?;
-    }
-    if run.is_none() && gate_path != &execution_gate_path {
-        run = store.latest_claim_bound_execution_run(
-            task_id,
-            gate_path,
-            task.claim_revision,
-            task.contract_revision,
-            worker_id,
-            &worktree_path.to_string_lossy(),
-        )?;
-    }
     let run = run.context("TASK_AUTO_PROOF_UNAVAILABLE: no execution exists for the active claim and current candidate")?;
     if run.candidate_fingerprint != candidate_fingerprint {
         bail!("TASK_AUTO_PROOF_UNAVAILABLE: latest execution belongs to a different Git candidate");
@@ -103,22 +91,31 @@ pub(super) fn compile_evidence_envelope(root: &Path, task_id: &str, stage: &str)
     if traces.is_empty() {
         bail!("TASK_AUTO_PROOF_UNAVAILABLE: latest execution contains no persisted command traces");
     }
-    if matches!(
-        gate.proof.kind(),
-        Some(ProofKind::Contract | ProofKind::Command)
-    ) {
-        validate_execution_plan(&worktree_path, &task, gate, &profile, &traces)?;
+    if gate.command.is_some()
+        && matches!(
+            gate.proof.kind(),
+            Some(ProofKind::Contract | ProofKind::Command | ProofKind::SeamTest)
+        )
+    {
+        validate_execution_plan(&worktree_path, task, gate, &profile, &traces)?;
     }
     let proof = match gate.proof.kind() {
-        Some(ProofKind::Contract) => contract_proof(&run, &traces, gate, &profile, &store)?,
+        Some(ProofKind::Contract) => contract_proof(
+            &run,
+            &traces,
+            gate,
+            &profile,
+            store,
+            &task.spec.proof_policy,
+        )?,
         Some(ProofKind::Command) => {
-            command_proof(&run, &traces, gate, &profile, &worktree_path, &store)?
+            command_proof(&run, &traces, gate, &profile, &worktree_path, store)?
         }
         Some(ProofKind::Review) => {
             bail!("TASK_TYPED_REVIEW_REQUIRED: review gates require reviewer-supplied contour evidence")
         }
         Some(ProofKind::SeamTest) => {
-            bail!("TASK_TYPED_EVIDENCE_REQUIRED: seam-test gates require typed seam references and test counts")
+            bail!("TASK_AUTO_PROOF_UNAVAILABLE: the runner does not provide structured per-test observations")
         }
         Some(ProofKind::Delivery) => {
             bail!("TASK_TYPED_EVIDENCE_REQUIRED: delivery gates require an accepted delivery proof")
@@ -152,8 +149,17 @@ pub(super) fn submit_zero_arg(
     stage: &str,
     action: Action,
     findings: Option<Value>,
+    session_fingerprint: Option<&str>,
 ) -> Result<Value> {
-    submit_zero_arg_with_timeout(root, task_id, stage, action, findings, None)
+    submit_zero_arg_with_timeout(
+        root,
+        task_id,
+        stage,
+        action,
+        findings,
+        None,
+        session_fingerprint,
+    )
 }
 
 pub(super) fn submit_zero_arg_with_timeout(
@@ -163,6 +169,7 @@ pub(super) fn submit_zero_arg_with_timeout(
     action: Action,
     findings: Option<Value>,
     timeout_seconds: Option<u64>,
+    session_fingerprint: Option<&str>,
 ) -> Result<Value> {
     if !matches!(action, Action::Pass) {
         bail!("TASK_TYPED_EVIDENCE_REQUIRED: zero-argument rejection submissions are not supported")
@@ -173,6 +180,7 @@ pub(super) fn submit_zero_arg_with_timeout(
     }
     let evidence = ensure_command_evidence(root, task_id, timeout_seconds)?;
     let submission = Submit {
+        session_fingerprint: session_fingerprint.map(str::to_owned),
         task_id: task_id.to_owned(),
         stage: stage.to_owned(),
         evidence,
@@ -207,7 +215,7 @@ fn ensure_command_evidence(
     }
     if !matches!(
         cursor.gate.proof.kind(),
-        Some(ProofKind::Contract | ProofKind::Command)
+        Some(ProofKind::Contract | ProofKind::Command | ProofKind::SeamTest)
     ) {
         bail!("TASK_TYPED_EVIDENCE_REQUIRED: active gate requires caller-supplied typed evidence");
     }
@@ -401,15 +409,6 @@ pub(super) fn verify_red_to_green(
     if !expected_failure.exit_codes.is_empty() && !expected_failure.exit_codes.contains(&red_code) {
         bail!("TASK_SEAM_TRANSITION_INVALID: red exit code {red_code} is not in the expected failure set");
     }
-    if let Some(expected) = expected_failure.stderr_contains.as_deref() {
-        let durable = store_for_task(Path::new(&red.run.worktree), &red_trace.subject)?
-            .execution_proof(red.run.run_id, &red_trace.command_id, red_trace.attempt_id)?;
-        if expected.trim().is_empty()
-            || !matches_failure_signature(durable.as_ref(), red_trace, expected)
-        {
-            bail!("TASK_SEAM_TRANSITION_INVALID: red output does not contain the configured failure signature");
-        }
-    }
     let green_code = green_trace
         .exit_code
         .context("TASK_SEAM_TRANSITION_INVALID: green trace has no process exit code")?;
@@ -429,9 +428,24 @@ pub(super) fn verify_red_to_green(
     if red.trace_order >= green.trace_order {
         bail!("TASK_SEAM_TRANSITION_INVALID: red execution must precede green execution");
     }
-    let red_seam = seam_reference_from_command(&red_trace.command_str)
+    let red_durable = store_for_task(Path::new(&red.run.worktree), &red_trace.subject)?
+        .execution_proof(red.run.run_id, &red_trace.command_id, red_trace.attempt_id)?;
+    let green_durable = store_for_task(Path::new(&green.run.worktree), &green_trace.subject)?
+        .execution_proof(
+            green.run.run_id,
+            &green_trace.command_id,
+            green_trace.attempt_id,
+        )?;
+    if let Some(expected) = expected_failure.stderr_contains.as_deref() {
+        if expected.trim().is_empty()
+            || !matches_failure_signature(red_durable.as_ref(), red_trace, expected)
+        {
+            bail!("TASK_SEAM_TRANSITION_INVALID: red output does not contain the configured failure signature");
+        }
+    }
+    let red_seam = seam_from_trace(red_trace, red_durable.as_ref())
         .context("TASK_SEAM_TRANSITION_INVALID: red command does not identify a seam test")?;
-    let green_seam = seam_reference_from_command(&green_trace.command_str)
+    let green_seam = seam_from_trace(green_trace, green_durable.as_ref())
         .context("TASK_SEAM_TRANSITION_INVALID: green command does not identify a seam test")?;
     if red_seam != green_seam {
         bail!("TASK_SEAM_TRANSITION_INVALID: red and green executions must identify the same seam test");
@@ -449,6 +463,16 @@ pub(super) fn verify_red_to_green(
     }))
 }
 
+fn seam_from_trace(
+    trace: &GateExecutionTrace,
+    durable: Option<&crate::store::CommandExecutionProof>,
+) -> Option<String> {
+    if let Some(cmd_seam) = seam_reference_from_command(&trace.command_str) {
+        return Some(cmd_seam);
+    }
+    durable.and_then(|proof| proof.seam_ref.clone())
+}
+
 fn matches_failure_signature(
     facts: Option<&crate::store::CommandExecutionProof>,
     trace: &GateExecutionTrace,
@@ -461,6 +485,81 @@ fn matches_failure_signature(
             .as_deref()
             .is_some_and(|output| output.len() <= 2048 && output.contains(expected)),
     }
+}
+
+fn validate_contract_failure_signature(
+    facts: Option<&crate::store::CommandExecutionProof>,
+    trace: &GateExecutionTrace,
+    expected: &ExpectedFailure,
+) -> Result<()> {
+    let (signature, error) = match expected.stderr_contains.as_deref() {
+        Some(signature) => (
+            signature,
+            "TASK_AUTO_PROOF_INVALID: contract trace does not contain the configured failure signature",
+        ),
+        None => (
+            "no compiler error diagnostic",
+            "TASK_AUTO_PROOF_INVALID: contract trace contains a compiler error diagnostic",
+        ),
+    };
+    if signature.trim().is_empty() || !matches_failure_signature(facts, trace, signature) {
+        bail!("{error}");
+    }
+    Ok(())
+}
+
+fn seam_reference_from_command(command: &str) -> Option<String> {
+    let tokens = command.split_whitespace().collect::<Vec<_>>();
+    if let Some(pos) = tokens.iter().position(|t| *t == "--test") {
+        if let Some(target) = tokens.get(pos + 1) {
+            if !target.is_empty()
+                && !target.starts_with('-')
+                && !target.contains('/')
+                && !target.contains('\\')
+            {
+                if let Some(filter) = tokens
+                    .iter()
+                    .skip(pos + 2)
+                    .take_while(|t| **t != "--")
+                    .find(|t| !t.starts_with('-'))
+                {
+                    let parts = filter
+                        .split("::")
+                        .filter(|p| !p.is_empty())
+                        .collect::<Vec<_>>();
+                    let mut modules = parts.as_slice();
+                    let target_mod = target.replace('-', "_");
+                    if modules
+                        .first()
+                        .is_some_and(|p| *p == *target || *p == target_mod.as_str())
+                    {
+                        modules = &modules[1..];
+                    }
+                    if let Some(symbol) = modules.last() {
+                        let mod_parts = &modules[..modules.len() - 1];
+                        return Some(if mod_parts.is_empty() {
+                            format!("tests/{target}.rs::{symbol}")
+                        } else {
+                            format!("tests/{target}/{}.rs::{symbol}", mod_parts.join("/"))
+                        });
+                    }
+                }
+            }
+        }
+    }
+    for (i, token) in tokens.iter().enumerate() {
+        if let Some(reference) = token.strip_prefix("--seam-ref=") {
+            if !reference.is_empty() {
+                return Some(reference.to_owned());
+            }
+        }
+        if *token == "--seam-ref" {
+            if let Some(next) = tokens.get(i + 1) {
+                return Some((*next).to_owned());
+            }
+        }
+    }
+    None
 }
 
 /// Resolve the destination gate for scope or public-symbol review findings.
@@ -523,6 +622,7 @@ fn contract_proof(
     gate: &crate::tasks::profile::GateDef,
     profile: &crate::tasks::profile::GateProfile,
     store: &crate::store::TasksStore,
+    proof_policy: &str,
 ) -> Result<Value> {
     if run.status != "completed" {
         bail!("TASK_AUTO_PROOF_UNAVAILABLE: contract execution did not complete");
@@ -533,7 +633,13 @@ fn contract_proof(
         .find(|entry| {
             entry.run.run_id == run.run_id
                 && entry.trace.status == "completed"
-                && entry.trace.exit_code.is_some_and(|code| code != 0)
+                && entry.trace.exit_code.is_some_and(|code| {
+                    code != 0
+                        || profile
+                            .contract_zero_exit_policies()
+                            .iter()
+                            .any(|policy| policy == proof_policy)
+                })
         })
         .context(
             "TASK_AUTO_PROOF_UNAVAILABLE: latest claim-bound run has no failing contract trace",
@@ -554,20 +660,17 @@ fn contract_proof(
         .trace
         .exit_code
         .context("TASK_AUTO_PROOF_UNAVAILABLE: contract trace has no process exit code")?;
-    if let Some(expected) = gate.expected_failure.as_ref() {
-        if !expected.exit_codes.is_empty() && !expected.exit_codes.contains(&red_exit_code) {
-            bail!("TASK_AUTO_PROOF_INVALID: contract exit code {red_exit_code} does not match the configured expected failure");
-        }
-        if let Some(signature) = expected.stderr_contains.as_deref() {
-            if !matches_failure_signature(durable.as_ref(), &trace.trace, signature) {
-                bail!("TASK_AUTO_PROOF_INVALID: contract trace does not contain the configured failure signature");
+    if red_exit_code != 0 {
+        if let Some(expected) = gate.expected_failure.as_ref() {
+            if !expected.exit_codes.is_empty() && !expected.exit_codes.contains(&red_exit_code) {
+                bail!("TASK_AUTO_PROOF_INVALID: contract exit code {red_exit_code} does not match the configured expected failure");
             }
+            validate_contract_failure_signature(durable.as_ref(), &trace.trace, expected)?;
         }
     }
     let seam_test_ref = durable
         .as_ref()
         .and_then(|proof| proof.seam_ref.clone())
-        .or_else(|| seam_reference_from_command(&trace.trace.command_str))
         .context(
             "TASK_AUTO_PROOF_UNAVAILABLE: contract command does not identify an indexed seam test",
         )?;
@@ -577,44 +680,6 @@ fn contract_proof(
             "red_exit_code": red_exit_code,
         }
     }))
-}
-
-fn seam_reference_from_command(command: &str) -> Option<String> {
-    let tokens = command.split_whitespace().collect::<Vec<_>>();
-    let test_arg = tokens.iter().position(|token| *token == "--test")?;
-    let target = *tokens.get(test_arg + 1)?;
-    if target.is_empty() || target.starts_with('-') || target.contains('/') || target.contains('\\')
-    {
-        return None;
-    }
-    let filter = tokens
-        .iter()
-        .skip(test_arg + 2)
-        .take_while(|token| **token != "--")
-        .find(|token| !token.starts_with('-'))?;
-    let parts = filter
-        .split("::")
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>();
-    let mut modules = parts.as_slice();
-    let target_module = target.replace('-', "_");
-    if modules
-        .first()
-        .is_some_and(|part| *part == target || *part == target_module.as_str())
-    {
-        modules = &modules[1..];
-    }
-    let symbol = *modules.last()?;
-    let module_parts = &modules[..modules.len() - 1];
-    let path = if module_parts.is_empty() {
-        PathBuf::from("tests").join(format!("{target}.rs"))
-    } else {
-        PathBuf::from("tests")
-            .join(target)
-            .join(module_parts.join("/"))
-            .with_extension("rs")
-    };
-    Some(format!("{}::{symbol}", path.to_string_lossy()))
 }
 
 fn command_proof(
@@ -638,8 +703,8 @@ fn command_proof(
         bail!("TASK_AUTO_PROOF_UNAVAILABLE: latest claim-bound command execution is incomplete");
     }
     let mut log = String::new();
-    let mut tests_passed = 0_u64;
-    let mut tests_failed = 0_u64;
+    let mut passed = None::<u64>;
+    let mut failed = None::<u64>;
     let mut summaries = 0;
     for entry in traces {
         if entry.run.run_id != run.run_id
@@ -649,38 +714,44 @@ fn command_proof(
             bail!("TASK_AUTO_PROOF_UNAVAILABLE: latest claim-bound execution contains an unsuccessful command");
         }
         verify_command_identity(registered_name, registered, &entry.trace, profile)?;
-        let durable =
-            store.execution_proof(run.run_id, &entry.trace.command_id, entry.trace.attempt_id)?;
-        let (passed, failed, command_log) = if let Some(durable) = durable {
-            if durable.output_spec.as_ref() != registered.output() {
+        let (command_passed, command_failed, command_log) = if let Some(facts) =
+            store.execution_proof(run.run_id, &entry.trace.command_id, entry.trace.attempt_id)?
+        {
+            if facts.output_spec.as_ref() != registered.output() {
                 bail!("TASK_AUTO_PROOF_INVALID: output rules changed since execution");
             }
             (
-                durable.passed,
-                durable.failed,
+                facts.passed,
+                facts.failed,
                 entry.trace.output_snippet.clone().unwrap_or_default(),
             )
         } else {
-            let log = read_trace_log(worktree, &entry.trace)?;
+            let command_log = read_trace_log(worktree, &entry.trace)?;
             let parsed = crate::milestones::parse_command_output(
-                &log,
+                &command_log,
                 &entry.trace.command_str,
                 registered.output(),
             )?;
-            (parsed.passed, parsed.failed, log)
+            (parsed.passed, parsed.failed, command_log)
         };
         if registered.output().is_none_or(|spec| spec.require_counts)
-            && (passed.is_none() || failed.is_none())
+            && (command_passed.is_none() || command_failed.is_none())
         {
             bail!("TASK_AUTO_PROOF_UNAVAILABLE: command output is missing required test counts");
         }
-        if passed.is_some() || failed.is_some() {
-            tests_passed = tests_passed
-                .checked_add(passed.unwrap_or(0))
-                .context("TASK_AUTO_PROOF_INVALID: passed test count overflowed")?;
-            tests_failed = tests_failed
-                .checked_add(failed.unwrap_or(0))
-                .context("TASK_AUTO_PROOF_INVALID: failed test count overflowed")?;
+        if command_passed.is_some() || command_failed.is_some() {
+            passed = Some(
+                passed
+                    .unwrap_or(0)
+                    .checked_add(command_passed.unwrap_or(0))
+                    .context("TASK_AUTO_PROOF_INVALID: passed test count overflowed")?,
+            );
+            failed = Some(
+                failed
+                    .unwrap_or(0)
+                    .checked_add(command_failed.unwrap_or(0))
+                    .context("TASK_AUTO_PROOF_INVALID: failed test count overflowed")?,
+            );
             summaries += 1;
         }
         log.push_str(&format!("[{}]\n{}\n", entry.trace.command_id, command_log));
@@ -688,18 +759,24 @@ fn command_proof(
     if summaries == 0 && registered.output().is_none_or(|spec| spec.require_counts) {
         bail!("TASK_AUTO_PROOF_UNAVAILABLE: command logs have no supported test summary");
     }
-    if tests_failed != 0 {
-        bail!("TASK_AUTO_PROOF_INVALID: command log reports {tests_failed} failing tests");
+    if failed.unwrap_or_default() != 0 {
+        bail!(
+            "TASK_AUTO_PROOF_INVALID: command log reports {} failing tests",
+            failed.unwrap_or_default()
+        );
     }
-    Ok(json!({
-        "command_proof": {
-            "command": registered_name,
-            "exit_code": 0,
-            "tests_passed": tests_passed,
-            "tests_failed": tests_failed,
-            "log": bounded_string(&log, 64 * 1024),
-        }
-    }))
+    let mut proof = json!({
+        "command": registered_name,
+        "exit_code": 0,
+        "log": bounded_string(&log, 64 * 1024),
+    });
+    if let Some(passed) = passed {
+        proof["tests_passed"] = json!(passed);
+    }
+    if let Some(failed) = failed {
+        proof["tests_failed"] = json!(failed);
+    }
+    Ok(json!({"command_proof": proof}))
 }
 
 fn verify_registered_command(
@@ -732,10 +809,15 @@ fn verify_command_identity(
                     .strip_prefix(&format!("{registered_name}::"))
                     .is_some_and(|path| {
                         validate_trace_path(path)
-                            && profile.scope_args_for_path(path).is_some_and(|args| {
-                                trace.command_str
-                                    == crate::milestones::expand_command_args(command, Some(&args))
-                            })
+                            && profile
+                                .scope_args_for_command_path(registered, path)
+                                .is_some_and(|args| {
+                                    trace.command_str
+                                        == crate::milestones::expand_command_args(
+                                            command,
+                                            Some(&args),
+                                        )
+                                })
                     })
         }
         crate::tasks::profile::CommandDef::Pattern(_) => trace
@@ -748,7 +830,9 @@ fn verify_command_identity(
                         trace.command_str
                             == crate::milestones::expand_command_args(
                                 command,
-                                profile.scope_args_for_path(path).as_deref(),
+                                profile
+                                    .scope_args_for_command_path(registered, path)
+                                    .as_deref(),
                             )
                     })
             }),
@@ -885,4 +969,119 @@ fn truncate_utf8(value: &mut String, max_bytes: usize) {
         end -= 1;
     }
     value.truncate(end);
+}
+
+#[cfg(test)]
+mod trace_log_tests {
+    use super::{read_trace_log, validate_contract_failure_signature};
+    use crate::{
+        store::{CommandExecutionProof, GateExecutionTrace},
+        tasks::profile::ExpectedFailure,
+    };
+    use std::collections::BTreeSet;
+
+    fn trace(log_path: impl Into<String>) -> GateExecutionTrace {
+        GateExecutionTrace {
+            milestone_id: "repo/project/milestone".into(),
+            subject: "repo/project/milestone:task".into(),
+            gate_path: "tasks.build".into(),
+            attempt_id: 1,
+            command_id: "check".into(),
+            command_str: "cargo test".into(),
+            status: "completed".into(),
+            exit_code: Some(0),
+            log_path: Some(log_path.into()),
+            output_snippet: None,
+            stdout_sha256: None,
+            duration_ms: 0,
+        }
+    }
+
+    fn proof(expected_signature: Option<&str>) -> CommandExecutionProof {
+        CommandExecutionProof {
+            passed: None,
+            failed: None,
+            seam_ref: None,
+            passed_tests: BTreeSet::new(),
+            output_spec: None,
+            expected_signature: expected_signature.map(str::to_owned),
+            scope_violations: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn contract_failure_requires_the_configured_stderr_signature() {
+        let expected = ExpectedFailure {
+            exit_codes: vec![101],
+            stderr_contains: Some("assertion failed".into()),
+        };
+
+        assert!(validate_contract_failure_signature(
+            Some(&proof(Some("assertion failed"))),
+            &trace(".forge/trace.log"),
+            &expected,
+        )
+        .is_ok());
+        assert!(validate_contract_failure_signature(
+            Some(&proof(Some("compiler error"))),
+            &trace(".forge/trace.log"),
+            &expected,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn contract_failure_without_a_configured_signature_requires_the_no_compiler_marker() {
+        let expected = ExpectedFailure {
+            exit_codes: vec![101],
+            stderr_contains: None,
+        };
+
+        assert!(
+            validate_contract_failure_signature(None, &trace(".forge/trace.log"), &expected,)
+                .is_err()
+        );
+        assert!(validate_contract_failure_signature(
+            Some(&proof(Some("no compiler error diagnostic"))),
+            &trace(".forge/trace.log"),
+            &expected,
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn reads_a_regular_log_inside_the_claimed_worktree() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join(".forge")).unwrap();
+        std::fs::write(root.path().join(".forge/trace.log"), "1 passed\n").unwrap();
+
+        let output = read_trace_log(root.path(), &trace(".forge/trace.log")).unwrap();
+
+        assert_eq!(output, "1 passed\n");
+    }
+
+    #[test]
+    fn rejects_a_log_path_that_escapes_the_claimed_worktree() {
+        let root = tempfile::tempdir().unwrap();
+
+        let error = read_trace_log(root.path(), &trace("../outside.log")).unwrap_err();
+
+        assert!(error.to_string().contains("path is not normalized"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_a_symlinked_command_log() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join(".forge")).unwrap();
+        let target = root.path().join("outside.log");
+        std::fs::write(&target, "1 passed\n").unwrap();
+        symlink(&target, root.path().join(".forge/trace.log")).unwrap();
+
+        let error = read_trace_log(root.path(), &trace(".forge/trace.log")).unwrap_err();
+
+        assert!(error.to_string().contains("contains a symlink"));
+    }
 }

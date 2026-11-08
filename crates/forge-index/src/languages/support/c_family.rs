@@ -23,10 +23,7 @@ pub(in crate::languages) fn symbol(node: Syntax<'_>) -> Option<&'static str> {
     symbol_kind(node.kind())
 }
 
-pub(in crate::languages) fn symbol_name<'a>(
-    node: Syntax<'_>,
-    source: &'a str,
-) -> Option<&'a str> {
+pub(in crate::languages) fn symbol_name<'a>(node: Syntax<'_>, source: &'a str) -> Option<&'a str> {
     node.child_by_field_name("name")
         .or_else(|| {
             node.child_by_field_name("declarator")

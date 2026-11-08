@@ -173,15 +173,18 @@ pub struct Graph {
 
 impl Graph {
     fn shared_path(&mut self, path: &str) -> Arc<str> {
-        if let Some(shared) = self.path_arc.as_ref().filter(|shared| shared.as_ref() == path) {
+        if let Some(shared) = self
+            .path_arc
+            .as_ref()
+            .filter(|shared| shared.as_ref() == path)
+        {
             return Arc::clone(shared);
         }
         if let Some(shared) = self.path_pool.get(path) {
             return Arc::clone(shared);
         }
         let shared = Arc::from(path);
-        self.path_pool
-            .insert(path.to_owned(), Arc::clone(&shared));
+        self.path_pool.insert(path.to_owned(), Arc::clone(&shared));
         shared
     }
 

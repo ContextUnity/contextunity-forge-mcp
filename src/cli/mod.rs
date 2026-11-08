@@ -1,5 +1,6 @@
 /// Implements ast support.
 pub mod ast;
+mod docs_check;
 pub(crate) mod discovery {
     use crate::{
         core::{
@@ -580,7 +581,7 @@ use crate::{
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::{json, Value};
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 #[derive(Parser, Debug)]
 #[command(
@@ -905,6 +906,8 @@ pub enum QueryCommand {
 #[derive(Subcommand, Debug)]
 /// Enumerates the supported docs command values.
 pub enum DocsCommand {
+    /// Check Markdown links and anchors in the workspace.
+    Check,
     /// Represents the search case.
     Search {
         /// The query value.
@@ -1026,6 +1029,7 @@ fn command_presentation(command: &Command) -> (OperationKind, &'static str, Opti
             }
         },
         Command::Docs { command } => match command {
+            DocsCommand::Check => (OperationKind::General, "docs check", None),
             DocsCommand::Search { .. } => (OperationKind::Navigation, "search_docs", None),
             DocsCommand::Get { .. } => (OperationKind::Navigation, "get_doc", None),
         },
@@ -1085,7 +1089,11 @@ fn command_root(global: Option<&Path>, positional: Option<&Path>) -> Result<Path
         .unwrap_or(std::env::current_dir()?.canonicalize()?))
 }
 
-fn open_or_rebuild(db: &Path, root: &Path) -> Result<crate::db::reader::LockedConnection> {
+fn open_or_rebuild(
+    db: &Path,
+    root: &Path,
+    cache_dir: Option<&Path>,
+) -> Result<crate::db::reader::LockedConnection> {
     writer::validate_code_map_target(root, db)?;
     match crate::db::reader::open_locked(db, root) {
         Ok(conn) => Ok(conn),
@@ -1099,7 +1107,12 @@ fn open_or_rebuild(db: &Path, root: &Path) -> Result<crate::db::reader::LockedCo
                     "Forge index incompatible or missing ({msg}); auto-rebuilding for {}...",
                     root.display()
                 );
-                crate::db::writer::build(root, db, None)?;
+                match cache_dir {
+                    Some(cache_dir) => {
+                        crate::engine::pipeline::build_with_cache_dir(root, db, None, cache_dir)?
+                    }
+                    None => crate::db::writer::build(root, db, None)?,
+                };
                 crate::db::reader::open_locked(db, root)
             } else {
                 Err(err)
@@ -1110,10 +1123,51 @@ fn open_or_rebuild(db: &Path, root: &Path) -> Result<crate::db::reader::LockedCo
 impl Cli {
     /// Performs run.
     pub async fn run(self) -> Result<()> {
+        self.run_with_writer(&mut io::stdout()).await
+    }
+
+    /// Runs CLI dispatch and formatting with a caller-provided output writer.
+    pub async fn run_with_writer<W: io::Write>(self, output: &mut W) -> Result<()> {
+        self.run_inner(output, None).await
+    }
+
+    /// Runs CLI dispatch with explicit output and extraction-cache locations.
+    pub async fn run_with_writer_and_cache_dir<W: io::Write>(
+        self,
+        output: &mut W,
+        cache_dir: &Path,
+    ) -> Result<()> {
+        self.run_inner(output, Some(cache_dir)).await
+    }
+
+    async fn run_inner<W: io::Write>(self, output: &mut W, cache_dir: Option<&Path>) -> Result<()> {
         let output_format = OutputFormat::from(self.format);
+        let command = self.command.unwrap_or(Command::Serve);
+        if matches!(
+            &command,
+            Command::Docs {
+                command: DocsCommand::Check
+            }
+        ) {
+            let root = match command_root(self.root.as_deref(), None) {
+                Ok(r) => r,
+                Err(err) => {
+                    if output_format == OutputFormat::Json {
+                        writeln!(
+                            output,
+                            "{}",
+                            serde_json::json!({"status": "error", "errors": [format!("{err:#}")]})
+                        )
+                        .unwrap_or_else(|error| panic!("failed printing to stdout: {error}"));
+                        bail!("documentation check failed");
+                    }
+                    return Err(err);
+                }
+            };
+            return docs_check::check(&root, output_format, output);
+        }
         let root = command_root(self.root.as_deref(), None)?;
         let db = self.db.clone().unwrap_or_else(|| default_db(&root));
-        let command = self.command.unwrap_or(Command::Serve);
         let validation_command = matches!(&command, Command::Validate { .. });
         let (operation, title, explain) = command_presentation(&command);
         let discovery = command_discovery(&command);
@@ -1142,6 +1196,7 @@ impl Cli {
                 let mode = serde_json::from_value::<forge_core::model::ReadMode>(json!(mode))?;
                 let request = crate::engine::reader::ReadRequest {
                     path: Some(path),
+                    paths: None,
                     mode,
                     selector,
                     start_line,
@@ -1166,7 +1221,7 @@ impl Cli {
                 page.detail = Detail::Full;
                 let structural = request.requires_index(&adapter)?;
                 if structural {
-                    let conn = open_or_rebuild(&db, &root)?;
+                    let conn = open_or_rebuild(&db, &root, cache_dir)?;
                     crate::engine::reader::forge_read_tool(
                         &root,
                         &adapter,
@@ -1206,7 +1261,12 @@ impl Cli {
             Command::Milestone { command } => milestone::run(&root, command)?,
             Command::Serve => {
                 writer::validate_code_map_target(&root, &db)?;
-                crate::mcp::server::serve(root, db).await?;
+                crate::mcp::server::serve_with_cache_dir(
+                    root,
+                    db,
+                    cache_dir.map(Path::to_path_buf),
+                )
+                .await?;
                 return Ok(());
             }
             Command::Reload => reload::run()?,
@@ -1221,7 +1281,15 @@ impl Cli {
                     .or(self.db)
                     .unwrap_or_else(|| default_db(&workspace_root));
                 writer::validate_code_map_target(&workspace_root, &output)?;
-                writer::build(&workspace_root, &output, adapter.as_deref())?
+                match cache_dir {
+                    Some(cache_dir) => crate::engine::pipeline::build_with_cache_dir(
+                        &workspace_root,
+                        &output,
+                        adapter.as_deref(),
+                        cache_dir,
+                    )?,
+                    None => writer::build(&workspace_root, &output, adapter.as_deref())?,
+                }
             }
             Command::Scan {
                 workspace_root,
@@ -1245,7 +1313,15 @@ impl Cli {
                     bail!("delta requires at least one modified file");
                 }
                 let db = self.db.unwrap_or_else(|| default_db(&workspace_root));
-                writer::delta(&workspace_root, &db, &modified_files)?
+                match cache_dir {
+                    Some(cache_dir) => crate::engine::pipeline::delta_with_cache_dir(
+                        &workspace_root,
+                        &db,
+                        &modified_files,
+                        cache_dir,
+                    )?,
+                    None => writer::delta(&workspace_root, &db, &modified_files)?,
+                }
             }
             Command::Guide { topic, force } => guide::run(&root, &topic, force)?,
             Command::Checkpoint {
@@ -1267,7 +1343,7 @@ impl Cli {
                         limit,
                     },
             } => {
-                let conn = open_or_rebuild(&db, &root)?;
+                let conn = open_or_rebuild(&db, &root, cache_dir)?;
                 // MCP accepts one AST page; share that producer throughout its limit range.
                 let mut result = if (1..=MAX_PAGE_SIZE).contains(&limit) {
                     ast::search_paged(
@@ -1295,7 +1371,7 @@ impl Cli {
                 result
             }
             Command::Query { command } => {
-                let conn = open_or_rebuild(&db, &root)?;
+                let conn = open_or_rebuild(&db, &root, cache_dir)?;
                 match command {
                     QueryCommand::Overview {
                         aspects,
@@ -1502,8 +1578,9 @@ impl Cli {
                 }
             }
             Command::Docs { command } => {
-                let conn = open_or_rebuild(&db, &root)?;
+                let conn = open_or_rebuild(&db, &root, cache_dir)?;
                 match command {
+                    DocsCommand::Check => unreachable!(),
                     DocsCommand::Search {
                         query,
                         doc_type,
@@ -1608,7 +1685,7 @@ impl Cli {
                 crate::core::debug_log::log_cli(&root, &cli_cmd, None, &result);
             }
         }
-        if let Err(e) = writeln!(io::stdout(), "{formatted}") {
+        if let Err(e) = writeln!(output, "{formatted}") {
             if e.kind() == io::ErrorKind::BrokenPipe {
                 return Ok(());
             }

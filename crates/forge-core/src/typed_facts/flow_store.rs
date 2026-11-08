@@ -4,22 +4,40 @@ use std::collections::HashMap;
 
 #[derive(Clone, Debug)]
 pub enum FlowState {
-    Valid { facts: Box<ValueFlowFacts>, original: Option<Value>, classic_fields_first: Option<bool> },
+    Valid {
+        facts: Box<ValueFlowFacts>,
+        original: Option<Value>,
+        classic_fields_first: Option<bool>,
+    },
     Invalid(Value),
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct FlowStore {
     entries: std::collections::BTreeMap<String, FlowState>,
-    uncertainties: std::collections::BTreeMap<String, Vec<crate::semantic::NamedDefinitionUncertainty>>,
-    uncertainty_faults: std::collections::BTreeSet<String>, invalid_uncertainty_carriers: std::collections::BTreeSet<String>,
+    uncertainties:
+        std::collections::BTreeMap<String, Vec<crate::semantic::NamedDefinitionUncertainty>>,
+    uncertainty_faults: std::collections::BTreeSet<String>,
+    invalid_uncertainty_carriers: std::collections::BTreeSet<String>,
 }
 
 const SCOPE_FACT_KEYS: [&str; 16] = [
-    "bindings", "branch_joins", "immutable_initializers", "fields",
-    "symbol_attachments", "factory_results", "named_bindings", "endpoint_requests",
-    "component_macros", "rule_origins", "component_configurations", "collection_elements",
-    "template_contexts", "type_only_imports", "annotation_references", "vue_slots",
+    "bindings",
+    "branch_joins",
+    "immutable_initializers",
+    "fields",
+    "symbol_attachments",
+    "factory_results",
+    "named_bindings",
+    "endpoint_requests",
+    "component_macros",
+    "rule_origins",
+    "component_configurations",
+    "collection_elements",
+    "template_contexts",
+    "type_only_imports",
+    "annotation_references",
+    "vue_slots",
 ];
 
 macro_rules! saturating_total {
@@ -44,8 +62,16 @@ macro_rules! merge_optional_fields {
 
 /// Returns the total count of all bounded scope fact arrays.
 pub fn scope_fact_count(facts: &ValueFlowFacts) -> usize {
-    saturating_total!(facts.bindings.len(), facts.branch_joins.len(), facts.immutable_initializers.len(),
-        facts.fields.len(), facts.framework.as_deref().map_or(0, |framework| framework.facts.len()))
+    saturating_total!(
+        facts.bindings.len(),
+        facts.branch_joins.len(),
+        facts.immutable_initializers.len(),
+        facts.fields.len(),
+        facts
+            .framework
+            .as_deref()
+            .map_or(0, |framework| framework.facts.len())
+    )
 }
 
 /// Counts the same bounded arrays on a persisted value-flow object.
@@ -57,11 +83,22 @@ pub fn encoded_scope_fact_count(encoded: &Value) -> usize {
 }
 
 fn merge_optional<T: PartialEq>(previous: &mut Option<T>, incoming: Option<T>) -> bool {
-    match (&*previous, incoming) { (None, value) => { *previous = value; false }, (Some(previous), Some(value)) => previous != &value, _ => false }
+    match (&*previous, incoming) {
+        (None, value) => {
+            *previous = value;
+            false
+        }
+        (Some(previous), Some(value)) => previous != &value,
+        _ => false,
+    }
 }
 
 impl FlowStore {
-    pub fn cache_entries(&self) -> impl ExactSizeIterator<Item = (&str, &FlowState)> { self.entries.iter().map(|(owner, state)| (owner.as_str(), state)) }
+    pub fn cache_entries(&self) -> impl ExactSizeIterator<Item = (&str, &FlowState)> {
+        self.entries
+            .iter()
+            .map(|(owner, state)| (owner.as_str(), state))
+    }
     pub fn restore_cache_entry(
         &mut self,
         owner: String,
@@ -69,21 +106,48 @@ impl FlowStore {
         uncertainties: Vec<crate::semantic::NamedDefinitionUncertainty>,
         uncertainty_fault: bool,
     ) {
-        if let Some(state) = state { self.entries.insert(owner.clone(), state); }
-        if !uncertainties.is_empty() { self.uncertainties.insert(owner.clone(), uncertainties); }
-        if uncertainty_fault { self.uncertainty_faults.insert(owner); }
+        if let Some(state) = state {
+            self.entries.insert(owner.clone(), state);
+        }
+        if !uncertainties.is_empty() {
+            self.uncertainties.insert(owner.clone(), uncertainties);
+        }
+        if uncertainty_fault {
+            self.uncertainty_faults.insert(owner);
+        }
     }
-    pub fn named_uncertainties(&self, owner: &str) -> &[crate::semantic::NamedDefinitionUncertainty] { self.uncertainties.get(owner).map_or(&[], Vec::as_slice) }
-    pub fn named_uncertainty_entries(&self) -> impl ExactSizeIterator<Item = (&str, &[crate::semantic::NamedDefinitionUncertainty])> { self.uncertainties.iter().map(|(id, values)| (id.as_str(), values.as_slice())) }
-    pub fn named_uncertainty_faults(&self) -> impl ExactSizeIterator<Item = &str> { self.uncertainty_faults.iter().map(String::as_str) }
-    pub fn named_uncertainty_fault(&self, owner: &str) -> bool { self.uncertainty_faults.contains(owner) }
-    pub fn has_invalid_named_uncertainty_carriers(&self) -> bool { !self.invalid_uncertainty_carriers.is_empty() }
+    pub fn named_uncertainties(
+        &self,
+        owner: &str,
+    ) -> &[crate::semantic::NamedDefinitionUncertainty] {
+        self.uncertainties.get(owner).map_or(&[], Vec::as_slice)
+    }
+    pub fn named_uncertainty_entries(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (&str, &[crate::semantic::NamedDefinitionUncertainty])> {
+        self.uncertainties
+            .iter()
+            .map(|(id, values)| (id.as_str(), values.as_slice()))
+    }
+    pub fn named_uncertainty_faults(&self) -> impl ExactSizeIterator<Item = &str> {
+        self.uncertainty_faults.iter().map(String::as_str)
+    }
+    pub fn named_uncertainty_fault(&self, owner: &str) -> bool {
+        self.uncertainty_faults.contains(owner)
+    }
+    pub fn has_invalid_named_uncertainty_carriers(&self) -> bool {
+        !self.invalid_uncertainty_carriers.is_empty()
+    }
     #[allow(clippy::result_unit_err)]
     pub fn read_named_uncertainties(
         node: &Node,
     ) -> Result<Vec<crate::semantic::NamedDefinitionUncertainty>, ()> {
         let markers = Self::read_named_uncertainty_carrier(node)?;
-        if node.details["named_definition_uncertainty_fault"] == true { Err(()) } else { Ok(markers) }
+        if node.details["named_definition_uncertainty_fault"] == true {
+            Err(())
+        } else {
+            Ok(markers)
+        }
     }
     fn read_named_uncertainty_carrier(
         node: &Node,
@@ -194,7 +258,8 @@ impl FlowStore {
     }
     fn invalid_overflow(mut original: Value) -> FlowState {
         if let Some(facts) = original.as_object_mut() {
-            facts.remove("type_only_imports"); facts.remove("annotation_references");
+            facts.remove("type_only_imports");
+            facts.remove("annotation_references");
             facts.insert("fact_limit_exceeded".into(), Value::Bool(true));
         }
         FlowState::Invalid(original)
@@ -206,35 +271,58 @@ impl FlowStore {
 
     pub fn get(&self, node: &Node) -> Option<&ValueFlowFacts> {
         match self.state(node) {
-            Some(FlowState::Valid { facts, .. }) => Some(facts), _ => None,
+            Some(FlowState::Valid { facts, .. }) => Some(facts),
+            _ => None,
         }
     }
 
     pub fn raw(&self, node: &Node) -> Option<&Value> {
         match self.state(node) {
-            Some(FlowState::Valid { original, .. }) => original.as_ref(), Some(FlowState::Invalid(value)) => Some(value), None => None,
+            Some(FlowState::Valid { original, .. }) => original.as_ref(),
+            Some(FlowState::Invalid(value)) => Some(value),
+            None => None,
         }
     }
 
     pub fn get_mut(&mut self, id: &str) -> Option<&mut ValueFlowFacts> {
         match self.entries.get_mut(id) {
-            Some(FlowState::Valid { facts, original, .. }) => { *original = None; Some(facts) }, _ => None,
+            Some(FlowState::Valid {
+                facts, original, ..
+            }) => {
+                *original = None;
+                Some(facts)
+            }
+            _ => None,
         }
     }
 
     fn exceeds_fact_limit(facts: &ValueFlowFacts) -> bool {
         scope_fact_count(facts) > crate::semantic::DEFAULT_FACTS_PER_SCOPE
-            || facts.symbol_attachments().count() > 128 || facts.factory_results().count() > 128
-            || facts.named_bindings().count() > 128 || facts.endpoint_requests().count() > 128
-            || facts.factory_results().any(|fact| fact.members.len() > 128) || facts.fact_limit_exceeded
-            || facts.bindings.iter().map(|fact| &fact.value).chain(facts.fields.iter().map(|fact| &fact.value))
-                .chain(facts.branch_joins.iter().map(|fact| &fact.value)).chain(facts.return_value.iter())
+            || facts.symbol_attachments().count() > 128
+            || facts.factory_results().count() > 128
+            || facts.named_bindings().count() > 128
+            || facts.endpoint_requests().count() > 128
+            || facts.factory_results().any(|fact| fact.members.len() > 128)
+            || facts.fact_limit_exceeded
+            || facts
+                .bindings
+                .iter()
+                .map(|fact| &fact.value)
+                .chain(facts.fields.iter().map(|fact| &fact.value))
+                .chain(facts.branch_joins.iter().map(|fact| &fact.value))
+                .chain(facts.return_value.iter())
                 .any(|value| !value.valid_call_sites(0))
     }
 
-    pub fn insert(&mut self, id: String, facts: ValueFlowFacts) { self.insert_with_mode(id, Box::new(facts), false); }
-    pub fn insert_boxed(&mut self, id: String, facts: Box<ValueFlowFacts>) { self.insert_with_mode(id, facts, false); }
-    pub fn insert_classic(&mut self, id: String, facts: ValueFlowFacts) { self.insert_with_mode(id, Box::new(facts), true); }
+    pub fn insert(&mut self, id: String, facts: ValueFlowFacts) {
+        self.insert_with_mode(id, Box::new(facts), false);
+    }
+    pub fn insert_boxed(&mut self, id: String, facts: Box<ValueFlowFacts>) {
+        self.insert_with_mode(id, facts, false);
+    }
+    pub fn insert_classic(&mut self, id: String, facts: ValueFlowFacts) {
+        self.insert_with_mode(id, Box::new(facts), true);
+    }
 
     fn insert_with_mode(&mut self, id: String, facts: Box<ValueFlowFacts>, classic: bool) {
         self.uncertainties.remove(&id);
@@ -469,13 +557,17 @@ impl FlowStore {
     }
 
     pub fn retain_nodes(&mut self, ids: &std::collections::HashSet<String>) {
-        self.entries.retain(|id, _| ids.contains(id)); self.uncertainties.retain(|id, _| ids.contains(id));
-        self.uncertainty_faults.retain(|id| ids.contains(id)); self.invalid_uncertainty_carriers.retain(|id| ids.contains(id));
+        self.entries.retain(|id, _| ids.contains(id));
+        self.uncertainties.retain(|id, _| ids.contains(id));
+        self.uncertainty_faults.retain(|id| ids.contains(id));
+        self.invalid_uncertainty_carriers
+            .retain(|id| ids.contains(id));
     }
 
     pub fn take(&mut self, id: &str) -> Option<ValueFlowFacts> {
         match self.entries.remove(id) {
-            Some(FlowState::Valid { facts, .. }) => Some(*facts), _ => None,
+            Some(FlowState::Valid { facts, .. }) => Some(*facts),
+            _ => None,
         }
     }
 }

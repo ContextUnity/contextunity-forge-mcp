@@ -1,9 +1,16 @@
 use super::*;
 
 impl<'a> LanguageMemberLookup<'_, 'a> {
-    pub(in crate::linker) fn rust_alias_member(&self, owner: &'a Node, reference: &Reference) -> Option<Symbol<'a>> {
+    pub(in crate::linker) fn rust_alias_member(
+        &self,
+        owner: &'a Node,
+        reference: &Reference,
+    ) -> Option<Symbol<'a>> {
         let (base, member) = reference.expression.rsplit_once("::")?;
-        let TypeTarget::Local(target) = self.context.rust_alias_target(owner, base, reference.position())? else {
+        let TypeTarget::Local(target) =
+            self.context
+                .rust_alias_target(owner, base, reference.position())?
+        else {
             return None;
         };
         Some(self.context.member(target, member, true, owner))
@@ -600,7 +607,9 @@ impl<'a> Context<'a> {
         let mut visited = Vec::new();
         for _ in 0..16 {
             match symbol {
-                Symbol::Type(TypeTarget::Local(alias)) if alias.language == "rust" && alias.kind == "type" => {
+                Symbol::Type(TypeTarget::Local(alias))
+                    if alias.language == "rust" && alias.kind == "type" =>
+                {
                     if alias.details["deref_unproven"] == true {
                         return None;
                     }
@@ -611,7 +620,12 @@ impl<'a> Context<'a> {
                         return Some(TypeTarget::Unknown);
                     };
                     visited.push(alias.id.as_str());
-                    symbol = self.resolve_symbol_raw(alias, target, super::super::value_flow::node_position(alias), SymbolRole::Type);
+                    symbol = self.resolve_symbol_raw(
+                        alias,
+                        target,
+                        super::super::value_flow::node_position(alias),
+                        SymbolRole::Type,
+                    );
                 }
                 Symbol::Type(target) if !visited.is_empty() => return Some(target),
                 _ => return (!visited.is_empty()).then_some(TypeTarget::Unknown),
@@ -969,5 +983,4 @@ impl<'a> Context<'a> {
             Symbol::Unknown
         }
     }
-
 }

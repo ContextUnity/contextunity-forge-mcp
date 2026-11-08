@@ -18,8 +18,8 @@ pub use linker::RouteIndex;
 pub(crate) mod core {
     pub use forge_core::*;
     pub mod commitments {
-        pub use forge_core::commitments::*;
         pub use crate::db::commitments::*;
+        pub use forge_core::commitments::*;
     }
     pub mod schema {
         pub use crate::db::schema::*;

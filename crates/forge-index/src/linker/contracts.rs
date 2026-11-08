@@ -1,10 +1,10 @@
-use super::value_flow::{SemanticLimits, valid_scope_facts};
+use super::value_flow::{valid_scope_facts, SemanticLimits};
 use crate::core::models::{Facts, Node};
 use crate::core::semantic::{SourcePosition, TypeExpr, ValueExpr, ValueFlowFacts};
 use crate::core::typed_facts::{FlowState, FlowStore, TypedFacts};
 use crate::engine::languages;
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
     borrow::Cow,

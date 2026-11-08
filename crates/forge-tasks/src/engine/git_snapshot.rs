@@ -316,10 +316,8 @@ fn add_candidate_entries_to_index(
     temp_index: &Path,
     candidate: &str,
 ) -> Result<()> {
-    let output = crate::git::git_command(
-        worktree,
-        &["ls-tree", "-r", "-z", "--full-tree", candidate],
-    )?;
+    let output =
+        crate::git::git_command(worktree, &["ls-tree", "-r", "-z", "--full-tree", candidate])?;
     if !output.status.success() {
         bail!(
             "TASK_CANDIDATE_INVALID: could not read candidate entries: {}",
@@ -403,8 +401,7 @@ fn commit_tree_and_parent(worktree: &Path, commit: &str) -> Result<(String, Stri
         bail!("TASK_SNAPSHOT_INVALID: candidate commit must have exactly one baseline parent");
     }
     let treeish = format!("{commit}^{{tree}}");
-    let tree =
-        crate::git::git_stdout(worktree, &["rev-parse", &treeish], "TASK_SNAPSHOT_INVALID")?;
+    let tree = crate::git::git_stdout(worktree, &["rev-parse", &treeish], "TASK_SNAPSHOT_INVALID")?;
     Ok((tree, fields[1].to_owned()))
 }
 
@@ -867,6 +864,8 @@ struct NamedSnapshotLock {
 
 impl Drop for NamedSnapshotLock {
     fn drop(&mut self) {
+        #[cfg(unix)]
+        let _ = self._file.unlock();
         #[cfg(not(unix))]
         let _ = std::fs::remove_file(&self.path);
     }
@@ -1016,8 +1015,7 @@ fn named_snapshot_context(worktree: &Path, name: &str) -> Result<NamedSnapshotCo
         <sha2::Sha256 as sha2::Digest>::digest(worktree.to_string_lossy().as_bytes())
     );
     let reference = format!("refs/forge/snapshots/{namespace}/{name}");
-    let check =
-        crate::git::git_command(&worktree, &["check-ref-format", reference.as_str()])?;
+    let check = crate::git::git_command(&worktree, &["check-ref-format", reference.as_str()])?;
     if !check.status.success() {
         bail!("TASK_SNAPSHOT_INVALID_NAME: snapshot name is not valid in a Git reference");
     }
@@ -1125,8 +1123,7 @@ fn restore_named_snapshot_tree(
             String::from_utf8_lossy(&clean.stderr)
         );
     }
-    let read_tree =
-        crate::git::git_command(worktree, &["read-tree", "--reset", "-u", commit])?;
+    let read_tree = crate::git::git_command(worktree, &["read-tree", "--reset", "-u", commit])?;
     if !read_tree.status.success() {
         bail!(
             "TASK_SNAPSHOT_ROLLBACK_FAILED: could not restore the snapshot tree: {}",

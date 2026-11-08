@@ -1,6 +1,6 @@
 use super::{relations, text, Syntax};
-use forge_core::models::{Edge, Facts, Node, Reference};
 use crate::languages;
+use forge_core::models::{Edge, Facts, Node, Reference};
 use languages::manifests::framework::RoutePrefixRule;
 use serde_json::json;
 use std::collections::{HashMap, HashSet};

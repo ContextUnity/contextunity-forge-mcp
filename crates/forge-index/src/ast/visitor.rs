@@ -605,8 +605,7 @@ impl SinglePassExtractor<'_> {
         #[cfg(feature = "lang-python")]
         let mut class_bindings = {
             let has_class = self.profile.id() == "python" && self.source.contains("class");
-            let registration =
-                has_class && languages::python::has_class_registration_import();
+            let registration = has_class && languages::python::has_class_registration_import();
             let orm = has_class && self.language_context.semantic_rules.iter().any(|rule| rule.active && matches!(&rule.rule.operation, languages::manifests::SemanticOperation::ClassDefaultTable { language, .. } if language == "python"));
             if has_class
                 && node.kind() == "module"

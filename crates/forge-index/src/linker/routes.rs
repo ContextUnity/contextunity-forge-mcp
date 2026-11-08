@@ -133,7 +133,11 @@ impl<'a> RouteIndex<'a> {
                 names.entry(name).or_default().push(node);
             }
         }
-        Self { entries, entries_by_len, names }
+        Self {
+            entries,
+            entries_by_len,
+            names,
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -166,9 +170,12 @@ impl<'a> RouteIndex<'a> {
         context: Option<&PreparedHttpTargetContext>,
         request_owner: &str,
     ) -> Result<Option<&'a Node>, ()> {
-        single_candidate(
-            &self.matching_routes_in_context(client_method, client_url, context, request_owner),
-        )
+        single_candidate(&self.matching_routes_in_context(
+            client_method,
+            client_url,
+            context,
+            request_owner,
+        ))
     }
 
     pub fn matching_routes(&self, client_method: &str, client_url: &str) -> Vec<&'a Node> {

@@ -143,17 +143,19 @@ fn claim_inner(root: &Path, p: Claim) -> Result<Value> {
     registry.check_worktree(workspace, &worktree)?;
     let mut store = workspace.open(&registry.database)?;
     store.lock_checkpoint()?;
-    let task = store.inspect(&p.task_id)?;
+    let mut task = store.inspect(&p.task_id)?;
     validate_authority(&task, &worktree, workspace, &registry)?;
     registry.check_scope(workspace, &task.spec.scope, Some(&worktree))?;
     context::validate_claim_gate_requirements(workspace, &task)?;
     let profile = store.profile_for_task(&task)?;
-    let cursor = super::claim::claim_nested_gate(&profile, &task.stage, &p.stage)?;
+    task.worktree = Some(worktree.to_string_lossy().into_owned());
+    let cursor = super::claim::claim_nested_gate_for_task(&profile, &task.stage, &p.stage, &task)?;
     let claimed = store.claim(
         &p.task_id,
         &cursor.canonical_stage_id,
         &p.worker_id,
         &p.worktree,
+        p.session_fingerprint.as_deref(),
     )?;
     finish_claim(root, workspace, &mut store, claimed, cursor, p.bundle)
 }
@@ -713,16 +715,26 @@ fn manage_inner(root: &Path, p: &mut Manage) -> Result<Value> {
             store.lock_checkpoint()?;
             let worker = p.worker_id.as_deref().context("worker_id required")?;
             let worktree = p.worktree.as_deref().context("worktree required")?;
-            let claimed = store.next(worker, worktree, |task, selected| {
-                registry.check_worktree(workspace, selected)?;
-                validate_authority(task, selected, workspace, &registry)?;
-                registry.check_scope(workspace, &task.spec.scope, Some(selected))?;
-                context::validate_claim_gate_requirements(workspace, task)
-            })?;
+            let claimed = store.next(
+                worker,
+                worktree,
+                p.session_fingerprint.as_deref(),
+                |task, selected| {
+                    registry.check_worktree(workspace, selected)?;
+                    validate_authority(task, selected, workspace, &registry)?;
+                    registry.check_scope(workspace, &task.spec.scope, Some(selected))?;
+                    context::validate_claim_gate_requirements(workspace, task)
+                },
+            )?;
             match claimed {
                 Some(claimed) => {
                     let profile = store.profile_for_task(&claimed)?;
-                    let cursor = super::claim::claim_nested_gate(&profile, &claimed.stage, "")?;
+                    let cursor = super::claim::claim_nested_gate_for_task(
+                        &profile,
+                        &claimed.stage,
+                        "",
+                        &claimed,
+                    )?;
                     finish_claim(root, workspace, &mut store, claimed, cursor, Some(true))
                 }
                 None => workspace.envelope(json!({"status":"idle","worker_id":worker})),

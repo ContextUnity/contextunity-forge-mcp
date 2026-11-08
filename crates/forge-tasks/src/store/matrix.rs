@@ -1,7 +1,7 @@
 use super::TasksStore;
-use anyhow::{Context, Result, bail};
-use rusqlite::{Connection, Transaction, TransactionBehavior, params};
-use serde::{Serialize, de::DeserializeOwned};
+use anyhow::{bail, Context, Result};
+use rusqlite::{params, Connection, Transaction, TransactionBehavior};
+use serde::{de::DeserializeOwned, Serialize};
 
 /// Create or upgrade the milestone contract matrix schema.
 pub(super) fn migrate(connection: &Connection) -> Result<()> {

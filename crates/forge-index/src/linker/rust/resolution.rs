@@ -23,29 +23,35 @@ where
     if reference.kind != "calls" {
         return false;
     }
-    let (receiver, member) =
-        if let Some((member, receiver)) = reference.receiver_hint.as_ref().and_then(|hint| {
-            let ReceiverHint::CallResult { member, .. } = hint else { return None; };
-            input.value_flow.computed_receiver(reference)
+    let (receiver, member) = if let Some((member, receiver)) =
+        reference.receiver_hint.as_ref().and_then(|hint| {
+            let ReceiverHint::CallResult { member, .. } = hint else {
+                return None;
+            };
+            input
+                .value_flow
+                .computed_receiver(reference)
                 .filter(|receiver| !matches!(receiver, TypeTarget::Unknown))
                 .map(|receiver| (member, receiver))
         }) {
-            (std::borrow::Cow::Borrowed(receiver), member.as_str())
-        } else {
-            let Some((receiver, member)) = reference.expression.rsplit_once('.') else {
-                return false;
-            };
-            let Some(value) = fallback_receiver_value(receiver, reference.position()) else { return false; };
-            (
-                std::borrow::Cow::Owned(input.value_flow.resolve_value(
-                    owner,
-                    &value,
-                    reference.position(),
-                    input.semantic_context,
-                )),
-                member,
-            )
+        (std::borrow::Cow::Borrowed(receiver), member.as_str())
+    } else {
+        let Some((receiver, member)) = reference.expression.rsplit_once('.') else {
+            return false;
         };
+        let Some(value) = fallback_receiver_value(receiver, reference.position()) else {
+            return false;
+        };
+        (
+            std::borrow::Cow::Owned(input.value_flow.resolve_value(
+                owner,
+                &value,
+                reference.position(),
+                input.semantic_context,
+            )),
+            member,
+        )
+    };
     if matches!(
         receiver.as_ref(),
         TypeTarget::Unknown | TypeTarget::Ambiguous | TypeTarget::Candidates { .. }
@@ -81,30 +87,71 @@ fn fallback_receiver_value(
     expression: &str,
     at: forge_core::semantic::SourcePosition,
 ) -> Option<forge_core::semantic::ValueExpr> {
-    use forge_core::semantic::{CallSiteEvidence, ValueExpr};
-    if expression.len() > 512 { return None; }
+    use forge_core::semantic::{CallSiteEvidence, TypeExpr, ValueExpr};
+    if expression.len() > 512 {
+        return None;
+    }
     if !expression.contains('.') && !expression.contains("::") && expression.ends_with("()") {
         return None;
     }
     let mut value = None;
     for (index, segment) in expression.split('.').enumerate() {
-        if index > 6 { return None; }
-        let (segment, try_result) = segment.strip_suffix('?').map_or((segment, false), |s| (s, true));
-        let (name, called) = segment.strip_suffix("()").map_or((segment, false), |s| (s, true));
-        if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_' || (index == 0 && c == ':')) {
+        if index > 6 {
+            return None;
+        }
+        let (segment, try_result) = segment
+            .strip_suffix('?')
+            .map_or((segment, false), |s| (s, true));
+        let (name, called) = segment
+            .strip_suffix("()")
+            .map_or((segment, false), |s| (s, true));
+        let is_str_literal = index == 0 && segment.starts_with('"') && segment.ends_with('"');
+        if !is_str_literal
+            && (name.is_empty()
+                || !name
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || c == '_' || (index == 0 && c == ':')))
+        {
             return None;
         }
         let next = match value {
-            None if called => ValueExpr::Call { callee: name.to_owned(), site: None },
-            None => ValueExpr::Alias { name: name.to_owned() },
-            Some(inner) if called && super::value_flow::is_adapter(name) => ValueExpr::Project { value: Box::new(inner), member: name.to_owned() },
+            None if is_str_literal => ValueExpr::Annotated {
+                type_expr: TypeExpr::Named {
+                    name: "str".to_owned(),
+                },
+            },
+            None if called => ValueExpr::Call {
+                callee: name.to_owned(),
+                site: None,
+            },
+            None => ValueExpr::Alias {
+                name: name.to_owned(),
+            },
+            Some(inner) if called && super::value_flow::is_adapter(name) => ValueExpr::Project {
+                value: Box::new(inner),
+                member: name.to_owned(),
+            },
             Some(inner) if called => ValueExpr::Call {
                 callee: name.to_owned(),
-                site: Some(CallSiteEvidence { position: at, receiver: Some(Box::new(inner)), arguments: Vec::new() }),
+                site: Some(CallSiteEvidence {
+                    position: at,
+                    receiver: Some(Box::new(inner)),
+                    arguments: Vec::new(),
+                }),
             },
-            Some(inner) => ValueExpr::Project { value: Box::new(inner), member: format!("__rust_field:{name}") },
+            Some(inner) => ValueExpr::Project {
+                value: Box::new(inner),
+                member: format!("__rust_field:{name}"),
+            },
         };
-        value = Some(if try_result { ValueExpr::Project { value: Box::new(next), member: "?".to_owned() } } else { next });
+        value = Some(if try_result {
+            ValueExpr::Project {
+                value: Box::new(next),
+                member: "?".to_owned(),
+            }
+        } else {
+            next
+        });
     }
     value
 }
@@ -187,11 +234,16 @@ pub(in crate::linker) fn resolve_self_reference<'a>(
     graph: &mut Graph,
 ) -> bool {
     if profile.is_some_and(|profile| profile.id() == "rust") && reference.kind == "calls" {
-        if let Some(crate::linker::value_flow::Symbol::Callable(target)) = owner
-            .and_then(|owner| member_lookup.rust_alias_member(owner, reference))
+        if let Some(crate::linker::value_flow::Symbol::Callable(target)) =
+            owner.and_then(|owner| member_lookup.rust_alias_member(owner, reference))
         {
             graph.reference_edge(path, reference, target.id.clone(), "calls", "exact");
-            graph.reference_coverage(path, reference, "resolved", format!("Rust type alias associated member: {}", target.qualname).into());
+            graph.reference_coverage(
+                path,
+                reference,
+                "resolved",
+                format!("Rust type alias associated member: {}", target.qualname).into(),
+            );
             return true;
         }
     }

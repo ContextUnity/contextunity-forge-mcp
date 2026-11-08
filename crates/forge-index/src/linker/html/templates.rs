@@ -524,9 +524,7 @@ pub(in crate::linker) struct ExpressionRegistry<'a> {
 }
 
 impl<'a> ExpressionRegistry<'a> {
-    pub(in crate::linker) fn build<F: AsRef<Facts> + Sync>(
-        all: &'a BTreeMap<String, F>,
-    ) -> Self {
+    pub(in crate::linker) fn build<F: AsRef<Facts> + Sync>(all: &'a BTreeMap<String, F>) -> Self {
         let mut files = HashMap::new();
         for (path, source) in all {
             let facts = source.as_ref();

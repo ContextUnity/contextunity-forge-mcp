@@ -1491,9 +1491,7 @@ impl FrameworkScopeFacts {
             .iter()
             .filter_map(FrameworkFact::symbol_attachment)
     }
-    pub fn symbol_attachments_mut(
-        &mut self,
-    ) -> impl Iterator<Item = &mut SymbolAttachmentFact> {
+    pub fn symbol_attachments_mut(&mut self) -> impl Iterator<Item = &mut SymbolAttachmentFact> {
         self.facts
             .iter_mut()
             .filter_map(FrameworkFact::symbol_attachment_mut)
@@ -1555,9 +1553,7 @@ impl FrameworkScopeFacts {
         self.facts.push(FrameworkFact::ComponentMacro(fact));
     }
 
-    pub fn collection_elements(
-        &self,
-    ) -> impl Iterator<Item = &CollectionElementFact> + Clone {
+    pub fn collection_elements(&self) -> impl Iterator<Item = &CollectionElementFact> + Clone {
         self.facts
             .iter()
             .filter_map(FrameworkFact::collection_element)
@@ -1578,9 +1574,7 @@ impl FrameworkScopeFacts {
             .iter()
             .filter_map(FrameworkFact::template_context)
     }
-    pub fn template_contexts_mut(
-        &mut self,
-    ) -> impl Iterator<Item = &mut TemplateContextFact> {
+    pub fn template_contexts_mut(&mut self) -> impl Iterator<Item = &mut TemplateContextFact> {
         self.facts.iter_mut().filter_map(|fact| {
             if let FrameworkFact::TemplateContext(value) = fact {
                 Some(value)
@@ -1602,9 +1596,7 @@ impl FrameworkScopeFacts {
         self.facts.push(FrameworkFact::TypeOnlyImport(fact));
     }
 
-    pub fn annotation_references(
-        &self,
-    ) -> impl Iterator<Item = &AnnotationReferenceFact> + Clone {
+    pub fn annotation_references(&self) -> impl Iterator<Item = &AnnotationReferenceFact> + Clone {
         self.facts
             .iter()
             .filter_map(FrameworkFact::annotation_reference)

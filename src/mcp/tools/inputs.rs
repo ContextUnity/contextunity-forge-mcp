@@ -151,12 +151,30 @@ impl Inspect {
     }
 }
 
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(untagged)]
+/// Line range (e.g. "100-200") or integer count.
+pub enum LinesInput {
+    Integer(usize),
+    String(String),
+}
+
 #[derive(Deserialize, JsonSchema)]
 /// Layered reader options and source continuation bounds.
 pub struct Snippet {
     #[serde(flatten)]
     /// Shared layered reader request.
     pub read: crate::engine::reader::ReadRequest,
+    /// Alias for path.
+    pub file_path: Option<String>,
+    /// One-based last line; computes line_count with start_line.
+    pub end_line: Option<usize>,
+    /// Line range (e.g. "100-200") or line count integer.
+    pub lines: Option<LinesInput>,
+    /// Alias for line_count.
+    pub max_lines: Option<usize>,
+    /// Alias for pattern search.
+    pub query: Option<String>,
     /// Optional show source value.
     pub show_source: Option<bool>,
     /// Optional leading lines value.
@@ -171,6 +189,86 @@ pub struct Snippet {
     pub page: PageInput,
 }
 impl Snippet {
+    pub(super) fn normalize(&mut self, root: &std::path::Path) -> anyhow::Result<()> {
+        if self.read.path.is_none() {
+            self.read.path = self.file_path.take();
+        }
+        if self.read.pattern.is_none() {
+            self.read.pattern = self.query.take();
+        }
+        if let Some(lines) = self.lines.take() {
+            match lines {
+                LinesInput::Integer(count) => {
+                    if self.read.line_count.is_none() {
+                        self.read.line_count = Some(count);
+                    }
+                }
+                LinesInput::String(s) => {
+                    let trimmed = s.trim();
+                    if let Some((start_s, end_s)) = trimmed
+                        .split_once('-')
+                        .or_else(|| trimmed.split_once(".."))
+                        .or_else(|| trimmed.split_once(':'))
+                    {
+                        let invalid = || {
+                            anyhow::anyhow!("invalid lines range '{s}': expected positive START-END with END >= START")
+                        };
+                        let start = start_s.trim().parse::<usize>().map_err(|_| invalid())?;
+                        let end = end_s.trim().parse::<usize>().map_err(|_| invalid())?;
+                        anyhow::ensure!(start > 0 && end >= start, "{}", invalid());
+                        {
+                            if self.read.start_line.is_none() {
+                                self.read.start_line = Some(start);
+                            }
+                            if self.read.line_count.is_none() {
+                                self.read.line_count = Some(end.saturating_sub(start) + 1);
+                            }
+                        }
+                    } else {
+                        let count = trimmed.parse::<usize>().map_err(|_| {
+                            anyhow::anyhow!(
+                                "invalid lines '{s}': expected a positive count or START-END range"
+                            )
+                        })?;
+                        anyhow::ensure!(count > 0, "invalid lines '{s}': count must be positive");
+                        if self.read.line_count.is_none() {
+                            self.read.line_count = Some(count);
+                        }
+                    }
+                }
+            }
+        }
+        if self.read.line_count.is_none() {
+            self.read.line_count = self.max_lines.take();
+        }
+        if let Some(end) = self.end_line.take() {
+            let start = self.read.start_line.unwrap_or(1);
+            anyhow::ensure!(
+                end > 0 && end >= start,
+                "invalid end_line: expected a positive last line >= start_line"
+            );
+            if self.read.start_line.is_none() {
+                self.read.start_line = Some(1);
+            }
+            if self.read.line_count.is_none() {
+                self.read.line_count = Some(end.saturating_sub(start) + 1);
+            }
+        }
+        if let Some(path) = self.read.path.take() {
+            self.read.path =
+                Some(crate::engine::reader::strip_root_path(&path, root).unwrap_or(path));
+        }
+        if let Some(paths) = self.read.paths.take() {
+            self.read.paths = Some(
+                paths
+                    .into_iter()
+                    .map(|p| crate::engine::reader::strip_root_path(&p, root).unwrap_or(p))
+                    .collect(),
+            );
+        }
+        Ok(())
+    }
+
     pub(super) fn source(&self, policy: &ResponsePolicy) -> anyhow::Result<SourceOptions> {
         anyhow::ensure!(
             self.source_offset == 0 || self.page.generation.is_some(),

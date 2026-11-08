@@ -404,12 +404,39 @@ fn rejected_workflow_context(
         .filter_map(|record| {
             let rejected_from = record.get("stage")?.as_str()?;
             let definition = profile.by_stage(rejected_from)?;
-            if record.get("state").and_then(Value::as_str) != Some("rejected")
-                || definition.reject_to.as_deref() != Some(stage)
+            if record.get("state").and_then(Value::as_str) != Some("rejected") {
+                return None;
+            }
+            let revision = record.get("claim_revision")?.as_u64()?;
+            let raw_findings = value
+                .get("findings")
+                .and_then(Value::as_array)
+                .and_then(|arr| {
+                    arr.iter()
+                        .rev()
+                        .find(|f| f.get("claim_revision").and_then(Value::as_u64) == Some(revision))
+                })
+                .and_then(|f| f.get("findings"));
+            let parsed_findings = raw_findings.and_then(|v| {
+                v.as_str()
+                    .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+                    .or_else(|| Some(v.clone()))
+            });
+            let resolved_target = super::gates::resolve_rejection_target(
+                definition,
+                parsed_findings.as_ref(),
+                rejected_from,
+            );
+            if resolved_target != stage
+                && definition
+                    .on_fail
+                    .as_deref()
+                    .or(definition.reject_to.as_deref())
+                    != Some(stage)
             {
                 return None;
             }
-            Some((record.get("claim_revision")?.as_u64()?, rejected_from))
+            Some((revision, rejected_from))
         })
         .max_by_key(|(revision, _)| *revision)?;
 
@@ -543,10 +570,7 @@ impl Workspace {
         } else {
             steps.extend(profile.completed.steps.iter().cloned());
         }
-        if matches!(
-            proof_kind,
-            Some(crate::tasks::profile::ProofKind::Review)
-        ) {
+        if matches!(proof_kind, Some(crate::tasks::profile::ProofKind::Review)) {
             steps.push(
                 "Submit review proof for every contour in the configured contour set.".into(),
             );
@@ -668,25 +692,24 @@ impl Workspace {
             workflow_guidance["mode"] = json!(def.effective_mode());
             let mut guide_parts = Vec::new();
             if let Some(guidance) = &def.guidance {
-                let adapted_guidance = if def.effective_mode()
-                    == crate::tasks::profile::RoleExecutionMode::Inline
-                {
-                    if let Some(rest) = guidance.strip_prefix("Spawn a dedicated ") {
-                        if let Some((_, action)) = rest.split_once(") to ") {
-                            format!("Execute inline in the current agent to {action}")
-                        } else if let Some((_, action)) = rest.split_once(" subagent to ") {
-                            format!("Execute inline in the current agent to {action}")
-                        } else if let Some((_, action)) = rest.split_once(" to ") {
-                            format!("Execute inline in the current agent to {action}")
+                let adapted_guidance =
+                    if def.effective_mode() == crate::tasks::profile::RoleExecutionMode::Inline {
+                        if let Some(rest) = guidance.strip_prefix("Spawn a dedicated ") {
+                            if let Some((_, action)) = rest.split_once(") to ") {
+                                format!("Execute inline in the current agent to {action}")
+                            } else if let Some((_, action)) = rest.split_once(" subagent to ") {
+                                format!("Execute inline in the current agent to {action}")
+                            } else if let Some((_, action)) = rest.split_once(" to ") {
+                                format!("Execute inline in the current agent to {action}")
+                            } else {
+                                format!("Execute inline in the current agent: {rest}")
+                            }
                         } else {
-                            format!("Execute inline in the current agent: {rest}")
+                            guidance.clone()
                         }
                     } else {
                         guidance.clone()
-                    }
-                } else {
-                    guidance.clone()
-                };
+                    };
                 guide_parts.push(adapted_guidance);
             }
             if !def.models.is_empty() {
@@ -907,9 +930,7 @@ pub(super) fn parse_milestone_manifest(
     owners: &std::collections::BTreeMap<String, String>,
     aliases: &std::collections::BTreeMap<String, String>,
 ) -> Result<Milestone> {
-    crate::tasks::parse_milestone_manifest(
-        text, reference, repository, project, owners, aliases,
-    )
+    crate::tasks::parse_milestone_manifest(text, reference, repository, project, owners, aliases)
 }
 
 pub(crate) struct Registry {

@@ -95,17 +95,27 @@ fn named_selector_reference(
     domain: &str,
 ) -> super::models::Reference {
     super::models::Reference {
-        source: node.id.clone(), line: position.line, column: position.column,
+        source: node.id.clone(),
+        line: position.line,
+        column: position.column,
         expression: match key {
             super::semantic::StaticString::Literal { value } => value.clone(),
             super::semantic::StaticString::Unknown => String::new(),
         },
-        kind: kind.to_owned(), alias: None, module: Some(domain.to_owned()), dynamic: false, receiver_hint: None,
+        kind: kind.to_owned(),
+        alias: None,
+        module: Some(domain.to_owned()),
+        dynamic: false,
+        receiver_hint: None,
     }
 }
 
 fn normalize_empty_details(node: &mut Node) {
-    if node.details.as_object().is_some_and(serde_json::Map::is_empty) {
+    if node
+        .details
+        .as_object()
+        .is_some_and(serde_json::Map::is_empty)
+    {
         node.details = Value::Null;
     }
 }
@@ -114,7 +124,9 @@ pub(super) fn remap_identifier(
     value: &mut String,
     ids: &std::collections::HashMap<String, String>,
 ) -> bool {
-    let Some(replacement) = ids.get(value) else { return false };
+    let Some(replacement) = ids.get(value) else {
+        return false;
+    };
     value.clone_from(replacement);
     true
 }
@@ -179,7 +191,9 @@ impl TypedFacts {
             }
         }
     }
-    pub fn nodes_view(&self) -> NodesView<'_, '_> { PublicNodesView::new(&self.facts, &self.flows) }
+    pub fn nodes_view(&self) -> NodesView<'_, '_> {
+        PublicNodesView::new(&self.facts, &self.flows)
+    }
     pub fn push_node(&mut self, mut node: Node) {
         NodeSemanticEntry::ingest(&mut node);
         self.flows.ingest(&mut node);
@@ -203,11 +217,15 @@ impl TypedFacts {
     }
 
     pub fn into_public(mut self) -> Facts {
-        self.facts.semantic.flows = self.flows; self.facts.pending_flow_nodes.clear(); self.facts
+        self.facts.semantic.flows = self.flows;
+        self.facts.pending_flow_nodes.clear();
+        self.facts
     }
 
     /// Extracts canonical semantic reference keys from typed facts.
-    pub fn reference_keys(&self) -> Vec<&str> { self.collect_reference_keys(false) }
+    pub fn reference_keys(&self) -> Vec<&str> {
+        self.collect_reference_keys(false)
+    }
 
     /// Extracts semantic reference keys from typed facts, optionally including component declarations.
     pub fn collect_reference_keys<'a>(&'a self, include_components: bool) -> Vec<&'a str> {
@@ -312,13 +330,19 @@ impl TypedFacts {
 
 impl std::ops::Deref for TypedFacts {
     type Target = Facts;
-    fn deref(&self) -> &Facts { &self.facts }
+    fn deref(&self) -> &Facts {
+        &self.facts
+    }
 }
 
 impl std::ops::DerefMut for TypedFacts {
-    fn deref_mut(&mut self) -> &mut Facts { &mut self.facts }
+    fn deref_mut(&mut self) -> &mut Facts {
+        &mut self.facts
+    }
 }
 
 impl AsRef<Facts> for TypedFacts {
-    fn as_ref(&self) -> &Facts { &self.facts }
+    fn as_ref(&self) -> &Facts {
+        &self.facts
+    }
 }

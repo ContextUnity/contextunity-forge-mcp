@@ -526,11 +526,7 @@ pub fn git_clean_file_merge_matches(
 
 /// Create a scoped commit on branch HEAD containing only the files in `scope`,
 /// preserving unrelated worktree and index changes.
-pub fn git_scoped_commit(
-    worktree: &Path,
-    scope: &[String],
-    msg: &str,
-) -> Result<String> {
+pub fn git_scoped_commit(worktree: &Path, scope: &[String], msg: &str) -> Result<String> {
     let git_dir = git_command(worktree, &["rev-parse", "--git-dir"])
         .context("TASK_PERSISTENCE_FAILED: git worktree check failed")?;
     if !git_dir.status.success() {
@@ -570,7 +566,10 @@ pub fn git_scoped_commit(
             .context("TASK_PERSISTENCE_FAILED: git read-tree --empty failed")?;
         if !empty_read.status.success() {
             let stderr = String::from_utf8_lossy(&empty_read.stderr);
-            bail!("TASK_PERSISTENCE_FAILED: git read-tree failed: {}", stderr.trim());
+            bail!(
+                "TASK_PERSISTENCE_FAILED: git read-tree failed: {}",
+                stderr.trim()
+            );
         }
     }
 
@@ -599,7 +598,9 @@ pub fn git_scoped_commit(
         cmd.args(&valid_paths);
         cmd.env("GIT_INDEX_FILE", &*temp_index_str);
         cmd.current_dir(worktree);
-        let out = cmd.output().context("TASK_PERSISTENCE_FAILED: git add failed")?;
+        let out = cmd
+            .output()
+            .context("TASK_PERSISTENCE_FAILED: git add failed")?;
         if !out.status.success() {
             let stderr = String::from_utf8_lossy(&out.stderr);
             bail!("TASK_PERSISTENCE_FAILED: git add failed: {}", stderr.trim());
@@ -611,14 +612,54 @@ pub fn git_scoped_commit(
     cmd.args(["commit", "-m", msg, "--allow-empty"]);
     cmd.env("GIT_INDEX_FILE", &*temp_index_str);
     cmd.current_dir(worktree);
-    let commit_res = cmd.output().context("TASK_PERSISTENCE_FAILED: git commit failed")?;
+    let commit_res = cmd
+        .output()
+        .context("TASK_PERSISTENCE_FAILED: git commit failed")?;
     if !commit_res.status.success() {
         let stderr = String::from_utf8_lossy(&commit_res.stderr);
-        bail!("TASK_PERSISTENCE_FAILED: commit hook failed: {}", stderr.trim());
+        bail!(
+            "TASK_PERSISTENCE_FAILED: commit hook failed: {}",
+            stderr.trim()
+        );
     }
 
     let head = git_stdout(worktree, &["rev-parse", "HEAD"], "TASK_GIT_FAILED")?;
     let head = head.trim().to_owned();
     retain_proof_commit(worktree, &head)?;
+
+    // Synchronize only the scoped committed paths in the worktree's default index with HEAD
+    if !valid_paths.is_empty() {
+        use std::io::Write;
+        let mut child = Command::new("git")
+            .args([
+                "--literal-pathspecs",
+                "reset",
+                "--quiet",
+                "--pathspec-from-file=-",
+                "--pathspec-file-nul",
+                &head,
+                "--",
+            ])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .current_dir(worktree)
+            .spawn()?;
+        if let Some(mut stdin) = child.stdin.take() {
+            for path in &valid_paths {
+                stdin.write_all(path.as_bytes())?;
+                stdin.write_all(b"\0")?;
+            }
+        }
+        let output = child.wait_with_output()?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!(
+                "TASK_PERSISTENCE_FAILED: index synchronization failed: {}",
+                stderr.trim()
+            );
+        }
+    }
+
     Ok(head)
 }

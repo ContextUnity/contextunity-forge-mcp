@@ -25,12 +25,10 @@ pub(crate) use integration::configure_checkpoint_owners;
 pub mod recovery;
 use contract::{snapshot, Snapshot};
 pub use handoff::{
-    execute_milestone_verification, handoff, handoff_context, milestone_verification_build,
-    set_symbol_facts_extractor, submit_milestone_verification_review,
+    execute_milestone_verification, handoff, handoff_context, set_symbol_facts_extractor,
 };
 pub use integration::{
     HandoffBinding, IntegrationEvidence, IntegrationReview, IntegrationVerification,
-    MilestoneVerificationReview,
 };
 pub use recovery::db_recover;
 pub(crate) use recovery::obsolete_checkpoint_owners;
@@ -46,9 +44,9 @@ pub fn execute_command_gate(
     command_gate::execute_command_gate(root, task_id, gate_path, commands, paths)
 }
 
+pub use command_gate::resolve_command_plan;
 pub(crate) use command_gate::{
     execute_command_gate_with_timeout, expand_command_args, parse_command_output,
-    resolve_command_plan,
 };
 
 /// Validate task dependencies and return stable topological execution waves.

@@ -66,6 +66,8 @@ pub struct Server {
     /// The connection value.
     pub connection: Arc<Mutex<ConnectionSlot>>,
     request_adapter: Option<RequestAdapter>,
+    extraction_cache_dir: Option<PathBuf>,
+    pub(crate) session_fingerprint: Option<String>,
 }
 impl Server {
     /// Creates a new instance.
@@ -75,6 +77,46 @@ impl Server {
             db,
             connection: Arc::new(Mutex::new(None)),
             request_adapter: None,
+            extraction_cache_dir: None,
+            session_fingerprint: Some(
+                crate::forge_tasks::store::host_session_fingerprint().unwrap_or_else(|| {
+                    crate::forge_tasks::store::UNKNOWN_SESSION_FINGERPRINT.to_owned()
+                }),
+            ),
+        }
+    }
+
+    /// Selects an explicit extraction cache for this server and selected worktrees.
+    pub fn with_cache_dir(mut self, cache_dir: PathBuf) -> Self {
+        self.extraction_cache_dir = Some(cache_dir);
+        self
+    }
+
+    /// Supplies trusted host session identity without exposing it to tool JSON.
+    pub fn with_session_fingerprint(mut self, session_fingerprint: String) -> Self {
+        self.session_fingerprint = Some(session_fingerprint);
+        self
+    }
+
+    fn rebuild(
+        &self,
+        root: &std::path::Path,
+        adapter: Option<&std::path::Path>,
+    ) -> Result<serde_json::Value> {
+        match self.extraction_cache_dir.as_deref() {
+            Some(cache_dir) => {
+                crate::engine::pipeline::build_with_cache_dir(root, &self.db, adapter, cache_dir)
+            }
+            None => crate::db::writer::build(root, &self.db, adapter),
+        }
+    }
+
+    fn delta(&self, root: &std::path::Path, modified: &[PathBuf]) -> Result<serde_json::Value> {
+        match self.extraction_cache_dir.as_deref() {
+            Some(cache_dir) => {
+                crate::engine::pipeline::delta_with_cache_dir(root, &self.db, modified, cache_dir)
+            }
+            None => crate::db::writer::delta(root, &self.db, modified),
         }
     }
 
@@ -89,6 +131,8 @@ impl Server {
             db,
             connection: Arc::clone(&self.connection),
             request_adapter: Some(adapter),
+            extraction_cache_dir: self.extraction_cache_dir.clone(),
+            session_fingerprint: self.session_fingerprint.clone(),
         }
     }
 
@@ -262,7 +306,7 @@ impl Server {
                 });
             if admitted_identity.is_none() && self.check_rebuild_needed(adapter)? {
                 *slot = None;
-                crate::db::writer::build(&root, &self.db, None)?;
+                self.rebuild(&root, None)?;
                 refresh = "rebuild";
                 continue;
             }
@@ -329,7 +373,7 @@ impl Server {
                 .optional()?;
             if previous_manifest_digest.as_deref() != Some(manifests.digest()) {
                 *slot = None;
-                crate::db::writer::build(&root, &self.db, adapter.adapter_path.as_deref())?;
+                self.rebuild(&root, adapter.adapter_path.as_deref())?;
                 refresh = "rebuild";
                 continue;
             }
@@ -395,10 +439,10 @@ impl Server {
             let modified: Vec<_> = changed.into_iter().map(PathBuf::from).collect();
             *slot = None;
             if rebuild {
-                crate::db::writer::build(&root, &self.db, None)?;
+                self.rebuild(&root, None)?;
                 refresh = "rebuild";
             } else {
-                match crate::db::writer::delta(&root, &self.db, &modified) {
+                match self.delta(&root, &modified) {
                     Ok(_) => {
                         refresh = "delta";
                     }
@@ -697,6 +741,15 @@ async fn parent_exited(initial_parent_pid: u32) {
 
 /// Performs serve.
 pub async fn serve(root: PathBuf, db: PathBuf) -> Result<()> {
+    serve_with_cache_dir(root, db, None).await
+}
+
+/// Serves stdio with an optional explicit extraction-cache directory.
+pub async fn serve_with_cache_dir(
+    root: PathBuf,
+    db: PathBuf,
+    cache_dir: Option<PathBuf>,
+) -> Result<()> {
     #[cfg(unix)]
     {
         let reload_parent = std::env::var(MCP_RELOAD_PARENT_ENV).ok();
@@ -705,7 +758,7 @@ pub async fn serve(root: PathBuf, db: PathBuf) -> Result<()> {
             .and_then(|value| value.parse::<u32>().ok())
             .unwrap_or_else(std::os::unix::process::parent_id);
         tokio::select! {
-            result = serve_session(root, db, initial_parent_pid) => result,
+            result = serve_session(root, db, cache_dir, initial_parent_pid) => result,
             _ = parent_exited(initial_parent_pid) => {
                 eprintln!(
                     "contextunity-forge-mcp: parent process ({initial_parent_pid}) exited; shutting down"
@@ -718,16 +771,20 @@ pub async fn serve(root: PathBuf, db: PathBuf) -> Result<()> {
     }
     #[cfg(not(unix))]
     {
-        serve_session(root, db).await
+        serve_session(root, db, cache_dir).await
     }
 }
 
 async fn serve_session(
     root: PathBuf,
     db: PathBuf,
+    cache_dir: Option<PathBuf>,
     #[cfg(unix)] initial_parent_pid: u32,
 ) -> Result<()> {
-    let server = Server::new(root, db);
+    let mut server = Server::new(root, db);
+    if let Some(cache_dir) = cache_dir.as_ref() {
+        server = server.with_cache_dir(cache_dir.clone());
+    }
     let service = if let Some(params) = resumed_initialize_params(&server) {
         rmcp::service::serve_directly(server, super::response::stdio(), Some(params))
     } else {
@@ -761,10 +818,12 @@ async fn serve_session(
                             }
                         }
                         let args: Vec<_> = std::env::args_os().skip(1).collect();
-                        Err(std::process::Command::new(exe)
-                            .args(args)
-                            .env(MCP_RELOAD_PARENT_ENV, initial_parent_pid.to_string())
-                            .exec())
+                        let mut command = std::process::Command::new(exe);
+                        command.args(args).env(MCP_RELOAD_PARENT_ENV, initial_parent_pid.to_string());
+                        if let Some(cache_dir) = cache_dir.as_ref() {
+                            command.env("FORGE_EXTRACTION_CACHE_DIR", cache_dir);
+                        }
+                        Err(command.exec())
                     })();
                     if let Err(error) = result {
                         eprintln!("SIGHUP reload failed: {error}");

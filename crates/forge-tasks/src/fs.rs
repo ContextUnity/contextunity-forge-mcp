@@ -131,43 +131,7 @@ pub fn exclusive_lock(path: &Path) -> Result<fs::File> {
     }
 }
 
-/// Return whether a path consists only of normal relative components.
-pub fn safe_relative(path: &Path) -> bool {
-    !path.as_os_str().is_empty()
-        && path
-            .components()
-            .all(|part| matches!(part, std::path::Component::Normal(_)))
-}
-
-/// Resolve a relative path without traversing a symlink component.
-pub fn checked_child(root: &Path, relative: &Path) -> std::io::Result<PathBuf> {
-    if !safe_relative(relative) {
-        return Err(path_error("path must be a relative plain path"));
-    }
-    let target = root.join(relative);
-    let mut current = root.to_path_buf();
-    for component in relative.components() {
-        let std::path::Component::Normal(name) = component else {
-            return Err(path_error("path must be relative"));
-        };
-        current.push(name);
-        match fs::symlink_metadata(&current) {
-            Ok(metadata) if metadata.file_type().is_symlink() => {
-                return Err(path_error("path must not traverse a symlink"));
-            }
-            Ok(_) => {}
-            Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
-                // Remaining nonexistent components cannot contain symlinks; recorded deletions retain admission.
-                return Ok(target);
-            }
-            Err(source) => return Err(source),
-        }
-    }
-    if target.exists() && !target.canonicalize()?.starts_with(root) {
-        return Err(path_error("path escapes workspace root"));
-    }
-    Ok(target)
-}
+pub use forge_core::fs::{checked_child, safe_relative};
 
 /// Performs atomic write.
 pub fn atomic_write(path: &Path, bytes: &[u8], executable: bool) -> Result<()> {

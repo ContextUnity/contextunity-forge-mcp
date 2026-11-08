@@ -23,44 +23,36 @@ fn computed_receiver_key_uses_borrowed_hash_lookup() {
         TypeTarget::Unknown,
     );
     let query = String::from("owner");
-    assert!(
-        cache
-            .get(&ComputedKey {
-                source: &query,
-                position,
-                expression: "Widget().second",
-                kind: "calls"
-            })
-            .is_none()
-    );
-    assert!(
-        cache
-            .get(&ComputedKey {
-                source: &query,
-                position,
-                expression: "Widget().first",
-                kind: "references"
-            })
-            .is_none()
-    );
-    assert!(
-        cache
-            .get(&ComputedKey {
-                source: &query,
-                expression: "Widget().first",
-                kind: "calls",
-                position
-            })
-            .is_some()
-    );
-    assert!(
-        cache
-            .get(&ComputedKey {
-                source: &query,
-                expression: "Widget().first",
-                kind: "calls",
-                position: SourcePosition { line: 7, column: 5 }
-            })
-            .is_none()
-    );
+    assert!(cache
+        .get(&ComputedKey {
+            source: &query,
+            position,
+            expression: "Widget().second",
+            kind: "calls"
+        })
+        .is_none());
+    assert!(cache
+        .get(&ComputedKey {
+            source: &query,
+            position,
+            expression: "Widget().first",
+            kind: "references"
+        })
+        .is_none());
+    assert!(cache
+        .get(&ComputedKey {
+            source: &query,
+            expression: "Widget().first",
+            kind: "calls",
+            position
+        })
+        .is_some());
+    assert!(cache
+        .get(&ComputedKey {
+            source: &query,
+            expression: "Widget().first",
+            kind: "calls",
+            position: SourcePosition { line: 7, column: 5 }
+        })
+        .is_none());
 }

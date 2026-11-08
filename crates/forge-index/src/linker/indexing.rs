@@ -138,14 +138,19 @@ impl<'a> NamespaceIndexes<'a> {
                                 }
                             }
                             let (first, tail) = module.split_once("::").unwrap_or((module, ""));
-                            let mut targets = rust_library_modules.iter()
+                            let mut targets = rust_library_modules
+                                .iter()
                                 .filter(|(_, (library, _))| *library == first);
                             if let Some((target_workspace, (library, _))) = targets.next() {
                                 if targets.next().is_some() {
                                     return None;
                                 }
                                 if dependency_registry.rust_library_for_path(path) != Some(*library)
-                                    && !dependency_registry.declares_for_path(LanguageFamily("rust"), path, first)
+                                    && !dependency_registry.declares_for_path(
+                                        LanguageFamily("rust"),
+                                        path,
+                                        first,
+                                    )
                                 {
                                     return None;
                                 }
@@ -159,7 +164,11 @@ impl<'a> NamespaceIndexes<'a> {
                                 } else {
                                     format!("{base_namespace}.{}", tail.replace("::", "."))
                                 };
-                                return Some(ImportPath { namespace, relative: true, symbol_path: true });
+                                return Some(ImportPath {
+                                    namespace,
+                                    relative: true,
+                                    symbol_path: true,
+                                });
                             }
                         }
                         profile.and_then(|profile| {

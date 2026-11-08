@@ -25,46 +25,74 @@ macro_rules! number_codec {
 number_codec!(u8, u32, u64, i64, f64);
 
 impl BinaryEncode for usize {
-    fn encode(&self, buf: &mut Vec<u8>) { (*self as u64).encode(buf); }
+    fn encode(&self, buf: &mut Vec<u8>) {
+        (*self as u64).encode(buf);
+    }
 }
 impl BinaryDecode for usize {
-    fn decode(bytes: &[u8], cursor: &mut usize) -> Option<Self> { Self::try_from(u64::decode(bytes, cursor)?).ok() }
+    fn decode(bytes: &[u8], cursor: &mut usize) -> Option<Self> {
+        Self::try_from(u64::decode(bytes, cursor)?).ok()
+    }
 }
 impl BinaryEncode for bool {
-    fn encode(&self, buf: &mut Vec<u8>) { u8::from(*self).encode(buf); }
+    fn encode(&self, buf: &mut Vec<u8>) {
+        u8::from(*self).encode(buf);
+    }
 }
 impl BinaryDecode for bool {
     fn decode(bytes: &[u8], cursor: &mut usize) -> Option<Self> {
-        match u8::decode(bytes, cursor)? { 0 => Some(false), 1 => Some(true), _ => None }
+        match u8::decode(bytes, cursor)? {
+            0 => Some(false),
+            1 => Some(true),
+            _ => None,
+        }
     }
 }
 impl BinaryEncode for str {
     fn encode(&self, buf: &mut Vec<u8>) {
-        (self.len() as u32).encode(buf); buf.extend_from_slice(self.as_bytes());
+        (self.len() as u32).encode(buf);
+        buf.extend_from_slice(self.as_bytes());
     }
 }
-impl BinaryEncode for String { fn encode(&self, buf: &mut Vec<u8>) { self.as_str().encode(buf); } }
+impl BinaryEncode for String {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        self.as_str().encode(buf);
+    }
+}
 impl BinaryDecode for String {
     fn decode(bytes: &[u8], cursor: &mut usize) -> Option<Self> {
         let len = usize::try_from(u32::decode(bytes, cursor)?).ok()?;
         let end = cursor.checked_add(len)?;
-        let value = std::str::from_utf8(bytes.get(*cursor..end)?).ok()?.to_owned();
-        *cursor = end; Some(value)
+        let value = std::str::from_utf8(bytes.get(*cursor..end)?)
+            .ok()?
+            .to_owned();
+        *cursor = end;
+        Some(value)
     }
 }
 impl<T: BinaryEncode> BinaryEncode for Option<T> {
     fn encode(&self, buf: &mut Vec<u8>) {
-        self.is_some().encode(buf); if let Some(value) = self { value.encode(buf); }
+        self.is_some().encode(buf);
+        if let Some(value) = self {
+            value.encode(buf);
+        }
     }
 }
 impl<T: BinaryDecode> BinaryDecode for Option<T> {
     fn decode(bytes: &[u8], cursor: &mut usize) -> Option<Self> {
-        match u8::decode(bytes, cursor)? { 0 => Some(None), 1 => Some(Some(T::decode(bytes, cursor)?)), _ => None }
+        match u8::decode(bytes, cursor)? {
+            0 => Some(None),
+            1 => Some(Some(T::decode(bytes, cursor)?)),
+            _ => None,
+        }
     }
 }
 impl<T: BinaryEncode> BinaryEncode for [T] {
     fn encode(&self, buf: &mut Vec<u8>) {
-        (self.len() as u32).encode(buf); for value in self { value.encode(buf); }
+        (self.len() as u32).encode(buf);
+        for value in self {
+            value.encode(buf);
+        }
     }
 }
 fn collection_count(bytes: &[u8], cursor: &mut usize) -> Option<usize> {
@@ -73,8 +101,11 @@ fn collection_count(bytes: &[u8], cursor: &mut usize) -> Option<usize> {
 }
 impl<T: BinaryDecode> BinaryDecode for Vec<T> {
     fn decode(bytes: &[u8], cursor: &mut usize) -> Option<Self> {
-        let count = collection_count(bytes, cursor)?; let mut values = Vec::with_capacity(count);
-        for _ in 0..count { values.push(T::decode(bytes, cursor)?); }
+        let count = collection_count(bytes, cursor)?;
+        let mut values = Vec::with_capacity(count);
+        for _ in 0..count {
+            values.push(T::decode(bytes, cursor)?);
+        }
         Some(values)
     }
 }
@@ -91,29 +122,47 @@ where
 }
 
 impl<T: BinaryEncode + ?Sized> BinaryEncode for &T {
-    fn encode(&self, buf: &mut Vec<u8>) { (**self).encode(buf); }
+    fn encode(&self, buf: &mut Vec<u8>) {
+        (**self).encode(buf);
+    }
 }
 impl<T: BinaryEncode> BinaryEncode for Box<T> {
-    fn encode(&self, buf: &mut Vec<u8>) { (**self).encode(buf); }
+    fn encode(&self, buf: &mut Vec<u8>) {
+        (**self).encode(buf);
+    }
 }
 impl<T: BinaryDecode> BinaryDecode for Box<T> {
-    fn decode(bytes: &[u8], cursor: &mut usize) -> Option<Self> { Some(Box::new(T::decode(bytes, cursor)?)) }
+    fn decode(bytes: &[u8], cursor: &mut usize) -> Option<Self> {
+        Some(Box::new(T::decode(bytes, cursor)?))
+    }
 }
 impl<A: BinaryEncode, B: BinaryEncode> BinaryEncode for (A, B) {
-    fn encode(&self, buf: &mut Vec<u8>) { self.0.encode(buf); self.1.encode(buf); }
+    fn encode(&self, buf: &mut Vec<u8>) {
+        self.0.encode(buf);
+        self.1.encode(buf);
+    }
 }
 impl<A: BinaryDecode, B: BinaryDecode> BinaryDecode for (A, B) {
-    fn decode(bytes: &[u8], cursor: &mut usize) -> Option<Self> { Some((A::decode(bytes, cursor)?, B::decode(bytes, cursor)?)) }
+    fn decode(bytes: &[u8], cursor: &mut usize) -> Option<Self> {
+        Some((A::decode(bytes, cursor)?, B::decode(bytes, cursor)?))
+    }
 }
 impl<K: BinaryEncode, V: BinaryEncode> BinaryEncode for std::collections::BTreeMap<K, V> {
     fn encode(&self, buf: &mut Vec<u8>) {
-        (self.len() as u32).encode(buf); for (key, value) in self { key.encode(buf); value.encode(buf); }
+        (self.len() as u32).encode(buf);
+        for (key, value) in self {
+            key.encode(buf);
+            value.encode(buf);
+        }
     }
 }
 impl<K: BinaryDecode + Ord, V: BinaryDecode> BinaryDecode for std::collections::BTreeMap<K, V> {
     fn decode(bytes: &[u8], cursor: &mut usize) -> Option<Self> {
-        let count = collection_count(bytes, cursor)?; let mut values = Self::new();
-        for _ in 0..count { values.insert(K::decode(bytes, cursor)?, V::decode(bytes, cursor)?); }
+        let count = collection_count(bytes, cursor)?;
+        let mut values = Self::new();
+        for _ in 0..count {
+            values.insert(K::decode(bytes, cursor)?, V::decode(bytes, cursor)?);
+        }
         Some(values)
     }
 }
@@ -123,14 +172,33 @@ impl BinaryEncode for serde_json::Value {
             Self::Null => 0u8.encode(buf),
             Self::Bool(false) => 1u8.encode(buf),
             Self::Bool(true) => 2u8.encode(buf),
-            Self::Number(number) if number.is_i64() => { 3u8.encode(buf); number.as_i64().expect("signed JSON number").encode(buf); }
-            Self::Number(number) if number.is_u64() => { 4u8.encode(buf); number.as_u64().expect("unsigned JSON number").encode(buf); }
-            Self::Number(number) => { 5u8.encode(buf); number.as_f64().expect("finite JSON number").encode(buf); }
-            Self::String(value) => { 6u8.encode(buf); value.encode(buf); }
-            Self::Array(values) => { 7u8.encode(buf); values.encode(buf); }
+            Self::Number(number) if number.is_i64() => {
+                3u8.encode(buf);
+                number.as_i64().expect("signed JSON number").encode(buf);
+            }
+            Self::Number(number) if number.is_u64() => {
+                4u8.encode(buf);
+                number.as_u64().expect("unsigned JSON number").encode(buf);
+            }
+            Self::Number(number) => {
+                5u8.encode(buf);
+                number.as_f64().expect("finite JSON number").encode(buf);
+            }
+            Self::String(value) => {
+                6u8.encode(buf);
+                value.encode(buf);
+            }
+            Self::Array(values) => {
+                7u8.encode(buf);
+                values.encode(buf);
+            }
             Self::Object(values) => {
                 8u8.encode(buf);
-                (values.len() as u32).encode(buf); for (key, value) in values { key.encode(buf); value.encode(buf); }
+                (values.len() as u32).encode(buf);
+                for (key, value) in values {
+                    key.encode(buf);
+                    value.encode(buf);
+                }
             }
         }
     }
@@ -144,14 +212,20 @@ impl BinaryDecode for serde_json::Value {
             2 => Some(Value::Bool(true)),
             3 => Some(Value::Number(Number::from(i64::decode(bytes, cursor)?))),
             4 => Some(Value::Number(Number::from(u64::decode(bytes, cursor)?))),
-            5 => Some(Value::Number(Number::from_f64(f64::decode(bytes, cursor)?)?)),
+            5 => Some(Value::Number(Number::from_f64(f64::decode(
+                bytes, cursor,
+            )?)?)),
             6 => Some(Value::String(String::decode(bytes, cursor)?)),
             7 => Some(Value::Array(Vec::decode(bytes, cursor)?)),
             8 => {
-                let count = collection_count(bytes, cursor)?; let mut values = Map::new();
+                let count = collection_count(bytes, cursor)?;
+                let mut values = Map::new();
                 for _ in 0..count {
-                    let key = String::decode(bytes, cursor)?; let value = Value::decode(bytes, cursor)?;
-                    if values.insert(key, value).is_some() { return None; }
+                    let key = String::decode(bytes, cursor)?;
+                    let value = Value::decode(bytes, cursor)?;
+                    if values.insert(key, value).is_some() {
+                        return None;
+                    }
                 }
                 Some(Value::Object(values))
             }
@@ -361,9 +435,7 @@ fn validate_named_uncertainty(
     value.valid().then_some(value)
 }
 
-fn validate_value_expr(
-    value: crate::semantic::ValueExpr,
-) -> Option<crate::semantic::ValueExpr> {
+fn validate_value_expr(value: crate::semantic::ValueExpr) -> Option<crate::semantic::ValueExpr> {
     value.valid_call_sites(0).then_some(value)
 }
 fn validate_static_string(
@@ -465,9 +537,8 @@ impl BinaryDecode for TypedFacts {
             ..Default::default()
         };
         let mut flows = crate::typed_facts::FlowStore::default();
-        for (owner, state) in Vec::<(String, crate::typed_facts::FlowState)>::decode(
-            bytes, cursor,
-        )? {
+        for (owner, state) in Vec::<(String, crate::typed_facts::FlowState)>::decode(bytes, cursor)?
+        {
             flows.restore_cache_entry(owner, Some(state), Vec::new(), false);
         }
         for (owner, uncertainties) in Vec::<(
@@ -480,10 +551,8 @@ impl BinaryDecode for TypedFacts {
         for owner in Vec::<String>::decode(bytes, cursor)? {
             flows.restore_cache_entry(owner, None, Vec::new(), true);
         }
-        for (index, entry) in Vec::<(
-            usize,
-            crate::typed_facts::SemanticEntry,
-        )>::decode(bytes, cursor)?
+        for (index, entry) in
+            Vec::<(usize, crate::typed_facts::SemanticEntry)>::decode(bytes, cursor)?
         {
             facts.semantic.restore_cache_entry(index, entry);
         }

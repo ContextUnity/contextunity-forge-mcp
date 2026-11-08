@@ -14,6 +14,7 @@ docs:
   - docs/architecture
   - docs/milestones
   - docs/plans
+  - docs/workflows
   - docs/reference
   - docs/runbooks
 milestones:

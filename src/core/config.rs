@@ -1,7 +1,7 @@
 //! Workspace adapter configuration, scanner limits, and path resolution re-exported from forge-core.
 
-pub use forge_core::config::*;
 use anyhow::Result;
+pub use forge_core::config::*;
 use std::path::Path;
 
 /// Reads adapter policy from index SQLite metadata table.

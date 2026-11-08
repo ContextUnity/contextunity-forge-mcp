@@ -334,7 +334,8 @@ pub fn search_with_options(
         );
         let and_query = terms.join(" AND ");
         let or_query = terms.join(" OR ");
-        let is_natural_query = !pattern.starts_with('@') && pattern.chars().any(char::is_whitespace);
+        let is_natural_query =
+            !pattern.starts_with('@') && pattern.chars().any(char::is_whitespace);
         let apply_and_bonus = i64::from(is_natural_query && terms.len() > 1);
         let run_query = |query: &str, and_bonus: i64| {
             ranked_search_page(

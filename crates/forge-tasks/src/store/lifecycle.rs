@@ -1,17 +1,42 @@
 use super::*;
 
-fn current_session_fingerprint() -> Option<String> {
+/// Internal marker for a host process that could not resolve an agent session.
+pub const UNKNOWN_SESSION_FINGERPRINT: &str = "__forge_unknown_agent_session__";
+
+pub(crate) fn current_session_fingerprint(explicit: Option<&str>) -> Option<String> {
+    resolve_session_fingerprint(explicit, |key| std::env::var(key).ok())
+}
+
+/// Resolve the host agent identity from the canonical Forge variable or known host variables.
+pub fn host_session_fingerprint() -> Option<String> {
+    resolve_session_fingerprint(None, |key| std::env::var(key).ok())
+}
+
+fn resolve_session_fingerprint(
+    explicit: Option<&str>,
+    mut environment: impl FnMut(&str) -> Option<String>,
+) -> Option<String> {
+    if let Some(session) = explicit.filter(|session| !session.trim().is_empty()) {
+        return Some(session.to_owned());
+    }
     [
         "FORGE_AGENT_SESSION_ID",
         "CODEX_THREAD_ID",
         "AGY_CONVERSATION_ID",
         "CLAUDE_SESSION_ID",
+        "CURSOR_SESSION_ID",
     ]
     .into_iter()
-    .filter_map(|key| std::env::var(key).ok())
-    .find(|value| !value.trim().is_empty())
+    .find_map(|key| environment(key).filter(|value| !value.trim().is_empty()))
 }
 
+#[cfg(test)]
+mod session_tests;
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "independence compares the prior proof, active claim, and submitting session in one check"
+)]
 pub(crate) fn validate_session_independence(
     conn: &Connection,
     id: &str,
@@ -20,8 +45,8 @@ pub(crate) fn validate_session_independence(
     evidence: &crate::tasks::gates::Evidence,
     worker: &str,
     claim_revision: Option<u64>,
+    current_fp: Option<&str>,
 ) -> Result<()> {
-    let current_fp = current_session_fingerprint();
     let prior_fp: Option<String> = conn
         .query_row(
             "SELECT session_fingerprint FROM task_claims WHERE task_id=?1 AND revision=?2",
@@ -41,12 +66,21 @@ pub(crate) fn validate_session_independence(
     } else {
         None
     };
-    if prior_fp.is_some() && prior_fp == current_fp
-        || prior_fp
-            .as_ref()
-            .is_some_and(|prior| Some(prior) == claim_fp.as_ref())
+    let known_fingerprint = |fingerprint: &str| {
+        !fingerprint.trim().is_empty() && fingerprint != UNKNOWN_SESSION_FINGERPRINT
+    };
+    let prior_fp = prior_fp.filter(|fingerprint| known_fingerprint(fingerprint));
+    let claim_fp = claim_fp.filter(|fingerprint| known_fingerprint(fingerprint));
+    let current_fp = current_fp.filter(|fingerprint| known_fingerprint(fingerprint));
+    if prior_fp.is_none()
+        || current_fp.is_none()
+        || (claim_revision.is_some() && claim_fp.is_none())
     {
-        let current_fp = prior_fp.as_deref().unwrap_or_default();
+        bail!("TASK_REVIEW_SESSION_UNKNOWN: independent gate '{stage}' requires a known session fingerprint for both the prior claim and current reviewer; set FORGE_AGENT_SESSION_ID or use a supported agent host session variable, then reclaim the affected gate");
+    }
+    let prior_fp = prior_fp.as_deref().unwrap_or_default();
+    let current_fp = current_fp.unwrap_or_default();
+    if prior_fp == current_fp || claim_fp.as_deref() == Some(prior_fp) {
         let prior_worker = &evidence.worker_id;
         bail!("TASK_REVIEW_NOT_INDEPENDENT: task '{id}'. gate '{stage}' was claimed from the same agent session fingerprint ('{current_fp}') as '{prior}' despite changing worker_id from '{prior_worker}' to '{worker}'. Do: spawn a separate subagent process/session to claim and review this gate.");
     }
@@ -259,7 +293,7 @@ impl TasksStore {
     }
 
     /// Persist trace diagnostics and complete-output facts in the same transaction.
-    pub(crate) fn record_execution_trace_with_proof(
+    pub fn record_execution_trace_with_proof(
         &mut self,
         run_id: i64,
         trace: &GateExecutionTrace,
@@ -509,9 +543,16 @@ impl TasksStore {
         Ok(())
     }
     /// Claim one task under the same immediate transaction used by dispatch.
-    pub fn claim(&mut self, id: &str, stage: &str, worker: &str, worktree: &str) -> Result<Task> {
+    pub fn claim(
+        &mut self,
+        id: &str,
+        stage: &str,
+        worker: &str,
+        worktree: &str,
+        session_fingerprint: Option<&str>,
+    ) -> Result<Task> {
         self.assert_id(id)?;
-        let context = ClaimContext::from_store(self);
+        let context = ClaimContext::from_store(self, session_fingerprint);
         let worktree = crate::tasks::claim_worktree(worktree)?;
         let checkpoint = self.checkpoint_context()?;
         let mut tx = super::recovery::transaction(&mut self.connection, checkpoint)?;
@@ -521,11 +562,41 @@ impl TasksStore {
         Ok(task)
     }
 
+    /// Resolve either the task's next applicable gate or one explicit profile stage.
+    /// Both paths use the production lifecycle cursor so nested references stay qualified.
+    pub fn resolve_gate_for_task(
+        &self,
+        id: &str,
+        worktree: &str,
+        stage: Option<&str>,
+    ) -> Result<crate::tasks::profile::GateDef> {
+        let mut task = self.inspect(id)?;
+        let profile = self.profile_for_task(&task)?;
+        let worktree = crate::tasks::claim_worktree(worktree)?;
+        task.worktree = Some(worktree.to_string_lossy().into_owned());
+        let cursor = match stage {
+            Some(stage) => crate::engine::claim::cursor_for_stage(&profile, stage)?,
+            None => {
+                let cursor = crate::engine::claim::claim_nested_gate_for_task(
+                    &profile,
+                    &task.stage,
+                    "",
+                    &task,
+                )?;
+                crate::engine::claim::cursor_for_stage(&profile, &cursor.canonical_stage_id)?
+            }
+        };
+        let mut gate = cursor.gate;
+        gate.id = cursor.canonical_stage_id;
+        Ok(gate)
+    }
+
     /// Select and claim eligible work without allowing a second dispatcher to race.
     pub fn next(
         &mut self,
         worker: &str,
         worktree: &str,
+        session_fingerprint: Option<&str>,
         mut validate: impl FnMut(&Task, &Path) -> Result<()>,
     ) -> Result<Option<Task>> {
         if worker.trim().is_empty() {
@@ -533,7 +604,7 @@ impl TasksStore {
                 "TASK_WORKER_INVALID: unselected. worker_id is empty. Do: supply a worker identity."
             );
         }
-        let context = ClaimContext::from_store(self);
+        let context = ClaimContext::from_store(self, session_fingerprint);
         let requested_worktree = crate::tasks::claim_worktree(worktree)?;
         let checkpoint = self.checkpoint_context()?;
         let mut tx = super::recovery::transaction(&mut self.connection, checkpoint)?;
@@ -558,6 +629,7 @@ impl TasksStore {
             }
             let profile =
                 resolve_task_profile(context.workspace_root.as_deref(), &context.profile, &task)?;
+            let profile = crate::engine::claim::flattened_profile(&profile, Some(&task))?;
             let gate = profile
                 .by_stage(&task.stage)
                 .context("TASK_STAGE_UNKNOWN: dispatch candidate stage is not in its profile")?;
@@ -610,9 +682,22 @@ impl TasksStore {
         } else {
             requested_worktree
         };
+        let mut task = task;
+        task.worktree = Some(selected_worktree.to_string_lossy().into_owned());
+        let profile =
+            resolve_task_profile(context.workspace_root.as_deref(), &context.profile, &task)?;
+        let cursor =
+            crate::engine::claim::claim_nested_gate_for_task(&profile, &task.stage, "", &task)?;
+        let stage_to_claim = cursor.canonical_stage_id;
         tx.enroll(std::slice::from_ref(&task.task_id), false)?;
         validate(&task, &selected_worktree)?;
-        let claimed = context.claim(&tx, &task.task_id, &task.stage, worker, &selected_worktree)?;
+        let claimed = context.claim(
+            &tx,
+            &task.task_id,
+            &stage_to_claim,
+            worker,
+            &selected_worktree,
+        )?;
         tx.commit()?;
         Ok(Some(claimed))
     }
@@ -634,9 +719,10 @@ impl TasksStore {
         tx.enroll(&[id.to_owned()], false)?;
         let mut task = load(&tx, id)?.context(task_not_found_message(id))?;
         let profile = resolve_task_profile(workspace_root.as_deref(), &base_profile, &task)?;
+        let task_profile = crate::engine::tasks::claim::flattened_profile(&profile, Some(&task))?;
         if matches!(task.status.as_str(), "completed" | "cancelled") {
             task.gate = 0;
-            task.stage = profile.gate_id(0).to_owned();
+            task.stage = task_profile.gate_id(0).to_owned();
             task.completed_at = None;
             task.receipt = None;
             task.spec.status = Some("ready".into());
@@ -651,7 +737,7 @@ impl TasksStore {
         task.blocked_by = None;
         tx.execute(
             "INSERT INTO task_gates VALUES(?1,?2,?3,'pending',NULL)",
-            params![id, profile.gate_id(task.gate), task.claim_revision],
+            params![id, task_profile.gate_id(task.gate), task.claim_revision],
         )?;
         save(&tx, &task)?;
         before_persist()?;
@@ -951,6 +1037,7 @@ impl TasksStore {
 }
 
 struct ClaimContext {
+    session_fingerprint: Option<String>,
     repository: String,
     project: String,
     id_prefix: String,
@@ -960,8 +1047,9 @@ struct ClaimContext {
 }
 
 impl ClaimContext {
-    fn from_store(store: &TasksStore) -> Self {
+    fn from_store(store: &TasksStore, session_fingerprint: Option<&str>) -> Self {
         Self {
+            session_fingerprint: current_session_fingerprint(session_fingerprint),
             repository: store.repository.clone(),
             project: store.project.clone(),
             id_prefix: store.id_prefix.clone(),
@@ -983,6 +1071,7 @@ impl ClaimContext {
             bail!("TASK_WORKER_INVALID: {id}. worker_id is empty. Do: supply a worker identity.");
         }
         let mut task = load(tx, id)?.context(task_not_found_message(id))?;
+        task.worktree = Some(worktree.to_string_lossy().into_owned());
         let profile = resolve_task_profile(self.workspace_root.as_deref(), &self.profile, &task)?;
         if task.status == "parked"
             && (task.parked_worker_id.as_deref() != Some(worker)
@@ -1031,23 +1120,40 @@ impl ClaimContext {
                 task.stage
             );
         }
-        let task_gate = profile.index_of(&task.stage).with_context(|| {
-            format!(
-                "TASK_STAGE_UNKNOWN: task '{}' is stored at unknown stage '{}'; active gates: {}",
+        let task_profile = crate::engine::tasks::claim::flattened_profile(&profile, Some(&task))?;
+        if !stage.trim().is_empty() && task_profile.index_of(stage).is_none() {
+            bail!(
+                "TASK_STAGE_UNKNOWN: task '{}' cannot claim unknown stage '{}'; active gates: {}",
                 task.task_id,
-                task.stage,
-                profile
+                stage,
+                task_profile
                     .executable_gates()
                     .iter()
                     .map(|gate| gate.id.as_str())
                     .collect::<Vec<_>>()
                     .join(", ")
-            )
-        })?;
-        check_stage(id, &task.stage, stage)?;
+            );
+        }
+        let cursor =
+            crate::engine::claim::claim_nested_gate_for_task(&profile, &task.stage, stage, &task)?;
+        let task_gate = task_profile
+            .index_of(&cursor.canonical_stage_id)
+            .with_context(|| {
+                format!(
+                    "TASK_STAGE_UNKNOWN: task '{}' cannot claim resolved stage '{}'; active gates: {}",
+                    task.task_id,
+                    cursor.canonical_stage_id,
+                    task_profile
+                        .executable_gates()
+                        .iter()
+                        .map(|gate| gate.id.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })?;
         task.gate = task_gate;
-        task.stage = profile.gate_id(task_gate).to_owned();
-        if let Some(prior) = profile
+        task.stage = task_profile.gate_id(task_gate).to_owned();
+        if let Some(prior) = task_profile
             .by_stage(&task.stage)
             .and_then(|gate| gate.independent_from.as_deref())
         {
@@ -1067,6 +1173,7 @@ impl ClaimContext {
                     &prior_evidence,
                     worker,
                     None,
+                    self.session_fingerprint.as_deref(),
                 )?;
             }
         }
@@ -1107,7 +1214,7 @@ impl ClaimContext {
         task.worker_id = Some(worker.into());
         task.worktree = Some(worktree.to_string_lossy().into_owned());
         task.status = "in_progress".into();
-        tx.execute("INSERT INTO task_claims(task_id,revision,worker_id,worktree,claimed_at,session_fingerprint) VALUES(?1,?2,?3,?4,?5,?6)",params![id,task.claim_revision,worker,task.worktree,now(),current_session_fingerprint()])?;
+        tx.execute("INSERT INTO task_claims(task_id,revision,worker_id,worktree,claimed_at,session_fingerprint) VALUES(?1,?2,?3,?4,?5,?6)",params![id,task.claim_revision,worker,task.worktree,now(),self.session_fingerprint])?;
         save(tx, &task)?;
 
         Ok(task)

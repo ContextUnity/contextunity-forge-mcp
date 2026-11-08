@@ -448,14 +448,35 @@ fn snippet_source_candidate(
     Some(candidate)
 }
 
-pub(crate) fn rejected_arguments(fields: &[String]) -> CallToolResult {
-    let fields = fields
+pub(crate) fn rejected_arguments(
+    fields: &[String],
+    message: Option<String>,
+    supported_parameters: Option<&[&str]>,
+    suggestions: &[(String, &str)],
+) -> CallToolResult {
+    let truncated_fields = fields
         .iter()
         .take(16)
         .map(|field| field.chars().take(128).collect::<String>())
         .collect::<Vec<_>>();
+    let mut error_obj = serde_json::Map::new();
+    error_obj.insert("code".into(), serde_json::json!("rejected_arguments"));
+    error_obj.insert("fields".into(), serde_json::json!(truncated_fields));
+    if let Some(msg) = message {
+        error_obj.insert("message".into(), serde_json::json!(msg));
+    }
+    if let Some(allowed) = supported_parameters {
+        error_obj.insert("supported_parameters".into(), serde_json::json!(allowed));
+    }
+    if !suggestions.is_empty() {
+        let mut sugg_map = serde_json::Map::new();
+        for (orig, sugg) in suggestions {
+            sugg_map.insert(orig.clone(), serde_json::json!(sugg));
+        }
+        error_obj.insert("suggestions".into(), Value::Object(sugg_map));
+    }
     CallToolResult::error(vec![ContentBlock::text(
-        json!({"error":{"code":"rejected_arguments","fields":fields}}).to_string(),
+        json!({"error": Value::Object(error_obj)}).to_string(),
     )])
 }
 

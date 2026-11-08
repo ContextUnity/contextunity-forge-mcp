@@ -3,7 +3,7 @@ use super::super::value_flow::{SemanticResolver, Symbol, SymbolRole, TypeTarget}
 use crate::core::models::{Facts, Node, Reference};
 use crate::core::semantic::{SourcePosition, TypeExpr};
 use crate::engine::languages::{
-    LanguageFamily, LanguageProfile, dependency_registry::DependencyRegistry,
+    dependency_registry::DependencyRegistry, LanguageFamily, LanguageProfile,
 };
 use crate::engine::linker::interner::LinkerInterner;
 use crate::engine::linker::traits::ModulesByNamespace;

@@ -1,10 +1,10 @@
 //! Persist effective entrypoint categories after graph resolution.
 
+use super::{CompactGraph, TypedFacts};
 use anyhow::Result;
 use rusqlite::{params, Connection};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
-use super::{CompactGraph, TypedFacts};
 
 /// Allocate the target set before graph changes so removed occurrences remain visible.
 pub(super) fn prepare_candidates(conn: &Connection) -> Result<()> {
@@ -43,9 +43,16 @@ pub(super) fn rank(category: &str) -> Option<i64> {
 }
 
 pub(super) fn category(rank: i64) -> Option<&'static str> {
-    ["test", "main", "http_route", "mcp_tool", "cli_command", "event_handler"]
-        .get(rank as usize)
-        .copied()
+    [
+        "test",
+        "main",
+        "http_route",
+        "mcp_tool",
+        "cli_command",
+        "event_handler",
+    ]
+    .get(rank as usize)
+    .copied()
 }
 
 /// Resolve graph categories before cold node insertion, using exact occurrences.
@@ -53,16 +60,27 @@ pub(super) fn cold_ranks<'a>(
     graph: &'a CompactGraph,
     facts: &'a BTreeMap<String, TypedFacts>,
 ) -> hashbrown::HashMap<&'a str, Option<i64>> {
-    let sources: hashbrown::HashMap<&str, &str> = facts.values().flat_map(|file| {
-        file.nodes.iter().filter_map(|node| match node.kind.as_str() {
-            "main_registration" | "route" | "tool_registration" |
-            "cli_command_registration" | "event_handler_registration" => Some((node.id.as_str(), node.kind.as_str())),
-            _ => None,
+    let sources: hashbrown::HashMap<&str, &str> = facts
+        .values()
+        .flat_map(|file| {
+            file.nodes
+                .iter()
+                .filter_map(|node| match node.kind.as_str() {
+                    "main_registration"
+                    | "route"
+                    | "tool_registration"
+                    | "cli_command_registration"
+                    | "event_handler_registration" => Some((node.id.as_str(), node.kind.as_str())),
+                    _ => None,
+                })
         })
-    }).collect();
+        .collect();
     let mut ranks: hashbrown::HashMap<&str, Option<i64>> = hashbrown::HashMap::new();
     for edge in &graph.edges {
-        if !matches!(edge.kind.as_str(), "handles" | "routes_to" | "dispatches" | "listens_to") {
+        if !matches!(
+            edge.kind.as_str(),
+            "handles" | "routes_to" | "dispatches" | "listens_to"
+        ) {
             continue;
         }
         let current = ranks.entry(edge.dst.as_str()).or_insert(None);
@@ -135,13 +153,24 @@ pub(super) fn project(conn: &Connection) -> Result<BTreeSet<String>> {
                     |row| row.get(0),
                 )?;
                 let facts = crate::core::typed_facts::decode_facts(&blob)?;
-                let ranks: hashbrown::HashMap<String, i64> = facts.facts.nodes.into_iter().filter_map(|node| {
-                    node.details.get("entrypoint_base").and_then(Value::as_str).and_then(rank)
-                        .map(|value| (node.id, value))
-                }).collect();
+                let ranks: hashbrown::HashMap<String, i64> = facts
+                    .facts
+                    .nodes
+                    .into_iter()
+                    .filter_map(|node| {
+                        node.details
+                            .get("entrypoint_base")
+                            .and_then(Value::as_str)
+                            .and_then(rank)
+                            .map(|value| (node.id, value))
+                    })
+                    .collect();
                 intrinsic_by_owner.insert(owner.clone(), ranks);
             }
-            intrinsic_by_owner.get(&owner).and_then(|ranks| ranks.get(&id)).copied()
+            intrinsic_by_owner
+                .get(&owner)
+                .and_then(|ranks| ranks.get(&id))
+                .copied()
         };
         let category = intrinsic.into_iter().chain(graph_rank).min().and_then(|r| {
             [

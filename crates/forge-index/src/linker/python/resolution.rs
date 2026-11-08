@@ -224,8 +224,7 @@ pub(in crate::linker) struct PythonResolutionView<'ctx, 'a, 'keys, F> {
     pub(in crate::linker) input: &'ctx super::super::resolution::ResolutionInput<'a, F>,
     pub(in crate::linker) path: &'ctx str,
     pub(in crate::linker) file_module: &'ctx str,
-    pub(in crate::linker) aliases:
-        &'ctx HashMap<&'keys str, HashMap<&'a str, Vec<&'a Node>>>,
+    pub(in crate::linker) aliases: &'ctx HashMap<&'keys str, HashMap<&'a str, Vec<&'a Node>>>,
     pub(in crate::linker) alias_import_positions:
         &'ctx HashMap<(&'keys str, &'keys str), crate::core::semantic::SourcePosition>,
     pub(in crate::linker) member_lookup: &'ctx LanguageMemberLookup<'a, 'a>,

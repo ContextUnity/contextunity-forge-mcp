@@ -7,7 +7,13 @@ static INIT_EXTRACTOR: Once = Once::new();
 /// Ensures that the production AST extractor and symbol facts extractor are registered into forge_tasks.
 pub fn ensure_extractors() {
     INIT_EXTRACTOR.call_once(|| {
-        forge_tasks::set_ast_extractor(crate::engine::ast::extract_typed);
+        forge_tasks::set_ast_extractor(|path, source| {
+            let Some(language) = crate::engine::languages::for_path(std::path::Path::new(path))
+            else {
+                return Ok(None);
+            };
+            crate::engine::ast::extract_typed(path, language.id(), source).map(Some)
+        });
         forge_tasks::milestones::set_symbol_facts_extractor(|path, source| {
             let Some(language) = crate::engine::languages::for_path(std::path::Path::new(path))
             else {
@@ -40,9 +46,17 @@ pub fn submit_zero_arg(
     stage: &str,
     action: Action,
     findings: Option<serde_json::Value>,
+    session_fingerprint: Option<&str>,
 ) -> anyhow::Result<serde_json::Value> {
     ensure_extractors();
-    forge_tasks::engine::submit_zero_arg(root, task_id, stage, action, findings)
+    forge_tasks::engine::submit_zero_arg(
+        root,
+        task_id,
+        stage,
+        action,
+        findings,
+        session_fingerprint,
+    )
 }
 
 /// Verifies a claimed gate without advancing its lifecycle after wiring extractors.
@@ -63,6 +77,7 @@ pub fn submit_zero_arg_with_timeout(
     action: Action,
     findings: Option<serde_json::Value>,
     timeout_seconds: Option<u64>,
+    session_fingerprint: Option<&str>,
 ) -> anyhow::Result<serde_json::Value> {
     ensure_extractors();
     forge_tasks::engine::submit_zero_arg_with_timeout(
@@ -72,6 +87,7 @@ pub fn submit_zero_arg_with_timeout(
         action,
         findings,
         timeout_seconds,
+        session_fingerprint,
     )
 }
 

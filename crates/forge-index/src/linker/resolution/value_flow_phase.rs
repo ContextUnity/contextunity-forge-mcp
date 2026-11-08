@@ -1216,10 +1216,16 @@ where
                         .filter(|receiver| !matches!(receiver, value_flow::TypeTarget::Unknown))
                     {
                         if tail.is_empty() {
-                            if owner.language == "rust" && r.kind == "calls"
+                            if owner.language == "rust"
+                                && r.kind == "calls"
                                 && matches!(receiver, value_flow::TypeTarget::Builtin(name) if name == "__rust_closure")
                             {
-                                graph.reference_coverage(path, r, "resolved", "invocation of a lexically proven Rust closure".into());
+                                graph.reference_coverage(
+                                    path,
+                                    r,
+                                    "resolved",
+                                    "invocation of a lexically proven Rust closure".into(),
+                                );
                                 continue;
                             }
                             if let value_flow::TypeTarget::Callable(callable) = receiver {
@@ -1251,7 +1257,8 @@ where
                                 let result = if owner.language == "rust" && r.kind == "references" {
                                     semantic_context.lookup_property(receiver, member, owner)
                                 } else {
-                                    semantic_context.lookup_member_mode(receiver, member, owner, associated)
+                                    semantic_context
+                                        .lookup_member_mode(receiver, member, owner, associated)
                                 };
                                 let result = if r.kind == "references"
                                     && active_profile.is_some_and(|profile| {
@@ -1493,13 +1500,18 @@ where
                         if let Some(owner) = owner {
                             #[cfg(feature = "lang-rust")]
                             let receiver_scope = (owner.language == "rust")
-                                .then(|| member_lookup.rust_receiver(owner)).flatten()
+                                .then(|| member_lookup.rust_receiver(owner))
+                                .flatten()
                                 .map(|receiver| receiver.qualname.as_str());
                             #[cfg(not(feature = "lang-rust"))]
                             let receiver_scope: Option<&str> = None;
                             let scope = receiver_scope.unwrap_or_else(|| {
                                 let scope = owner.qualname.rsplit_once('.').map_or("", |(p, _)| p);
-                                if owner.language == "rust" { scope.split_once('<').map_or(scope, |(base, _)| base) } else { scope }
+                                if owner.language == "rust" {
+                                    scope.split_once('<').map_or(scope, |(base, _)| base)
+                                } else {
+                                    scope
+                                }
                             });
                             candidates
                                 .extend_from_slice(lookup(qualified(lookup_key, scope, tail)));

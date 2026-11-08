@@ -1,14 +1,14 @@
 //! Language-owned import and receiver resolution used by the shared linker.
 
-use forge_core::models::{Facts, Node, Reference};
+use super::NodeBindingIndex;
 use crate::{
     languages::{
-        ImportPath, LanguageFamily, LanguageProfile, dependency_registry::DependencyRegistry,
-        manifests::FrameworkManifest,
+        dependency_registry::DependencyRegistry, manifests::FrameworkManifest, ImportPath,
+        LanguageFamily, LanguageProfile,
     },
     linker::interner::{LinkerInterner, PathId, SymbolId},
 };
-use super::NodeBindingIndex;
+use forge_core::models::{Facts, Node, Reference};
 use hashbrown::HashMap;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -70,8 +70,7 @@ pub(crate) fn import_provider_modules<'a, 'n>(
                     .flatten()
                     .copied()
                     .filter(|node| {
-                        (crate::languages::workspace_path(&node.path).0 == workspace)
-                            == local
+                        (crate::languages::workspace_path(&node.path).0 == workspace) == local
                     })
                     .collect();
             }
@@ -131,8 +130,7 @@ pub struct ImportContext<'ctx, 'a, 'input> {
     pub reference: &'input Reference,
     /// Rust's bounded canonical named-forwarding index, when Rust is enabled.
     #[cfg(feature = "lang-rust")]
-    pub(crate) rust_forwarding:
-        Option<&'ctx crate::languages::rust::linker::RustForwarding<'a>>,
+    pub(crate) rust_forwarding: Option<&'ctx crate::languages::rust::linker::RustForwarding<'a>>,
     /// Normalized import path from the language profile.
     pub normalized: Option<&'input ImportPath>,
     /// Namespace prefix that selected the indexed module.

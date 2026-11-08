@@ -520,10 +520,7 @@ pub(crate) fn inspect_paged_response(
 }
 
 /// Attaches document contents to symbol inspect response.
-pub fn attach_inspect_document_contents(
-    conn: &Connection,
-    result: &mut Value,
-) -> Result<()> {
+pub fn attach_inspect_document_contents(conn: &Connection, result: &mut Value) -> Result<()> {
     let Some(items) = result
         .get("documented_in")
         .and_then(|page| page.get("items"))

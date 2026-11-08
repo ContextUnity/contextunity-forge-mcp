@@ -451,6 +451,7 @@ pub fn run(root: &Path, command: TaskCommand) -> Result<Value> {
             return tasks::claim(
                 root,
                 Claim {
+                    session_fingerprint: None,
                     task_id,
                     stage,
                     worker_id: worker,
@@ -482,6 +483,7 @@ pub fn run(root: &Path, command: TaskCommand) -> Result<Value> {
                 Some(evidence) => tasks::submit(
                     root,
                     Submit {
+                        session_fingerprint: None,
                         task_id,
                         stage,
                         action,
@@ -496,6 +498,7 @@ pub fn run(root: &Path, command: TaskCommand) -> Result<Value> {
                     action,
                     findings,
                     timeout_seconds,
+                    None,
                 ),
             };
         }

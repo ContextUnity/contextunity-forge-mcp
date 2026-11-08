@@ -8,11 +8,11 @@ mod coverage_leaves;
 mod domain_leaves;
 mod snapshot;
 
-pub(crate) use snapshot::{fts_commitment_digests, seal_snapshot_from_projection, SnapshotTimings};
 pub use forge_core::commitments::{
-    aggregate_domain_digest, compute_merkle_root, hash, ALGORITHM, DOMAINS, DomainCommitment,
-    MerkleCommitment,
+    aggregate_domain_digest, compute_merkle_root, hash, DomainCommitment, MerkleCommitment,
+    ALGORITHM, DOMAINS,
 };
+pub(crate) use snapshot::{fts_commitment_digests, seal_snapshot_from_projection, SnapshotTimings};
 const FTS: &[(&str, &str)] = &[
     ("node_search_postings", "term,doc,col,offset"),
     ("node_search_config", "k"),
@@ -425,18 +425,24 @@ fn stream_node_fts_digest(conn: &Connection) -> Result<Option<String>> {
         );
         let offset: i64 = row.get(2)?;
         let doc: i64 = row.get(3)?;
-        let document = documents.get_mut(&doc)
+        let document = documents
+            .get_mut(&doc)
             .with_context(|| format!("FTS5 postings refer to missing owner rows: {table}"))?;
-        let identity = document.identity_sort_key
+        let identity = document
+            .identity_sort_key
             .with_context(|| format!("FTS5 postings refer to missing owner rows: {table}"))?;
         let order = term.cmp(previous_term.as_slice());
-        if previous.is_some_and(|last| order.is_lt() || (order.is_eq() && (identity, offset) < last)) {
+        if previous
+            .is_some_and(|last| order.is_lt() || (order.is_eq() && (identity, offset) < last))
+        {
             return Ok(None);
         }
         if previous.is_none() || !order.is_eq() {
             // Match the sorted implementation's u32 term-id limit.
             u32::try_from(distinct_terms)?;
-            distinct_terms = distinct_terms.checked_add(1).context("FTS5 term count overflow")?;
+            distinct_terms = distinct_terms
+                .checked_add(1)
+                .context("FTS5 term count overflow")?;
             previous_term.clear();
             previous_term.extend_from_slice(term);
         }
@@ -444,7 +450,13 @@ fn stream_node_fts_digest(conn: &Connection) -> Result<Option<String>> {
         document.token_counts[0] = document.token_counts[0]
             .checked_add(1)
             .context("FTS5 token count exceeds document-size range")?;
-        append_fts_posting(&mut encoded, term, FtsRowIdentityRef::NodeHash(identity), column, offset);
+        append_fts_posting(
+            &mut encoded,
+            term,
+            FtsRowIdentityRef::NodeHash(identity),
+            column,
+            offset,
+        );
         if encoded.len() >= 256 * 1024 {
             hasher.update(&encoded);
             encoded.clear();

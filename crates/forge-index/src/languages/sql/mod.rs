@@ -283,7 +283,10 @@ fn table_uses(tokens: &[Token<'_>]) -> Vec<(String, &'static str, usize)> {
         let Some(events) = cte_events(tokens) else {
             return uses;
         };
-        (Some(events), std::collections::HashMap::<String, usize>::new())
+        (
+            Some(events),
+            std::collections::HashMap::<String, usize>::new(),
+        )
     } else {
         (None, std::collections::HashMap::new())
     };

@@ -1,6 +1,6 @@
 use super::super::value_flow::{
-    ReadTrace, SemanticLimits, SemanticResolver, Symbol, SymbolRole, TypeTarget, ValueFlowIndex,
-    node_position, resolve_type, symbol_type,
+    node_position, resolve_type, symbol_type, ReadTrace, SemanticLimits, SemanticResolver, Symbol,
+    SymbolRole, TypeTarget, ValueFlowIndex,
 };
 use crate::core::{
     models::Node,

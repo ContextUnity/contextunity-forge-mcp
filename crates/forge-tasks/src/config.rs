@@ -431,87 +431,46 @@ pub fn resolve_file_path(
         if let Some((prefix, rest)) = file_path.split_once("]/") {
             let ws_name = prefix.trim_start_matches('[');
             if let Some(lw) = adapter.linked_workspaces.iter().find(|w| w.name == ws_name) {
-                return checked_child(&lw.path, Path::new(rest));
+                let cleaned = rest.strip_prefix("./").unwrap_or(rest);
+                return checked_child(&lw.path, Path::new(cleaned));
             }
         }
     }
-    checked_child(root, Path::new(file_path))
+    let p = Path::new(file_path);
+    if p.is_absolute() {
+        // Reject any absolute path that traverses a symlink before considering fallback.
+        let mut cur = std::path::PathBuf::new();
+        for comp in p.components() {
+            cur.push(comp);
+            if let Ok(meta) = std::fs::symlink_metadata(&cur) {
+                if meta.file_type().is_symlink() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "path must not traverse a symlink",
+                    ));
+                }
+            }
+        }
+        if let Ok(rel) = p.strip_prefix(root) {
+            return checked_child(root, rel);
+        }
+        for lw in &adapter.linked_workspaces {
+            if let Ok(rel) = p.strip_prefix(&lw.path) {
+                return checked_child(&lw.path, rel);
+            }
+        }
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "path must be a relative plain path",
+        ));
+    }
+    let cleaned = file_path.strip_prefix("./").unwrap_or(file_path);
+    checked_child(root, Path::new(cleaned))
 }
 
 /// Checks root scope against filesystem roots, system directories, user home directories, and multi-repository containers.
 pub fn check_root_scope(root: &Path, allow_broad: bool) -> std::io::Result<()> {
-    if allow_broad
-        || std::env::var("FORGE_ALLOW_BROAD_ROOT")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false)
-    {
-        return Ok(());
-    }
-
-    // 1. Filesystem root
-    if root == Path::new("/") {
-        return Err(error(
-            "refusing to index filesystem root '/'; specify a repository directory or set limits.allow_broad_root: true",
-        ));
-    }
-
-    // 2. Direct parent is / or /home or /Users
-    if let Some(parent) = root.parent() {
-        if parent == Path::new("/") {
-            let name = root.file_name().unwrap_or_default().to_string_lossy();
-            if matches!(
-                name.as_ref(),
-                "home" | "Users" | "var" | "tmp" | "usr" | "etc" | "opt"
-            ) {
-                return Err(error(format!(
-                    "refusing to index system directory '{root:?}'; specify a repository directory or set limits.allow_broad_root: true"
-                )));
-            }
-        } else if parent == Path::new("/home") || parent == Path::new("/Users") {
-            return Err(error(format!(
-                "refusing to index user home directory '{root:?}'; specify a repository directory or set limits.allow_broad_root: true"
-            )));
-        }
-    }
-
-    // 3. Multi-repository container check:
-    let is_git_repo = root.join(".git").exists();
-    let has_manifest = root.join("forge-mcp.yaml").exists()
-        || root.join("Cargo.toml").exists()
-        || root.join("package.json").exists()
-        || root.join("pyproject.toml").exists()
-        || root.join("go.mod").exists();
-
-    if !is_git_repo && !has_manifest {
-        if let Ok(entries) = fs::read_dir(root) {
-            let mut git_subdirs = 0;
-            for entry in entries.flatten() {
-                if let Ok(ft) = entry.file_type() {
-                    if ft.is_dir() {
-                        let p = entry.path();
-                        if p.join(".git").exists() {
-                            git_subdirs += 1;
-                        } else if let Ok(sub_entries) = fs::read_dir(&p) {
-                            for sub_entry in sub_entries.flatten() {
-                                if let Ok(sft) = sub_entry.file_type() {
-                                    if sft.is_dir() && sub_entry.path().join(".git").exists() {
-                                        git_subdirs += 1;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                if git_subdirs >= 2 {
-                    return Err(error(format!(
-                        "workspace root '{root:?}' appears to be a multi-repository container ({git_subdirs}+ repos detected); specify a single repository or set limits.allow_broad_root: true"
-                    )));
-                }
-            }
-        }
-    }
-
-    Ok(())
+    forge_core::config::check_root_scope(root, allow_broad)
 }
 
 /// Formats the adapter configuration for serialization into SQLite database metadata.

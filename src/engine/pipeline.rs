@@ -891,7 +891,11 @@ fn consume_pipeline_results(
     })
 }
 
-fn components(facts: &mut BTreeMap<String, TypedFacts>) -> BTreeSet<String> {
+/// Assigns the full-build component ownership graph to extracted typed facts.
+///
+/// Replaces existing component nodes and edges using the same deterministic
+/// owner selection as a filesystem full build. Returns component owner paths.
+pub fn components(facts: &mut BTreeMap<String, TypedFacts>) -> BTreeSet<String> {
     let owners = component_owners(facts.iter().filter_map(|(path, f)| {
         f.nodes
             .iter()
@@ -2040,6 +2044,37 @@ fn reference_keys(facts: &TypedFacts) -> Vec<&str> {
 
 /// Performs incremental delta indexing for modified source files.
 pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
+    delta_inner(root, db, modified, None)
+}
+
+/// Applies a delta while preserving an explicit cache directory during rebuilds.
+pub fn delta_with_cache_dir(
+    root: &Path,
+    db: &Path,
+    modified: &[PathBuf],
+    cache_dir: &Path,
+) -> Result<Value> {
+    delta_inner(root, db, modified, Some(cache_dir))
+}
+
+fn rebuild_with_cache_dir(
+    root: &Path,
+    db: &Path,
+    adapter: Option<&Path>,
+    cache_dir: Option<&Path>,
+) -> Result<Value> {
+    match cache_dir {
+        Some(cache_dir) => build_with_cache_dir(root, db, adapter, cache_dir),
+        None => build(root, db, adapter),
+    }
+}
+
+fn delta_inner(
+    root: &Path,
+    db: &Path,
+    modified: &[PathBuf],
+    cache_dir: Option<&Path>,
+) -> Result<Value> {
     validate_code_map_target(root, db)?;
     let started = Instant::now();
     if modified.is_empty() {
@@ -2079,7 +2114,7 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
     };
     if !schema_compatible {
         drop(generation_lock);
-        return build(&root, db, previous_adapter_path.as_deref());
+        return rebuild_with_cache_dir(&root, db, previous_adapter_path.as_deref(), cache_dir);
     }
     let admitted = crate::db::reader::open(db, &root)?;
     let admitted_identity = crate::db::cache::identity(db)?;
@@ -2105,7 +2140,7 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
     {
         drop(admitted);
         drop(generation_lock);
-        return build(&root, db, adapter.adapter_path.as_deref());
+        return rebuild_with_cache_dir(&root, db, adapter.adapter_path.as_deref(), cache_dir);
     }
     let previous = crate::db::reader::inventory_snapshot(&admitted)?;
     let scanning = Instant::now();
@@ -2126,7 +2161,7 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
     if previous_manifest_digest.as_deref() != Some(dependencies.digest()) {
         drop(admitted);
         drop(generation_lock);
-        return build(&root, db, adapter.adapter_path.as_deref());
+        return rebuild_with_cache_dir(&root, db, adapter.adapter_path.as_deref(), cache_dir);
     }
     let modified: BTreeSet<String> = modified
         .iter()

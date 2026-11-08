@@ -188,7 +188,8 @@ gates:
 
 Workflow guidance selects `rust-check-and-test`, the canonical strict Clippy-plus-test command. Profiles may define
 `scope_args_by_pattern` as project-relative path patterns mapped to command
-arguments. The most specific matching pattern wins, and `{file_stem}` expands
+arguments. The most specific matching pattern wins across profile and command
+patterns; command-local patterns win ties. `{file_stem}` expands
 to the matched path's filename without its extension. For each configured
 command, claim context substitutes those arguments for `{scope_target}` or
 appends them when the command has no placeholder. If no pattern matches, the

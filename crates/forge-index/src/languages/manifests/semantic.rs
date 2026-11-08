@@ -175,8 +175,6 @@ pub(crate) fn normal_relative_path(value: &str) -> bool {
         })
 }
 
-
-
 fn identifier(value: &str) -> bool {
     let mut chars = value.chars();
     chars

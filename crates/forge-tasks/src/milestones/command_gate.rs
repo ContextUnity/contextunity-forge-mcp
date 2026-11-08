@@ -130,20 +130,32 @@ pub(crate) fn execute_command_gate_with_timeout(
         violations.extend(scope_violations(root, &task.spec)?);
         let output = String::from_utf8_lossy(&complete_log).into_owned();
         let parsed = parse_command_output(&output, &command_str, commands.output())?;
+        let stderr_text = String::from_utf8_lossy(&stderr);
+        let compilation_error = stderr_text.contains("could not compile")
+            || stderr_text.contains("error[E")
+            || stderr_text.lines().any(|line| {
+                let line = line.trim_start();
+                line.starts_with("error:") && !line.starts_with("error: test failed")
+            });
         let expected = gate.expected_failure.as_ref().is_some_and(|expected| {
             status == "completed"
+                && !compilation_error
                 && exit_code.is_some_and(|code| {
                     code != 0
                         && (expected.exit_codes.is_empty() || expected.exit_codes.contains(&code))
                 })
-                && expected
-                    .stderr_contains
-                    .as_ref()
-                    .is_none_or(|signature| output.contains(signature))
+                && expected.stderr_contains.as_ref().is_none_or(|signature| {
+                    !signature.trim().is_empty() && output.contains(signature)
+                })
         });
         let succeeded = status == "completed"
             && if gate.proof.kind() == Some(crate::tasks::profile::ProofKind::Contract) {
                 expected
+                    || (exit_code == Some(0)
+                        && profile
+                            .contract_zero_exit_policies()
+                            .iter()
+                            .any(|policy| policy == &task.spec.proof_policy))
             } else {
                 exit_code == Some(0)
             };
@@ -208,18 +220,28 @@ pub(crate) fn execute_command_gate_with_timeout(
             stdout_sha256: Some(format!("{:x}", Sha256::digest(&stdout))),
             duration_ms,
         };
+        let seam_ref = parsed.seam_ref;
+        let passed_tests = passed_test_references(
+            root,
+            &output,
+            &trace.command_id,
+            &trace.command_str,
+            commands.output(),
+        )
+        .unwrap_or_default();
         let facts = crate::store::CommandExecutionProof {
             passed: parsed.passed,
             failed: parsed.failed,
-            seam_ref: parsed.seam_ref,
+            seam_ref,
+            passed_tests,
             output_spec: commands.output().cloned(),
             scope_violations: violations.into_iter().collect(),
-            expected_signature: gate
-                .expected_failure
-                .as_ref()
-                .and_then(|expected| expected.stderr_contains.as_ref())
-                .filter(|signature| output.contains(signature.as_str()))
-                .cloned(),
+            expected_signature: expected.then(|| {
+                gate.expected_failure
+                    .as_ref()
+                    .and_then(|failure| failure.stderr_contains.clone())
+                    .unwrap_or_else(|| "no compiler error diagnostic".into())
+            }),
         };
         store.record_execution_trace_with_proof(run.run_id, &trace, Some(&facts))?;
         traces.push(trace);
@@ -241,7 +263,7 @@ pub(crate) fn execute_command_gate_with_timeout(
     Ok(traces)
 }
 
-pub(crate) fn resolve_command_plan(
+pub fn resolve_command_plan(
     root: &Path,
     registered_name: &str,
     commands: &CommandDef,
@@ -256,8 +278,12 @@ pub(crate) fn resolve_command_plan(
             for path in &paths {
                 validate_project_path(path)?;
                 if let Some(command) = commands.command_for_path(path) {
-                    let command =
-                        expand_command_args(command, profile.scope_args_for_path(path).as_deref());
+                    let command = expand_command_args(
+                        command,
+                        profile
+                            .scope_args_for_command_path(commands, path)
+                            .as_deref(),
+                    );
                     if selected.iter().any(|(_, existing, _)| *existing == command) {
                         continue;
                     }
@@ -276,7 +302,11 @@ pub(crate) fn resolve_command_plan(
             let timeout = Duration::from_secs(timeout.max(1));
             let args = paths
                 .iter()
-                .filter_map(|path| profile.scope_args_for_path(path).map(|args| (args, path)))
+                .filter_map(|path| {
+                    profile
+                        .scope_args_for_command_path(commands, path)
+                        .map(|args| (args, path))
+                })
                 .collect::<std::collections::BTreeMap<_, _>>();
             if args.is_empty() {
                 return Ok(vec![(registered_name.to_owned(), command.clone(), timeout)]);
@@ -367,9 +397,9 @@ pub(crate) fn parse_command_output(
     command: &str,
     spec: Option<&crate::tasks::profile::CommandOutputSpec>,
 ) -> Result<ParsedCommandOutput> {
-    fn count(output: &str, pattern: &str) -> Result<Option<u64>> {
+    let count = |output: &str, pattern: &str| -> Result<Option<u64>> {
         let regex = regex::Regex::new(pattern)?;
-        let mut total = None;
+        let mut total = None::<u64>;
         for captures in regex.captures_iter(output) {
             let value = captures
                 .get(1)
@@ -385,7 +415,7 @@ pub(crate) fn parse_command_output(
             );
         }
         Ok(total)
-    }
+    };
     let counts = spec.and_then(|spec| spec.counts.as_ref());
     let passed = count(
         output,
@@ -435,13 +465,174 @@ pub(crate) fn parse_command_output(
                 .map(|value| value.as_str().to_owned()))
         })
         .transpose()?
-        .flatten();
+        .flatten()
+        .or_else(|| {
+            let re = regex::Regex::new(r#"(?:--seam-ref\s+|--seam-ref=)(\S+)"#).ok()?;
+            re.captures(command)
+                .and_then(|c| c.get(1))
+                .map(|m| m.as_str().to_owned())
+        });
     Ok(ParsedCommandOutput {
         passed,
         failed,
         seam_ref,
         diagnostic,
     })
+}
+
+fn passed_test_references(
+    root: &Path,
+    output: &str,
+    trace_command_id: &str,
+    command_str: &str,
+    spec: Option<&crate::tasks::profile::CommandOutputSpec>,
+) -> Result<std::collections::BTreeSet<String>> {
+    let Some(spec) = spec else {
+        return Ok(Default::default());
+    };
+    let Some(tests_spec) = &spec.tests else {
+        return Ok(Default::default());
+    };
+
+    let passed_re = regex::Regex::new(&tests_spec.passed)?;
+    let failed_re = tests_spec
+        .failed
+        .as_ref()
+        .map(|pattern| regex::Regex::new(pattern))
+        .transpose()?;
+    let ignored_re = tests_spec
+        .ignored
+        .as_ref()
+        .map(|pattern| regex::Regex::new(pattern))
+        .transpose()?;
+    let target_re = tests_spec
+        .target
+        .as_ref()
+        .map(|pattern| regex::Regex::new(pattern))
+        .transpose()?;
+
+    let scoped_target = trace_command_id
+        .split_once("::")
+        .map(|(_, path)| path.trim_start_matches('/'));
+
+    let mut current_target = scoped_target.map(|s| s.to_string());
+    let mut targets_seen = std::collections::BTreeSet::new();
+    let mut passed = std::collections::BTreeSet::new();
+    let mut failed = std::collections::BTreeSet::new();
+    let mut ignored = std::collections::BTreeSet::new();
+
+    for line in output.lines() {
+        if let Some(target_re) = &target_re {
+            if let Some(captures) = target_re.captures(line) {
+                if let Some(m) = captures.get(1) {
+                    let target_str = m.as_str().trim();
+                    let normalized = if let Ok(rel) = Path::new(target_str).strip_prefix(root) {
+                        rel.to_string_lossy().into_owned()
+                    } else {
+                        target_str.trim_start_matches('/').to_string()
+                    };
+                    targets_seen.insert(normalized.clone());
+                    current_target = Some(normalized);
+                }
+            }
+        }
+
+        if let Some(captures) = passed_re.captures(line) {
+            if let Some(m) = captures.get(1) {
+                let test_id = m.as_str().trim();
+                let qualified = qualify_test_reference(test_id, current_target.as_deref());
+                passed.insert(qualified);
+            }
+        }
+
+        if let Some(failed_re) = &failed_re {
+            if let Some(captures) = failed_re.captures(line) {
+                if let Some(m) = captures.get(1) {
+                    let test_id = m.as_str().trim();
+                    let qualified = qualify_test_reference(test_id, current_target.as_deref());
+                    failed.insert(qualified);
+                }
+            }
+        }
+
+        if let Some(ignored_re) = &ignored_re {
+            if let Some(captures) = ignored_re.captures(line) {
+                let test_id = captures
+                    .get(1)
+                    .map(|m| m.as_str().trim())
+                    .unwrap_or_else(|| line.trim());
+                let qualified = qualify_test_reference(test_id, current_target.as_deref());
+                ignored.insert(qualified);
+            }
+        }
+    }
+
+    let mut canonical_targets = std::collections::BTreeSet::new();
+    for target in &targets_seen {
+        if targets_seen
+            .iter()
+            .any(|other| other != target && other.ends_with(&format!("/{target}")))
+        {
+            continue;
+        }
+        canonical_targets.insert(target.clone());
+    }
+
+    if canonical_targets.len() == 1 {
+        let single_target = canonical_targets.iter().next().unwrap();
+        passed = passed
+            .into_iter()
+            .map(|id| qualify_test_reference(&id, Some(single_target)))
+            .collect();
+    } else if current_target.is_none() {
+        if let Some(target_re) = &target_re {
+            if let Some(captures) = target_re.captures(command_str) {
+                if let Some(m) = captures.get(1) {
+                    let target_str = m.as_str().trim();
+                    let normalized = if let Ok(rel) = Path::new(target_str).strip_prefix(root) {
+                        rel.to_string_lossy().into_owned()
+                    } else {
+                        target_str.trim_start_matches('/').to_string()
+                    };
+                    let re_qualified: std::collections::BTreeSet<String> = passed
+                        .into_iter()
+                        .map(|id| qualify_test_reference(&id, Some(&normalized)))
+                        .collect();
+                    passed = re_qualified;
+                }
+            }
+        }
+    }
+
+    for test in failed.iter().chain(&ignored) {
+        passed.remove(test);
+    }
+
+    let mut validated = std::collections::BTreeSet::new();
+    for reference in passed {
+        if let Some((target, _)) = reference.split_once("::") {
+            if target.contains('/') || Path::new(target).extension().is_some() {
+                validate_project_path(target)?;
+            }
+        }
+        validated.insert(reference);
+    }
+
+    Ok(validated)
+}
+
+fn qualify_test_reference(test_id: &str, target: Option<&str>) -> String {
+    if test_id.contains('/') || test_id.contains('\\') {
+        test_id.to_string()
+    } else if let Some(target) = target {
+        if let Some(stripped) = test_id.strip_prefix(&format!("{target}::")) {
+            format!("{target}::{stripped}")
+        } else {
+            format!("{target}::{test_id}")
+        }
+    } else {
+        test_id.to_string()
+    }
 }
 
 fn output_boundary(value: &str, limit: usize) -> usize {
@@ -780,4 +971,54 @@ fn create_confined_log(root: &Path, relative: &Path, output: &[u8]) -> Result<()
 
 fn digest_key(value: &str) -> String {
     format!("{:x}", Sha256::digest(value.as_bytes()))
+}
+
+#[cfg(test)]
+mod command_output_tests {
+    use super::parse_command_output;
+    use crate::tasks::profile::{CommandCountsSpec, CommandOutputSpec};
+
+    fn output_spec() -> CommandOutputSpec {
+        CommandOutputSpec {
+            counts: Some(CommandCountsSpec {
+                passed: r"(?m)^passed=(.+)$".into(),
+                failed: r"(?m)^failed=(.+)$".into(),
+            }),
+            require_counts: true,
+            noise: Vec::new(),
+            errors: Vec::new(),
+            seam_ref_pattern: None,
+            tests: None,
+        }
+    }
+
+    #[test]
+    fn malformed_count_is_rejected() {
+        let error = parse_command_output("passed=unknown\nfailed=0", "test", Some(&output_spec()))
+            .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("test count is not an unsigned integer"));
+    }
+
+    #[test]
+    fn overflowing_count_total_is_rejected() {
+        let error = parse_command_output(
+            "passed=18446744073709551615\npassed=1\nfailed=0",
+            "test",
+            Some(&output_spec()),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("test count overflow"));
+    }
+
+    #[test]
+    fn configured_pass_count_without_failed_match_means_zero_failures() {
+        let parsed = parse_command_output("passed=3", "test", Some(&output_spec())).unwrap();
+
+        assert_eq!(parsed.passed, Some(3));
+        assert_eq!(parsed.failed, Some(0));
+    }
 }

@@ -15,6 +15,7 @@ pub(super) struct Snapshot {
     pub(super) status: String,
     pub(super) depends_on: Vec<String>,
     pub(super) invariants: Vec<String>,
+    pub(super) polish_scope: Vec<String>,
     pub(super) tasks: Vec<serde_yaml::Value>,
 }
 
@@ -59,6 +60,11 @@ pub(super) fn snapshot(root: &Path, path: PathBuf, settings: &TaskSettings) -> R
         .map(|value| serde_yaml::from_value(value.clone()))
         .transpose()?
         .unwrap_or_default();
+    let polish_scope = frontmatter
+        .get("polish_scope")
+        .map(|value| serde_yaml::from_value(value.clone()))
+        .transpose()?
+        .unwrap_or_default();
     let mut tasks = Vec::new();
     let mut lines = text.lines();
     while let Some(line) = lines.next() {
@@ -86,6 +92,7 @@ pub(super) fn snapshot(root: &Path, path: PathBuf, settings: &TaskSettings) -> R
         status,
         depends_on,
         invariants,
+        polish_scope,
         tasks,
     })
 }

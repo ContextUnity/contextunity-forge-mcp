@@ -24,7 +24,8 @@ use self::trace::prune_milestone_gate_records;
 
 pub(crate) use blackboard::clear_blackboard;
 pub use blackboard::is_canonical_blackboard_topic;
-pub(crate) use lifecycle::validate_session_independence;
+pub(crate) use lifecycle::{current_session_fingerprint, validate_session_independence};
+pub use lifecycle::{host_session_fingerprint, UNKNOWN_SESSION_FINGERPRINT};
 pub use lifecycle::{ClaimBoundExecutionRun, ClaimBoundExecutionTrace};
 pub use trace::{
     CommandExecutionProof, GateCheckpoint, GateExecutionTrace, GateTransition,
@@ -232,6 +233,8 @@ pub struct TasksStore {
     workspace_root: Option<PathBuf>,
     handoff_pruning: bool,
     pub(crate) database_path: PathBuf,
+    #[cfg(test)]
+    memory_uri: Option<String>,
     checkpoint_lock: Option<recovery::DatabaseFence>,
     recovery_stage: bool,
     preparation_owners: Vec<recovery::PreparationOwner>,
@@ -483,6 +486,85 @@ impl TasksStore {
         };
         #[cfg(not(unix))]
         let mut connection = connection;
+        Self::initialize_connection(&mut connection, known, path)?;
+        Ok(Self::from_connection(connection, path, repository, project))
+    }
+
+    /// Open an isolated in-memory task store using the same schema as a file-backed store.
+    ///
+    /// In-memory stores are suitable for state-only operations, not durable checkpoint
+    /// publication or filesystem recovery.
+    pub fn open_in_memory(repository: &str, project: &str) -> Result<Self> {
+        crate::tasks::valid_identity(repository)?;
+        crate::tasks::valid_identity(project)?;
+        static NEXT_MEMORY_STORE: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(0);
+        let id = NEXT_MEMORY_STORE
+            .try_update(
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+                |id| id.checked_add(1),
+            )
+            .map_err(|_| anyhow::anyhow!("in-memory store identity space exhausted"))?;
+        let uri = format!(
+            "file:forge_tasks_{}_{}?mode=memory&cache=shared",
+            std::process::id(),
+            id
+        );
+        let mut connection = Connection::open(&uri)?;
+        let path = Path::new(":memory:");
+        Self::initialize_connection(&mut connection, false, path)?;
+        let store = Self::from_connection(connection, path, repository, project);
+        #[cfg(test)]
+        let store = Self {
+            memory_uri: Some(uri),
+            ..store
+        };
+        Ok(store)
+    }
+
+    /// Open an isolated in-memory task store with a caller-supplied validated profile.
+    ///
+    /// The same store schema and persistence constraints apply as in
+    /// [`TasksStore::open_in_memory`]; this only selects the active gate profile.
+    pub fn open_in_memory_with_profile(
+        repository: &str,
+        project: &str,
+        profile: std::sync::Arc<crate::tasks::profile::GateProfile>,
+    ) -> Result<Self> {
+        profile.validate()?;
+        let mut store = Self::open_in_memory(repository, project)?;
+        store.profile = profile;
+        Ok(store)
+    }
+
+    /// Open another connection to this in-memory store's isolated shared cache.
+    /// The database remains alive until its last connection closes.
+    #[cfg(test)]
+    fn open_in_memory_peer(&self) -> Result<Self> {
+        let uri = self
+            .memory_uri
+            .as_deref()
+            .context("not an in-memory task store")?;
+        let connection = Connection::open(uri)?;
+        connection.execute_batch("PRAGMA busy_timeout=5000; PRAGMA synchronous=NORMAL; PRAGMA mmap_size=268435456; PRAGMA foreign_keys=ON;")?;
+        let mut peer = Self::from_connection(
+            connection,
+            Path::new(":memory:"),
+            &self.repository,
+            &self.project,
+        );
+        peer.memory_uri = Some(uri.to_owned());
+        peer.default_project = self.default_project.clone();
+        peer.project_owners = self.project_owners.clone();
+        peer.project_aliases = self.project_aliases.clone();
+        peer.profile = self.profile.clone();
+        peer.workspace_root = self.workspace_root.clone();
+        peer.handoff_pruning = self.handoff_pruning;
+        Ok(peer)
+    }
+
+    fn initialize_connection(connection: &mut Connection, known: bool, path: &Path) -> Result<()> {
         if known {
             let version: String = connection.query_row(
                 "SELECT value FROM task_store_metadata WHERE key='schema_version'",
@@ -559,7 +641,7 @@ impl TasksStore {
             CREATE TRIGGER IF NOT EXISTS task_delete_generation AFTER DELETE ON tasks BEGIN UPDATE meta SET value=value+1 WHERE key='generation'; END;
             COMMIT;")?;
         }
-        schema::migrate(&mut connection)?;
+        schema::migrate(connection)?;
         if !connection.query_row(
             "SELECT EXISTS(SELECT 1 FROM pragma_table_info('task_claims') WHERE name='session_fingerprint')",
             [],
@@ -582,8 +664,8 @@ impl TasksStore {
                 return Err(err);
             }
         }
-        ensure_execution_provenance_schema(&connection)?;
-        trace::ensure_command_output_schema(&connection)?;
+        ensure_execution_provenance_schema(connection)?;
+        trace::ensure_command_output_schema(connection)?;
         let version: String = connection.query_row(
             "SELECT value FROM task_store_metadata WHERE key='schema_version'",
             [],
@@ -592,7 +674,16 @@ impl TasksStore {
         if version != "7" {
             bail!("unsupported tasks schema; use recovery tooling");
         }
-        Ok(Self {
+        Ok(())
+    }
+
+    fn from_connection(
+        connection: Connection,
+        path: &Path,
+        repository: &str,
+        project: &str,
+    ) -> Self {
+        Self {
             connection,
             repository: repository.to_owned(),
             project: project.to_owned(),
@@ -605,11 +696,13 @@ impl TasksStore {
             workspace_root: None,
             handoff_pruning: true,
             database_path: path.to_path_buf(),
+            #[cfg(test)]
+            memory_uri: None,
             checkpoint_lock: None,
             recovery_stage: false,
             preparation_owners: Vec::new(),
             obsolete_checkpoint_owners: Default::default(),
-        })
+        }
     }
     pub(crate) fn set_profile(
         &mut self,
@@ -621,7 +714,7 @@ impl TasksStore {
         self.workspace_root = Some(root.to_path_buf());
     }
     /// Resolve and validate the profile pinned to one task, falling back to the workspace profile.
-    pub(crate) fn profile_for_task(
+    pub fn profile_for_task(
         &self,
         task: &Task,
     ) -> Result<std::sync::Arc<crate::tasks::profile::GateProfile>> {
@@ -632,12 +725,13 @@ impl TasksStore {
         task: &mut Task,
         profile: &crate::tasks::profile::GateProfile,
     ) -> Result<()> {
-        task.gate = profile.index_of(&task.stage).with_context(|| {
+        let task_profile = crate::engine::tasks::claim::flattened_profile(profile, Some(task))?;
+        task.gate = task_profile.index_of(&task.stage).with_context(|| {
             format!(
                 "TASK_STAGE_UNKNOWN: task '{}' is stored at unknown stage '{}'; active gates: {}",
                 task.task_id,
                 task.stage,
-                profile
+                task_profile
                     .gates
                     .iter()
                     .map(|gate| gate.id.as_str())
@@ -711,33 +805,39 @@ impl TasksStore {
                 }
             }
         }
-        let snapshot_gate = exec_gates[..stage_index]
+        for snapshot_gate in exec_gates[..stage_index]
             .iter()
             .rev()
-            .find(|gate| gate.sha_snapshot)
-            .context(
-                "TASK_SNAPSHOT_NOT_FOUND: no accepted candidate snapshot precedes this gate",
-            )?;
-        let leaf_alias = snapshot_gate
-            .id
-            .rsplit('.')
-            .next()
-            .unwrap_or(&snapshot_gate.id);
-        let evidence: Option<String> = self
-            .connection
-            .prepare("SELECT evidence FROM task_gates WHERE task_id=?1 AND (gate=?2 OR gate=?3) AND state='passed' ORDER BY revision DESC LIMIT 1")?
-            .query_row(params![task_id, snapshot_gate.id, leaf_alias], |r| r.get(0))
-            .optional()?;
-        Ok(evidence.and_then(|ev| {
-            let evidence = serde_json::from_str::<serde_json::Value>(&ev).ok()?;
-            Some((
-                evidence.get("commit")?.as_str()?.to_owned(),
-                evidence
-                    .get("candidate_baseline_head")?
-                    .as_str()?
-                    .to_owned(),
-            ))
-        }))
+            .filter(|gate| gate.sha_snapshot)
+        {
+            let leaf_alias = snapshot_gate
+                .id
+                .rsplit('.')
+                .next()
+                .unwrap_or(&snapshot_gate.id);
+            let evidence: Option<String> = self
+                .connection
+                .prepare("SELECT evidence FROM task_gates WHERE task_id=?1 AND (gate=?2 OR gate=?3) AND state='passed' ORDER BY revision DESC LIMIT 1")?
+                .query_row(params![task_id, snapshot_gate.id, leaf_alias], |r| r.get(0))
+                .optional()?;
+            if let Some(ev) = evidence {
+                let evidence_val: serde_json::Value = serde_json::from_str(&ev).context(
+                    "TASK_GATE_EVIDENCE_CORRUPTED: candidate evidence is malformed JSON",
+                )?;
+                let commit = evidence_val
+                    .get("commit")
+                    .and_then(|v| v.as_str())
+                    .context(
+                    "TASK_GATE_EVIDENCE_CORRUPTED: missing commit in candidate snapshot evidence",
+                )?;
+                let baseline = evidence_val
+                    .get("candidate_baseline_head")
+                    .and_then(|v| v.as_str())
+                    .context("TASK_GATE_EVIDENCE_CORRUPTED: missing candidate_baseline_head in candidate snapshot evidence")?;
+                return Ok(Some((commit.to_owned(), baseline.to_owned())));
+            }
+        }
+        bail!("TASK_SNAPSHOT_NOT_FOUND: no accepted candidate snapshot precedes this gate");
     }
     /// Read the candidate SHA recorded for the latest preceding snapshot gate.
     pub fn build_snapshot_commit(&self, task_id: &str) -> Result<Option<String>> {
@@ -806,15 +906,20 @@ impl TasksStore {
         object.insert("stage".into(), serde_json::json!(task.stage));
         object.insert("attempts".into(), serde_json::json!(attempts));
         object.insert("gates".into(), serde_json::json!(gates));
-        let latest_snapshot = profile
-            .gates
+        let exec_gates = profile.executable_gates();
+        let latest_snapshot = exec_gates
             .iter()
             .rev()
             .filter(|gate| gate.sha_snapshot)
             .find_map(|snapshot_gate| {
+                let leaf = snapshot_gate
+                    .id
+                    .rsplit('.')
+                    .next()
+                    .unwrap_or(&snapshot_gate.id);
                 let accepted = gates.iter().rev().find(|record| {
-                    record.get("stage").and_then(serde_json::Value::as_str)
-                        == Some(snapshot_gate.id.as_str())
+                    let st = record.get("stage").and_then(serde_json::Value::as_str);
+                    (st == Some(snapshot_gate.id.as_str()) || st == Some(leaf))
                         && record.get("state").and_then(serde_json::Value::as_str) == Some("passed")
                 })?;
                 let commit = accepted.get("commit")?.as_str()?;
@@ -827,7 +932,24 @@ impl TasksStore {
             object.insert("latest_snapshot".into(), snapshot);
         }
         object.insert("findings".into(), serde_json::json!(findings));
-        object.insert("gate_states".into(),serde_json::json!(profile.gates.iter().map(|gate| gate.id.as_str()).enumerate().map(|(i,name)|serde_json::json!({"stage":name,"state":if i<task.gate || task.status=="completed" {"passed"} else if i==task.gate && task.status=="in_progress" {"in_progress"} else {"pending"}})).collect::<Vec<_>>()));
+        object.insert(
+            "gate_states".into(),
+            serde_json::json!(exec_gates
+                .iter()
+                .map(|gate| gate.id.as_str())
+                .enumerate()
+                .map(|(i, name)| serde_json::json!({
+                    "stage": name,
+                    "state": if i < task.gate || task.status == "completed" {
+                        "passed"
+                    } else if i == task.gate && task.status == "in_progress" {
+                        "in_progress"
+                    } else {
+                        "pending"
+                    }
+                }))
+                .collect::<Vec<_>>()),
+        );
         object.insert("subtasks".into(), serde_json::json!(task.spec.subtasks));
         shorten_task_response_commits(&mut value);
         Ok(value)
@@ -1197,18 +1319,30 @@ impl TasksStore {
                 }
             }
             let completed = spec.status.as_deref() == Some("completed");
+            let flattened_task_profile =
+                crate::engine::tasks::claim::flattened_profile(&task_profile, None)?;
             if completed && !reference.split('/').any(|part| part == "archive") {
                 crate::tasks::gates::validate_durable_receipt_with_profile(
                     spec.receipt
                         .as_ref()
                         .context("TASK_RECEIPT_INVALID: missing receipt")?,
                     spec.contract_revision,
-                    &task_profile,
+                    &flattened_task_profile,
                 )?;
             }
-            let first_gate = task_profile.gate_id(0).to_owned();
-            let last_index = task_profile.gates.len().saturating_sub(1);
-            let last_gate = task_profile.gate_id(last_index).to_owned();
+            let first_gate = flattened_task_profile.gate_id(0).to_owned();
+            let last_index = spec
+                .receipt
+                .as_ref()
+                .and_then(|receipt| receipt.delivery_gate.as_deref())
+                .map(|stage| {
+                    flattened_task_profile
+                        .index_of(stage)
+                        .context("TASK_RECEIPT_INVALID: receipt delivery gate is missing")
+                })
+                .transpose()?
+                .unwrap_or_else(|| flattened_task_profile.gates.len().saturating_sub(1));
+            let last_gate = flattened_task_profile.gate_id(last_index).to_owned();
             let archived: Option<u64> = tx
                 .query_row(
                     "SELECT revision FROM task_revisions WHERE task_id=?1",
@@ -2127,6 +2261,156 @@ pub fn now() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    const IN_MEMORY_TEST_ROOT: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/acdd/fixtures/empty-root"
+    );
+
+    #[test]
+    fn in_memory_shared_cache_writer_contention_returns_locked() -> Result<()> {
+        let source = "---\nid: m-contention\nstatus: active\n---\n```yaml\ntask_ref: first\ntarget: Writer contention\nproof_policy: seam-test-first\nscope: [src/lib.rs]\n```\n";
+        let milestone = Milestone::parse(source, "forge-mcp")?;
+        let root = std::path::Path::new(IN_MEMORY_TEST_ROOT);
+        let mut writer = TasksStore::open_in_memory("forge-mcp", "forge-mcp")?;
+        writer.sync(&milestone, "docs/contention.md", root)?;
+        let mut peer = writer.open_in_memory_peer()?;
+        let tx = writer
+            .connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        assert!(!peer.milestone_tombstoned(&milestone.id)?);
+        let error = peer
+            .sync(&milestone, "docs/contention.md", root)
+            .unwrap_err();
+        let sqlite_error = error
+            .downcast_ref::<rusqlite::Error>()
+            .expect("shared-cache writer contention must return a SQLite error");
+        assert!(
+            matches!(sqlite_error, rusqlite::Error::SqliteFailure(e, _) if e.code == rusqlite::ErrorCode::DatabaseLocked),
+            "{error:#}"
+        );
+        tx.execute_batch("DELETE FROM task_revisions; DELETE FROM tasks; INSERT INTO milestone_tombstones VALUES('forge-mcp/forge-mcp/m-contention',1,1,'[]');")?;
+        tx.commit()?;
+        let error = peer
+            .sync(&milestone, "docs/contention.md", root)
+            .unwrap_err();
+        assert!(error.to_string().contains("STORE_SYNC_FAILED"), "{error:#}");
+        assert!(peer.list(None, "all", None)?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn in_memory_checkpoint_recovery_rejects_file_operations() -> Result<()> {
+        let mut store = TasksStore::open_in_memory("repo", "project")?;
+        assert!(store.reconcile_checkpoints().is_err());
+        assert!(store.lock_checkpoint().is_err());
+        assert!(store.recover_orphaned_intents(&[]).is_err());
+        assert!(recovery::read_database(Path::new(":memory:")).is_err());
+        assert!(!Path::new(":memory:")
+            .with_extension("receipt.lock")
+            .exists());
+        Ok(())
+    }
+
+    #[test]
+    fn in_memory_task_store_persists_lifecycle_and_enforces_constraints() -> Result<()> {
+        let source = "---\nid: m-statuses\nstatus: active\n---\n```yaml\ntask_ref: statuses\ntarget: Status lifecycle\nproof_policy: seam-test-first\nscope: [src/lib.rs]\nsubtasks:\n- subtask_ref: child\n  title: Child\n  status: pending\n```\n";
+        let milestone = Milestone::parse(source, "forge-mcp")?;
+        let id = milestone.task_id(&milestone.tasks[0]);
+        let workspace = std::path::Path::new(IN_MEMORY_TEST_ROOT);
+        let mut workspace_entries = std::fs::read_dir(workspace)?
+            .map(|entry| entry.map(|entry| entry.file_name()))
+            .collect::<std::io::Result<Vec<_>>>()?;
+        workspace_entries.sort();
+        let mut store = TasksStore::open_in_memory("forge-mcp", "forge-mcp")?;
+        let generation = || -> Result<i64> {
+            Ok(store.connection.query_row(
+                "SELECT value FROM meta WHERE key='generation'",
+                [],
+                |r| r.get(0),
+            )?)
+        };
+        let before = generation()?;
+        store.sync(&milestone, "docs/statuses.md", workspace)?;
+        let inserted = store.connection.query_row(
+            "SELECT value FROM meta WHERE key='generation'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )?;
+        assert!(inserted > before);
+        assert_eq!(store.inspect(&id)?.status, "ready");
+        assert_eq!(store.subtask_list(&id)?[0].status, "ready");
+        assert_eq!(
+            store
+                .subtask_update(&id, "child", "in_progress", None)?
+                .status,
+            "in_progress"
+        );
+        assert_eq!(store.inspect(&id)?.spec.subtasks[0].status, "in_progress");
+        let updated = store.connection.query_row(
+            "SELECT value FROM meta WHERE key='generation'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )?;
+        assert!(updated > inserted);
+        assert!(store.subtask_update(&id, "child", "invalid", None).is_err());
+        assert_eq!(store.subtask_list(&id)?[0].status, "in_progress");
+        assert!(store.connection.execute("INSERT INTO task_subtasks(task_id,subtask_ref,title,status,updated_at) VALUES('absent','child','Child','ready',0)", []).is_err());
+        store.prune_cancelled("docs/statuses.md")?;
+        let deleted = store.connection.query_row(
+            "SELECT value FROM meta WHERE key='generation'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )?;
+        assert!(deleted > updated);
+        assert!(store.inspect(&id).is_err());
+        let mut workspace_entries_after = std::fs::read_dir(workspace)?
+            .map(|entry| entry.map(|entry| entry.file_name()))
+            .collect::<std::io::Result<Vec<_>>>()?;
+        workspace_entries_after.sort();
+        assert_eq!(workspace_entries_after, workspace_entries);
+        Ok(())
+    }
+
+    #[test]
+    fn in_memory_stores_initialize_schema_and_isolate_state() -> Result<()> {
+        let mut first = TasksStore::open_in_memory("repo", "project")?;
+        let second = TasksStore::open_in_memory("repo", "project")?;
+        let peer = first.open_in_memory_peer()?;
+        let scope = "repo/project/docs/milestones/example.md";
+        first.blackboard_post_scoped(scope, None, None, "worker", "notes", "hello")?;
+        assert_eq!(
+            peer.blackboard_page(scope, None, None, None, None, None)?
+                .messages
+                .len(),
+            1
+        );
+        assert!(peer.connection.execute("INSERT INTO task_subtasks(task_id,subtask_ref,title,status,updated_at) VALUES('absent','child','Child','ready',0)", []).is_err());
+        assert_eq!(
+            first
+                .blackboard_page(scope, None, None, None, None, None)?
+                .messages
+                .len(),
+            1
+        );
+        assert!(second
+            .blackboard_page(scope, None, None, None, None, None)?
+            .messages
+            .is_empty());
+        assert_eq!(first.prune_cancelled("docs/milestones/example.md")?, 0);
+        assert!(first
+            .blackboard_page(scope, None, None, None, None, None)?
+            .messages
+            .is_empty());
+        assert_eq!(first.connection.path(), Some(""));
+        assert!(TasksStore::open_in_memory("invalid/repo", "project").is_err());
+        drop(first);
+        peer.blackboard_post_scoped(scope, None, None, "worker", "notes", "peer remains")?;
+        assert!(second
+            .blackboard_page(scope, None, None, None, None, None)?
+            .messages
+            .is_empty());
+        Ok(())
+    }
 
     #[test]
     fn initialized_task_store_opens_during_a_write_transaction() {

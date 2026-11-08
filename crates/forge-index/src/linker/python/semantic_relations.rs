@@ -1,9 +1,9 @@
-use crate::core::models::{Facts, Node, ReceiverHint, Reference, compact_graph::Graph};
+use crate::core::models::{compact_graph::Graph, Facts, Node, ReceiverHint, Reference};
 use crate::core::semantic::SourcePosition;
 use crate::engine::languages::{self, dependency_registry::DependencyRegistry};
 use crate::engine::linker::{
     framework_relations::{
-        DeclarativeRulePrimitive, OccurrenceTable, PreparedSemanticFacts, project_scope,
+        project_scope, DeclarativeRulePrimitive, OccurrenceTable, PreparedSemanticFacts,
     },
     interner::{LinkerInterner, SymbolId},
     semantic_context,

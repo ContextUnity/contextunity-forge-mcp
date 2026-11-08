@@ -30,11 +30,23 @@ macro_rules! semantic_fields {
 }
 
 fn take_strings(values: Vec<Value>) -> Vec<String> {
-    values.into_iter().map(|value| match value { Value::String(value) => value, _ => unreachable!() }).collect()
+    values
+        .into_iter()
+        .map(|value| match value {
+            Value::String(value) => value,
+            _ => unreachable!(),
+        })
+        .collect()
 }
 
 fn take_string_pairs(fields: serde_json::Map<String, Value>) -> Vec<(String, String)> {
-    fields.into_iter().map(|(key, value)| match value { Value::String(value) => (key, value), _ => unreachable!() }).collect()
+    fields
+        .into_iter()
+        .map(|(key, value)| match value {
+            Value::String(value) => (key, value),
+            _ => unreachable!(),
+        })
+        .collect()
 }
 
 impl NodeSemanticEntry {
@@ -65,14 +77,20 @@ impl NodeSemanticEntry {
             }
             let valid = match (key, &value) {
                 ("param_types", Value::Object(fields)) => fields.values().all(Value::is_string),
-                ("bindings" | "rebindings", Value::Array(values)) => values.iter().all(Value::is_string),
+                ("bindings" | "rebindings", Value::Array(values)) => {
+                    values.iter().all(Value::is_string)
+                }
                 _ => false,
             };
             if !valid {
                 details.insert(key.to_owned(), value);
                 if let Some(entry) = node.native_semantic.as_mut() {
                     entry.admitted &= !bit;
-                    match key { "bindings" => entry.bindings.clear(), "rebindings" => entry.rebindings.clear(), _ => entry.param_types.clear() }
+                    match key {
+                        "bindings" => entry.bindings.clear(),
+                        "rebindings" => entry.rebindings.clear(),
+                        _ => entry.param_types.clear(),
+                    }
                 }
                 continue;
             }
@@ -85,7 +103,9 @@ impl NodeSemanticEntry {
             let entry = node.native_semantic.get_or_insert_with(Default::default);
             entry.admitted |= bit;
             match (key, value) {
-                ("param_types", Value::Object(fields)) => entry.param_types = take_string_pairs(fields),
+                ("param_types", Value::Object(fields)) => {
+                    entry.param_types = take_string_pairs(fields)
+                }
                 ("bindings", Value::Array(values)) => entry.bindings = take_strings(values),
                 ("rebindings", Value::Array(values)) => entry.rebindings = take_strings(values),
                 _ => unreachable!(),
@@ -117,32 +137,51 @@ impl NodeSemanticEntry {
         entry.admitted |= 3;
         if let Some(details) = node.details.as_object_mut() {
             for (key, present) in [("bindings", has_bindings), ("rebindings", has_rebindings)] {
-                if present && details.get(key).is_some_and(|value| value.as_array().is_some_and(Vec::is_empty)) { details.remove(key); }
+                if present
+                    && details
+                        .get(key)
+                        .is_some_and(|value| value.as_array().is_some_and(Vec::is_empty))
+                {
+                    details.remove(key);
+                }
             }
         }
     }
 
     pub fn parameters(&self) -> impl Iterator<Item = (&str, &str)> {
-        self.param_types.iter().map(|(key, value)| (key.as_str(), value.as_str()))
+        self.param_types
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_str()))
     }
 }
 
 #[derive(Clone, Debug)]
 pub enum SemanticState {
-    Valid { facts: Vec<crate::semantic::SemanticFact>, original: Option<Value> },
-    Invalid { original: Value, error: String },
+    Valid {
+        facts: Vec<crate::semantic::SemanticFact>,
+        original: Option<Value>,
+    },
+    Invalid {
+        original: Value,
+        error: String,
+    },
 }
 
 #[derive(Clone, Debug)]
 pub struct SemanticEntry {
-    pub owner: String, pub line: usize, pub qualname: String, pub state: SemanticState,
+    pub owner: String,
+    pub line: usize,
+    pub qualname: String,
+    pub state: SemanticState,
 }
 
 #[derive(Clone, Debug, Default)]
 #[doc(hidden)]
 pub struct SemanticStore {
-    entries: std::collections::BTreeMap<usize, SemanticEntry>, owners: HashMap<String, usize>,
-    complete: bool, pub flows: FlowStore,
+    entries: std::collections::BTreeMap<usize, SemanticEntry>,
+    owners: HashMap<String, usize>,
+    complete: bool,
+    pub flows: FlowStore,
 }
 
 fn remap_semantic_fact(
@@ -160,7 +199,9 @@ fn remap_semantic_fact(
         }
         _ => false,
     };
-    if changed { *original = None; }
+    if changed {
+        *original = None;
+    }
 }
 
 impl SemanticStore {
@@ -200,11 +241,7 @@ impl SemanticStore {
             },
         );
     }
-    pub fn push(
-        &mut self,
-        nodes: &mut [Node],
-        fact: crate::semantic::SemanticFact,
-    ) -> bool {
+    pub fn push(&mut self, nodes: &mut [Node], fact: crate::semantic::SemanticFact) -> bool {
         let owner = &fact.occurrence.owner_id;
         let index = self
             .owners
@@ -267,15 +304,27 @@ impl SemanticStore {
             }
         }
     }
-    pub fn state(&self, index: usize) -> Option<&SemanticState> { self.entries.get(&index).map(|entry| &entry.state) }
-    pub fn entries(&self) -> impl ExactSizeIterator<Item = (&usize, &SemanticEntry)> { self.entries.iter() }
-    pub fn is_complete(&self) -> bool { self.complete }
-    pub fn mark_complete(&mut self) { self.complete = true; }
+    pub fn state(&self, index: usize) -> Option<&SemanticState> {
+        self.entries.get(&index).map(|entry| &entry.state)
+    }
+    pub fn entries(&self) -> impl ExactSizeIterator<Item = (&usize, &SemanticEntry)> {
+        self.entries.iter()
+    }
+    pub fn is_complete(&self) -> bool {
+        self.complete
+    }
+    pub fn mark_complete(&mut self) {
+        self.complete = true;
+    }
     pub fn restore_cache_entry(&mut self, index: usize, entry: SemanticEntry) {
-        self.owners.entry(entry.owner.clone()).or_insert(index); self.entries.insert(index, entry);
+        self.owners.entry(entry.owner.clone()).or_insert(index);
+        self.entries.insert(index, entry);
     }
     pub fn remap_order(&mut self, map: &HashMap<usize, usize>) {
-        self.entries = std::mem::take(&mut self.entries).into_iter().map(|(i, e)| (map.get(&i).copied().unwrap_or(i), e)).collect();
+        self.entries = std::mem::take(&mut self.entries)
+            .into_iter()
+            .map(|(i, e)| (map.get(&i).copied().unwrap_or(i), e))
+            .collect();
         for index in self.owners.values_mut() {
             if let Some(new) = map.get(index) {
                 *index = *new;
@@ -283,7 +332,9 @@ impl SemanticStore {
         }
     }
     pub fn retain_remapped(&mut self, map: &HashMap<usize, usize>) {
-        self.entries.retain(|index, _| map.contains_key(index)); self.owners.retain(|_, index| map.contains_key(index)); self.remap_order(map);
+        self.entries.retain(|index, _| map.contains_key(index));
+        self.owners.retain(|_, index| map.contains_key(index));
+        self.remap_order(map);
     }
     pub fn append_remapped(
         &mut self,
@@ -295,9 +346,13 @@ impl SemanticStore {
             let Some(&index) = map.get(&index) else {
                 continue;
             };
-            if let Some(id) = ids.get(&entry.owner) { entry.owner.clone_from(id); }
+            if let Some(id) = ids.get(&entry.owner) {
+                entry.owner.clone_from(id);
+            }
             if let SemanticState::Valid { facts, original } = &mut entry.state {
-                for fact in facts.iter_mut() { remap_semantic_fact(fact, ids, original); }
+                for fact in facts.iter_mut() {
+                    remap_semantic_fact(fact, ids, original);
+                }
             }
             if let Some(previous) = self.entries.get_mut(&index) {
                 if let (

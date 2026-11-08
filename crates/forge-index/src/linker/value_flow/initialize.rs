@@ -209,9 +209,8 @@ impl<'a> ValueFlowIndex<'a> {
             let mut events = Vec::with_capacity(bindings.len());
             for binding in bindings {
                 let loop_element = matches!(binding.value, ValueExpr::LoopElement { .. });
-                let guarded_python =
-                    owner.language == "python" && matches!(binding.value, ValueExpr::Scoped { .. });
-                let target = if (binding.conditional && !loop_element && !guarded_python)
+                let lexical_scoped = matches!(binding.value, ValueExpr::Scoped { .. });
+                let target = if (binding.conditional && !loop_element && !lexical_scoped)
                     || index.scopes[owner.id.as_str()].invalid
                 {
                     TypeTarget::Unknown
@@ -346,9 +345,8 @@ impl<'a> ValueFlowIndex<'a> {
         // Replay in source order so aliases of field-derived values see the summaries.
         for owner in &owners {
             for (binding, event_index) in &ordered[owner.id.as_str()] {
-                let guarded_python =
-                    owner.language == "python" && matches!(binding.value, ValueExpr::Scoped { .. });
-                if (!binding.conditional || guarded_python)
+                let lexical_scoped = matches!(binding.value, ValueExpr::Scoped { .. });
+                if (!binding.conditional || lexical_scoped)
                     && !index.scopes[owner.id.as_str()].invalid
                 {
                     let writes = &index.scopes[owner.id.as_str()].bindings[binding.name];

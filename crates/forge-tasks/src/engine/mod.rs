@@ -20,11 +20,12 @@ mod context;
 use context::context_bundle;
 pub mod blackboard;
 pub(crate) mod claim;
+mod evidence_compiler;
+pub(crate) mod gate_graph;
 pub mod gates;
 mod git_snapshot;
 mod lifecycle;
 mod scheduler;
-mod submit;
 
 pub use crate::milestones;
 pub use blackboard::{blackboard, BlackboardAction, BlackboardRequest, BlackboardScope};
@@ -40,11 +41,11 @@ pub fn default_db(root: &std::path::Path) -> std::path::PathBuf {
 
 /// Compile an automated gate proof from its persisted traces and current Git state.
 pub fn compile_evidence_envelope(root: &Path, task_id: &str, stage: &str) -> Result<Value> {
-    submit::compile_evidence_envelope(root, task_id, stage)
+    evidence_compiler::compile_evidence_envelope(root, task_id, stage)
 }
 
 pub fn candidate_fingerprint(root: &Path) -> Result<String> {
-    submit::candidate_fingerprint(root)
+    evidence_compiler::candidate_fingerprint(root)
 }
 
 /// Submit an automated gate without caller-supplied proof fields.
@@ -54,13 +55,14 @@ pub fn submit_zero_arg(
     stage: &str,
     action: Action,
     findings: Option<Value>,
+    session_fingerprint: Option<&str>,
 ) -> Result<Value> {
-    submit::submit_zero_arg(root, task_id, stage, action, findings)
+    evidence_compiler::submit_zero_arg(root, task_id, stage, action, findings, session_fingerprint)
 }
 
 /// Verify the active command gate without advancing its lifecycle.
 pub fn verify_task(root: &Path, task_id: &str, timeout_seconds: Option<u64>) -> Result<Value> {
-    submit::verify_task(root, task_id, timeout_seconds)
+    evidence_compiler::verify_task(root, task_id, timeout_seconds)
 }
 
 /// Submit inferred command evidence with an optional process timeout.
@@ -71,8 +73,17 @@ pub fn submit_zero_arg_with_timeout(
     action: Action,
     findings: Option<Value>,
     timeout_seconds: Option<u64>,
+    session_fingerprint: Option<&str>,
 ) -> Result<Value> {
-    submit::submit_zero_arg_with_timeout(root, task_id, stage, action, findings, timeout_seconds)
+    evidence_compiler::submit_zero_arg_with_timeout(
+        root,
+        task_id,
+        stage,
+        action,
+        findings,
+        timeout_seconds,
+        session_fingerprint,
+    )
 }
 
 /// Check that a configured red result is followed by a successful result.
@@ -81,7 +92,7 @@ pub fn verify_red_to_green(
     green: &ClaimBoundExecutionTrace,
     expected_failure: &crate::tasks::profile::ExpectedFailure,
 ) -> Result<Value> {
-    submit::verify_red_to_green(red, green, expected_failure)
+    evidence_compiler::verify_red_to_green(red, green, expected_failure)
 }
 
 /// Resolve the configured destination for scope or public-symbol findings.
@@ -89,7 +100,7 @@ pub fn evaluate_reject_routing(
     routing: &crate::tasks::profile::RejectRouting,
     finding_kind: &str,
 ) -> Result<String> {
-    submit::evaluate_reject_routing(routing, finding_kind)
+    evidence_compiler::evaluate_reject_routing(routing, finding_kind)
 }
 
 /// Render a compact Git telemetry note while keeping full logs in their log files.
@@ -98,7 +109,7 @@ pub fn telemetry_passport_note(
     traces: &[GateExecutionTrace],
     diff_summary: &str,
 ) -> Result<String> {
-    submit::telemetry_passport_note(task_id, traces, diff_summary)
+    evidence_compiler::telemetry_passport_note(task_id, traces, diff_summary)
 }
 
 /// Rebase a speculative task branch after its upstream snapshot advances.
@@ -236,6 +247,10 @@ pub struct List {
 #[serde(deny_unknown_fields)]
 /// Parameters for claiming a task lifecycle gate.
 pub struct Claim {
+    /// Trusted in-process session context; external callers use FORGE_AGENT_SESSION_ID.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub session_fingerprint: Option<String>,
     /// Unique task identifier `{project}/{milestone_id}:{task_ref}`.
     pub task_id: String,
     /// Lifecycle stage identifier from the task's active workflow profile.
@@ -255,6 +270,10 @@ pub struct Claim {
 #[serde(deny_unknown_fields)]
 /// Parameters for submitting evidence to advance or reject a lifecycle gate.
 pub struct Submit {
+    /// Trusted in-process session context; external callers use FORGE_AGENT_SESSION_ID.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub session_fingerprint: Option<String>,
     /// Unique task identifier `{project}/{milestone_id}:{task_ref}`.
     pub task_id: String,
     /// Active lifecycle stage identifier from the task's pinned workflow profile.
@@ -322,6 +341,10 @@ pub enum ManageAction {
 #[serde(deny_unknown_fields)]
 /// Parameters for administrative task management in .forge/tasks.sqlite.
 pub struct Manage {
+    /// Trusted in-process session context for next; external callers use FORGE_AGENT_SESSION_ID.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub session_fingerprint: Option<String>,
     /// Process timeout override for verify, in seconds (1..=3600).
     pub timeout_seconds: Option<u64>,
     /// Worker receiving an atomic next claim.
@@ -1020,7 +1043,7 @@ fn submit_inner(root: &Path, p: Submit) -> Result<Value> {
     let mut store = registry.open(workspace)?;
     let observed_task = store.inspect(&p.task_id)?;
     let profile = store.profile_for_task(&observed_task)?;
-    let gate_index = profile.index_of(&p.stage).with_context(|| {
+    profile.index_of(&p.stage).with_context(|| {
         format!(
             "TASK_STAGE_UNKNOWN: '{}' is not in the active profile; choose one of: {}",
             p.stage,
@@ -1065,13 +1088,8 @@ fn submit_inner(root: &Path, p: Submit) -> Result<Value> {
     }
     let worktree = Path::new(&evidence.worktree);
     let explicit_commit = evidence.commit.clone();
-    let exec_gates = profile.executable_gates();
-    let prior_snapshot = exec_gates[..gate_index]
-        .iter()
-        .rev()
-        .find(|prior| prior.sha_snapshot);
-    let needs_candidate =
-        !gate.sha_snapshot && (prior_snapshot.is_some() || gate.persistence.immutable);
+    let prior_snapshot = claim::has_predecessor_snapshot(&profile, &task, &p.stage)?;
+    let needs_candidate = !gate.sha_snapshot && (prior_snapshot || gate.persistence.immutable);
     let mut candidate_commit = None;
     let mut provisional_objects = None;
     let mut delivery_rollback = None;
@@ -1188,8 +1206,18 @@ fn submit_inner(root: &Path, p: Submit) -> Result<Value> {
     let snapshot_scope = task.spec.scope.clone();
     let snapshot_commit = candidate_commit.clone().or_else(|| evidence.commit.clone());
     let snapshot_baseline = evidence.candidate_baseline_head.clone();
-    let delivery_needs_commit =
-        is_delivery && gate.auto_commit && p.action.name() == "pass" && task.status != "completed";
+    let delivery_needs_commit = is_delivery
+        && p.action.name() == "pass"
+        && task.status != "completed"
+        && match gate.persistence.post {
+            Some(crate::tasks::profile::PersistenceAction::Commit) => true,
+            Some(
+                crate::tasks::profile::PersistenceAction::Snapshot
+                | crate::tasks::profile::PersistenceAction::Logfile
+                | crate::tasks::profile::PersistenceAction::None,
+            ) => false,
+            None => gate.auto_commit,
+        };
     let snapshot_milestone_ref = task.milestone_ref.clone();
     let task_result = store.submit_with_pre_persist(
         &p.task_id,
@@ -1197,6 +1225,7 @@ fn submit_inner(root: &Path, p: Submit) -> Result<Value> {
         &mut evidence,
         p.action.name(),
         p.findings.as_ref(),
+        p.session_fingerprint.as_deref(),
         |delivery_task| {
             if pin_snapshot {
                 if let Some(commit_sha) = snapshot_commit.as_deref() {

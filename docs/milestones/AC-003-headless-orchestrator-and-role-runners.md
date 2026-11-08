@@ -22,6 +22,7 @@ invariants:
   - 'INV-PLAN-WORKFLOW-ORCHESTRATION: The orchestrator supports standalone workflows (docs/workflows/*.yaml) via contextunity-forge-mcp workflow [list|show|run] and structured plans (doc_type: plan in docs/plans/*.md) via contextunity-forge-mcp plan [list|show|run], executing in-place under universal gate governance.'
   - 'INV-DELIVERY-SUBTASK-COMPLETION-GUARD: Mechanical delivery verification fails closed with TASK_SUBTASKS_INCOMPLETE if any declared subtask under the active task or plan step is not completed or cancelled, and with TASK_SUBTASK_EVIDENCE_MISSING if any completed subtask lacks non-empty verification evidence.'
   - 'INV-CLI-UNIFIED-ARGUMENTS: Global CLI and orchestrator execution accept explicit path parameters (--root, --db, --config for custom forge-mcp.yaml, and --profile for custom profile.yaml) with deterministic resolution order.'
+  - 'INV-PLAN-WORKFLOW-HARNESS: All tests for structured plans (docs/plans/*.md) and standalone workflows (docs/workflows/*.yaml) must use PlanHarness and WorkflowHarness with canonical templates in tests/acdd/fixtures/plans/ and workflows/. Ad-hoc markdown heredocs and subprocess CLI spawning are strictly banned.'
 required_skills:
   - contextunity-forge
   - agent-instructions
@@ -79,12 +80,15 @@ scope:
 symbols:
   - struct:RunnerConfig
   - struct:RunnerInvocationContext
+  - struct:AgentDef
   - enum:OrchestratorEvent
   - struct:OrchestratorState
 status: ready
 subtasks:
   - subtask_ref: runner-config-and-context-types
     title: "Define RunnerConfig and RunnerInvocationContext in profile and engine/orchestrator/types.rs"
+  - subtask_ref: profile-agent-schema-reconciliation
+    title: "Rename RoleDef and 'roles' to AgentDef and 'agents' in GateProfile with backward-compatible Serde aliases (alias = 'roles', alias = 'role')"
   - subtask_ref: orchestrator-event-and-state-models
     title: "Define state machines and event types for headless lifecycle tracking"
   - subtask_ref: orchestrator-seam-test-stubs
@@ -93,9 +97,10 @@ subtasks:
 
 #### Acceptance
 
-1. `RunnerConfig` supports single-pass template interpolation of `{model}`, `{reasoning}`, `{session_id}`, `{prompt}`, and `{worktree}` without mutating `RoleDef` wire serialization.
-2. `OrchestratorState` tracks active wave indices, claimed task IDs, worker identities, and cumulative attempt counts in memory without adding parallel SQLite tables.
-3. Seam test harness compiles cleanly in `tests/acdd/orchestrator.rs`.
+1. `RunnerConfig` supports single-pass template interpolation of `{model}`, `{reasoning}`, `{session_id}`, `{prompt}`, and `{worktree}` without mutating `AgentDef` / `RoleDef` wire serialization.
+2. `GateProfile` recognizes `agents:` and gate `agent:` natively while transparently admitting legacy `roles:` and `role:` keys via Serde aliases without breaking existing profile documents.
+3. `OrchestratorState` tracks active wave indices, claimed task IDs, worker identities, and cumulative attempt counts in memory without adding parallel SQLite tables.
+4. Seam test harness compiles cleanly in `tests/acdd/orchestrator.rs`.
 
 ---
 
@@ -194,6 +199,10 @@ scope:
   - docs/reference/cli.md
   - docs/reference/acdd.md
   - tests/acdd/orchestrator.rs
+  - tests/acdd/fixtures/plans/
+  - tests/acdd/fixtures/workflows/
+  - tests/acdd/harness/plans.rs
+  - tests/acdd/harness/workflows.rs
 symbols:
   - fn:run_milestone_waves
   - fn:execute_wave_verification
@@ -205,6 +214,10 @@ subtasks:
     title: "Schedule and dispatch milestone tasks in wave order respecting depends_on dependencies"
   - subtask_ref: in-place-plan-and-workflow-runners
     title: "Implement plan [list|show|run] (save: snapshot) and workflow [list|show|run] (save: none) in-place execution"
+  - subtask_ref: plan-and-workflow-harnesses-and-fixtures
+    title: "Build PlanHarness and WorkflowHarness with canonical static fixtures in tests/acdd/fixtures/plans/ and workflows/ according to INV-PLAN-WORKFLOW-HARNESS"
+  - subtask_ref: plan-and-workflow-documentation-reconciliation
+    title: "Reconcile documentation in docs/reference/cli.md and docs/reference/acdd.md covering plan run and workflow run execution"
   - subtask_ref: wave-barrier-and-autonomous-handoff
     title: "Execute milestone verification commands and invoke milestone handoff when all tasks pass"
   - subtask_ref: global-cli-path-resolution
@@ -217,6 +230,8 @@ subtasks:
 2. `contextunity-forge-mcp plan [list|show|run]` executes structured documentation plans (`doc_type: plan`) in-place without worktree spawning.
 3. `contextunity-forge-mcp workflow [list|show|run]` executes standalone root-gate workflows (`docs/workflows/*.yaml`) with `save: none`.
 4. Global CLI arguments (`--root`, `--db`, `--config`, `--profile`) resolve deterministically across CLI commands.
+5. All plan and workflow orchestrator tests are driven through `PlanHarness` and `WorkflowHarness` using canonical fixtures from `tests/acdd/fixtures/plans/` and `workflows/`; ad-hoc markdown heredocs and external CLI subprocess execution are strictly banned (`INV-PLAN-WORKFLOW-HARNESS`).
+6. Documentation in `docs/reference/cli.md` and `docs/reference/acdd.md` is fully updated to document `plan [list|show|run]` (`--in-place`) and `workflow [list|show|run]` commands, execution flags, and persistence models.
 
 ---
 

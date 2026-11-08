@@ -21,24 +21,22 @@ pub use config::{
 };
 pub use engine::gates::set_ast_extractor;
 pub use engine::{
-    candidate_fingerprint, claim, compile_evidence_envelope, database_path,
-    default_db, list, list_workspaces, manage, primary_worktree_root, project_identity,
-    read_checkpoint_fence, rebase_speculative_dependency, reopen, reset, store,
-    store_for_task, submit, submit_zero_arg, telemetry_passport_note, verify_red_to_green,
-    Action, BlackboardAction, BlackboardRequest, Claim, CommitTrackingSetting, List,
-    Manage, ManageAction, MilestoneStatusFilter, Status, Submit, TaskListDetail,
-    TaskSettings,
+    candidate_fingerprint, claim, compile_evidence_envelope, database_path, default_db, list,
+    list_workspaces, manage, primary_worktree_root, project_identity, read_checkpoint_fence,
+    rebase_speculative_dependency, reopen, reset, store, store_for_task, submit, submit_zero_arg,
+    telemetry_passport_note, verify_red_to_green, Action, BlackboardAction, BlackboardRequest,
+    Claim, CommitTrackingSetting, List, Manage, ManageAction, MilestoneStatusFilter, Status,
+    Submit, TaskListDetail, TaskSettings,
 };
 pub use fs::*;
 pub use git::*;
 pub use lifecycle::{Subtask, Task, TaskContract, TaskStage, TaskStatus};
 pub use milestones::handoff::set_symbol_facts_extractor;
 pub use milestones::{
-    draft, execute_command_gate, execute_milestone_verification, extract_shared_helpers,
-    handoff, handoff_context, init_from_manifest, milestone_verification_build,
-    submit_milestone_verification_review, synthesize_milestone_contracts, validate_wave_dag,
+    draft, execute_command_gate, execute_milestone_verification, extract_shared_helpers, handoff,
+    handoff_context, init_from_manifest, synthesize_milestone_contracts, validate_wave_dag,
     verify_contract_matrix_parity, HandoffBinding, IntegrationEvidence, IntegrationReview,
-    IntegrationVerification, MilestoneVerificationReview,
+    IntegrationVerification,
 };
 pub use response::*;
 pub use store::{TasksStore, TASKS_SCHEMA_VERSION};

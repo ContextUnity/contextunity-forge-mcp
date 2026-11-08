@@ -1,9 +1,7 @@
 use super::*;
+use crate::languages::{dependency_registry::DependencyRegistry, ImportPath, LanguageProfile};
+use crate::linker::traits::{import_provider_modules, ModulesByNamespace, PackageExports};
 use forge_core::typed_facts::FlowState;
-use crate::languages::{
-    ImportPath, LanguageProfile, dependency_registry::DependencyRegistry,
-};
-use crate::linker::traits::{ModulesByNamespace, PackageExports, import_provider_modules};
 
 type ExternalAliases<'a> = HashMap<&'a str, Option<(String, usize)>>;
 mod documentation;
@@ -170,10 +168,8 @@ pub(super) struct ResolutionInput<'a, F> {
     pub(super) by_suffix: &'a HashMap<&'a str, Vec<&'a Node>>,
     pub(super) by_id: &'a HashMap<super::interner::SymbolId, &'a Node>,
     pub(super) by_module: &'a HashMap<&'a str, Vec<&'a Node>>,
-    pub(super) node_bindings:
-        &'a super::NodeBindingIndex,
-    pub(super) node_rebindings:
-        &'a super::NodeBindingIndex,
+    pub(super) node_bindings: &'a super::NodeBindingIndex,
+    pub(super) node_rebindings: &'a super::NodeBindingIndex,
     pub(super) children_by_parent: &'a HashMap<super::interner::SymbolId, Vec<&'a Node>>,
     pub(super) profiles: &'a HashMap<&'a str, &'static dyn LanguageProfile>,
     pub(super) normalized_imports: &'a HashMap<(&'a str, &'a str), Option<ImportPath>>,
@@ -356,10 +352,10 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                 .find(|node| node.kind == "module")
                 .map(|node| Cow::Borrowed(node.qualname.as_str()))
                 .unwrap_or_else(|| {
-                    Cow::Owned(profile.map_or_else(
-                        || module_name(path),
-                        |profile| profile.module_name(path),
-                    ))
+                    Cow::Owned(
+                        profile
+                            .map_or_else(|| module_name(path), |profile| profile.module_name(path)),
+                    )
                 });
             let mut file_resolver = FileResolver::new(
                 &input,

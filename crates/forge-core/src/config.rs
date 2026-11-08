@@ -536,11 +536,41 @@ pub fn resolve_file_path(
         if let Some((prefix, rest)) = file_path.split_once("]/") {
             let ws_name = prefix.trim_start_matches('[');
             if let Some(lw) = adapter.linked_workspaces.iter().find(|w| w.name == ws_name) {
-                return checked_child(&lw.path, Path::new(rest));
+                let cleaned = rest.strip_prefix("./").unwrap_or(rest);
+                return checked_child(&lw.path, Path::new(cleaned));
             }
         }
     }
-    checked_child(root, Path::new(file_path))
+    let p = Path::new(file_path);
+    if p.is_absolute() {
+        // Reject any absolute path that traverses a symlink before considering fallback.
+        let mut cur = PathBuf::new();
+        for comp in p.components() {
+            cur.push(comp);
+            if let Ok(meta) = std::fs::symlink_metadata(&cur) {
+                if meta.file_type().is_symlink() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "path must not traverse a symlink",
+                    ));
+                }
+            }
+        }
+        if let Ok(rel) = p.strip_prefix(root) {
+            return checked_child(root, rel);
+        }
+        for lw in &adapter.linked_workspaces {
+            if let Ok(rel) = p.strip_prefix(&lw.path) {
+                return checked_child(&lw.path, rel);
+            }
+        }
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "path must be a relative plain path",
+        ));
+    }
+    let cleaned = file_path.strip_prefix("./").unwrap_or(file_path);
+    checked_child(root, Path::new(cleaned))
 }
 
 /// Checks root scope against filesystem roots, system directories, user home directories, and multi-repository containers.
@@ -745,5 +775,56 @@ pub fn local_template_target(owner: &str, target: &str) -> Option<String> {
         Some(format!("{template_root}{target}"))
     } else {
         Some(format!("{template_root}/{target}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_file_path_handles_dot_slash_and_absolute_paths() {
+        let temp_dir = std::env::temp_dir().join(format!("forge_test_{}", std::process::id()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let file_path = temp_dir.join("test.rs");
+        std::fs::write(&file_path, "pub fn test() {}").unwrap();
+
+        let adapter = Adapter {
+            adapter_path: None,
+            response: ResponsePolicy::default(),
+            modules: SubsystemRegistry::default(),
+            sensitive: Vec::new(),
+            limits: ScannerLimits::default(),
+            roots: vec![temp_dir.clone()],
+            ignored_names: BTreeSet::new(),
+            adapter_version: None,
+            digest: String::new(),
+            linked_workspaces: Vec::new(),
+            owners: BTreeMap::new(),
+            aliases: BTreeMap::new(),
+            milestones: Vec::new(),
+            plans: Vec::new(),
+            debug: false,
+        };
+
+        // 1. Plain relative
+        let resolved = resolve_file_path(&temp_dir, &adapter, "test.rs").unwrap();
+        assert_eq!(resolved, file_path);
+
+        // 2. Leading ./
+        let resolved = resolve_file_path(&temp_dir, &adapter, "./test.rs").unwrap();
+        assert_eq!(resolved, file_path);
+
+        // 3. Absolute path inside root
+        let resolved = resolve_file_path(&temp_dir, &adapter, file_path.to_str().unwrap()).unwrap();
+        assert_eq!(resolved, file_path);
+
+        // 4. Absolute path outside root
+        let outside = std::env::temp_dir().join("some_outside_file_123.rs");
+        let err = resolve_file_path(&temp_dir, &adapter, outside.to_str().unwrap()).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+
+        std::fs::remove_file(&file_path).ok();
+        std::fs::remove_dir(&temp_dir).ok();
     }
 }

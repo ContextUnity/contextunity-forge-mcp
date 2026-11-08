@@ -17,9 +17,10 @@ pub mod typed_facts;
 pub use commitments::{DomainCommitment, MerkleCommitment};
 pub use config::{Detail, ResponsePolicy, ScannerLimits, SourceContextPolicy};
 pub use format::stable_hash64;
+pub use fs::is_doc_path;
 pub use interner::{LinkerInterner, PathId, SymbolId};
-pub use models::{Coverage, Edge, Facts, FileEntry, Graph, Node, Reference, is_test};
 pub use models::NodeSemanticMeta;
+pub use models::{is_test, Coverage, Edge, Facts, FileEntry, Graph, Node, Reference};
 pub use typed_facts::{NodeSemanticEntry, SemanticStore};
 
 /// Returns the forge-core crate version.

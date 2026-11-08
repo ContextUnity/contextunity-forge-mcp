@@ -34,8 +34,10 @@ pub struct Evidence {
 struct CommandProof {
     command: String,
     exit_code: i32,
-    tests_passed: u64,
-    tests_failed: u64,
+    #[serde(default, rename = "tests_passed")]
+    tests_passed: Option<u64>,
+    #[serde(default, rename = "tests_failed")]
+    tests_failed: Option<u64>,
     log: Option<String>,
 }
 
@@ -104,6 +106,7 @@ fn proof_payload<'a>(
 
 fn validate_contract(
     value: &serde_json::Value,
+    gate: &crate::tasks::profile::GateDef,
     proof_policy: &str,
     passed: bool,
     zero_exit: &[String],
@@ -115,15 +118,40 @@ fn validate_contract(
         if proof.seam_test_ref.trim().is_empty() {
             bail!("TASK_EVIDENCE_INVALID: seam test reference required");
         }
-        if zero_exit.iter().any(|policy| policy == proof_policy) {
-            if proof.red_exit_code < 0 {
-                bail!("TASK_EVIDENCE_INVALID: exit code must be non-negative");
+        let allows_zero = zero_exit.iter().any(|policy| policy == proof_policy);
+        if proof.red_exit_code <= 0 {
+            if allows_zero {
+                if proof.red_exit_code < 0 {
+                    bail!("TASK_EVIDENCE_INVALID: exit code must be non-negative");
+                }
+            } else {
+                bail!("TASK_EVIDENCE_INVALID: red seam test and nonzero exit code required");
             }
-        } else if proof.red_exit_code <= 0 {
-            bail!("TASK_EVIDENCE_INVALID: red seam test and nonzero exit code required");
+        } else if let Some(expected) = &gate.expected_failure {
+            if !expected.exit_codes.is_empty()
+                && !expected.exit_codes.contains(&proof.red_exit_code)
+            {
+                bail!(
+                    "TASK_EVIDENCE_INVALID: contract exit code {} does not match expected_failure {:?}",
+                    proof.red_exit_code,
+                    expected.exit_codes
+                );
+            }
         }
     }
     Ok(())
+}
+
+fn command_matches(proof_cmd: &str, expected_cmd: &str) -> bool {
+    let p = proof_cmd.trim();
+    let e = expected_cmd.trim();
+    if p == e {
+        return true;
+    }
+    if let Some(rest) = p.strip_prefix(e) {
+        return rest.starts_with(' ') || rest.starts_with('\t');
+    }
+    false
 }
 
 fn validate_command(
@@ -135,14 +163,16 @@ fn validate_command(
         serde_json::from_value(proof_payload(value, "command_proof")?.clone())
             .context("TASK_EVIDENCE_INVALID: typed command proof required")?;
     let registered = commands.iter().find(|(name, definition)| {
-        let command = definition.command().trim_end();
         proof.command == **name
-            || proof.command == command
-            || proof
-                .command
-                .strip_prefix(command)
-                .and_then(|suffix| suffix.chars().next())
-                .is_some_and(char::is_whitespace)
+            || command_matches(&proof.command, definition.command())
+            || matches!(
+                definition,
+                CommandDef::Pattern(patterns)
+                    if patterns
+                        .by_pattern
+                        .values()
+                        .any(|cmd| command_matches(&proof.command, cmd))
+            )
     });
     let Some((_, definition)) = registered else {
         bail!(
@@ -150,16 +180,27 @@ fn validate_command(
             proof.command
         );
     };
-    if passed
-        && (proof.command.trim().is_empty()
-            || proof.exit_code != 0
-            || (proof.tests_passed == 0
-                && definition
-                    .output()
-                    .is_none_or(|output| output.require_counts))
-            || proof.tests_failed != 0)
-    {
-        bail!("TASK_EVIDENCE_INVALID: passing test command and counts required");
+    let require_counts = definition
+        .output()
+        .is_none_or(|output| output.require_counts);
+    let has_counts = proof.tests_passed.is_some() || proof.tests_failed.is_some();
+    if passed {
+        if proof.command.trim().is_empty() || proof.exit_code != 0 {
+            bail!("TASK_EVIDENCE_INVALID: passing command required");
+        }
+        if (require_counts || has_counts)
+            && (proof.tests_passed.is_none() || proof.tests_failed.is_none())
+        {
+            bail!("TASK_EVIDENCE_INVALID: passing command requires complete test counts");
+        }
+        if (require_counts || has_counts)
+            && (proof.tests_passed.unwrap_or_default() == 0
+                || proof.tests_failed.unwrap_or_default() != 0)
+        {
+            bail!(
+                "TASK_EVIDENCE_INVALID: passing command requires passing tests and zero failures"
+            );
+        }
     }
     if proof.log.as_ref().is_some_and(|log| log.len() > 64 * 1024) {
         bail!("TASK_EVIDENCE_INVALID: test log exceeds 64 KiB");
@@ -191,6 +232,81 @@ fn validate_seam_test(value: &serde_json::Value, passed: bool) -> Result<()> {
         }
     }
     Ok(())
+}
+
+pub(crate) fn validate_observed_seam_test(
+    supplied: &serde_json::Value,
+    actual: &serde_json::Value,
+) -> Result<()> {
+    let supplied: SeamTestProof = serde_json::from_value(supplied.clone())?;
+    let actual: SeamTestProof = serde_json::from_value(actual.clone())?;
+    if supplied
+        .seam_test_refs
+        .iter()
+        .any(|reference| !actual.seam_test_refs.contains(reference))
+    {
+        bail!("TASK_EVIDENCE_INVALID: every seam reference must identify an individually passed test in the claim-bound execution");
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod command_proof_tests {
+    use super::validate_command;
+    use crate::tasks::profile::{CommandCountsSpec, CommandDef, CommandOutputSpec};
+    use serde_json::json;
+    use std::collections::BTreeMap;
+
+    fn command(require_counts: bool) -> BTreeMap<String, CommandDef> {
+        BTreeMap::from([(
+            "check".into(),
+            CommandDef::Detailed {
+                command: "cargo test".into(),
+                timeout_seconds: None,
+                description: None,
+                scope_args_by_pattern: BTreeMap::new(),
+                output: Some(CommandOutputSpec {
+                    counts: Some(CommandCountsSpec {
+                        passed: r"(?m)^test result: ok\. (\d+) passed".into(),
+                        failed: r"(?m)^test result: .*; (\d+) failed".into(),
+                    }),
+                    require_counts,
+                    noise: Vec::new(),
+                    errors: Vec::new(),
+                    seam_ref_pattern: None,
+                    tests: None,
+                }),
+            },
+        )])
+    }
+
+    fn proof(counts: Option<(u64, u64)>) -> serde_json::Value {
+        let mut proof = json!({"command":"check", "exit_code":0});
+        if let Some((passed, failed)) = counts {
+            proof["tests_passed"] = json!(passed);
+            proof["tests_failed"] = json!(failed);
+        }
+        json!({"command_proof":proof})
+    }
+
+    #[test]
+    fn passing_command_rejects_reported_test_failures() {
+        let error = validate_command(&proof(Some((10, 1))), true, &command(false)).unwrap_err();
+
+        assert!(error.to_string().contains("zero failures"));
+    }
+
+    #[test]
+    fn passing_command_rejects_missing_required_counts() {
+        let error = validate_command(&proof(None), true, &command(true)).unwrap_err();
+
+        assert!(error.to_string().contains("complete test counts"));
+    }
+
+    #[test]
+    fn passing_command_allows_count_free_linter_proofs() {
+        validate_command(&proof(None), true, &command(false)).unwrap();
+    }
 }
 
 fn validate_review(
@@ -283,6 +399,7 @@ pub(crate) fn validate_gate_proof(
     match &gate.proof {
         ProofDef::Kind(ProofKind::Contract) => validate_contract(
             evidence,
+            gate,
             proof_policy,
             passed,
             &profile.contract_zero_exit_policies(),
@@ -302,7 +419,7 @@ pub(crate) fn validate_gate_proof(
         ProofDef::Kind(ProofKind::Delivery) => {
             proof_payload(evidence, "delivery_proof").map(|_| ())
         }
-        ProofDef::Kind(ProofKind::None) => {
+        ProofDef::Kind(ProofKind::None) | ProofDef::Unspecified => {
             if !catalog_schema_validated {
                 validate_none(evidence)?;
             }
@@ -402,20 +519,91 @@ pub fn validate_durable_receipt_with_profile(
     revision: u64,
     profile: &crate::tasks::profile::GateProfile,
 ) -> Result<()> {
-    let delivery_index = profile
-        .gates
-        .iter()
-        .position(|gate| gate.proof.kind() == Some(ProofKind::Delivery))
-        .context("TASK_RECEIPT_INVALID: profile has no delivery gate")?;
-    let delivery = &profile.gates[delivery_index];
-    let snapshot_gate = profile.gates[..delivery_index]
+    let deliveries = profile.executable_gate_paths();
+    if receipt.candidate_gate.is_none()
+        && deliveries
+            .iter()
+            .filter(|(_, gate)| gate.proof.kind() == Some(ProofKind::Delivery))
+            .count()
+            > 1
+    {
+        bail!("TASK_RECEIPT_INVALID: multi-track receipt must identify its candidate gate");
+    }
+    let mut matching = deliveries.iter().enumerate().filter(|(_, (path, gate))| {
+        gate.proof.kind() == Some(ProofKind::Delivery)
+            && receipt
+                .delivery_gate
+                .as_ref()
+                .is_none_or(|selected| selected == path)
+    });
+    let (delivery_index, _) = matching
+        .next()
+        .context("TASK_RECEIPT_INVALID: selected delivery gate is missing")?;
+    if matching.next().is_some() {
+        bail!("TASK_RECEIPT_INVALID: receipt must identify its delivery gate in a multi-track profile");
+    }
+    let (delivery_path, delivery) = &deliveries[delivery_index];
+    let snapshot_gate = deliveries[..delivery_index]
         .iter()
         .rev()
-        .find(|gate| gate.sha_snapshot)
+        .filter(|(path, gate)| {
+            gate.sha_snapshot
+                && receipt
+                    .candidate_gate
+                    .as_ref()
+                    .is_none_or(|selected| selected == path)
+        })
+        .find(|(_, gate)| {
+            validate_gate_proof(&receipt.evidence, gate, profile, true, "receipt").is_ok()
+        })
+        .or_else(|| {
+            deliveries[..delivery_index]
+                .iter()
+                .rev()
+                .find(|(path, gate)| {
+                    gate.sha_snapshot
+                        && receipt
+                            .candidate_gate
+                            .as_ref()
+                            .is_none_or(|selected| selected == path)
+                })
+        })
+        .map(|(_, gate)| *gate)
         .context("TASK_RECEIPT_INVALID: profile has no candidate snapshot gate")?;
     validate_gate_proof(&receipt.evidence, snapshot_gate, profile, true, "receipt")
         .context("TASK_RECEIPT_INVALID: candidate evidence is invalid")?;
-    let review_sources = review_source_proofs(&receipt.review, &delivery.review_sources)?;
+    let selected_reviews = delivery
+        .review_sources
+        .iter()
+        .map(|reference| {
+            let mut scope = delivery_path.rsplit_once('.').map(|(scope, _)| scope);
+            if reference.contains('.') && deliveries.iter().any(|(path, _)| path == reference) {
+                return Ok(reference.clone());
+            }
+            while let Some(owner) = scope {
+                let local = format!("{owner}.{reference}");
+                if deliveries.iter().any(|(path, _)| path == &local) {
+                    return Ok(local);
+                }
+                scope = owner.rsplit_once('.').map(|(parent, _)| parent);
+            }
+            if deliveries.iter().any(|(path, _)| path == reference) {
+                return Ok(reference.clone());
+            }
+            let mut matches = deliveries.iter().filter(|(path, _)| {
+                path == reference || path.rsplit('.').next() == Some(reference.as_str())
+            });
+            let selected = matches
+                .next()
+                .context("TASK_RECEIPT_INVALID: referenced review gate is missing")?;
+            anyhow::ensure!(
+                matches.next().is_none(),
+                "TASK_RECEIPT_INVALID: referenced review gate is ambiguous"
+            );
+            Ok(selected.0.clone())
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let review_sources = review_source_proofs(&receipt.review, &selected_reviews)?;
     for (review_name, proof) in &review_sources {
         let review_gate = profile
             .by_stage(review_name)

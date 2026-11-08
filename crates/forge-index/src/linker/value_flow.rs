@@ -1232,13 +1232,13 @@ impl<'a> ValueFlowIndex<'a> {
                             return result.clone();
                         }
                     }
-                    if let Some(target) =
-                        if owner.language == "rust" {
-                            super::rust::value_flow::declared_adapter_result(&receiver, callee, owner, at, resolver)
-                        } else {
-                            resolver.resolve_member_result(&receiver, callee, owner, at)
-                        }
-                    {
+                    if let Some(target) = if owner.language == "rust" {
+                        super::rust::value_flow::declared_adapter_result(
+                            &receiver, callee, owner, at, resolver,
+                        )
+                    } else {
+                        resolver.resolve_member_result(&receiver, callee, owner, at)
+                    } {
                         return target;
                     }
                     if let Some(target) = super::javascript::value_flow::platform_member_return(
@@ -1354,12 +1354,22 @@ impl<'a> ValueFlowIndex<'a> {
                         let ValueExpr::BranchJoin { alternatives } = value.as_ref() else {
                             return TypeTarget::Unknown;
                         };
-                        let [call @ ValueExpr::Call { callee, .. }, ValueExpr::Annotated { type_expr }] = alternatives.as_slice() else {
+                        let [call @ ValueExpr::Call { callee, .. }, ValueExpr::Annotated { type_expr }] =
+                            alternatives.as_slice()
+                        else {
                             return TypeTarget::Unknown;
                         };
                         return super::rust::value_flow::deserializer_result(
-                            owner, callee, type_expr, at, resolver, self.limits,
-                        ).unwrap_or_else(|| self.evaluate_tracked(owner, call, at, resolver, definitions, trace));
+                            owner,
+                            callee,
+                            type_expr,
+                            at,
+                            resolver,
+                            self.limits,
+                        )
+                        .unwrap_or_else(|| {
+                            self.evaluate_tracked(owner, call, at, resolver, definitions, trace)
+                        });
                     }
                     if matches!(member.as_str(), "__rust_array" | "__rust_tuple") {
                         let ValueExpr::BranchJoin { alternatives } = value.as_ref() else {
@@ -1409,10 +1419,14 @@ impl<'a> ValueFlowIndex<'a> {
                         };
                     }
                     if member == "__rust_index" {
-                        let receiver = self.evaluate_tracked(owner, value, at, resolver, definitions, trace);
+                        let receiver =
+                            self.evaluate_tracked(owner, value, at, resolver, definitions, trace);
                         return match &receiver {
                             TypeTarget::External { module, .. }
-                                if module.replace("::", ".") == "serde_json.Value" => receiver,
+                                if module.replace("::", ".") == "serde_json.Value" =>
+                            {
+                                receiver
+                            }
                             _ => TypeTarget::Unknown,
                         };
                     }
@@ -1934,7 +1948,12 @@ fn field_owner<'a>(
     }
     owner.details["receiver_type"].as_str().and_then(|name| {
         let clean = super::receiver_type_name(name).unwrap_or(Cow::Borrowed(name));
-        match resolver.resolve_symbol(owner, clean.as_ref(), node_position(owner), SymbolRole::Type) {
+        match resolver.resolve_symbol(
+            owner,
+            clean.as_ref(),
+            node_position(owner),
+            SymbolRole::Type,
+        ) {
             Symbol::Type(TypeTarget::Local(node)) => Some(node),
             _ => None,
         }

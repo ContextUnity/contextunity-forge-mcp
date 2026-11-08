@@ -1,7 +1,9 @@
 use super::*;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, clap::ValueEnum)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, clap::ValueEnum,
+)]
 #[serde(rename_all = "snake_case")]
 #[value(rename_all = "snake_case")]
 /// Operation to perform on the task blackboard.
@@ -15,7 +17,9 @@ pub enum BlackboardAction {
     Inspect,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, clap::ValueEnum)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, clap::ValueEnum,
+)]
 #[serde(rename_all = "snake_case")]
 #[value(rename_all = "snake_case")]
 /// Hierarchy level selected for blackboard operations.
@@ -423,10 +427,7 @@ fn blackboard_profile(
     }
 }
 
-fn blackboard_schema_hint(
-    profile: &crate::tasks::profile::GateProfile,
-    issue: &str,
-) -> String {
+fn blackboard_schema_hint(profile: &crate::tasks::profile::GateProfile, issue: &str) -> String {
     let topics = crate::store::BLACKBOARD_TOPICS
         .iter()
         .map(|(topic, description)| format!("{topic}: {description}"))

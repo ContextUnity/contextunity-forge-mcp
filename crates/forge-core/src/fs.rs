@@ -45,9 +45,23 @@ pub fn normalize_path(path: &Path) -> PathBuf {
 /// Return whether a path consists only of normal relative components.
 pub fn safe_relative(path: &Path) -> bool {
     !path.as_os_str().is_empty()
-        && path
-            .components()
-            .all(|part| matches!(part, std::path::Component::Normal(_)))
+        && path.components().all(|part| {
+            matches!(
+                part,
+                std::path::Component::Normal(_) | std::path::Component::CurDir
+            )
+        })
+}
+
+/// Return whether a path represents a documentation file.
+pub fn is_doc_path(p: &str) -> bool {
+    p.starts_with("docs/")
+        || p.starts_with("docs\\")
+        || p.ends_with(".md")
+        || p.ends_with(".markdown")
+        || p.ends_with(".txt")
+        || p.ends_with(".rst")
+        || p.ends_with(".adoc")
 }
 
 /// Resolve a relative path without traversing a symlink component.
@@ -58,8 +72,10 @@ pub fn checked_child(root: &Path, relative: &Path) -> std::io::Result<PathBuf> {
     let target = root.join(relative);
     let mut current = root.to_path_buf();
     for component in relative.components() {
-        let std::path::Component::Normal(name) = component else {
-            return Err(path_error("path must be relative"));
+        let name = match component {
+            std::path::Component::CurDir => continue,
+            std::path::Component::Normal(name) => name,
+            _ => return Err(path_error("path must be relative")),
         };
         current.push(name);
         match fs::symlink_metadata(&current) {

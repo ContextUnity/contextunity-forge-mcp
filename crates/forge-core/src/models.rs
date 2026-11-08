@@ -295,7 +295,12 @@ pub struct NavigationDetails<'a> {
 }
 
 impl<'a> NavigationDetails<'a> {
-    pub fn persisted(mut self, return_type: Option<&'a str>, entrypoint: Option<&'a str>, clear_entrypoint: bool) -> Self {
+    pub fn persisted(
+        mut self,
+        return_type: Option<&'a str>,
+        entrypoint: Option<&'a str>,
+        clear_entrypoint: bool,
+    ) -> Self {
         self.return_type = return_type;
         self.entrypoint = entrypoint;
         self.persisted = true;
@@ -681,10 +686,7 @@ impl Facts {
         }
         self.remap_node_order(&mapping);
     }
-    pub fn remap_node_order(
-        &mut self,
-        old_to_new: &std::collections::HashMap<usize, usize>,
-    ) {
+    pub fn remap_node_order(&mut self, old_to_new: &std::collections::HashMap<usize, usize>) {
         for index in &mut self.pending_flow_nodes {
             if let Some(new) = old_to_new.get(index) {
                 *index = *new;

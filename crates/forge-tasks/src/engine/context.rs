@@ -479,7 +479,7 @@ fn scoped_commands(
                 .filter_map(move |(name, definition)| {
                     let command = definition.command_for_path(&path)?;
                     let scope_target = profile
-                        .scope_args_for_path(&path)
+                        .scope_args_for_command_path(definition, &path)
                         .unwrap_or_else(|| path.clone());
                     let command = if command.contains("{scope_target}") {
                         command.replace("{scope_target}", &scope_target)
@@ -819,7 +819,27 @@ pub(super) fn context_bundle(
             let rejected_stage = rejected.get("stage").and_then(Value::as_str)?;
             let rejected_cursor = super::claim::cursor_for_stage(&profile, rejected_stage).ok()?;
             let gate = &rejected_cursor.gate;
-            let reject_target = gate.reject_to.as_deref()?;
+            let revision = rejected.get("claim_revision").and_then(Value::as_u64)?;
+            let raw_findings = details
+                .get("findings")?
+                .as_array()?
+                .iter()
+                .rev()
+                .find(|finding| {
+                    finding.get("claim_revision").and_then(Value::as_u64) == Some(revision)
+                })
+                .and_then(|finding| finding.get("findings"));
+            let parsed_findings = raw_findings.and_then(|value| {
+                value
+                    .as_str()
+                    .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+                    .or_else(|| Some(value.clone()))
+            });
+            let reject_target = super::gates::resolve_rejection_target(
+                gate,
+                parsed_findings.as_ref(),
+                rejected_stage,
+            );
             let target_cursor = super::claim::cursor_for_stage(&profile, reject_target).ok()?;
             if target_cursor.canonical_stage_id != active_cursor.canonical_stage_id
                 || !matches!(
@@ -832,26 +852,7 @@ pub(super) fn context_bundle(
             {
                 return None;
             }
-            let revision = rejected.get("claim_revision").and_then(Value::as_u64)?;
-            details
-                .get("findings")?
-                .as_array()?
-                .iter()
-                .rev()
-                .find(|finding| {
-                    finding.get("claim_revision").and_then(Value::as_u64) == Some(revision)
-                })
-                .and_then(|finding| finding.get("findings"))
-                .and_then(|value| {
-                    value
-                        .as_str()
-                        .and_then(|raw| {
-                            serde_json::from_str::<Value>(raw)
-                                .ok()
-                                .or_else(|| Some(json!(raw)))
-                        })
-                        .or_else(|| Some(value.clone()))
-                })
+            parsed_findings
         })
     });
 

@@ -21,6 +21,9 @@ use std::{
 pub struct ReadRequest {
     /// Workspace-relative file, including configured linked-workspace paths.
     pub path: Option<String>,
+    /// Optional batch file paths when reading multiple files.
+    #[serde(default)]
+    pub paths: Option<Vec<String>>,
     /// Indexed symbol selector. When supplied, auto mode selects snippet.
     pub selector: Option<String>,
     /// auto, lines, raw, search, delta, snippet, or outline.
@@ -44,16 +47,66 @@ pub struct ReadRequest {
     pub output_file: Option<String>,
 }
 
+/// Strips workspace root prefix from absolute paths, resolving to workspace-relative path.
+pub fn strip_root_path(path: &str, root: &Path) -> Option<String> {
+    let p = Path::new(path);
+    if !p.is_absolute()
+        || p.components()
+            .any(|part| part == std::path::Component::ParentDir)
+    {
+        return None;
+    }
+    if p.ancestors().any(|component| {
+        std::fs::symlink_metadata(component).is_ok_and(|metadata| metadata.file_type().is_symlink())
+    }) {
+        return None;
+    }
+    if let Ok(rel) = p.strip_prefix(root) {
+        return Some(rel.to_string_lossy().into_owned());
+    }
+    if let (Ok(can_p), Ok(can_root)) = (p.canonicalize(), root.canonicalize()) {
+        if let Ok(rel) = can_p.strip_prefix(&can_root) {
+            return Some(rel.to_string_lossy().into_owned());
+        }
+    }
+    let root_str = root.to_string_lossy();
+    let root_trimmed = root_str.trim_end_matches('/');
+    if let Some(rest) = path.strip_prefix(root_trimmed) {
+        if rest.is_empty() {
+            return Some(String::new());
+        }
+        if rest.starts_with([std::path::MAIN_SEPARATOR, '/']) {
+            return Some(rest[1..].to_owned());
+        }
+    }
+    None
+}
+
 impl ReadRequest {
     /// Check subsystem admission before either transport opens the code index.
     pub fn requires_index(&self, adapter: &Adapter) -> Result<bool> {
         let mode = self.resolved_mode();
-        let markdown = self
-            .path
-            .as_deref()
-            .is_some_and(|p| p.ends_with(".md") || p.ends_with(".markdown"));
-        if let Some(error) = disabled_read_mode_error(mode, markdown, &adapter.modules) {
-            bail!("{error}");
+        let is_md_path = forge_core::is_doc_path;
+        let mut target_paths = Vec::new();
+        if let Some(p) = self.path.as_deref() {
+            target_paths.push(p);
+        }
+        if let Some(paths) = &self.paths {
+            for p in paths {
+                target_paths.push(p.as_str());
+            }
+        }
+        if target_paths.is_empty() {
+            if let Some(error) = disabled_read_mode_error(mode, false, &adapter.modules) {
+                bail!("{error}");
+            }
+        } else {
+            for p in &target_paths {
+                let markdown = is_md_path(p);
+                if let Some(error) = disabled_read_mode_error(mode, markdown, &adapter.modules) {
+                    bail!("{error}");
+                }
+            }
         }
         Ok(matches!(mode, ReadMode::Snippet | ReadMode::Outline))
     }
@@ -84,8 +137,14 @@ fn sensitive(adapter: &Adapter, path: &str) -> Result<()> {
 }
 
 fn admitted_file(root: &Path, adapter: &Adapter, path: &str) -> Result<std::path::PathBuf> {
+    let stripped = strip_root_path(path, root);
+    let path = stripped.as_deref().unwrap_or(path);
     sensitive(adapter, path)?;
     let file = resolve_file_path(root, adapter, path)?;
+    ensure!(
+        file.exists(),
+        "FILE_NOT_FOUND: file '{path}' does not exist"
+    );
     ensure!(file.is_file(), "reader path must name a regular file");
     // Check canonical-relative names as well as linked-path aliases.
     let relative = file.strip_prefix(root).unwrap_or(&file).to_string_lossy();
@@ -140,6 +199,178 @@ pub fn forge_read_tool(
     source: &SourceOptions,
     conn: Option<&Connection>,
 ) -> Result<Value> {
+    if request.resolved_mode() == ReadMode::Lines {
+        line_coordinates(request.start_line.unwrap_or(1), request.line_count)?;
+    }
+    let mut normalized_req;
+    let request = if let Some(stripped) = request
+        .path
+        .as_deref()
+        .and_then(|p| strip_root_path(p, root))
+    {
+        normalized_req = request.clone();
+        normalized_req.path = Some(stripped);
+        &normalized_req
+    } else {
+        request
+    };
+    if let Some(paths) = &request.paths {
+        if !paths.is_empty() {
+            let normalized_paths: Vec<String> = paths
+                .iter()
+                .map(|p| strip_root_path(p, root).unwrap_or_else(|| p.clone()))
+                .collect();
+            let paths = &normalized_paths;
+            if let Some(output) = &request.output_file {
+                sensitive(adapter, output)?;
+                let destination = forge_core::fs::checked_child(root, Path::new(output))?;
+                for p in paths {
+                    if let Ok(input_res) = resolve_file_path(root, adapter, p) {
+                        ensure!(
+                            destination != input_res,
+                            "output_file must differ from any input file in paths"
+                        );
+                    }
+                }
+            }
+            let mut results = Vec::new();
+            let mut markdown_sections = Vec::new();
+            for p in paths {
+                let mut single_req = request.clone();
+                single_req.path = Some(p.clone());
+                single_req.paths = None;
+                single_req.output_file = None;
+                match forge_read_single(root, adapter, &single_req, page, source, conn) {
+                    Ok(mut val) => {
+                        let content = exportable_content(&val).unwrap_or("");
+                        markdown_sections.push(format!("### {p}\n\n{content}"));
+                        if let Some(obj) = val.as_object_mut() {
+                            obj.remove("content");
+                        }
+                        results.push(val);
+                    }
+                    Err(e) => {
+                        markdown_sections.push(format!("### {p}\n\n*Error reading file: {e}*"));
+                        results.push(json!({
+                            "path": p,
+                            "error": e.to_string(),
+                        }));
+                    }
+                }
+            }
+            let aggregate_content = markdown_sections.join("\n\n---\n\n");
+            let mut response = json!({
+                "mode": "batch",
+                "paths": paths,
+                "batch": results,
+                "content": aggregate_content,
+            });
+            if let Some(output) = &request.output_file {
+                let destination = forge_core::fs::checked_child(root, Path::new(output))?;
+                forge_core::fs::atomic_write(&destination, aggregate_content.as_bytes(), false)?;
+                response["output_file"] = json!(output);
+            }
+            return Ok(response);
+        }
+    }
+    forge_read_single(root, adapter, request, page, source, conn)
+}
+
+fn line_coordinates(start: usize, count: Option<usize>) -> Result<(i64, Option<i64>)> {
+    let first = i64::try_from(start)
+        .context("invalid line bounds: start_line exceeds SQLite coordinates")?;
+    let last = count
+        .map(|count| {
+            count
+                .checked_sub(1)
+                .and_then(|offset| start.checked_add(offset))
+                .and_then(|end| i64::try_from(end).ok())
+                .context("invalid line bounds: range exceeds SQLite coordinates")
+        })
+        .transpose()?;
+    Ok((first, last))
+}
+
+fn exportable_content(value: &Value) -> Option<&str> {
+    value["source"].as_str().or(value["content"].as_str())
+}
+
+fn find_enclosing_symbol(
+    conn: &Connection,
+    path: &str,
+    start_line: i64,
+    end_line: Option<i64>,
+) -> Result<Option<(String, String)>> {
+    let clean_path = path.strip_prefix("./").unwrap_or(path);
+    let check_end = end_line.unwrap_or(start_line);
+    let mut stmt = conn.prepare(
+        "SELECT n.kind, CASE WHEN (SELECT count(*) FROM nodes duplicate
+             WHERE duplicate.path_id = n.path_id AND duplicate.name = n.name) > 1
+             THEN CASE WHEN (SELECT count(*) FROM nodes qualified
+                 WHERE qualified.path_id = n.path_id AND qualified.qualname = n.qualname) = 1
+                 THEN n.qualname ELSE n.id END ELSE n.name END
+         FROM path_dictionary p
+         JOIN nodes n ON n.path_id = p.path_id
+         WHERE (p.path = ?1 OR (substr(p.path, -length(?1) - 1) = '/' || ?1
+                AND NOT EXISTS (SELECT 1 FROM path_dictionary exact WHERE exact.path = ?1)))
+           AND n.line <= ?2
+           AND n.end_line >= ?3
+           AND n.kind IN ('function', 'method', 'struct', 'class', 'trait', 'interface', 'enum')
+         ORDER BY (p.path = ?1) DESC, (n.end_line - n.line) ASC, n.id
+         LIMIT 1",
+    )?;
+    let mut rows = stmt.query(params![clean_path, start_line, check_end])?;
+    if let Some(row) = rows.next()? {
+        let kind: String = row.get(0)?;
+        let name: String = row.get(1)?;
+        return Ok(Some((kind, name)));
+    }
+    let mut stmt = conn.prepare(
+        "SELECT n.kind, CASE WHEN (SELECT count(*) FROM nodes duplicate
+             WHERE duplicate.path_id = n.path_id AND duplicate.name = n.name) > 1
+             THEN CASE WHEN (SELECT count(*) FROM nodes qualified
+                 WHERE qualified.path_id = n.path_id AND qualified.qualname = n.qualname) = 1
+                 THEN n.qualname ELSE n.id END ELSE n.name END
+         FROM path_dictionary p
+         JOIN nodes n ON n.path_id = p.path_id
+         WHERE (p.path = ?1 OR (substr(p.path, -length(?1) - 1) = '/' || ?1
+                AND NOT EXISTS (SELECT 1 FROM path_dictionary exact WHERE exact.path = ?1)))
+           AND n.line <= ?2
+           AND n.end_line >= ?2
+           AND n.kind IN ('function', 'method', 'struct', 'class', 'trait', 'interface', 'enum')
+         ORDER BY (p.path = ?1) DESC, (n.end_line - n.line) ASC, n.id
+         LIMIT 1",
+    )?;
+    let mut rows = stmt.query(params![clean_path, start_line])?;
+    if let Some(row) = rows.next()? {
+        let kind: String = row.get(0)?;
+        let name: String = row.get(1)?;
+        Ok(Some((kind, name)))
+    } else {
+        Ok(None)
+    }
+}
+
+fn forge_read_single(
+    root: &Path,
+    adapter: &Adapter,
+    request: &ReadRequest,
+    page: &QueryOptions,
+    source: &SourceOptions,
+    conn: Option<&Connection>,
+) -> Result<Value> {
+    let mut normalized_req;
+    let request = if let Some(stripped) = request
+        .path
+        .as_deref()
+        .and_then(|p| strip_root_path(p, root))
+    {
+        normalized_req = request.clone();
+        normalized_req.path = Some(stripped);
+        &normalized_req
+    } else {
+        request
+    };
     let mode = request.resolved_mode();
     let markdown = request
         .path
@@ -275,7 +506,30 @@ pub fn forge_read_tool(
             "OUT_OF_SCOPE"
         });
     }
-    let hints = render_read_hints(
+    let footer_hint = if mode == ReadMode::Lines {
+        if let (Some(conn), Some(start_line)) = (conn, request.start_line) {
+            let (start, end_line) = line_coordinates(start_line, request.line_count)?;
+            find_enclosing_symbol(conn, &path, start, end_line)?.map(|(kind, name)| {
+                let kind_label = match kind.as_str() {
+                    "function" | "method" => "fn",
+                    "struct" => "struct",
+                    "class" => "class",
+                    "trait" => "trait",
+                    "enum" => "enum",
+                    "interface" => "interface",
+                    other => other,
+                };
+                format!(
+                    "💡 Enclosing symbol: '{kind_label} {name}'. To read this entire symbol safely with verified digest, use forge_read(path=\"{path}\", selector=\"{name}\")"
+                )
+            })
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let mut hints = render_read_hints(
         root,
         conn,
         adapter,
@@ -284,6 +538,14 @@ pub fn forge_read_tool(
         task.as_ref(),
         value["write_scope"] == "OUT_OF_SCOPE",
     )?;
+    if let Some(ref footer) = footer_hint {
+        value["footer"] = json!(footer);
+        if hints.is_empty() {
+            hints = footer.clone();
+        } else {
+            hints = format!("{footer}\n{hints}");
+        }
+    }
     if !hints.is_empty() {
         value["Hints"] = json!(hints);
     }
@@ -294,10 +556,7 @@ pub fn forge_read_tool(
             destination != resolve_file_path(root, adapter, &path)?,
             "output_file must differ from input"
         );
-        let content = value["content"]
-            .as_str()
-            .or(value["source"].as_str())
-            .context("read has no exportable content")?;
+        let content = exportable_content(&value).context("read has no exportable content")?;
         forge_core::fs::atomic_write(&destination, content.as_bytes(), false)?;
         value["output_file"] = json!(output);
     }

@@ -1,10 +1,7 @@
 use super::super::value_flow::{Binding, ReadTrace, SemanticResolver, TypeTarget, ValueFlowIndex};
 use crate::core::{models::Node, semantic::SourcePosition};
 
-pub(in crate::linker) fn construct<'a>(
-    owner: &Node,
-    callee: &str,
-) -> Option<TypeTarget<'a>> {
+pub(in crate::linker) fn construct<'a>(owner: &Node, callee: &str) -> Option<TypeTarget<'a>> {
     if matches!(owner.language.as_str(), "javascript" | "typescript" | "vue") && callee == "[]" {
         Some(TypeTarget::Builtin("Array".to_owned()))
     } else {

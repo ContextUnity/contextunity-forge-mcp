@@ -24,8 +24,8 @@ roles:
     mode: subagent
     reuse_on_reject: true
     models:
-      - 'sol-6.1:high'
-    guidance: "As contract author, lead architectural synthesis and implementation planning before writing tests. Do not reduce contracts to quick failing tests. Synthesize a concrete architectural plan: trace data flow, define typed invariants, specify negative boundaries, and establish compiling runtime-red seam tests (exit code 101) as executable proof of the architecture. For existing capabilities, extend table-driven cases additively; for distinct capabilities or contract boundaries, author dedicated, descriptively-named test functions. Never accumulate unrelated scenarios into monolithic test functions. Never modify protected files (Cargo.toml, build.rs, .forge/**). Post the build-targeted architectural draft to task_blackboard."
+      - 'gpt-6.1-sol:xhigh'
+    guidance: "MANDATORY: Launch an autonomous agent session via: codex exec -c model=\"gpt-6.1-sol\" -c model_reasoning_effort=\"xhigh\". As contract author, lead architectural synthesis and implementation planning before writing tests. Do not reduce contracts to quick failing tests. Synthesize a concrete architectural plan: trace data flow, define typed invariants, specify negative boundaries, and establish compiling runtime-red seam tests (exit code 101) as executable proof of the architecture. For existing capabilities, extend table-driven cases additively; for distinct capabilities or contract boundaries, author dedicated, descriptively-named test functions. Never accumulate unrelated scenarios into monolithic test functions. Never modify protected files (Cargo.toml, build.rs, .forge/**). Post the build-targeted architectural draft to task_blackboard."
 
   builder:
     mode: subagent
@@ -38,15 +38,22 @@ roles:
     mode: subagent
     reuse_on_reject: true
     models:
-      - 'sol-6.1:xhigh'
-    guidance: "Use a reviewer worker independent from the builder. Conduct a broad architectural audit and check against performance.md. Treat review contours as analytical guidance rather than rigid checkboxes. Reject superficial workarounds, ad-hoc string heuristics (e.g. path shape guesses, magic substring checks), parallel hardcoded lists, or patches designed merely to appease a test. Reject implementations that dump tests into monolithic functions instead of domain-decomposed tests. If an implementation requires repeated duct-tape fixes across review rounds, reject the architecture and require root-cause redesign. Formulate findings constructively without blocking beneficial optimizations. Submit review proof across contours, then claim and submit deliver in the same reviewer session."
+      - 'gpt-6.1-sol:xhigh'
+    guidance: "MANDATORY: Launch an independent reviewer session via: codex exec -c model=\"gpt-6.1-sol\" -c model_reasoning_effort=\"xhigh\". Use a reviewer worker independent from the builder. Conduct a broad architectural audit and check against performance.md. Treat review contours as analytical guidance rather than rigid checkboxes. Reject superficial workarounds, ad-hoc string heuristics (e.g. path shape guesses, magic substring checks), parallel hardcoded lists, or patches designed merely to appease a test. Reject implementations that dump tests into monolithic functions instead of domain-decomposed tests. If an implementation requires repeated duct-tape fixes across review rounds, reject the architecture and require root-cause redesign. Formulate findings constructively without blocking beneficial optimizations. Submit review proof across contours, then claim and submit deliver in the same reviewer session."
 
   architect:
     mode: subagent
     reuse_on_reject: true
     models:
-      - 'sol-6.1:high'
-    guidance: "As Architect, lead architectural contract synthesis and arbitration. Conduct a comprehensive architectural audit of codebase extension points and subsystem data flows before coding. Ensure task contracts define durable architectural blueprints, invariant specifications, and implementation steps, where tests serve as verification seams. Verify scope integrity without touching Cargo.toml or build.rs. Define cross-task seam contracts, establish compiling red tests (exit 101), and record architectural decisions on task_blackboard."
+      - 'gpt-6.1-sol:xhigh'
+    guidance: "Execute via: codex exec -c model=\"gpt-6.1-sol\" -c model_reasoning_effort=\"xhigh\". As Architect, execute the full architectural synthesis lifecycle: 1. Subsystem Audit: Use Forge MCP (code_map_inspect, code_map_impact, ast_grep_search, forge_read) to trace existing registries, call graphs, and extension seams. 2. Architecture Blueprint: Design the durable typed models, structs, enums, error taxonomy, and cross-task seam contracts; freeze disjoint file write scopes across tasks. 3. Seam Proof: Author dedicated, compiling runtime-red seam tests in tests/ asserting on authentic unfulfilled contracts. Production code must only declare necessary type and signature stubs without artificial panic or mock hacks. 4. Blackboard Record: Publish the complete architectural decision to task_blackboard (topic: decisions) covering data flow, invariants, and implementation steps before gate submission."
+
+  doc_writer:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:high'
+    guidance: "Audit all milestone changes against documentation scope and reconcile documentation with live code and tests."
 
 guidance:
   milestone.synthesis:
@@ -59,8 +66,8 @@ guidance:
       - "ARCHITECTURAL EXTENSION POINTS: Inspect existing parser and linker registries using code_map_* and forge_read. Identify natural extension seams and data flow. Do NOT invent parallel systems or touch protected files (Cargo.toml, build.rs, .forge/**)."
       - "FORMAL ARCHITECTURAL BLUEPRINT: Synthesize an architectural decision covering type invariants, data flow, error states, and impact perimeters."
       - "DOMAIN SEAM TEST: Author a compiling runtime-red seam test in the appropriate domain test module (in tests/) proving the unfulfilled contract. Author dedicated test functions with descriptive names rather than appending to monolithic test functions."
-      - "RECORD ARCHITECTURAL DECISION: Before submitting this gate, post an explicit synthesis decision to task_blackboard (topic: decisions) detailing the chosen implementation path."
-      - "ANTI-AUTOPILOT INVARIANT: Do NOT blindly submit a failing test without completing the architectural audit and posting the decision to the blackboard."
+      - "RECORD ARCHITECTURAL DECISION: Before submitting this gate, post an explicit synthesis decision to task_blackboard (topic: decisions) detailing data flow, invariants, and implementation steps."
+      - "ARCHITECTURAL LIFECYCLE: 1) Trace call trees and integration points via Forge MCP. 2) Formalize typed data models, error taxonomy, and cross-task contracts. 3) Author authentic compiling red seam tests asserting on real unfulfilled contracts. 4) Record the complete blueprint on task_blackboard."
 
   task.contract:
     description: "PRODUCTION-SEAM CONTRACT AUTHORING & RUNTIME-RED PROOF"
@@ -101,6 +108,19 @@ guidance:
 commands:
   rust-check-and-test:
     command: "cargo clippy --all-targets --all-features -- -D warnings && cargo test"
+    output:
+      counts:
+        passed: '(?m)\b(\d+) passed\b'
+        failed: '(?m)\b(\d+) failed\b'
+      require_counts: true
+      noise: ['^\s*(Compiling|Downloading|Finished|Checking)\b', '^✔']
+      errors: ['^error(\[E\d+\])?:', 'panicked at', '^FAIL ']
+      seam_ref_pattern: '(?:--seam-ref\s+)(\S+)'
+      tests:
+        target: '(?m)(?:^\s*Running\s+(?:unittests\s+)?|"kind":\s*\[[^\]]*"test"[^\]]*\].*?"src_path":\s*"|--test\s+)([^\s"\\)]+)'
+        passed: '(?m)^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+ok\b'
+        failed: '(?m)^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+FAILED\b'
+        ignored: '(?m)^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+ignored\b'
     description: "Run strict Rust checks followed by the repository's test suite."
     scope_args_by_pattern:
       "src/main.rs": "--bin contextunity-forge-mcp"
@@ -125,10 +145,6 @@ commands:
     command: "cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets"
     description: "Run the milestone handoff verification commands from TESTS.md."
     timeout_seconds: 1800
-  check_ux002_focused:
-    command: "cargo clippy --all-targets --all-features -- -D warnings && cargo test --test mcp test_read:: && cargo test --test mcp -- task_submit_format_preserves_optional_input_and_evidence_semantics stdio_default_pages_and_stale_continuation_are_explicit && cargo test --test acdd -- acdd::runner:: acdd::mcp::command_ task_store_migrates_the_ac001_gate_persistence_contract stdio_tool_catalog_uses_object_schemas_for_every_property task_stdio_lifecycle_submits_inline_evidence_in_independent_worktrees task_manage_selector_diagnostics_report_fields_before_resolution"
-    description: "Run focused UX-002 reader, command and MCP verification."
-    timeout_seconds: 600
   test:
     command: "cargo test"
     description: "Compatibility command for legacy task evidence."
@@ -143,16 +159,17 @@ gate_templates:
   build_review_cycle:
     gates:
       - id: build
-        role: architect
-        proof: none
-      - id: verify
-        command: check_full_repo
-        proof: command
+        role: builder
+        guidance: [task.code]
+        command: rust-check-and-test
       - id: review
         role: independent_reviewer
-        proof: review
-        independent_from: build
+        policy: default_review
         contours: guidance.contours
+        independent_from: build
+        fail: build
+        save:
+          immutable: true
 
 gates:
   - id: contract_synthesis
@@ -172,34 +189,31 @@ gates:
       - "3. SEAM TEST: Strengthen existing domain seam tests additively in tests/ with a cleanly compiling test that triggers runtime assertion failure (exit 101)."
       - "4. BLACKBOARD RECORD: Post architectural synthesis decision to task_blackboard (topic: decisions) detailing the chosen implementation path."
       - "5. SUBMIT: Submit contract proof with seam_test_ref and red_exit_code: 101."
-    proof: contract
     expected_failure:
       exit_codes: [1, 101, 134]
       stderr_contains: "assertion failed"
-    persistence:
+    save:
       pre: snapshot
-      post: commit
+      post: snapshot
 
   - tasks:
       gates:
         - id: contract
           role: contract_author
+          command: test
           tools: [forge_read, search_docs, get_doc]
           guidance: [task.contract, hitl.pro]
-          proof: contract
           expected_failure:
             exit_codes: [1, 101, 134]
             stderr_contains: "assertion failed"
-          persistence:
-            post: snapshot
+          save: snapshot
 
         - id: build
           role: builder
           tools: [forge_read, search_docs, get_doc]
           guidance: [task.code, hitl.pro]
           command: rust-check-and-test
-          proof: command
-          persistence:
+          save:
             pre: snapshot
             post: snapshot
 
@@ -208,75 +222,83 @@ gates:
           tools: [forge_read, search_docs, get_doc]
           guidance: [task.review, hitl.pro]
           policy: default_review
-          proof: review
           contours: guidance.contours
           independent_from: build
-          reject_to: build
-          reject_routing:
+          fail: build
+          loop:
             scope: build
             symbols: contract
-          persistence:
+          save:
             immutable: true
 
         - id: seam
           when: seam
           gates:
             - id: integrate
+              proof: seam_test
               role: builder
               command: rust-check-and-test
-              proof: seam_test
-              persistence:
+              save:
                 pre: snapshot
                 post: snapshot
             - id: review
               role: independent_reviewer
-              proof: review
               contours: guidance.contours
               independent_from: integrate
-              reject_to: integrate
-              reject_routing:
+              fail: integrate
+              loop:
                 scope: integrate
                 symbols: contract
-              persistence:
+              save:
                 immutable: true
 
         - id: deliver
           role: independent_reviewer
           guidance: [hitl.pro]
-          proof: delivery
           receipt: true
-          review_sources:
+          need:
             - review
           independent_from: build
-          reject_to: build
-          persistence:
+          fail: build
+          save:
             immutable: true
             post: commit
             git_commit_note: telemetry
 
-milestone_verification:
-  id: milestone_verification
-  gates:
-    - id: verify
-      command: check_full_repo
-      proof: command
-    - id: review
-      role: independent_reviewer
-      policy: default_review
-      guidance: [milestone.review]
-      proof: review
-      contours: guidance.contours
-      independent_from: verify
-      persistence:
-        immutable: true
-  fallback:
-    use: build_review_cycle
+  - id: verify
     command: check_full_repo
-    guidance: [milestone.polish]
     max_attempts: 2
-  deliver:
-    proof: delivery
-    receipt: true
-    persistence:
+    pass: documentation
+    fail: polish
+
+  - id: polish
+    role: architect
+    guidance: [milestone.polish, hitl]
+    tools: [forge_read, search_docs, get_doc, task_blackboard]
+    pass: milestone_review
+    save:
+      pre: snapshot
+      post: snapshot
+
+  - id: milestone_review
+    role: independent_reviewer
+    policy: default_review
+    guidance: [milestone.review]
+    contours: guidance.contours
+    independent_from: polish
+    pass: verify
+    fail: polish
+    save:
       immutable: true
-      post: commit
+
+  - id: documentation
+    role: doc_writer
+    when: doc
+    guidance: [milestone.doc]
+    tools: [forge_read, search_docs, get_doc]
+    pass: handoff
+
+  - id: handoff
+    receipt: true
+    absorb: true
+    save: commit

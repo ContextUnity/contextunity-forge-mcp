@@ -6,8 +6,8 @@ use crate::core::models::compact_graph::Graph;
 use crate::core::models::{Facts, Node, Reference};
 use crate::core::semantic::ObjectOwnershipFact;
 use crate::core::typed_facts::FlowState;
-use crate::engine::languages::LanguageProfile;
 use crate::engine::languages::manifests::syntax::{SyntaxOperation, SyntaxRule};
+use crate::engine::languages::LanguageProfile;
 use hashbrown::{HashMap, HashSet};
 
 pub(in crate::linker) fn builtin_property_chain(
