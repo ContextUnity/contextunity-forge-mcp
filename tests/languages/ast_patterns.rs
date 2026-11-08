@@ -1,20 +1,19 @@
-use super::support::Workspace;
 use contextunity_forge_mcp::engine::{ast, languages};
 use contextunity_forge_mcp::{
     cli,
     core::response::{Detail, QueryOptions, ResponsePolicy},
-    db::reader,
 };
 
 #[cfg(feature = "lang-rust")]
 #[test]
 fn bare_rust_headers_match_signatures_without_weakening_explicit_parameters() {
-    let workspace = Workspace::new();
+    let workspace = crate::languages::PersistedWorkspaceHarness::new();
     workspace.write(
         "src/lib.rs",
         "fn target() {}\nfn target(value: i32) {}\nfn target() -> i32 { 1 }\nfn target<T>(value: T) -> T { value }\nfn other() {}\n",
     );
-    let conn = workspace.build();
+    workspace.build();
+    let conn = workspace.open();
     let options =
         QueryOptions::resolve(&ResponsePolicy::default(), Some(10), 0, None, None).unwrap();
     for (pattern, expected) in [
@@ -24,7 +23,8 @@ fn bare_rust_headers_match_signatures_without_weakening_explicit_parameters() {
         ("fn target<T>", 1),
     ] {
         let result =
-            cli::ast::search_paged(&conn, &workspace.0, pattern, "rust", None, &options).unwrap();
+            cli::ast::search_paged(&conn, workspace.root(), pattern, "rust", None, &options)
+                .unwrap();
         assert_eq!(result["matches"]["total"], expected, "{pattern}: {result}");
     }
 }
@@ -33,15 +33,17 @@ fn bare_rust_headers_match_signatures_without_weakening_explicit_parameters() {
 #[test]
 fn invalid_ast_patterns_report_diagnostics_without_candidate_files() {
     for rust_only in [false, true] {
-        let workspace = Workspace::new();
+        let workspace = crate::languages::PersistedWorkspaceHarness::new();
         if rust_only {
             workspace.write("src/lib.rs", "fn valid() {}\n");
         }
-        let conn = workspace.build();
+        workspace.build();
+        let conn = workspace.open();
         let options =
             QueryOptions::resolve(&ResponsePolicy::default(), Some(10), 0, None, None).unwrap();
         let result =
-            cli::ast::search_paged(&conn, &workspace.0, "def (", "python", None, &options).unwrap();
+            cli::ast::search_paged(&conn, workspace.root(), "def (", "python", None, &options)
+                .unwrap();
         let diagnostic = &result["diagnostic"];
         assert_eq!(diagnostic["code"], "unsupported_ast_pattern", "{result}");
         assert_eq!(diagnostic["language"], "python");
@@ -50,7 +52,7 @@ fn invalid_ast_patterns_report_diagnostics_without_candidate_files() {
         assert!(!diagnostic["examples"].as_array().unwrap().is_empty());
         let valid = cli::ast::search_paged(
             &conn,
-            &workspace.0,
+            workspace.root(),
             "def target()",
             "python",
             None,
@@ -64,15 +66,16 @@ fn invalid_ast_patterns_report_diagnostics_without_candidate_files() {
 #[cfg(feature = "lang-typescript")]
 #[test]
 fn upfront_ast_validation_accepts_tsx_grammar_patterns() {
-    let workspace = Workspace::new();
+    let workspace = crate::languages::PersistedWorkspaceHarness::new();
     workspace.write("src/view.tsx", "const view = <Widget value={value} />;\n");
-    let conn = workspace.build();
+    workspace.build();
+    let conn = workspace.open();
     let options =
         QueryOptions::resolve(&ResponsePolicy::default(), Some(10), 0, None, None).unwrap();
     for path in [None, Some("src/view.tsx")] {
         let result = cli::ast::search_paged(
             &conn,
-            &workspace.0,
+            workspace.root(),
             "<Widget value={$VALUE} />",
             "typescript",
             path,
@@ -84,7 +87,7 @@ fn upfront_ast_validation_accepts_tsx_grammar_patterns() {
     }
     let invalid = cli::ast::search_paged(
         &conn,
-        &workspace.0,
+        workspace.root(),
         "function (",
         "typescript",
         None,
@@ -359,14 +362,14 @@ fn ast_search_profiles_with_only_complete_syntax_use_the_shared_default() {
 #[cfg(feature = "lang-rust")]
 #[test]
 fn public_ast_search_keeps_rust_body_only_literal_candidates() {
-    let workspace = Workspace::new();
+    let workspace = crate::languages::PersistedWorkspaceHarness::new();
     workspace.write("src/a_candidate.rs", "fn coverage_owner_language() {}\n");
     workspace.write(
         "src/z_body.rs",
         "fn other() { let value = \"coverage_owner_language\"; }\n",
     );
     workspace.build();
-    let conn = reader::open(&workspace.db(), &workspace.0).unwrap();
+    let conn = workspace.open();
     let options = QueryOptions::resolve(
         &ResponsePolicy::default(),
         Some(10),
@@ -378,7 +381,7 @@ fn public_ast_search_keeps_rust_body_only_literal_candidates() {
 
     let result = cli::ast::search_paged(
         &conn,
-        &workspace.0,
+        workspace.root(),
         "\"coverage_owner_language\"",
         "rust",
         None,
@@ -413,10 +416,10 @@ fn public_ast_search_reports_structured_tree_sitter_pattern_diagnostics() {
         smallest
     }
 
-    let workspace = Workspace::new();
+    let workspace = crate::languages::PersistedWorkspaceHarness::new();
     workspace.write("src/lib.rs", "fn valid() {}\n");
     workspace.build();
-    let conn = reader::open(&workspace.db(), &workspace.0).unwrap();
+    let conn = workspace.open();
     let options = QueryOptions::resolve(
         &ResponsePolicy::default(),
         Some(10),
@@ -427,7 +430,7 @@ fn public_ast_search_reports_structured_tree_sitter_pattern_diagnostics() {
     .unwrap();
     let pattern = "let = ;";
     let result =
-        cli::ast::search_paged(&conn, &workspace.0, pattern, "rust", None, &options).unwrap();
+        cli::ast::search_paged(&conn, workspace.root(), pattern, "rust", None, &options).unwrap();
     let mut parser = contextunity_forge_mcp::engine::ast::parser("rust", "src/lib.rs").unwrap();
     let tree = parser.parse(pattern, None).unwrap();
     let expected = smallest_error(tree.root_node()).expect("pattern has a nonempty ERROR node");

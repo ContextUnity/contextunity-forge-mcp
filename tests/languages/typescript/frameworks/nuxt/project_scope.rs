@@ -1,16 +1,12 @@
-use super::super::*;
-
 #[test]
 fn ignored_root_ancestor_and_linked_manifests_do_not_activate_nuxt() {
-    use contextunity_forge_mcp::db::{reader, writer};
-
-    let workspace = Workspace::new();
-    let linked = Workspace::new();
+    let workspace = crate::languages::PersistedWorkspaceHarness::new();
+    let linked = crate::languages::PersistedWorkspaceHarness::new();
     workspace.write(
         "forge-mcp.yaml",
         &format!(
             "roots: [src, nuxt.config.ts, nested/src, nested/nuxt.config.ts]\ndocs: []\nignore: [package.json]\nlinked_workspaces:\n  - name: shared\n    path: '{}'\n    roots: [src, nuxt.config.ts]\n    ignore: [package.json]\n",
-            linked.0.display()
+            linked.root().display()
         ),
     );
     for (path, source) in [
@@ -52,9 +48,7 @@ fn ignored_root_ancestor_and_linked_manifests_do_not_activate_nuxt() {
         linked.write(path, source);
     }
 
-    let database = workspace.join(".forge/code-map.sqlite");
-    writer::build(&workspace, &database, None).unwrap();
-    let conn = reader::open(&database, &workspace).unwrap();
+    let conn = workspace.build_and_open();
     let coverage = |path: &str, expression: &str| -> Vec<String> {
         let mut stmt = conn.prepare("SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)=?1 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)=?2").unwrap();
         stmt.query_map(rusqlite::params![path, expression], |row| row.get(0))
@@ -95,7 +89,7 @@ fn ignored_root_ancestor_and_linked_manifests_do_not_activate_nuxt() {
         "export function useForeign() { return 1; }\nexport function remoteStore() { return 2; }\n",
     );
     workspace.write("src/explicit.ts", "import {usePlain} from './stores/plain';\nexport function imported() { return usePlain(); }\n");
-    let consumer = fs::read(workspace.join("src/unconfigured.ts")).unwrap();
+    let consumer = workspace.read("src/unconfigured.ts");
     let assert_unconfigured = || {
         let conn = workspace.open();
         contextunity_forge_mcp::core::commitments::verify(&conn).unwrap();
@@ -120,7 +114,7 @@ fn ignored_root_ancestor_and_linked_manifests_do_not_activate_nuxt() {
             "ordinary explicit imports keep their canonical target"
         );
         assert_eq!(
-            fs::read(workspace.join("src/unconfigured.ts")).unwrap(),
+            workspace.read("src/unconfigured.ts"),
             consumer,
             "provider/rule-only changes leave the consumer untouched"
         );
@@ -133,15 +127,20 @@ fn ignored_root_ancestor_and_linked_manifests_do_not_activate_nuxt() {
                 manifest,
                 &format!(
                     "enabled = false\n{}",
-                    include_str!("../../../../../crates/forge-index/src/languages/manifests/nuxt.toml")
+                    include_str!(
+                        "../../../../../crates/forge-index/src/languages/manifests/nuxt.toml"
+                    )
                 ),
             );
-        } else if workspace.join(manifest).exists() {
-            fs::remove_file(workspace.join(manifest)).unwrap();
+        } else if workspace.path(manifest).exists() {
+            workspace.remove(manifest);
         }
-        writer::build(&workspace, &database, None).unwrap();
+        workspace.build_to(workspace.db());
         assert_unconfigured();
-        workspace.assert_cold_equivalent();
+        let parity = crate::languages::harness::cold_relations(&workspace);
+        assert_eq!(parity.incremental_verification, Ok(()));
+        assert_eq!(parity.cold_verification, Ok(()));
+        assert_eq!(parity.incremental, parity.cold);
         for provider in [
             Some("export function usePlain() { return 1; }\n"),
             None,
@@ -151,24 +150,28 @@ fn ignored_root_ancestor_and_linked_manifests_do_not_activate_nuxt() {
             if let Some(source) = provider {
                 workspace.write(path, source);
             } else {
-                fs::remove_file(workspace.join(path)).unwrap();
+                workspace.remove(path);
             }
-            workspace.delta(path);
+            workspace.delta(&[path]);
             assert_unconfigured();
-            workspace.assert_cold_equivalent();
+            let parity = crate::languages::harness::cold_relations(&workspace);
+            assert_eq!(parity.incremental_verification, Ok(()));
+            assert_eq!(parity.cold_verification, Ok(()));
+            assert_eq!(parity.incremental, parity.cold);
         }
-        fs::remove_file(workspace.join("src/utils/alternate.ts")).unwrap();
-        workspace.delta("src/utils/alternate.ts");
+        workspace.remove("src/utils/alternate.ts");
+        workspace.delta(&["src/utils/alternate.ts"]);
         assert_unconfigured();
-        workspace.assert_cold_equivalent();
+        let parity = crate::languages::harness::cold_relations(&workspace);
+        assert_eq!(parity.incremental_verification, Ok(()));
+        assert_eq!(parity.cold_verification, Ok(()));
+        assert_eq!(parity.incremental, parity.cold);
     }
 }
 
 #[test]
 fn nuxt_components_import_links_tsx_to_vue_only_for_declared_nuxt() {
-    use contextunity_forge_mcp::db::{reader, writer};
-
-    let workspace = Workspace::new();
+    let workspace = crate::languages::PersistedWorkspaceHarness::new();
     for (path, source) in [
         (
             "nuxt/package.json",
@@ -196,13 +199,9 @@ fn nuxt_components_import_links_tsx_to_vue_only_for_declared_nuxt() {
             "<template><BaseWidgetCard /></template>",
         ),
     ] {
-        let target = workspace.join(path);
-        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
-        std::fs::write(target, source).unwrap();
+        workspace.write(path, source);
     }
-    let database = workspace.join(".forge/code-map.sqlite");
-    writer::build(&workspace, &database, None).unwrap();
-    let conn = reader::open(&database, &workspace).unwrap();
+    let conn = workspace.build_and_open();
     let statuses = |path: &str| -> Vec<String> {
         conn.prepare("SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)=?1 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='BaseWidgetCard' ORDER BY line,status")
             .unwrap()

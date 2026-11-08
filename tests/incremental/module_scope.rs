@@ -80,7 +80,7 @@ fn module_addition_ambiguity_and_deletion_keep_relative_imports_and_doc_suffixes
         assert_cold_equivalent(&w);
     }
     for path in ["pkg/types/__init__.py", "pkg/types.py"] {
-        std::fs::remove_file(w.path(path)).unwrap();
+        w.remove(path);
         w.delta(&[path]);
         assert_cold_equivalent(&w);
     }

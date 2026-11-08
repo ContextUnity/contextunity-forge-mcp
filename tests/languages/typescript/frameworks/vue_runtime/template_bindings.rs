@@ -3,7 +3,7 @@ use super::super::*;
 #[cfg(feature = "lang-vue")]
 #[test]
 fn vue_template_bindings() {
-    let w = Workspace::new();
+    let w = crate::languages::PersistedWorkspaceHarness::new();
     w.write(
         "MyButton.vue",
         r#"<template>
@@ -37,12 +37,9 @@ nextTick(); inject(); provide(); useSlots(); useAttrs(); useI18n(); t();
 "#,
     );
 
-    let facts = ast::extract(
-        "App.vue",
-        "vue",
-        &fs::read_to_string(w.0.join("App.vue")).unwrap(),
-    )
-    .unwrap();
+    let facts = ExtractorHarness::for_lang("vue")
+        .at_path("App.vue")
+        .extract(&fs::read_to_string(w.root().join("App.vue")).unwrap());
 
     let expressions: Vec<&str> = facts
         .references
@@ -69,7 +66,8 @@ nextTick(); inject(); provide(); useSlots(); useAttrs(); useI18n(); t();
         "missing template interpolation user: {:?}",
         expressions
     );
-    let conn = w.build();
+    w.build();
+    let conn = w.open();
     for name in "ref computed reactive shallowRef shallowReactive toRef toRefs unref isRef watch watchEffect onMounted onUnmounted onUpdated onBeforeMount onBeforeUnmount nextTick inject provide useSlots useAttrs useI18n".split_ascii_whitespace() {
         let (status, evidence): (String, String) = conn
             .query_row(
@@ -81,11 +79,7 @@ nextTick(); inject(); provide(); useSlots(); useAttrs(); useI18n(); t();
         assert_eq!(status, "external", "Vue runtime call {name}");
         assert!(evidence.contains("builtin:vue_runtime"), "Vue runtime call {name}: {evidence}");
     }
-    let unbound_t: String = conn.query_row(
-        "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='App.vue' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='t'",
-        [],
-        |row| row.get(0),
-    ).unwrap();
+    let unbound_t: String = query_scalar(&conn, "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='App.vue' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='t'", []);
     assert_eq!(
         unbound_t, "unresolved",
         "t requires a proven callable setup binding"
@@ -96,7 +90,7 @@ nextTick(); inject(); provide(); useSlots(); useAttrs(); useI18n(); t();
 #[cfg(feature = "lang-vue")]
 #[test]
 fn vue_typed_defineprops_template_members() {
-    let w = Workspace::new();
+    let w = crate::languages::PersistedWorkspaceHarness::new();
     w.write(
         "Props.vue",
         r#"<template>
@@ -136,13 +130,10 @@ const props = defineProps<{ label: string }>();
         "Ordinary.vue",
         "<template><p>{{ props.label }}</p></template><script lang=\"ts\">const props = defineProps<{ label: string }>();</script>",
     );
-    let conn = w.build();
+    w.build();
+    let conn = w.open();
     let coverage = |path: &str, expression: &str| -> String {
-        conn.query_row(
-            "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)=?1 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)=?2",
-            rusqlite::params![path, expression],
-            |row| row.get(0),
-        ).unwrap()
+        query_scalar(&conn, "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)=?1 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)=?2", rusqlite::params![path, expression])
     };
     assert_eq!(coverage("Props.vue", "props.label"), "resolved");
     assert_eq!(coverage("Props.vue", "props.missing"), "unresolved");
@@ -161,10 +152,7 @@ const props = defineProps<{ label: string }>();
             "unproven typed props in {path}"
         );
     }
-    let exact_field_edges: i64 = conn.query_row(
-        "SELECT count(*) FROM edge_occurrences e JOIN nodes src ON src.node_hash=e.src_hash JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='Props.vue' AND e.kind='references' AND e.line=2 AND (SELECT path FROM path_dictionary WHERE path_id=src.path_id)='Props.vue' AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)='Props.vue' AND dst.kind='field' AND dst.name='label'",
-        [], |row| row.get(0),
-    ).unwrap();
+    let exact_field_edges: i64 = query_scalar(&conn, "SELECT count(*) FROM edge_occurrences e JOIN nodes src ON src.node_hash=e.src_hash JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='Props.vue' AND e.kind='references' AND e.line=2 AND (SELECT path FROM path_dictionary WHERE path_id=src.path_id)='Props.vue' AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)='Props.vue' AND dst.kind='field' AND dst.name='label'", []);
     assert_eq!(
         exact_field_edges, 1,
         "template member must link to the same-file indexed label field"
@@ -176,10 +164,7 @@ const props = defineProps<{ label: string }>();
         "ShadowedProducer.vue",
         "Ordinary.vue",
     ] {
-        let field_edges: i64 = conn.query_row(
-            "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)=?1 AND e.kind='references' AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)=?1 AND dst.name='label'",
-            [path], |row| row.get(0),
-        ).unwrap();
+        let field_edges: i64 = query_scalar(&conn, "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)=?1 AND e.kind='references' AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)=?1 AND dst.name='label'", [path]);
         assert_eq!(
             field_edges, 0,
             "unproven typed props cannot provide an exact template target in {path}"
@@ -191,7 +176,7 @@ const props = defineProps<{ label: string }>();
 #[cfg(feature = "lang-vue")]
 #[test]
 fn vue_nested_and_optional_defineprops_template_members() {
-    let w = Workspace::new();
+    let w = crate::languages::PersistedWorkspaceHarness::new();
     w.write(
         "Nested.vue",
         r#"<template>
@@ -216,7 +201,8 @@ const props = defineProps<{ user?: { profile: { name?: string } } }>();
         "SameLine.vue",
         r#"<template>{{ props.left.name }} {{ props.right.name }}</template><script setup lang="ts">const props = defineProps<{ left: { name: string }; right: { name: string } }>();</script>"#,
     );
-    let conn = w.build();
+    w.build();
+    let conn = w.open();
     let coverage = |path: &str, expression: &str| -> String {
         conn.query_row(
             "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)=?1 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)=?2",
@@ -250,10 +236,7 @@ const props = defineProps<{ user?: { profile: { name?: string } } }>();
             "ambiguous type-literal field {expression}"
         );
     }
-    let exact_field_edges: i64 = conn.query_row(
-        "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='Nested.vue' AND e.kind='references' AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)='Nested.vue' AND dst.kind='field' AND dst.name='name'",
-        [], |row| row.get(0),
-    ).unwrap();
+    let exact_field_edges: i64 = query_scalar(&conn, "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='Nested.vue' AND e.kind='references' AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)='Nested.vue' AND dst.kind='field' AND dst.name='name'", []);
     assert_eq!(
         exact_field_edges, 2,
         "both template expressions link to their same-file typed field"

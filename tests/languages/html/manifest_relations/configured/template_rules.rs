@@ -1,16 +1,20 @@
 use super::*;
 
-pub(in crate::languages::html::manifest_relations) fn configured_template_rules_follow_effective_rules_and_delta(
-) {
-    let workspace = Workspace::new();
+#[test]
+fn configured_template_rules_follow_effective_rules_and_delta() {
+    let workspace = HtmlWorkspaceHarness::new();
     workspace.write(
         "pyproject.toml",
         "[project]\nname='template-proof'\ndependencies=['atelier']\n",
     );
     workspace.write("app/models.py", "class Record: pass\n");
     workspace.write("app/views.py", "from atelier.views import emit\nfrom atelier.paths import lookup\nfrom atelier.router import Table\nfrom app.models import Record\nregistry = Table()\nregistry.add('configured/', Record, alias='configured')\ndef page(): return emit('screens/card.html', {'headline':'Title'})\ndef route(): return lookup('configured')\ndef helper(): return 1\ndef ordinary(): return helper()\n");
-    workspace.write("app/environment.py", "from pathlib import Path\nfrom atelier.templates import Engine, Reader\nROOT = Path(__file__).parent / 'screens'\nengine = Engine(source=Reader(str(ROOT)))\n");
-    workspace.write("app/screens/card.html", "<h1>{{ headline }}</h1>\n{% pull 'part.html' %}\n{% address 'configured' %}\n{% assign local = 'value' %}\n{{ local }}\n{% use custom %}\n{% shout 'hello' %}\n{{ 'hello'|caps }}\n");
+    workspace
+        .write("app/environment.py", "from pathlib import Path\nfrom atelier.templates import Engine, Reader\nROOT = Path(__file__).parent / 'screens'\nengine = Engine(source=Reader(str(ROOT)))\n");
+    workspace.write(
+        "app/screens/card.html",
+        "<h1>{{ headline }}</h1>\n{% pull 'part.html' %}\n{% address 'configured' %}\n{% assign local = 'value' %}\n{{ local }}\n{% use custom %}\n{% shout 'hello' %}\n{{ 'hello'|caps }}\n",
+    );
     workspace.write("app/screens/part.html", "<p>{{ headline }}</p>\n");
     workspace.write(
         "app/templates/default.html",
@@ -32,22 +36,59 @@ pub(in crate::languages::html::manifest_relations) fn configured_template_rules_
         ]
     });
     let manifest = ".forge/frameworks/atelier-templates.toml";
-    let write =
-        |value: &serde_json::Value| workspace.write(manifest, &toml::to_string(value).unwrap());
+    let write = |value: &serde_json::Value| workspace.write(manifest, &toml::to_string(value).unwrap());
     write(&pack);
-    writer::build(&workspace.0, &workspace.db(), None).unwrap();
+    workspace.build();
     let assert_active = |active: bool| {
-        let conn = workspace.open();
-        assert_valid(&conn);
-        for (label,sql,expected) in [
-            ("import-proven receiver registration", "SELECT count(*) FROM nodes WHERE kind='route' AND json_extract(details,'$.route_name')='configured'",1),
-            ("call and tag consume typed route keys", "SELECT count(*) FROM edge_occurrences WHERE kind='references_route'",2),
-            ("configured include", "SELECT count(*) FROM edge_occurrences e JOIN nodes s ON s.node_hash=e.src_hash JOIN path_dictionary p ON p.path_id=s.path_id WHERE e.kind='includes' AND p.path='app/screens/card.html'",1),
-            ("configured template library", "SELECT count(*) FROM edge_occurrences e JOIN nodes d ON d.node_hash=e.dst_hash WHERE e.kind='references' AND d.name='speak'",1),
-            ("configured template filter", "SELECT count(*) FROM edge_occurrences e JOIN nodes d ON d.node_hash=e.dst_hash WHERE e.kind='references' AND d.name='capitalize'",1),
+        let observations = workspace.observe();
+        let validity = &observations.validity();
+        validity.assert_valid();
+        for (label, actual, expected) in [
+            (
+                "import-proven receiver registration",
+                observations.nodes()
+                    .iter()
+                    .filter(|node| node.kind == "route")
+                    .filter(|node| {
+                        serde_json::from_str::<serde_json::Value>(&node.details).unwrap()["route_name"] == "configured"
+                    })
+                    .count(),
+                1,
+            ),
+            (
+                "call and tag consume typed route keys",
+                observations.edges()
+                    .iter()
+                    .filter(|edge| edge.kind == "references_route")
+                    .count(),
+                2,
+            ),
+            (
+                "configured include",
+                observations.edges()
+                    .iter()
+                    .filter(|edge| edge.kind == "includes" && edge.owner_path == "app/screens/card.html")
+                    .count(),
+                1,
+            ),
+            (
+                "configured template library",
+                observations.edges()
+                    .iter()
+                    .filter(|edge| edge.kind == "references" && edge.target_name == "speak")
+                    .count(),
+                1,
+            ),
+            (
+                "configured template filter",
+                observations.edges()
+                    .iter()
+                    .filter(|edge| edge.kind == "references" && edge.target_name == "capitalize")
+                    .count(),
+                1,
+            ),
         ] {
-            let actual:usize=conn.query_row(sql,[],|row|row.get(0)).unwrap();
-            assert_eq!(actual,if active{expected}else{0},"{label}, active={active}");
+            assert_eq!(actual, if active { expected } else { 0 }, "{label}, active={active}");
         }
         if active {
             for (path, expression) in [
@@ -55,38 +96,52 @@ pub(in crate::languages::html::manifest_relations) fn configured_template_rules_
                 ("app/screens/part.html", "template.variable.headline"),
                 ("app/screens/card.html", "template.variable.local"),
             ] {
-                let status:String=conn.query_row("SELECT c.status FROM resolution_coverage c JOIN path_dictionary p ON p.path_id=c.path_id JOIN coverage_expressions x ON x.expression_id=c.expression_id WHERE p.path=?1 AND x.expression=?2",params![path,expression],|row|row.get(0)).unwrap();
+                let statuses: Vec<_> = observations.coverage()
+                    .iter()
+                    .filter(|coverage| coverage.path == path && coverage.expression == expression)
+                    .map(|coverage| coverage.status.as_str())
+                    .collect();
                 assert_eq!(
-                    status, "resolved",
+                    statuses,
+                    ["resolved"],
                     "render context and configured dialect {path}:{expression}"
                 );
             }
         }
-        let ordinary:usize=conn.query_row("SELECT count(*) FROM edge_occurrences e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE e.kind='calls' AND s.name='ordinary' AND d.name='helper'",[],|row|row.get(0)).unwrap();
+        let ordinary = observations.edges()
+            .iter()
+            .filter(|edge| edge.kind == "calls" && edge.source_name == "ordinary" && edge.target_name == "helper")
+            .count();
         assert_eq!(ordinary, 1);
-        assert_eq!(conn.query_row("SELECT count(*) FROM edge_occurrences e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash JOIN path_dictionary p ON p.path_id=s.path_id JOIN path_dictionary q ON q.path_id=d.path_id WHERE e.kind='includes' AND p.path='app/templates/default.html' AND q.path='app/templates/part.html'", [], |row|row.get::<_, usize>(0)).unwrap(), 1, "bundled and configured dialects coexist");
+        assert_eq!(
+            observations.edges()
+                .iter()
+                .filter(|edge| {
+                    edge.kind == "includes"
+                        && edge.source_path == "app/templates/default.html"
+                        && edge.target_path == "app/templates/part.html"
+                })
+                .count(),
+            1,
+            "bundled and configured dialects coexist"
+        );
     };
     assert_active(true);
-    complete_parity(&workspace);
+    workspace.assert_cold_parity();
     let late_manifest = ".forge/frameworks/zcustom.toml";
-    fs::rename(workspace.0.join(manifest), workspace.0.join(late_manifest)).unwrap();
-    writer::delta(
-        &workspace.0,
-        &workspace.db(),
-        &[PathBuf::from(manifest), PathBuf::from(late_manifest)],
-    )
-    .unwrap();
+    workspace.rename_file(manifest, late_manifest).unwrap();
+    workspace.delta(&[manifest, late_manifest]);
     assert_active(true);
-    complete_parity(&workspace);
-    let cached = persisted_facts(&workspace.open());
-    assert!(cached.iter().flat_map(|facts| &facts.references).any(|reference| reference.kind == "includes" && reference.expression == "part.html" && matches!(&reference.receiver_hint, Some(contextunity_forge_mcp::core::models::ReceiverHint::ConfiguredReference { origin }) if origin.pack == "zcustom" && origin.rule == "dialect")), "late pack retains actual typed include origin");
-    fs::rename(workspace.0.join(late_manifest), workspace.0.join(manifest)).unwrap();
-    writer::delta(
-        &workspace.0,
-        &workspace.db(),
-        &[PathBuf::from(manifest), PathBuf::from(late_manifest)],
-    )
-    .unwrap();
+    let observations = workspace.observe();
+    let cached = observations.persisted_facts();
+    assert!(
+        cached.iter().flat_map(|facts| &facts.references).any(|reference| reference.kind == "includes"
+            && reference.expression == "part.html"
+            && matches!(&reference.receiver_hint, Some(contextunity_forge_mcp::core::models::ReceiverHint::ConfiguredReference { origin }) if origin.pack == "zcustom" && origin.rule == "dialect")),
+        "late pack retains actual typed include origin"
+    );
+    workspace.rename_file(late_manifest, manifest).unwrap();
+    workspace.delta(&[manifest, late_manifest]);
     assert_active(true);
     let mut conflicting = pack.clone();
     conflicting["syntax_rules"] = serde_json::json!([pack["syntax_rules"][7].clone()]);
@@ -95,53 +150,52 @@ pub(in crate::languages::html::manifest_relations) fn configured_template_rules_
     conflicting["syntax_rules"][0]["operation"]["dialect"]["include"] = "different".into();
     let conflict_path = ".forge/frameworks/ambiguous-dialect.toml";
     workspace.write(conflict_path, &toml::to_string(&conflicting).unwrap());
-    workspace.delta(conflict_path);
-    assert_eq!(workspace.open().query_row("SELECT count(*) FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path='app/screens/card.html' AND n.name='local'", [], |row|row.get::<_, usize>(0)).unwrap(), 0, "conflicting directory-owning dialects fail closed");
-    complete_parity(&workspace);
-    fs::remove_file(workspace.0.join(conflict_path)).unwrap();
-    workspace.delta(conflict_path);
+    workspace.delta(&[conflict_path]);
+    let observations = workspace.observe();
+    let validity = &observations.validity();
+    validity.assert_valid();
+    let conflicting_locals = observations.nodes()
+        .iter()
+        .filter(|node| node.path == "app/screens/card.html" && node.name == "local")
+        .count();
+    assert_eq!(
+        conflicting_locals, 0,
+        "conflicting directory-owning dialects fail closed"
+    );
+    workspace.remove_file(conflict_path).unwrap();
+    workspace.delta(&[conflict_path]);
     assert_active(true);
-    complete_parity(&workspace);
-    let card_source = fs::read_to_string(workspace.0.join("app/screens/card.html")).unwrap();
+    let card_source = workspace.read("app/screens/card.html").unwrap();
     let mut renamed_dialect = pack.clone();
     renamed_dialect["syntax_rules"][7]["operation"]["dialect"]["include"] = "draw".into();
     write(&renamed_dialect);
-    workspace.delta(manifest);
+    workspace.delta(&[manifest]);
+    let observations = workspace.observe();
+    let validity = &observations.validity();
+    validity.assert_valid();
     assert!(
-        edge_occurrence_rows(&workspace.open(), "app/screens/card.html", "includes").is_empty(),
+        observations.edges()
+            .iter()
+            .find(|edge| edge.owner_path == "app/screens/card.html" && edge.kind == "includes")
+            .is_none(),
         "removed configured directive cannot retain an exact include"
     );
-    complete_parity(&workspace);
-    workspace.write(
-        "app/screens/card.html",
-        &card_source.replace("{% pull ", "{% draw "),
-    );
-    workspace.delta("app/screens/card.html");
+    workspace.write("app/screens/card.html", &card_source.replace("{% pull ", "{% draw "));
+    workspace.delta(&["app/screens/card.html"]);
     assert_active(true);
-    complete_parity(&workspace);
     write(&pack);
     workspace.write("app/screens/card.html", &card_source);
-    writer::delta(
-        &workspace.0,
-        &workspace.db(),
-        &[
-            PathBuf::from(manifest),
-            PathBuf::from("app/screens/card.html"),
-        ],
-    )
-    .unwrap();
+    workspace.delta(&[manifest, "app/screens/card.html"]);
     assert_active(true);
-    complete_parity(&workspace);
     let mut empty = pack.clone();
     empty["replace"] = true.into();
     empty["syntax_rules"] = serde_json::json!([]);
     empty["route_calls"] = serde_json::json!([]);
     write(&empty);
-    workspace.delta(manifest);
+    workspace.delta(&[manifest]);
     assert_active(false);
-    complete_parity(&workspace);
     write(&pack);
-    workspace.delta(manifest);
+    workspace.delta(&[manifest]);
     assert_active(true);
-    complete_parity(&workspace);
+    workspace.assert_cold_parity();
 }

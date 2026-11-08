@@ -18,7 +18,9 @@ const CANONICAL_FORGE_GITIGNORE: &str = concat!(
 
 mod boundaries;
 mod guidance;
+pub(super) mod harness;
 mod lifecycle;
+mod mcp_fixture;
 mod retirement;
 mod seams;
 mod workspaces;

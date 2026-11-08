@@ -1,10 +1,9 @@
-use super::Workspace;
-use contextunity_forge_mcp::engine::{ast, linker};
+use crate::languages::harness::ExtractorHarness;
 use std::collections::BTreeMap;
 
 #[test]
 fn template_targets_require_indexed_local_providers_even_with_framework_dependencies() {
-    let workspace = Workspace::new();
+    let workspace = crate::languages::PersistedWorkspaceHarness::new();
     workspace.write(
         "commerce/pyproject.toml",
         "[project]\nname = 'commerce'\ndependencies = ['django>=5.0.0']\n",
@@ -31,18 +30,24 @@ fn template_targets_require_indexed_local_providers_even_with_framework_dependen
     let mut facts = BTreeMap::from([
         (
             django_path.to_owned(),
-            ast::extract(django_path, "html", django_source).unwrap(),
+            ExtractorHarness::for_lang("html")
+                .at_path(django_path)
+                .extract(django_source),
         ),
         (
             other_path.to_owned(),
-            ast::extract(other_path, "html", other_source).unwrap(),
+            ExtractorHarness::for_lang("html")
+                .at_path(other_path)
+                .extract(other_source),
         ),
         (
             isolated_path.to_owned(),
-            ast::extract(isolated_path, "html", isolated_source).unwrap(),
+            ExtractorHarness::for_lang("html")
+                .at_path(isolated_path)
+                .extract(isolated_source),
         ),
     ]);
-    let graph = linker::link_with_root(&facts, None, Some(&workspace.0));
+    let graph = ExtractorHarness::link_graph_with_root(&facts, Some(workspace.root()));
 
     for target in [
         "admin/change_form.html",
@@ -88,9 +93,11 @@ fn template_targets_require_indexed_local_providers_even_with_framework_dependen
     let local_path = "commerce/templates/admin/change_form.html";
     facts.insert(
         local_path.to_owned(),
-        ast::extract(local_path, "html", "<form></form>").unwrap(),
+        ExtractorHarness::for_lang("html")
+            .at_path(local_path)
+            .extract("<form></form>"),
     );
-    let local_graph = linker::link_with_root(&facts, None, Some(&workspace.0));
+    let local_graph = ExtractorHarness::link_graph_with_root(&facts, Some(workspace.root()));
     let local_module = facts[local_path]
         .nodes
         .iter()

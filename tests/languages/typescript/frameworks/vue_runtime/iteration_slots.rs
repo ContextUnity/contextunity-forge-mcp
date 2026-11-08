@@ -1,4 +1,5 @@
 use super::super::*;
+use crate::languages::harness::ExtractorHarness;
 
 #[cfg(feature = "lang-vue")]
 #[test]
@@ -8,7 +9,9 @@ fn vue_iteration_and_slot_scopes_keep_all_bindings_and_source_coordinates() {
   <Panel v-slot="{ entry, count }">{{ entry.title }} {{ count }}</Panel>
 </template>
 <script setup>const items = [];</script>"#;
-    let facts = ast::extract("Scoped.vue", "vue", source).unwrap();
+    let facts = ExtractorHarness::for_lang("vue")
+        .at_path("Scoped.vue")
+        .extract(source);
     let iteration = facts
         .nodes
         .iter()
@@ -62,7 +65,7 @@ fn vue_iteration_and_slot_scopes_keep_all_bindings_and_source_coordinates() {
 #[cfg(feature = "lang-vue")]
 #[test]
 fn vue_typed_iteration_members_resolve_to_declared_element_fields() {
-    let w = Workspace::new();
+    let w = crate::languages::PersistedWorkspaceHarness::new();
     let source = "<template><ul><li v-for=\"(item, index) in items\">{{ item.title }} {{ index }}</li></ul></template>\n<script setup lang=\"ts\">interface Item { title: string } const items: Item[] = [];</script>";
     w.write("TypedList.vue", source);
     w.write(
@@ -73,29 +76,21 @@ fn vue_typed_iteration_members_resolve_to_declared_element_fields() {
         "ShadowedIterable.vue",
         "<template><div v-for=\"items in groups\"><span v-for=\"item in items\">{{ item.title }}</span></div></template>\n<script setup lang=\"ts\">interface Item { title: string } const items: Item[] = []; const groups = [];</script>",
     );
-    let conn = w.build();
+    w.build();
+    let conn = w.open();
     let (status, evidence): (String, String) = conn.query_row(
         "SELECT r.status, e.evidence FROM resolution_coverage r JOIN coverage_evidence e ON e.evidence_id=r.evidence_id WHERE (SELECT path FROM path_dictionary WHERE path_id=r.path_id)='TypedList.vue' AND (SELECT expression FROM coverage_expressions WHERE expression_id=r.expression_id)='item.title' AND r.line=1",
         [], |row| Ok((row.get(0)?, row.get(1)?)),
     ).unwrap();
     assert_eq!(status, "resolved", "{evidence}");
-    let field_edge: i64 = conn.query_row(
-        "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='TypedList.vue' AND e.kind='references' AND e.line=1 AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)='TypedList.vue' AND dst.kind='field' AND dst.name='title'",
-        [], |row| row.get(0),
-    ).unwrap();
+    let field_edge: i64 = query_scalar(&conn, "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='TypedList.vue' AND e.kind='references' AND e.line=1 AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)='TypedList.vue' AND dst.kind='field' AND dst.name='title'", []);
     assert_eq!(field_edge, 1);
-    let call_status: String = conn.query_row(
-        "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='TypedCall.vue' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='item.title' AND line=1",
-        [], |row| row.get(0),
-    ).unwrap();
+    let call_status: String = query_scalar(&conn, "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='TypedCall.vue' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='item.title' AND line=1", []);
     assert_eq!(
         call_status, "unresolved",
         "a typed field is not a callable method"
     );
-    let shadowed_status: String = conn.query_row(
-        "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='ShadowedIterable.vue' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='item.title' AND line=1",
-        [], |row| row.get(0),
-    ).unwrap();
+    let shadowed_status: String = query_scalar(&conn, "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='ShadowedIterable.vue' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='item.title' AND line=1", []);
     assert_eq!(
         shadowed_status, "unresolved",
         "outer loop binding shadows the setup iterable"
@@ -106,7 +101,7 @@ fn vue_typed_iteration_members_resolve_to_declared_element_fields() {
 #[cfg(feature = "lang-vue")]
 #[test]
 fn vue_typed_slot_members_follow_imported_component_provider() {
-    let w = Workspace::new();
+    let w = crate::languages::PersistedWorkspaceHarness::new();
     w.write(
         "app/Panel.vue",
         "<template><slot /></template>\n<script lang=\"ts\">const runtimeTsSlots = defineSlots();</script>\n<script setup lang=\"ts\">interface Item { title: string } defineSlots<{ default(props: { entry: Item }): any }>();</script>",
@@ -176,7 +171,8 @@ fn vue_typed_slot_members_follow_imported_component_provider() {
         "other/Panel.vue",
         "<template><slot /></template>\n<script setup lang=\"ts\">interface Item { title: string } defineSlots<{ default(props: { entry: Item }): any }>();</script>",
     );
-    let conn = w.build();
+    w.build();
+    let conn = w.open();
     let status = |path: &str| -> String {
         conn.query_row(
             "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)=?1 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='entry.title' AND line=1",
@@ -187,18 +183,12 @@ fn vue_typed_slot_members_follow_imported_component_provider() {
     assert_eq!(status("app/NestedSlot.vue"), "resolved");
     assert_eq!(status("app/JavascriptSlots.vue"), "resolved");
     assert_eq!(status("app/UnrelatedImport.vue"), "resolved");
-    let field_edge: i64 = conn.query_row(
-        "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='app/View.vue' AND e.kind='references' AND e.line=1 AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)='app/Panel.vue' AND dst.kind='field' AND dst.name='title'",
-        [], |row| row.get(0),
-    ).unwrap();
+    let field_edge: i64 = query_scalar(&conn, "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='app/View.vue' AND e.kind='references' AND e.line=1 AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)='app/Panel.vue' AND dst.kind='field' AND dst.name='title'", []);
     assert_eq!(
         field_edge, 1,
         "slot member points to the uniquely imported provider field"
     );
-    let nested_edge: i64 = conn.query_row(
-        "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='app/NestedSlot.vue' AND e.kind='references' AND e.line=1 AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)='app/Panel.vue' AND dst.kind='field' AND dst.name='title'",
-        [], |row| row.get(0),
-    ).unwrap();
+    let nested_edge: i64 = query_scalar(&conn, "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='app/NestedSlot.vue' AND e.kind='references' AND e.line=1 AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)='app/Panel.vue' AND dst.kind='field' AND dst.name='title'", []);
     assert_eq!(
         nested_edge, 1,
         "nested slot follows the imported parent component"

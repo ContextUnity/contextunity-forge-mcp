@@ -1,8 +1,6 @@
-use contextunity_forge_mcp::{
-    db::{reader, writer},
-    engine::{ast, languages, scanner},
-};
-use std::{collections::BTreeSet, fs};
+use crate::languages::{harness::ExtractorHarness, PersistedWorkspaceHarness};
+use contextunity_forge_mcp::engine::{languages, scanner};
+use std::collections::BTreeSet;
 
 struct Fixture {
     id: &'static str,
@@ -134,8 +132,6 @@ const FIXTURES: &[Fixture] = &[
     },
 ];
 
-use super::support::Workspace;
-
 #[test]
 fn registry_and_extraction_match_the_compiled_feature_contract() {
     let expected: BTreeSet<_> = FIXTURES
@@ -169,7 +165,8 @@ fn registry_and_extraction_match_the_compiled_feature_contract() {
             "{}",
             fixture.id
         );
-        let facts = ast::extract(fixture.path, fixture.id, fixture.source);
+        let extractor = ExtractorHarness::for_lang(fixture.id).at_path(fixture.path);
+        let facts = extractor.try_extract(fixture.source);
         if fixture.enabled {
             let facts = facts.unwrap();
             assert!(
@@ -194,14 +191,16 @@ fn registry_and_extraction_match_the_compiled_feature_contract() {
             assert!(error.contains("disabled"), "{error}");
             assert!(error.contains(fixture.feature), "{error}");
             assert!(error.contains("compiled languages:"), "{error}");
-            let error = ast::parser(fixture.id, fixture.path)
-                .err()
-                .expect("disabled parser")
-                .to_string();
+            let error = contextunity_forge_mcp::engine::ast::parser(fixture.id, fixture.path)
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+                .unwrap_err();
             assert!(error.contains(fixture.feature), "{error}");
         }
     }
-    let unknown = ast::extract("sample.unknown", "unknown", "")
+    let unknown = ExtractorHarness::for_lang("unknown")
+        .at_path("sample.unknown")
+        .try_extract("")
         .unwrap_err()
         .to_string();
     assert!(unknown.contains("unknown AST language"), "{unknown}");
@@ -210,18 +209,15 @@ fn registry_and_extraction_match_the_compiled_feature_contract() {
 
 #[test]
 fn scanner_and_database_keep_documents_and_only_compiled_languages() {
-    let workspace = Workspace::new();
+    let workspace = PersistedWorkspaceHarness::new();
     for fixture in FIXTURES {
-        fs::write(workspace.0.join(fixture.path), fixture.source).unwrap();
+        workspace.write(fixture.path, fixture.source);
     }
-    fs::write(
-        workspace.0.join("README.md"),
+    workspace.write(
+        "README.md",
         "# Feature fixture\n\nDocuments remain available.\n",
-    )
-    .unwrap();
-    let db = workspace.0.join(".forge/code-map.sqlite");
-    writer::build(&workspace.0, &db, None).unwrap();
-    let conn = reader::open(&db, &workspace.0).unwrap();
+    );
+    let conn = workspace.build_and_open();
     let files: BTreeSet<String> = conn
         .prepare("SELECT path FROM files")
         .unwrap()
@@ -260,30 +256,27 @@ fn scanner_and_database_keep_documents_and_only_compiled_languages() {
 
 #[test]
 fn cross_layer_seams_endpoint_vue_alpine() {
-    let workspace = Workspace::new();
-    let root = &workspace.0;
-    fs::create_dir_all(root.join("stores")).unwrap();
+    let workspace = PersistedWorkspaceHarness::new();
 
     // Existing Nuxt builtins require actual project activation.
     workspace.write("package.json", r#"{"name":"cross-layer-seam","dependencies":{"nuxt":"3.21.9","vue":"3.5.0","alpinejs":"3.14.9"}}"#);
     workspace.write("nuxt.config.ts", "export default defineNuxtConfig({});\n");
 
     // 1. Python Django backend route + view
-    fs::write(
-        root.join("urls.py"),
+    workspace.write(
+        "urls.py",
         "from django.urls import path\ndef order_list(request): pass\nurlpatterns = [\n    path('api/v1/orders/', order_list, name='order-list'),\n]\n",
-    ).unwrap();
+    );
 
     // 2. TypeScript client calling endpoint via fetch
-    fs::write(
-        root.join("api.ts"),
+    workspace.write(
+        "api.ts",
         "export async function fetchOrders() {\n    return fetch('/api/v1/orders/');\n}\n",
-    )
-    .unwrap();
+    );
 
     // 3. HTML calling endpoint via HTMX and Alpine.js component
-    fs::write(
-        root.join("index.html"),
+    workspace.write(
+        "index.html",
         concat!(
             "<div>\n",
             "  <button hx-get=\"/api/v1/orders/\">Load</button>\n",
@@ -292,19 +285,17 @@ fn cross_layer_seams_endpoint_vue_alpine() {
             "  </div>\n",
             "</div>\n",
         ),
-    )
-    .unwrap();
+    );
 
     // 4. Pinia store
-    fs::write(
-        root.join("stores/admin.ts"),
+    workspace.write(
+        "stores/admin.ts",
         "export function useAdminStore() {\n    return { bookmarks: [] };\n}\n",
-    )
-    .unwrap();
+    );
 
     // 5. Vue component explicitly imports its store and uses an activated Nuxt builtin.
-    fs::write(
-        root.join("Admin.vue"),
+    workspace.write(
+        "Admin.vue",
         concat!(
             "<script setup>\n",
             "import { useAdminStore } from './stores/admin';\n",
@@ -313,12 +304,9 @@ fn cross_layer_seams_endpoint_vue_alpine() {
             "</script>\n",
             "<template><div>Admin</div></template>\n",
         ),
-    )
-    .unwrap();
+    );
 
-    let db = root.join(".forge/code-map.sqlite");
-    writer::build(root, &db, None).unwrap();
-    let conn = reader::open(&db, root).unwrap();
+    let conn = workspace.build_and_open();
 
     // Verify calls_endpoint edges
     let endpoint_edges: Vec<String> = conn

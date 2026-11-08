@@ -1,4 +1,4 @@
-use super::support::Workspace;
+use crate::languages::PersistedWorkspaceHarness;
 use contextunity_forge_mcp::{
     core::response::{QueryOptions, ResponsePolicy, SourceOptions},
     db::{reader, symbols},
@@ -16,11 +16,12 @@ fn rows(conn: &Connection, sql: &str) -> Vec<String> {
         .collect()
 }
 
-fn assert_snippet(workspace: &Workspace, conn: &Connection, selector: &str, expected: &str) {
+fn assert_snippet(workspace: &PersistedWorkspaceHarness, conn: &Connection, selector: &str, expected: &str) {
     let policy = ResponsePolicy::default();
     let options = QueryOptions::resolve(&policy, None, 0, None, None).unwrap();
     let source = SourceOptions::resolve(&policy, Some(true), Some(0), None, 0).unwrap();
-    let snippet = symbols::snippet_paged(conn, &workspace.0, selector, &source, &options).unwrap();
+    let snippet =
+        symbols::snippet_paged(conn, workspace.root(), selector, &source, &options).unwrap();
     assert!(
         snippet["source"].as_str().unwrap().contains(expected),
         "{snippet}"
@@ -29,11 +30,11 @@ fn assert_snippet(workspace: &Workspace, conn: &Connection, selector: &str, expe
 
 #[test]
 fn yaml_indexes_nested_quoted_flow_and_sequence_keys_with_unique_ids() {
-    let w = Workspace::new();
+    let w = crate::languages::PersistedWorkspaceHarness::new();
     let source = "service:\n  port: 8080\n  \"literal.dot\": yes\nflow: {left: {port: 1}, right: {port: 2}}\nitems:\n  - name: first\n  - name: second\n";
     w.write("settings.yml", source);
     w.build();
-    let conn = reader::open(&w.db(), &w.0).unwrap();
+    let conn = w.open();
     let names = rows(
         &conn,
         "SELECT qualname FROM nodes WHERE kind='variable' ORDER BY qualname",
@@ -59,16 +60,19 @@ fn yaml_indexes_nested_quoted_flow_and_sequence_keys_with_unique_ids() {
     assert_snippet(&w, &conn, "settings.yml:2", "port: 8080");
     drop(conn);
     w.write("settings.yml", &source.replace("port: 8080", "timeout: 15"));
-    w.cold_parity("settings.yml");
+    let parity = crate::languages::support::delta_cold(&w, "settings.yml");
+    assert_eq!(parity.incremental_verification, Ok(()));
+    assert_eq!(parity.cold_verification, Ok(()));
+    assert_eq!(parity.incremental, parity.cold);
 }
 
 #[test]
 fn toml_indexes_tables_array_tables_dotted_and_inline_keys() {
-    let w = Workspace::new();
+    let w = crate::languages::PersistedWorkspaceHarness::new();
     let source = "title = \"app\"\n[server]\nport = 8080\n\"literal.dot\" = true\nlimits.cpu = 2\ninline = { left = { value = 1 }, right = { value = 2 } }\n[[workers]]\nname = \"first\"\n[[workers]]\nname = \"second\"\n";
     w.write("settings.toml", source);
     w.build();
-    let conn = reader::open(&w.db(), &w.0).unwrap();
+    let conn = w.open();
     let names = rows(&conn, "SELECT qualname FROM nodes ORDER BY qualname");
     for expected in [
         "settings.title",
@@ -101,12 +105,15 @@ fn toml_indexes_tables_array_tables_dotted_and_inline_keys() {
         "settings.toml",
         &source.replace("port = 8080", "timeout = 15"),
     );
-    w.cold_parity("settings.toml");
+    let parity = crate::languages::support::delta_cold(&w, "settings.toml");
+    assert_eq!(parity.incremental_verification, Ok(()));
+    assert_eq!(parity.cold_verification, Ok(()));
+    assert_eq!(parity.incremental, parity.cold);
 }
 
 #[test]
 fn config_ast_search_finds_inner_pairs_and_key_captures() {
-    let w = Workspace::new();
+    let w = crate::languages::PersistedWorkspaceHarness::new();
     for (path, language, source, patterns) in [
         (
             "settings.yml",
@@ -137,22 +144,28 @@ fn config_ast_search_finds_inner_pairs_and_key_captures() {
 
 #[test]
 fn config_syntax_errors_are_recorded_and_repaired_by_delta() {
-    let w = Workspace::new();
+    let w = crate::languages::PersistedWorkspaceHarness::new();
     w.write("broken.yaml", "key: [one, two\n");
     w.write("broken.toml", "[server\nport =\n");
     w.build();
-    let conn = reader::open(&w.db(), &w.0).unwrap();
+    let conn = w.open();
     assert!(!rows(&conn, "SELECT message FROM errors WHERE path='broken.yaml'").is_empty());
     assert!(!rows(&conn, "SELECT message FROM errors WHERE path='broken.toml'").is_empty());
     drop(conn);
     w.write("broken.yaml", "key: [one, two]\n");
-    w.cold_parity("broken.yaml");
+    let parity = crate::languages::support::delta_cold(&w, "broken.yaml");
+    assert_eq!(parity.incremental_verification, Ok(()));
+    assert_eq!(parity.cold_verification, Ok(()));
+    assert_eq!(parity.incremental, parity.cold);
     w.write("broken.toml", "[server]\nport = 80\n");
-    w.cold_parity("broken.toml");
-    let conn = reader::open(&w.db(), &w.0).unwrap();
+    let parity = crate::languages::support::delta_cold(&w, "broken.toml");
+    assert_eq!(parity.incremental_verification, Ok(()));
+    assert_eq!(parity.cold_verification, Ok(()));
+    assert_eq!(parity.incremental, parity.cold);
+    let conn = w.open();
     assert!(rows(&conn, "SELECT message FROM errors").is_empty());
-    let adapter = scanner::load_adapter(&w.0, None).unwrap();
-    let scan = scanner::scan_with_adapter(&w.0, &adapter).unwrap();
+    let adapter = scanner::load_adapter(w.root(), None).unwrap();
+    let scan = scanner::scan_with_adapter(w.root(), &adapter).unwrap();
     assert!(scan.entries.iter().any(|entry| entry.language == "yaml"));
     assert!(scan.entries.iter().any(|entry| entry.language == "toml"));
 }

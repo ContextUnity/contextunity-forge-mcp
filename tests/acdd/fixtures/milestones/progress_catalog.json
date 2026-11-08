@@ -1,0 +1,8 @@
+{
+  "forge-mcp.yaml": "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+  "docs/milestones/010-queued.md": "---\nid: m-queued\ntitle: Queued work\ndoc_type: contract\nstatus: planned\n---\n# Queued work\n\n### task: draft\n```yaml\ntask_ref: draft\ntarget: Draft work\nproof_policy: seam-test-first\nscope: [src/]\n```\n",
+  "docs/milestones/011-live.md": "---\nid: m-live\ntitle: Live work\ndoc_type: contract\nstatus: active\nstarted_at: 2026-10-01T10:00:00Z\ninvariants: [Keep receipts]\ndepends_on: [m-queued]\n---\n# Live work\n\n## Outcome and purpose\nDeliver visible progress.\n\n### task: first\n```yaml\ntask_ref: first\ntarget: First result\nproof_policy: seam-test-first\nscope: [src/]\n```\nImplementation steps for first.\n\n### task: second\n```yaml\ntask_ref: second\ntarget: Second result\nproof_policy: seam-test-first\nscope: [src/]\n```\nDelivery notes for second.\n",
+  "docs/milestones/archive/020-prior.md": "---\nid: m-prior\ntitle: Prior work\ndoc_type: contract\nstatus: completed\nstarted_at: 2026-09-01T10:00:00Z\n---\n# Prior work\n\n### task: shipped\n```yaml\ntask_ref: shipped\ntarget: Shipped result\nproof_policy: seam-test-first\nscope: [src/]\n```\n",
+  "docs/milestones/README.md": "---\ntitle: Milestone guide\ndoc_type: guide\n---\n# Milestone guide\n",
+  "docs/milestones/archive/README.md": "---\ntitle: Archive guide\ndoc_type: guide\n---\n# Archive guide\n"
+}

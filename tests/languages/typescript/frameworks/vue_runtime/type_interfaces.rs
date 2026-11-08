@@ -3,7 +3,7 @@ use super::super::*;
 #[cfg(feature = "lang-vue")]
 #[test]
 fn vue_transitive_nested_defineprops_interfaces() {
-    let w = Workspace::new();
+    let w = crate::languages::PersistedWorkspaceHarness::new();
     w.write(
         "app/types.ts",
         r#"export interface Citation {
@@ -48,7 +48,8 @@ const props = defineProps<Props>();
 </script>
 "#,
     );
-    let conn = w.build();
+    w.build();
+    let conn = w.open();
     let coverage = |path: &str, expression: &str| -> (String, String) {
         conn.query_row(
             "SELECT r.status,e.evidence FROM resolution_coverage r JOIN path_dictionary p ON p.path_id=r.path_id JOIN coverage_expressions x ON x.expression_id=r.expression_id JOIN coverage_evidence e ON e.evidence_id=r.evidence_id WHERE p.path=?1 AND x.expression=?2 AND r.line=2",
@@ -90,10 +91,7 @@ const props = defineProps<Props>();
         "props.bookmark.citation.url in NamedProps.vue"
     );
 
-    let edge_count: i64 = conn.query_row(
-        "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='app/InlineProps.vue' AND e.kind='references' AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)='app/types.ts' AND dst.kind='field' AND dst.name='url'",
-        [], |row| row.get(0),
-    ).unwrap();
+    let edge_count: i64 = query_scalar(&conn, "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='app/InlineProps.vue' AND e.kind='references' AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)='app/types.ts' AND dst.kind='field' AND dst.name='url'", []);
     assert_eq!(
         edge_count, 1,
         "reference edge to Citation.url field in app/types.ts"

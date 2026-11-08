@@ -3,294 +3,21 @@ use super::*;
 #[cfg(all(feature = "lang-python", feature = "lang-typescript"))]
 #[test]
 fn declarative_framework_rules_reach_persisted_receivers_routes_and_dependencies() {
-    let workspace = Workspace::new();
-    workspace.write(
-        "pyproject.toml",
-        "[project]\nname = 'sample'\ndependencies = ['django', 'fastapi', 'grid-view-spec']\n",
+    let sources = cross_pack_sources();
+    let indexed = sources.index().unwrap();
+    assert!(
+        indexed
+            .registry
+            .framework_manifest_for_path(LanguageFamily("python"), "app.py", "django", "django")
+            .is_some()
     );
-    workspace.write("package.json", r#"{"dependencies":{"@nestjs/common":"*"}}"#);
-    workspace.write(
-        ".forge/frameworks/django.toml",
-        r#"
-[[class_hierarchy_receivers]]
-bases = ["django.custom.Base"]
-provider = "django.custom.Base"
-members = ["deliver"]
-[[route_decorators]]
-callee = "portal.expose"
-method = "POST"
-path_argument = 0
-[[route_calls]]
-callee = "register_endpoint"
-method = "GET"
-path_argument = 0
-handler_argument = 1
-[[route_calls]]
-callee = "register_with_handler"
-method = "GET"
-path_argument = 0
-handler_argument = 2
-[[route_calls]]
-callee = "register_with_middleware"
-method = "GET"
-path_argument = 0
-handler_argument = 1
-[[route_calls]]
-callee = "path"
-method = "ANY"
-path_argument = 0
-handler_argument = 1
-allow_relative_path = true
-name_keyword = "name"
-include = { callee = ".include", argument = 0, namespace_keyword = "namespace" }
-[[route_calls]]
-callee = "publish"
-method = "GET"
-path_argument = 0
-[[route_decorators]]
-callee = "Get"
-method = "GET"
-path_argument = 0
-prefixes = [{ kind = "class_decorator", callee = "Controller", argument = 0 }]
-[[di_calls]]
-callee = "InjectService"
-argument = 0
-"#,
-    );
-    workspace.write(
-        "app.py",
-        r#"from django.custom import Base
-class Worker(Base):
-    def run(self):
-        self.deliver()
-def dependency():
-    return Worker()
-def middleware():
-    return None
-@portal.expose('/custom')
-def endpoint(service = InjectService(dependency)):
-    return service
-register_endpoint('/registered', endpoint)
-register_endpoint('/missing-handler')
-register_endpoint('/keyword-handler', callback=endpoint)
-register_with_handler('/offset-missing', 'metadata')
-register_with_handler('/offset-valid', 'metadata', endpoint)
-register_with_middleware('/middleware', middleware, endpoint)
-catalog.path('setting', endpoint)
-publish('/no-handler')
-@catalog.Get('/setting')
-def unrelated():
-    return None
-"#,
-    );
-    workspace.write(
-        "grid_spec.py",
-        "from grid_view_spec.types.spec import GridViewSpec\nfrom grid_view_spec.types.block_base import GridViewBlockBase\nclass CustomSpec(GridViewSpec):\n    def config_value(self): return self.config\nclass CustomBlock(GridViewBlockBase):\n    def block_type(self): return self.type\n",
-    );
-    let gridview_receiver_cases = [
-        (
-            "GridViewSpec",
-            "grid_view_spec.types.spec.GridViewSpec",
-            "blocks",
-        ),
-        (
-            "GridViewMeta",
-            "grid_view_spec.types.spec_meta.GridViewMeta",
-            "subtitle",
-        ),
-        (
-            "GridViewConfig",
-            "grid_view_spec.types.spec_meta.GridViewConfig",
-            "htmx",
-        ),
-        (
-            "GridViewLayout",
-            "grid_view_spec.types.layout.GridViewLayout",
-            "root",
-        ),
-        (
-            "GridViewBlockBase",
-            "grid_view_spec.types.block_base.GridViewBlockBase",
-            "trusted_style",
-        ),
-        (
-            "GridViewTable",
-            "grid_view_spec.types.table_v2.GridViewTable",
-            "column_source",
-        ),
-        (
-            "GridViewToolbar",
-            "grid_view_spec.types.toolbar.GridViewToolbar",
-            "counters",
-        ),
-        (
-            "GridViewFilters",
-            "grid_view_spec.types.filters_v2.GridViewFilters",
-            "drawer_sections",
-        ),
-        (
-            "GridViewActions",
-            "grid_view_spec.types.actions.GridViewActions",
-            "items",
-        ),
-        (
-            "GridViewCards",
-            "grid_view_spec.types.content.GridViewCards",
-            "cards",
-        ),
-        (
-            "GridViewCharts",
-            "grid_view_spec.types.content.GridViewCharts",
-            "charts",
-        ),
-        (
-            "GridViewKpi",
-            "grid_view_spec.types.content.GridViewKpi",
-            "items",
-        ),
-        (
-            "GridViewTabs",
-            "grid_view_spec.types.content.GridViewTabs",
-            "tabs",
-        ),
-        (
-            "GridViewNav",
-            "grid_view_spec.types.nav.GridViewNav",
-            "levels",
-        ),
-        (
-            "GridViewForm",
-            "grid_view_spec.types.form.GridViewForm",
-            "fieldsets",
-        ),
-        (
-            "GridViewHeader",
-            "grid_view_spec.types.header.GridViewHeader",
-            "entity",
-        ),
-        (
-            "GridViewTemplate",
-            "grid_view_spec.types.content.GridViewTemplate",
-            "mode",
-        ),
-        (
-            "GridViewColumn",
-            "grid_view_spec.types.table_v2.GridViewColumn",
-            "currency_formatter",
-        ),
-        (
-            "GridViewFilter",
-            "grid_view_spec.types.filters_v2.GridViewFilter",
-            "drawer_control",
-        ),
-        (
-            "GridViewCard",
-            "grid_view_spec.types.content.GridViewCard",
-            "meta",
-        ),
-        (
-            "DjangoGridViewHost",
-            "grid_view_spec.backends.django.host.DjangoGridViewHost",
-            "url_for",
-        ),
-        (
-            "GridViewActionBase",
-            "grid_view_spec.types.actions.GridViewActionBase",
-            "confirm",
-        ),
-        (
-            "GridViewExportAction",
-            "grid_view_spec.types.actions.GridViewExportAction",
-            "format",
-        ),
-        (
-            "GridViewOverlayAction",
-            "grid_view_spec.types.actions.GridViewOverlayAction",
-            "overlay",
-        ),
-        (
-            "GridViewLinkAction",
-            "grid_view_spec.types.actions.GridViewLinkAction",
-            "href",
-        ),
-        (
-            "GridViewButtonAction",
-            "grid_view_spec.types.actions.GridViewButtonAction",
-            "action",
-        ),
-        (
-            "GridViewSelectAction",
-            "grid_view_spec.types.actions.GridViewSelectAction",
-            "options",
-        ),
-        (
-            "GridViewMenuAction",
-            "grid_view_spec.types.actions.GridViewMenuAction",
-            "items",
-        ),
-    ];
-    for &(class_name, provider, member) in &gridview_receiver_cases {
-        let (module, symbol) = provider.rsplit_once('.').unwrap();
-        let import_module = match class_name {
-            "DjangoGridViewHost" | "GridViewActionBase" => module,
-            _ => "grid_view_spec.types",
-        };
-        let missing_member = format!("_forge_missing_{class_name}");
-        workspace.write(
-            format!("grid_receivers/{class_name}.py"),
-            &format!("from {import_module} import {symbol} as ExternalBase\nclass Probe{class_name}(ExternalBase):\n    def known_probe(self): return self.{member}\n    def unknown_probe(self): return self.{missing_member}\n"),
-        );
-    }
-    workspace.write(
-        "fast.py",
-        r#"from fastapi import APIRouter, Depends
-service_api = APIRouter(prefix='/api')
-def dependency():
-    return 1
-def middleware(request):
-    return request
-@service_api.get('/items')
-def items(value = Depends(dependency)):
-    return value
-api.get('/builtin-missing')
-api.get('/keyword-handler', callback=items)
-api.get('/builtin-valid', items)
-api.get('/middleware', middleware, items)
-api.get('/invalid-literal-handler', 'handler')
-api.get(items)
-"#,
-    );
-    workspace.write("controller.ts", "import { Controller, Get } from '@nestjs/common';\n@Controller('/nest')\nclass ControllerClass {\n@Get('/items')\nitems() { return 1; }\n}\n");
-    workspace.write(
-        "urls.py",
-        "from django.urls import path, include\ndef endpoint(): return 'parent decoy'\nurlpatterns = [path('shop/', include('shop.urls', namespace='shop')), path('nested/', include('nested.urls', namespace='nested')), path('parent-decoy/', endpoint)]\n",
-    );
-    workspace.write("shop/urls.py", "from django.urls import path\nfrom app import endpoint\nurlpatterns = [path('detail/', endpoint, name='detail')]\n");
-    workspace.write(
-        "nested/urls.py",
-        "from django.urls import path, include\nurlpatterns = [path('catalog/', include('catalog.endpoints', namespace='catalog'))]\n",
-    );
-    workspace.write(
-        "catalog/endpoints.py",
-        "from django.urls import path\nfrom .views import endpoint\nurlpatterns = [path('deep/', endpoint, name='deep')]\n",
-    );
-    workspace.write(
-        "catalog/views.py",
-        "def endpoint(): return 'catalog endpoint'\n",
-    );
-    workspace.write(
-        "qualified_urls.py",
-        "import django.urls\nfrom django import urls\ndef endpoint(): return None\na = django.urls.path('/qualified', endpoint)\nb = urls.re_path('^regex/$', endpoint)\n",
-    );
-    let registry = DependencyRegistry::collect_with_scan_config(&workspace.0, None);
-    assert!(registry
-        .framework_manifest_for_path(LanguageFamily("python"), "app.py", "django", "django")
-        .is_some());
-    let conn = workspace.build();
-    let routes = query_rows(
+    let conn = indexed.conn;
+    let component_contains_count = query_rows(
         &conn,
-        "SELECT name FROM nodes WHERE kind='route' ORDER BY name",
+        "SELECT CAST(COUNT(*) AS TEXT) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash WHERE s.kind='component' AND e.kind='contains'",
     );
+    assert_eq!(component_contains_count, ["39"]);
+    let routes = route_names(&conn);
     for expected in [
         "POST /custom",
         "GET /registered",
@@ -311,14 +38,32 @@ api.get(items)
             "missing {expected}: {routes:?}"
         );
     }
-    let composed_handles: Vec<(String, String, String)> = conn
-        .prepare("SELECT route_path.path,target_path.path,target.qualname FROM edge_occurrences edge JOIN nodes route ON route.node_hash=edge.src_hash JOIN nodes target ON target.node_hash=edge.dst_hash JOIN path_dictionary route_path ON route_path.path_id=route.owner_path_id JOIN path_dictionary target_path ON target_path.path_id=target.path_id WHERE edge.kind='handles' AND route.kind='route' AND route.name='ANY shop/detail/'")
-        .unwrap().query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap().map(Result::unwrap).collect();
-    let missing_configured_routes = query_count(&conn, "SELECT count(*) FROM nodes WHERE kind='route' AND name IN ('GET /missing-handler','GET /keyword-handler','GET /offset-missing','GET /builtin-missing','GET /invalid-literal-handler')", []);
+    let composed_handles: Vec<(String, String, String)> = {
+        let mut statement = conn
+            .prepare_cached(
+                "SELECT route_path.path,target_path.path,target.qualname FROM edge_occurrences edge JOIN nodes route ON route.node_hash=edge.src_hash JOIN nodes target ON target.node_hash=edge.dst_hash JOIN path_dictionary route_path ON route_path.path_id=route.owner_path_id JOIN path_dictionary target_path ON target_path.path_id=target.path_id WHERE edge.kind='handles' AND route.kind='route' AND route.name='ANY shop/detail/'",
+            )
+            .unwrap();
+        statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    };
+    let missing_configured_routes: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM nodes WHERE kind='route' AND name IN ('GET /missing-handler','GET /keyword-handler','GET /offset-missing','GET /builtin-missing','GET /invalid-literal-handler')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
     assert!(
-        composed_handles.iter().any(|(route_path, target_path, target)| {
-            route_path == "urls.py" && target_path == "app.py" && target == "app.endpoint"
-        }) && missing_configured_routes == 0,
+        composed_handles
+            .iter()
+            .any(|(route_path, target_path, target)| {
+                route_path == "urls.py" && target_path == "app.py" && target == "app.endpoint"
+            })
+            && missing_configured_routes == 0,
         "both independent contract boundaries must hold: composed_handles={composed_handles:?}, missing_configured_routes={missing_configured_routes}"
     );
     assert!(
@@ -348,13 +93,25 @@ api.get(items)
             && inherited.1.contains("via external import django.custom"),
         "project receiver must preserve its exact provider identity: {inherited:?}"
     );
-    let grid_spec_receivers: Vec<(String, String, String)> = conn
-        .prepare("SELECT x.expression,c.status,e.evidence FROM resolution_coverage c JOIN coverage_expressions x ON x.expression_id=c.expression_id JOIN coverage_evidence e ON e.evidence_id=c.evidence_id JOIN path_dictionary p ON p.path_id=c.path_id WHERE p.path='grid_spec.py' AND x.expression IN ('self.config','self.type') ORDER BY x.expression")
-        .unwrap().query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap().map(Result::unwrap).collect();
+    let grid_spec_receivers: Vec<(String, String, String)> = {
+        let mut statement = conn
+            .prepare_cached(
+                "SELECT x.expression,c.status,e.evidence FROM resolution_coverage c JOIN coverage_expressions x ON x.expression_id=c.expression_id JOIN coverage_evidence e ON e.evidence_id=c.evidence_id JOIN path_dictionary p ON p.path_id=c.path_id WHERE p.path='grid_spec.py' AND x.expression IN ('self.config','self.type') ORDER BY x.expression",
+            )
+            .unwrap();
+        statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    };
     assert_eq!(grid_spec_receivers.len(), 2, "{grid_spec_receivers:?}");
-    assert!(grid_spec_receivers.iter().all(|(_, status, evidence)| {
-        status == "external" && evidence.starts_with("finite Python framework member ")
-    }), "verified GridView dataclass fields must resolve as external members: {grid_spec_receivers:?}");
+    assert!(
+        grid_spec_receivers.iter().all(|(_, status, evidence)| {
+            status == "external" && evidence.starts_with("finite Python framework member ")
+        }),
+        "verified GridView dataclass fields must resolve as external members: {grid_spec_receivers:?}"
+    );
     assert!(
         grid_spec_receivers.iter().any(|(expression, _, evidence)| {
             expression == "self.config"
@@ -369,8 +126,8 @@ api.get(items)
         }),
         "GridViewBlockBase field provenance must be exact: {grid_spec_receivers:?}"
     );
-    assert_eq!(gridview_receiver_cases.len(), 28);
-    for &(class_name, provider, member) in &gridview_receiver_cases {
+    assert_eq!(GRIDVIEW_RECEIVER_CASES.len(), 28);
+    for &(class_name, provider, member) in GRIDVIEW_RECEIVER_CASES {
         let source_path = format!("grid_receivers/{class_name}.py");
         let known = coverage_status_and_evidence(&conn, &source_path, &format!("self.{member}"));
         assert_eq!(
@@ -391,9 +148,18 @@ api.get(items)
             "unknown member on {class_name} must fail closed"
         );
     }
-    let injection_edges: Vec<(String, String, String)> = conn
-        .prepare("SELECT owner.path,target_path.path,target.qualname FROM edge_occurrences edge JOIN path_dictionary owner ON owner.path_id=edge.owner_id JOIN nodes target ON target.node_hash=edge.dst_hash JOIN path_dictionary target_path ON target_path.path_id=target.path_id WHERE edge.kind='injects' ORDER BY owner.path")
-        .unwrap().query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap().map(Result::unwrap).collect();
+    let injection_edges: Vec<(String, String, String)> = {
+        let mut statement = conn
+            .prepare_cached(
+                "SELECT owner.path,target_path.path,target.qualname FROM edge_occurrences edge JOIN path_dictionary owner ON owner.path_id=edge.owner_id JOIN nodes target ON target.node_hash=edge.dst_hash JOIN path_dictionary target_path ON target_path.path_id=target.path_id WHERE edge.kind='injects' ORDER BY owner.path",
+            )
+            .unwrap();
+        statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    };
     let expected_injections = [
         ("app.py", "app.py", "app.dependency"),
         ("fast.py", "fast.py", "fast.dependency"),
@@ -406,9 +172,20 @@ api.get(items)
         actual_injections, expected_injections,
         "each declarative DI call must persist its exact provider path and qualname"
     );
-    let route_targets: Vec<(String, String, String, String)> = conn
-        .prepare("SELECT DISTINCT route.name,route_path.path,target_path.path,target.qualname FROM edge_occurrences edge JOIN nodes route ON route.node_hash=edge.src_hash JOIN nodes target ON target.node_hash=edge.dst_hash JOIN path_dictionary route_path ON route_path.path_id=route.path_id JOIN path_dictionary target_path ON target_path.path_id=target.path_id WHERE edge.kind='handles' AND route.kind='route' ORDER BY route.name,route_path.path,target_path.path,target.qualname")
-        .unwrap().query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).unwrap().map(Result::unwrap).collect();
+    let route_targets: Vec<(String, String, String, String)> = {
+        let mut statement = conn
+            .prepare_cached(
+                "SELECT DISTINCT route.name,route_path.path,target_path.path,target.qualname FROM edge_occurrences edge JOIN nodes route ON route.node_hash=edge.src_hash JOIN nodes target ON target.node_hash=edge.dst_hash JOIN path_dictionary route_path ON route_path.path_id=route.path_id JOIN path_dictionary target_path ON target_path.path_id=target.path_id WHERE edge.kind='handles' AND route.kind='route' ORDER BY route.name,route_path.path,target_path.path,target.qualname",
+            )
+            .unwrap();
+        statement
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    };
     let expected_route_targets = [
         (
             "ANY /qualified",
@@ -467,9 +244,15 @@ api.get(items)
         actual_route_targets, expected_route_targets,
         "route handlers must persist exact source and target identities"
     );
+    let missing_configured_routes: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM nodes WHERE kind='route' AND name IN ('GET /missing-handler','GET /keyword-handler','GET /offset-missing','GET /builtin-missing','GET /invalid-literal-handler')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
     assert_eq!(
-        query_count(&conn, "SELECT count(*) FROM nodes WHERE kind='route' AND name IN ('GET /missing-handler','GET /keyword-handler','GET /offset-missing','GET /builtin-missing','GET /invalid-literal-handler')", []),
-        0,
+        missing_configured_routes, 0,
         "configured handler positions missing positional arguments must suppress route facts"
     );
     let middleware_handles = query_rows(
@@ -485,12 +268,24 @@ api.get(items)
             "fast.middleware"
         ]
     );
+    let no_handler_edge_count: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM edge_occurrences edge JOIN nodes route ON route.node_hash=edge.src_hash WHERE route.kind='route' AND route.name='GET /no-handler' AND edge.kind='handles'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
     assert_eq!(
-        query_count(&conn, "SELECT count(*) FROM edge_occurrences edge JOIN nodes route ON route.node_hash=edge.src_hash WHERE route.kind='route' AND route.name='GET /no-handler' AND edge.kind='handles'", []),
-        0,
+        no_handler_edge_count, 0,
         "optional handler rules emit route facts without handles edges"
     );
-    let (details, owner_path): (String, String) = conn.query_row("SELECT route.details,owner.path FROM nodes route JOIN path_dictionary owner ON owner.path_id=route.owner_path_id WHERE route.kind='route' AND route.name='ANY shop/detail/'", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+    let (details, owner_path): (String, String) = conn
+        .query_row(
+            "SELECT route.details,owner.path FROM nodes route JOIN path_dictionary owner ON owner.path_id=route.owner_path_id WHERE route.kind='route' AND route.name='ANY shop/detail/'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
     let details: serde_json::Value = serde_json::from_str(&details).unwrap();
     assert_eq!(owner_path, "urls.py");
     assert_eq!(details["route_name"], "detail");
@@ -502,7 +297,13 @@ api.get(items)
         "shop.urls.urlpatterns.ANY detail/"
     );
 
-    let nested_details: (String, String, String) = conn.query_row("SELECT route.details,owner.path,target.qualname FROM nodes route JOIN path_dictionary owner ON owner.path_id=route.owner_path_id JOIN edge_occurrences edge ON edge.src_hash=route.node_hash AND edge.kind='handles' JOIN nodes target ON target.node_hash=edge.dst_hash JOIN path_dictionary target_path ON target_path.path_id=target.path_id WHERE route.kind='route' AND route.name='ANY nested/catalog/deep/' AND target_path.path='catalog/views.py'", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
+    let nested_details: (String, String, String) = conn
+        .query_row(
+            "SELECT route.details,owner.path,target.qualname FROM nodes route JOIN path_dictionary owner ON owner.path_id=route.owner_path_id JOIN edge_occurrences edge ON edge.src_hash=route.node_hash AND edge.kind='handles' JOIN nodes target ON target.node_hash=edge.dst_hash JOIN path_dictionary target_path ON target_path.path_id=target.path_id WHERE route.kind='route' AND route.name='ANY nested/catalog/deep/' AND target_path.path='catalog/views.py'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
     let nested_route_details: serde_json::Value = serde_json::from_str(&nested_details.0).unwrap();
     assert_eq!(nested_route_details["source_path"], "catalog/endpoints.py");
     assert_eq!(
@@ -513,7 +314,20 @@ api.get(items)
     assert_eq!(nested_details.1, "urls.py");
     assert_eq!(nested_details.2, "catalog.views.endpoint");
 
-    let origin_coverage: Vec<(String, i64, String, String)> = conn.prepare("SELECT path.path,coverage.line,expression.expression,coverage.status FROM resolution_coverage coverage JOIN path_dictionary path ON path.path_id=coverage.path_id JOIN coverage_expressions expression ON expression.expression_id=coverage.expression_id WHERE path.path IN ('shop/urls.py','catalog/endpoints.py') AND coverage.line=3 AND expression.expression='endpoint' ORDER BY path.path").unwrap().query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).unwrap().map(Result::unwrap).collect();
+    let origin_coverage: Vec<(String, i64, String, String)> = {
+        let mut statement = conn
+            .prepare_cached(
+                "SELECT path.path,coverage.line,expression.expression,coverage.status FROM resolution_coverage coverage JOIN path_dictionary path ON path.path_id=coverage.path_id JOIN coverage_expressions expression ON expression.expression_id=coverage.expression_id WHERE path.path IN ('shop/urls.py','catalog/endpoints.py') AND coverage.line=3 AND expression.expression='endpoint' ORDER BY path.path",
+            )
+            .unwrap();
+        statement
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    };
     let actual_origins: Vec<(&str, i64, &str, &str)> = origin_coverage
         .iter()
         .map(|(a, b, c, d)| (a.as_str(), *b, c.as_str(), d.as_str()))
@@ -526,16 +340,57 @@ api.get(items)
         ],
         "route handle coverage must use the deepest physical import context and line"
     );
-    workspace.assert_cold_equivalent();
+    let workspace = FrameworkHarness::publish_virtual(sources);
+    let cold = workspace.open();
+    commitments::verify(&conn).unwrap();
+    commitments::verify(&cold).unwrap();
+    assert_eq!(
+        persisted_graph_rows(&conn),
+        persisted_graph_rows(&cold),
+        "RAM versus independent disk cold graph, including component ownership"
+    );
+    drop(cold);
+}
 
-    drop(conn);
+#[cfg(all(feature = "lang-python", feature = "lang-typescript"))]
+#[test]
+fn django_include_deltas_preserve_owner_prefix_deletion_and_manifest_reclassification() {
+    let workspace = FrameworkHarness::publish_virtual(django_include_sources());
     workspace.write(
         "shop/urls.py",
         "from django.urls import path\nfrom app import endpoint\nurlpatterns = [path('updated/', endpoint, name='detail_v2')]\n",
     );
-    workspace.cold_parity("shop/urls.py");
+    let observed = crate::support::delta_cold(&workspace, "shop/urls.py");
+    assert!(
+        observed.incremental_verification.is_ok(),
+        "incremental commitment: {:?}",
+        observed.incremental_verification
+    );
+    assert!(
+        observed.cold_verification.is_ok(),
+        "cold commitment: {:?}",
+        observed.cold_verification
+    );
+    assert_eq!(
+        observed.incremental.node_rows, observed.cold.node_rows,
+        "complete persisted nodes cold/delta parity"
+    );
+    assert_eq!(
+        observed.incremental.edge_rows, observed.cold.edge_rows,
+        "complete persisted edges cold/delta parity"
+    );
+    assert_eq!(
+        observed.incremental.error_rows, observed.cold.error_rows,
+        "complete persisted errors cold/delta parity"
+    );
     let conn = workspace.open();
-    let (details, owner_path): (String, String) = conn.query_row("SELECT route.details,owner.path FROM nodes route JOIN path_dictionary owner ON owner.path_id=route.owner_path_id WHERE route.kind='route' AND route.name='ANY shop/updated/'", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+    let (details, owner_path): (String, String) = conn
+        .query_row(
+            "SELECT route.details,owner.path FROM nodes route JOIN path_dictionary owner ON owner.path_id=route.owner_path_id WHERE route.kind='route' AND route.name='ANY shop/updated/'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
     let details: serde_json::Value = serde_json::from_str(&details).unwrap();
     assert_eq!(
         owner_path, "urls.py",
@@ -544,7 +399,13 @@ api.get(items)
     assert_eq!(details["route_name"], "detail_v2");
     assert_eq!(details["route_namespace"], "shop");
     assert_eq!(details["source_path"], "shop/urls.py");
-    let updated_handle: (String, String, String) = conn.query_row("SELECT owner.path,target_path.path,target.qualname FROM edge_occurrences edge JOIN nodes route ON route.node_hash=edge.src_hash JOIN path_dictionary owner ON owner.path_id=route.owner_path_id JOIN nodes target ON target.node_hash=edge.dst_hash JOIN path_dictionary target_path ON target_path.path_id=target.path_id WHERE edge.kind='handles' AND route.kind='route' AND route.name='ANY shop/updated/'", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
+    let updated_handle: (String, String, String) = conn
+        .query_row(
+            "SELECT owner.path,target_path.path,target.qualname FROM edge_occurrences edge JOIN nodes route ON route.node_hash=edge.src_hash JOIN path_dictionary owner ON owner.path_id=route.owner_path_id JOIN nodes target ON target.node_hash=edge.dst_hash JOIN path_dictionary target_path ON target_path.path_id=target.path_id WHERE edge.kind='handles' AND route.kind='route' AND route.name='ANY shop/updated/'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
     assert_eq!(
         updated_handle,
         (
@@ -555,11 +416,59 @@ api.get(items)
         "child delta must preserve the imported handler despite a parent decoy"
     );
     drop(conn);
+    drop(observed);
 
-    workspace.write("urls.py", "from django.urls import path, include\ndef endpoint(): return 'parent decoy'\nurlpatterns = [path('market/', include('shop.urls', namespace='market')), path('nested/', include('nested.urls', namespace='nested')), path('parent-decoy/', endpoint)]\n");
-    workspace.cold_parity("urls.py");
+    workspace.write(
+        "shop/urls.py",
+        "from django.urls import path\nfrom app import endpoint\nurlpatterns = [path('detail/', endpoint, name='detail')]\n",
+    );
+    workspace.delta(&["shop/urls.py"]);
+
+    workspace.write(
+        "shop/urls.py",
+        "from django.urls import path\nfrom app import endpoint\nurlpatterns = [path('updated/', endpoint, name='detail_v2')]\n",
+    );
+    workspace.delta(&["shop/urls.py"]);
+    workspace.write(
+        "urls.py",
+        "from django.urls import path, include\ndef endpoint(): return 'parent decoy'\nurlpatterns = [path('market/', include('shop.urls', namespace='market')), path('nested/', include('nested.urls', namespace='nested')), path('parent-decoy/', endpoint)]\n",
+    );
+    let observed = crate::support::delta_cold(&workspace, "urls.py");
+    assert!(
+        observed.incremental_verification.is_ok(),
+        "incremental commitment: {:?}",
+        observed.incremental_verification
+    );
+    assert!(
+        observed.cold_verification.is_ok(),
+        "cold commitment: {:?}",
+        observed.cold_verification
+    );
+    assert_eq!(
+        observed.incremental.node_rows, observed.cold.node_rows,
+        "complete persisted nodes cold/delta parity"
+    );
+    assert_eq!(
+        observed.incremental.edge_rows, observed.cold.edge_rows,
+        "complete persisted edges cold/delta parity"
+    );
+    assert_eq!(
+        observed.incremental.error_rows, observed.cold.error_rows,
+        "complete persisted errors cold/delta parity"
+    );
     let conn = workspace.open();
-    let (details, parent_only_handle): (String, (String, String, String)) = conn.query_row("SELECT route.details,owner.path,target_path.path,target.qualname FROM nodes route JOIN path_dictionary owner ON owner.path_id=route.owner_path_id JOIN edge_occurrences edge ON edge.src_hash=route.node_hash AND edge.kind='handles' JOIN nodes target ON target.node_hash=edge.dst_hash JOIN path_dictionary target_path ON target_path.path_id=target.path_id WHERE route.kind='route' AND route.name='ANY market/updated/'", [], |row| Ok((row.get(0)?, (row.get(1)?, row.get(2)?, row.get(3)?)))).unwrap();
+    let (details, parent_only_handle): (String, (String, String, String)) = conn
+        .query_row(
+            "SELECT route.details,owner.path,target_path.path,target.qualname FROM nodes route JOIN path_dictionary owner ON owner.path_id=route.owner_path_id JOIN edge_occurrences edge ON edge.src_hash=route.node_hash AND edge.kind='handles' JOIN nodes target ON target.node_hash=edge.dst_hash JOIN path_dictionary target_path ON target_path.path_id=target.path_id WHERE route.kind='route' AND route.name='ANY market/updated/'",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    (row.get(1)?, row.get(2)?, row.get(3)?),
+                ))
+            },
+        )
+        .unwrap();
     let details: serde_json::Value = serde_json::from_str(&details).unwrap();
     assert_eq!(
         parent_only_handle,
@@ -576,60 +485,129 @@ api.get(items)
         details["source_qualname"],
         "shop.urls.urlpatterns.ANY updated/"
     );
-    let parent_decoy: (String, String) = conn.query_row("SELECT owner.path,target.qualname FROM edge_occurrences edge JOIN nodes route ON route.node_hash=edge.src_hash JOIN path_dictionary owner ON owner.path_id=route.owner_path_id JOIN nodes target ON target.node_hash=edge.dst_hash WHERE edge.kind='handles' AND route.kind='route' AND route.name='ANY parent-decoy/'", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+    let parent_decoy: (String, String) = conn
+        .query_row(
+            "SELECT owner.path,target.qualname FROM edge_occurrences edge JOIN nodes route ON route.node_hash=edge.src_hash JOIN path_dictionary owner ON owner.path_id=route.owner_path_id JOIN nodes target ON target.node_hash=edge.dst_hash WHERE edge.kind='handles' AND route.kind='route' AND route.name='ANY parent-decoy/'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
     assert_eq!(
         parent_decoy,
         ("urls.py".to_owned(), "urls.endpoint".to_owned())
     );
-    let market_origin_coverage: (i64, String) = conn.query_row("SELECT coverage.line,coverage.status FROM resolution_coverage coverage JOIN path_dictionary path ON path.path_id=coverage.path_id JOIN coverage_expressions expression ON expression.expression_id=coverage.expression_id WHERE path.path='shop/urls.py' AND expression.expression='endpoint' AND coverage.line=3", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+    let market_origin_coverage: (i64, String) = conn
+        .query_row(
+            "SELECT coverage.line,coverage.status FROM resolution_coverage coverage JOIN path_dictionary path ON path.path_id=coverage.path_id JOIN coverage_expressions expression ON expression.expression_id=coverage.expression_id WHERE path.path='shop/urls.py' AND expression.expression='endpoint' AND coverage.line=3",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
     assert_eq!(market_origin_coverage, (3, "resolved".to_owned()));
     assert_eq!(
-        query_count(
-            &conn,
+        conn.query_row(
             "SELECT count(*) FROM nodes WHERE kind='route' AND name LIKE 'ANY shop/%'",
-            []
-        ),
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
         0,
         "parent-only prefix update must remove old route refs"
     );
     drop(conn);
+    drop(observed);
 
-    fs::remove_file(workspace.join("shop/urls.py")).unwrap();
-    workspace.cold_parity("shop/urls.py");
+    workspace.write(
+        "urls.py",
+        "from django.urls import path, include\ndef endpoint(): return 'parent decoy'\nurlpatterns = [path('shop/', include('shop.urls', namespace='shop')), path('nested/', include('nested.urls', namespace='nested')), path('parent-decoy/', endpoint)]\n",
+    );
+    workspace.delta(&["urls.py"]);
+    workspace.write(
+        "shop/urls.py",
+        "from django.urls import path\nfrom app import endpoint\nurlpatterns = [path('detail/', endpoint, name='detail')]\n",
+    );
+    workspace.delta(&["shop/urls.py"]);
+
+    workspace.remove("shop/urls.py");
+    let observed = crate::support::delta_cold(&workspace, "shop/urls.py");
+    assert!(
+        observed.incremental_verification.is_ok(),
+        "incremental commitment: {:?}",
+        observed.incremental_verification
+    );
+    assert!(
+        observed.cold_verification.is_ok(),
+        "cold commitment: {:?}",
+        observed.cold_verification
+    );
+    assert_eq!(
+        observed.incremental.node_rows, observed.cold.node_rows,
+        "complete persisted nodes cold/delta parity"
+    );
+    assert_eq!(
+        observed.incremental.edge_rows, observed.cold.edge_rows,
+        "complete persisted edges cold/delta parity"
+    );
+    assert_eq!(
+        observed.incremental.error_rows, observed.cold.error_rows,
+        "complete persisted errors cold/delta parity"
+    );
+    let cold = observed.cold_connection;
     let conn = workspace.open();
     assert_eq!(
-        query_count(&conn, "SELECT count(*) FROM nodes WHERE kind='route' AND name IN ('ANY shop/detail/','ANY shop/updated/','ANY market/updated/')", []),
+        conn.query_row(
+            "SELECT count(*) FROM nodes WHERE kind='route' AND name IN ('ANY shop/detail/','ANY shop/updated/','ANY market/updated/')",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
         0,
         "deleting an included Django module removes parent route facts"
     );
     assert_eq!(
-        query_count(&conn, "SELECT count(*) FROM edge_occurrences edge JOIN nodes route ON route.node_hash=edge.src_hash WHERE edge.kind='handles' AND route.kind='route' AND route.name LIKE 'ANY market/%'", []),
+        conn.query_row(
+            "SELECT count(*) FROM edge_occurrences edge JOIN nodes route ON route.node_hash=edge.src_hash WHERE edge.kind='handles' AND route.kind='route' AND route.name LIKE 'ANY market/%'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
         0,
         "deleted route must leave no handle edge"
     );
     assert_eq!(
-        query_count(&conn, "SELECT count(*) FROM resolution_coverage coverage JOIN path_dictionary path ON path.path_id=coverage.path_id WHERE path.path='shop/urls.py'", []),
+        conn.query_row(
+            "SELECT count(*) FROM resolution_coverage coverage JOIN path_dictionary path ON path.path_id=coverage.path_id WHERE path.path='shop/urls.py'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
         0,
         "deleted source must leave no handle coverage"
     );
+    // Reuse this connection for parity after the remaining deletion assertions.
+    commitments::verify(&conn).unwrap();
+    commitments::verify(&cold).unwrap();
+    assert_eq!(
+        persisted_graph_rows(&conn),
+        persisted_graph_rows(&cold),
+        "deleted include edge and coverage parity against independently rebuilt cold store"
+    );
     drop(conn);
-    workspace.assert_cold_equivalent();
+    drop(cold);
+
+    workspace.write(
+        "shop/urls.py",
+        "from django.urls import path\nfrom app import endpoint\nurlpatterns = [path('detail/', endpoint, name='detail')]\n",
+    );
+    workspace.delta(&["shop/urls.py"]);
 
     workspace.write(
         ".forge/frameworks/django.toml",
-        r#"
-[[route_decorators]]
-callee = "portal.expose"
-method = "PATCH"
-path_argument = 0
-"#,
+        "[[route_decorators]]\ncallee = \"portal.expose\"\nmethod = \"PATCH\"\npath_argument = 0\n",
     );
-    workspace.delta("app.py");
+    workspace.delta(&["app.py"]);
     let conn = workspace.open();
-    let routes = query_rows(
-        &conn,
-        "SELECT name FROM nodes WHERE kind='route' ORDER BY name",
-    );
+    let routes = route_names(&conn);
     assert!(
         routes.iter().any(|name| name == "PATCH /custom"),
         "{routes:?}"
@@ -638,28 +616,48 @@ path_argument = 0
         !routes.iter().any(|name| name == "POST /custom"),
         "{routes:?}"
     );
+}
 
-    let cycle_workspace = Workspace::new();
-    cycle_workspace.write(
-        "pyproject.toml",
-        "[project]\nname = 'include-cycle'\ndependencies = ['django']\n",
+#[cfg(all(feature = "lang-python", feature = "lang-typescript"))]
+#[test]
+fn cyclic_django_includes_have_a_finite_terminal_route_set() {
+    let cycle_fixture = VirtualWorkspace::from_files(&[
+        (
+            "pyproject.toml",
+            "[project]\nname = 'include-cycle'\ndependencies = ['django']\n",
+        ),
+        ("a/__init__.py", ""),
+        ("b/__init__.py", ""),
+        (
+            "a/urls.py",
+            "from django.urls import include, path\nfrom a.views import a_endpoint\nurlpatterns = [path('to-b/', include('b.urls')), path('a/', a_endpoint)]\n",
+        ),
+        (
+            "b/urls.py",
+            "from django.urls import include, path\nfrom b.views import b_endpoint\nurlpatterns = [path('to-a/', include('a.urls')), path('b/', b_endpoint)]\n",
+        ),
+        ("a/views.py", "def a_endpoint(request): return None\n"),
+        ("b/views.py", "def b_endpoint(request): return None\n"),
+    ]);
+    let cycle_index = cycle_fixture.index().unwrap();
+    let cycle_conn = cycle_index.conn;
+    let cycle_owners = query_rows(
+        &cycle_conn,
+        "SELECT path.path FROM nodes module JOIN path_dictionary path ON path.path_id=module.path_id WHERE module.kind='module' AND path.path IN ('a/urls.py','b/urls.py') ORDER BY path.path",
     );
-    cycle_workspace.write("a/__init__.py", "");
-    cycle_workspace.write("b/__init__.py", "");
-    cycle_workspace.write(
-        "a/urls.py",
-        "from django.urls import include, path\nfrom a.views import a_endpoint\nurlpatterns = [path('to-b/', include('b.urls')), path('a/', a_endpoint)]\n",
-    );
-    cycle_workspace.write(
-        "b/urls.py",
-        "from django.urls import include, path\nfrom b.views import b_endpoint\nurlpatterns = [path('to-a/', include('a.urls')), path('b/', b_endpoint)]\n",
-    );
-    cycle_workspace.write("a/views.py", "def a_endpoint(request): return None\n");
-    cycle_workspace.write("b/views.py", "def b_endpoint(request): return None\n");
-    let cycle_conn = cycle_workspace.build();
-    let cycle_owners = query_rows(&cycle_conn, "SELECT path.path FROM nodes module JOIN path_dictionary path ON path.path_id=module.path_id WHERE module.kind='module' AND path.path IN ('a/urls.py','b/urls.py') ORDER BY path.path");
     assert_eq!(cycle_owners, ["a/urls.py", "b/urls.py"]);
-    let cycle_routes: Vec<(String, String)> = cycle_conn.prepare("SELECT path.path,route.name FROM nodes route JOIN path_dictionary path ON path.path_id=route.path_id WHERE route.kind='route' AND path.path IN ('a/urls.py','b/urls.py') ORDER BY path.path,route.name").unwrap().query_map([], |row| Ok((row.get(0)?, row.get(1)?))).unwrap().map(Result::unwrap).collect();
+    let cycle_routes: Vec<(String, String)> = {
+        let mut statement = cycle_conn
+            .prepare_cached(
+                "SELECT path.path,route.name FROM nodes route JOIN path_dictionary path ON path.path_id=route.path_id WHERE route.kind='route' AND path.path IN ('a/urls.py','b/urls.py') ORDER BY path.path,route.name",
+            )
+            .unwrap();
+        statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    };
     let actual_cycle_routes: Vec<(&str, &str)> = cycle_routes
         .iter()
         .map(|(a, b)| (a.as_str(), b.as_str()))
@@ -678,7 +676,20 @@ path_argument = 0
         ],
         "A↔B includes must terminate with the full finite terminal-route set"
     );
-    let cycle_handles: Vec<(String, String, String, String)> = cycle_conn.prepare("SELECT owner.path,route.name,target_path.path,target.qualname FROM edge_occurrences edge JOIN nodes route ON route.node_hash=edge.src_hash JOIN path_dictionary owner ON owner.path_id=route.owner_path_id JOIN nodes target ON target.node_hash=edge.dst_hash JOIN path_dictionary target_path ON target_path.path_id=target.path_id WHERE edge.kind='handles' AND route.kind='route' AND owner.path IN ('a/urls.py','b/urls.py') ORDER BY owner.path,route.name").unwrap().query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).unwrap().map(Result::unwrap).collect();
+    let cycle_handles: Vec<(String, String, String, String)> = {
+        let mut statement = cycle_conn
+            .prepare_cached(
+                "SELECT owner.path,route.name,target_path.path,target.qualname FROM edge_occurrences edge JOIN nodes route ON route.node_hash=edge.src_hash JOIN path_dictionary owner ON owner.path_id=route.owner_path_id JOIN nodes target ON target.node_hash=edge.dst_hash JOIN path_dictionary target_path ON target_path.path_id=target.path_id WHERE edge.kind='handles' AND route.kind='route' AND owner.path IN ('a/urls.py','b/urls.py') ORDER BY owner.path,route.name",
+            )
+            .unwrap();
+        statement
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    };
     let actual_cycle_handles: Vec<(&str, &str, &str, &str)> = cycle_handles
         .iter()
         .map(|(a, b, c, d)| (a.as_str(), b.as_str(), c.as_str(), d.as_str()))
@@ -715,5 +726,13 @@ path_argument = 0
         ],
         "cycle composition must keep terminal handlers at their real source"
     );
-    cycle_workspace.assert_cold_equivalent();
+    let cycle_workspace = FrameworkHarness::publish_virtual(cycle_fixture);
+    let cold = cycle_workspace.open();
+    commitments::verify(&cycle_conn).unwrap();
+    commitments::verify(&cold).unwrap();
+    assert_eq!(
+        persisted_graph_rows(&cycle_conn),
+        persisted_graph_rows(&cold),
+        "RAM versus independent disk cold cycle graph"
+    );
 }

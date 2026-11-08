@@ -145,6 +145,15 @@ Task-list generations bind task state separately from code-index generations.
 On computation limits, narrow scope/depth; on byte limits, reduce detail or page
 size. Inspect a truncated blackboard message by its returned message ID.
 
+## Test harness ownership
+
+When present, read the target repository's `docs/architecture/test-harness.md`,
+section "Rule 3: The Two-Caller Rule".
+Shared disk setup lives in `tests/common`. Shared ACDD session, evidence, and
+task completion live in `tests/acdd/support.rs`. A domain harness function needs
+at least two callers. Load `test-suite-refactor` when moving setup out of a
+`#[test]`.
+
 ## ACDD profiles and task operations
 
 Workflow sequence, roles/models, proof gates, review contours, commands, and
@@ -171,8 +180,8 @@ Custom profiles (never the embedded default profile) may also configure optional
 and `{goal}` slots; when configured, `task_claim` renders them in
 `workflow_guidance.role_runner` (`runner` + `rendered_prompt`). Gates with
 `independent_from` enforce independence at both `task_claim` and `task_submit`
-across `worker_id` and persisted `session_fingerprint` (`FORGE_AGENT_SESSION_ID`,
-`CODEX_THREAD_ID`, `AGY_CONVERSATION_ID`, `CLAUDE_SESSION_ID`).
+across `worker_id` and persisted `session_fingerprint`. CLI and MCP calls obtain
+the session fingerprint from `FORGE_AGENT_SESSION_ID` when it is set and nonempty.
 
 Explicit gate `tools` are requirements validated against enabled modules.
 Empty tool lists receive module-filtered advisory navigation tools for contract,

@@ -1,7 +1,6 @@
-use crate::common::{
-    mcp_client::{run_cli, run_cli_json, StdioClient},
-    Workspace,
-};
+use crate::cli::{run_cli, run_cli_json};
+use crate::common::Workspace;
+use crate::harness::McpTestHarness;
 use contextunity_forge_mcp::{
     core::response::{QueryOptions, ResponsePolicy},
     db::lint,
@@ -45,7 +44,7 @@ fn populate(workspace: &Workspace) -> BTreeSet<String> {
 
 #[test]
 fn stored_syntax_lint_covers_compiled_profiles_without_mutating_index() {
-    let workspace = Workspace::new();
+    let workspace = Workspace::with_files(&[]);
     let expected = populate(&workspace);
     workspace.build();
     let conn = workspace.open();
@@ -126,9 +125,8 @@ fn absence_of_stored_diagnostics_is_not_a_full_lint_success_claim() {
     let Some(profile) = languages::profiles().next() else {
         return;
     };
-    let workspace = Workspace::new();
     let path = format!("source.{}", profile.extensions()[0]);
-    workspace.write(&path, "\n");
+    let workspace = crate::common::Workspace::with_files(&[(path.as_str(), "\n")]);
     workspace.build();
     let conn = workspace.open();
     let options =
@@ -146,24 +144,20 @@ fn absence_of_stored_diagnostics_is_not_a_full_lint_success_claim() {
         .contains("does not prove syntactic validity"));
 }
 
-fn analyze_call(client: &mut StdioClient, arguments: Value) -> Value {
-    client.call("code_map_analyze", arguments).1
-}
-
-fn analyze_payload(client: &mut StdioClient, arguments: Value) -> Value {
-    client.payload("code_map_analyze", arguments)
-}
-
 #[test]
 fn mcp_lint_is_opt_in_bounded_and_rejects_incompatible_requests() {
-    let workspace = Workspace::new();
+    let workspace = Workspace::with_files(&[]);
     if populate(&workspace).is_empty() {
         return;
     }
     workspace.write("clean.py", "def clean(): return 1\n");
-    let mut client = StdioClient::new(&workspace);
-    let default_overview = client.payload("code_map_overview", json!({}));
-    let empty_aspect_overview = client.payload("code_map_overview", json!({"aspects":[]}));
+    let mut client = McpTestHarness::new(&workspace).expect("MCP initialize");
+    let default_overview = client
+        .payload("code_map_overview", json!({}))
+        .expect("MCP tool should succeed");
+    let empty_aspect_overview = client
+        .payload("code_map_overview", json!({"aspects":[]}))
+        .expect("MCP tool should succeed");
     for aspect in [
         "components",
         "counts",
@@ -186,26 +180,37 @@ fn mcp_lint_is_opt_in_bounded_and_rejects_incompatible_requests() {
         ("documentation_hubs", "documentation_hubs"),
         ("milestones", "active_milestones"),
     ] {
-        let overview = client.payload("code_map_overview", json!({"aspects":[aspect]}));
+        let overview = client
+            .payload("code_map_overview", json!({"aspects":[aspect]}))
+            .expect("MCP tool should succeed");
         assert!(
             overview["discovery"].get(expected_facet).is_some(),
             "supported discovery aspect {aspect} omitted {expected_facet}: {overview}"
         );
     }
 
-    let normal = analyze_payload(&mut client, json!({"target":""}));
+    let normal = client
+        .payload("code_map_analyze", json!({"target":""}))
+        .expect("MCP tool should succeed");
     assert!(normal.get("mode").is_none());
-    let first = analyze_payload(&mut client, json!({"target":"","lint":true,"limit":1}));
+    let first = client
+        .payload(
+            "code_map_analyze",
+            json!({"target":"","lint":true,"limit":1}),
+        )
+        .expect("MCP tool should succeed");
     assert_eq!(first["mode"], "lint");
     assert_eq!(first["diagnostics"]["items"].as_array().unwrap().len(), 1);
     let mut offset = first["diagnostics"]["next_offset"].clone();
     let generation = first["diagnostics"]["generation"].clone();
     let mut seen = first["diagnostics"]["items"].as_array().unwrap().clone();
     while !offset.is_null() {
-        let next = analyze_payload(
-            &mut client,
-            json!({"target":"","lint":true,"limit":1,"offset":offset,"generation":generation}),
-        );
+        let next = client
+            .payload(
+                "code_map_analyze",
+                json!({"target":"","lint":true,"limit":1,"offset":offset,"generation":generation}),
+            )
+            .expect("MCP tool should succeed");
         seen.extend(
             next["diagnostics"]["items"]
                 .as_array()
@@ -219,7 +224,12 @@ fn mcp_lint_is_opt_in_bounded_and_rejects_incompatible_requests() {
         seen.len(),
         first["diagnostics"]["total"].as_u64().unwrap() as usize
     );
-    let all = analyze_payload(&mut client, json!({"target":"","lint":true,"limit":100}));
+    let all = client
+        .payload(
+            "code_map_analyze",
+            json!({"target":"","lint":true,"limit":100}),
+        )
+        .expect("MCP tool should succeed");
     assert_eq!(json!(seen), all["diagnostics"]["items"]);
     for arguments in [
         json!({"target":"","lint":true,"include_cycles":true}),
@@ -229,16 +239,23 @@ fn mcp_lint_is_opt_in_bounded_and_rejects_incompatible_requests() {
         json!({"target":"ignored.unknown","lint":true}),
         json!({"target":"SELECT count(*) FROM nodes","lint":true}),
     ] {
-        let result = analyze_call(&mut client, arguments);
+        let result = client
+            .call("code_map_analyze", arguments)
+            .expect("MCP transport")
+            .1;
         assert_eq!(result["result"]["isError"], true, "{result}");
     }
-    let sql = analyze_payload(
-        &mut client,
-        json!({"target":"SELECT count(*) AS total FROM nodes"}),
-    );
+    let sql = client
+        .payload(
+            "code_map_analyze",
+            json!({"target":"SELECT count(*) AS total FROM nodes"}),
+        )
+        .expect("MCP tool should succeed");
     assert!(sql["rows"]["items"][0]["total"].as_u64().unwrap() > 0);
 
-    let mcp_clean = analyze_payload(&mut client, json!({"target":"clean.py"}));
+    let mcp_clean = client
+        .payload("code_map_analyze", json!({"target":"clean.py"}))
+        .expect("MCP tool should succeed");
     let cli_clean = run_cli_json(&workspace, &["query", "analyze", "clean.py"]);
     assert!(
         cli_clean.status.success(),
@@ -268,7 +285,9 @@ fn mcp_lint_is_opt_in_bounded_and_rejects_incompatible_requests() {
     for mode in ["diagnostics", "cycles"] {
         let expected_mode_error =
             format!("analysis target '{mode}' is interpreted as a path, not an analysis mode");
-        let (_, mcp_mode_error) = client.call("code_map_analyze", json!({"target":mode}));
+        let (_, mcp_mode_error) = client
+            .call("code_map_analyze", json!({"target":mode}))
+            .expect("MCP transport");
         assert_eq!(
             mcp_mode_error["result"]["isError"], true,
             "{mcp_mode_error}"
@@ -289,7 +308,9 @@ fn mcp_lint_is_opt_in_bounded_and_rejects_incompatible_requests() {
 
     let expected_missing =
         "PATH_NOT_INDEXED: 'nonexistent.rs' was not found in the indexed inventory";
-    let (_, missing_analyze) = client.call("code_map_analyze", json!({"target":"nonexistent.rs"}));
+    let (_, missing_analyze) = client
+        .call("code_map_analyze", json!({"target":"nonexistent.rs"}))
+        .expect("MCP transport");
     let cli_missing = run_cli(&workspace, &["query", "analyze", "nonexistent.rs"]);
     let cli_missing_stderr = String::from_utf8_lossy(&cli_missing.stderr);
     assert!(
@@ -302,20 +323,29 @@ fn mcp_lint_is_opt_in_bounded_and_rejects_incompatible_requests() {
         "MCP: {missing_analyze}; CLI: {cli_missing_stderr}"
     );
 
-    let missing_lint = analyze_call(&mut client, json!({"target":"nonexistent.rs","lint":true}));
+    let missing_lint = client
+        .call(
+            "code_map_analyze",
+            json!({"target":"nonexistent.rs","lint":true}),
+        )
+        .expect("MCP transport")
+        .1;
     assert_eq!(missing_lint["result"]["isError"], true, "{missing_lint}");
     assert!(
         missing_lint.to_string().contains(expected_missing),
         "{missing_lint}"
     );
 
-    let clean_lint = analyze_payload(&mut client, json!({"target":"clean.py","lint":true}));
+    let clean_lint = client
+        .payload("code_map_analyze", json!({"target":"clean.py","lint":true}))
+        .expect("MCP tool should succeed");
     assert_eq!(clean_lint["mode"], "lint");
     assert_eq!(clean_lint["status"], "no_stored_syntax_diagnostics");
     assert_eq!(clean_lint["diagnostics"]["total"], 0);
 
     let unsupported_aspect = client
         .call("code_map_overview", json!({"aspects":["unsupported"]}))
+        .expect("MCP transport")
         .1;
     assert_eq!(
         unsupported_aspect["result"]["isError"], true,
@@ -339,4 +369,5 @@ fn mcp_lint_is_opt_in_bounded_and_rejects_incompatible_requests() {
             "missing allowed overview aspect {aspect}: {unsupported_aspect}"
         );
     }
+    client.finish().expect("server must finish successfully");
 }

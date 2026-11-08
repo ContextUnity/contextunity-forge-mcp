@@ -18,7 +18,9 @@ class ServiceClient:
 def standalone_helper(x: int) -> int:
     return x * 2
 "#;
-    let facts = ast::extract("test.py", "python", source).expect("python extraction failed");
+    let facts = ExtractorHarness::for_lang("python")
+        .at_path("test.py")
+        .extract(source);
     assert!(facts
         .nodes
         .iter()
@@ -59,8 +61,18 @@ def standalone_helper(x: int) -> int:
         for (source, expected) in cases {
             scope.spawn(move || {
                 for _ in 0..3 {
-                    let facts = ast::extract("fixture.py", "python", source).unwrap();
-                    let marked = facts.nodes.iter().filter(|n| n.kind == "function" && n.name == "run" && n.details["entrypoint_base"] == "main").count();
+                    let facts = ExtractorHarness::for_lang("python")
+                        .at_path("fixture.py")
+                        .extract(source);
+                    let marked = facts
+                        .nodes
+                        .iter()
+                        .filter(|n| {
+                            n.kind == "function"
+                                && n.name == "run"
+                                && n.details["entrypoint_base"] == "main"
+                        })
+                        .count();
                     assert_eq!(marked > 0, expected, "{source}");
                     assert!(ast::extract("fixture.invalid", "unknown-language", "").is_err());
                 }

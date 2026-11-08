@@ -3,7 +3,7 @@ use contextunity_forge_mcp::db::writer;
 use contextunity_forge_mcp::engine::scanner;
 use rusqlite::Connection;
 use std::{
-    fs,
+    fs, io,
     path::{Path, PathBuf},
 };
 
@@ -88,52 +88,71 @@ limits:
 }
 
 #[test]
-fn scanner_enforces_configured_file_count_limit() {
+fn scanner_enforces_configured_file_count_and_byte_limits() {
     let workspace = Workspace::new();
     workspace.write(".git/config", "");
-    workspace.write(
-        "forge-mcp.yaml",
-        "limits:\n  max_files: 2\n  allow_broad_root: true\n",
-    );
-    for name in ["a.py", "b.py", "c.py"] {
-        workspace.write(format!("src/{name}"), "x = 1\n");
+
+    enum Expected {
+        Error(&'static str),
+        SuccessFiles(usize),
     }
 
-    let error = scanner::scan(workspace.root(), None).unwrap_err();
-    assert!(error.to_string().contains("workspace exceeds file limit"));
-}
+    let cases = [
+        (
+            "configured file count limit",
+            "limits:\n  max_files: 2\n  allow_broad_root: true\n",
+            &[
+                ("src/a.py", "x = 1\n"),
+                ("src/b.py", "x = 1\n"),
+                ("src/c.py", "x = 1\n"),
+            ][..],
+            Expected::Error("workspace exceeds file limit"),
+        ),
+        (
+            "aggregate byte limit",
+            "limits:\n  max_total_bytes: 6\n  allow_broad_root: true\n",
+            &[("src/a.py", "abc\n"), ("src/b.py", "def\n")][..],
+            Expected::Error("workspace exceeds total byte limit"),
+        ),
+        (
+            "file count limit ignores unrecognized files",
+            "limits:\n  max_files: 2\n  allow_broad_root: true\n",
+            &[
+                ("src/a.py", "x = 1\n"),
+                ("src/b.py", "y = 2\n"),
+                ("notes.txt", "not indexed\n"),
+            ][..],
+            Expected::SuccessFiles(2),
+        ),
+    ];
 
-#[test]
-fn scanner_enforces_aggregate_byte_limit() {
-    let workspace = Workspace::new();
-    workspace.write(".git/config", "");
-    workspace.write(
-        "forge-mcp.yaml",
-        "limits:\n  max_total_bytes: 6\n  allow_broad_root: true\n",
-    );
-    workspace.write("src/a.py", "abc\n");
-    workspace.write("src/b.py", "def\n");
+    for (name, config, files, expected) in cases {
+        let _ = std::fs::remove_dir_all(workspace.path("src"));
+        let _ = std::fs::remove_file(workspace.path("notes.txt"));
+        workspace.write("forge-mcp.yaml", config);
+        for &(file_path, content) in files {
+            workspace.write(file_path, content);
+        }
 
-    let error = scanner::scan(workspace.root(), None).unwrap_err();
-    assert!(error
-        .to_string()
-        .contains("workspace exceeds total byte limit"));
-}
-
-#[test]
-fn scanner_file_count_limit_ignores_unrecognized_files() {
-    let workspace = Workspace::new();
-    workspace.write(".git/config", "");
-    workspace.write(
-        "forge-mcp.yaml",
-        "limits:\n  max_files: 2\n  allow_broad_root: true\n",
-    );
-    workspace.write("src/a.py", "x = 1\n");
-    workspace.write("src/b.py", "y = 2\n");
-    workspace.write("notes.txt", "not indexed\n");
-
-    let report = scanner::scan(workspace.root(), None).unwrap();
-    assert_eq!(report.files, 2);
+        match (scanner::scan(workspace.root(), None), expected) {
+            (Err(err), Expected::Error(expected_msg)) => {
+                assert!(
+                    err.to_string().contains(expected_msg),
+                    "{name}: expected error containing '{expected_msg}', got: {err}"
+                );
+            }
+            (Ok(report), Expected::SuccessFiles(expected_count)) => {
+                assert_eq!(
+                    report.files, expected_count,
+                    "{name}: expected {expected_count} files, got {}",
+                    report.files
+                );
+            }
+            (result, _) => {
+                panic!("{name}: unexpected result: {result:?}");
+            }
+        }
+    }
 }
 
 #[test]
@@ -159,18 +178,47 @@ fn scanner_accepts_the_default_file_boundary_and_rejects_one_byte_over() {
 }
 
 #[test]
-#[ignore = "creates more than 100,000 files; run only on a dedicated filesystem stress lane"]
 fn scanner_rejects_a_workspace_over_the_default_file_limit() {
     let workspace = Workspace::new();
     workspace.write(".git/config", "");
     let source = workspace.root().join("src");
     fs::create_dir_all(&source).unwrap();
-    for index in 0..=scanner::DEFAULT_MAX_FILES {
-        fs::write(source.join(format!("file_{index}.py")), "x=1\n").unwrap();
+    let mut created_paths = 0;
+    for group_start in (0..=scanner::DEFAULT_MAX_FILES).step_by(100) {
+        let group_end = (group_start + 100).min(scanner::DEFAULT_MAX_FILES + 1);
+        let seed = workspace
+            .root()
+            .join(format!(".file-limit-seed-{group_start}.data"));
+        fs::write(&seed, "x=1\n").unwrap();
+        for index in group_start..group_end {
+            // Distinct directory entries share fixture bytes in bounded groups.
+            let path = source.join(format!("file_{index}.py"));
+            match fs::hard_link(&seed, &path) {
+                Ok(()) => {}
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::PermissionDenied | io::ErrorKind::Unsupported
+                    ) =>
+                {
+                    fs::write(path, "x=1\n").unwrap();
+                }
+                Err(error) => panic!("create distinct scanner fixture path: {error}"),
+            }
+            created_paths += 1;
+        }
     }
 
-    let error = scanner::scan(workspace.root(), None).unwrap_err();
-    assert!(error.to_string().contains("workspace exceeds file limit"));
+    assert_eq!(scanner::DEFAULT_MAX_FILES, 100_000);
+    assert_eq!(created_paths, 100_001);
+    assert_eq!(created_paths, scanner::DEFAULT_MAX_FILES + 1);
+    let error = scanner::scan(workspace.root(), None)
+        .map(|report| report.files)
+        .expect_err("one path beyond the default limit must be rejected");
+    assert_eq!(
+        error.to_string(),
+        "workspace exceeds file limit (100001 > max_files 100000)"
+    );
 }
 
 #[test]

@@ -15,27 +15,7 @@ use rusqlite::{
 use serde_json::Value;
 use std::{collections::BTreeSet, path::PathBuf};
 
-struct Workspace(PathBuf, common::Workspace);
-
-impl Workspace {
-    fn new() -> Self {
-        let shared = common::Workspace::new();
-        Self(shared.root().to_path_buf(), shared)
-    }
-
-    fn write(&self, path: &str, contents: &str) {
-        self.1.write(path, contents);
-    }
-
-    fn db(&self) -> PathBuf {
-        self.1.db()
-    }
-
-    fn build(&self) -> Connection {
-        self.1.build();
-        self.1.open()
-    }
-}
+use common::Workspace;
 
 fn options(limit: usize) -> QueryOptions {
     QueryOptions::resolve(&ResponsePolicy::default(), Some(limit), 0, None, None).unwrap()

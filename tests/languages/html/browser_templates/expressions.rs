@@ -1,8 +1,6 @@
-use super::*;
-
 #[test]
 fn template_expressions_follow_proven_local_and_imported_bindings() {
-    let workspace = Workspace::new();
+    let workspace = crate::languages::PersistedWorkspaceHarness::new();
     for project in ["commerce", "other"] {
         workspace.write(
             format!("{project}/templates/macros/forms.html"),
@@ -18,8 +16,7 @@ fn template_expressions_follow_proven_local_and_imported_bindings() {
         "{% import 'macros/forms.html' as forms %}\n{{ forms.field('Name') }}\n",
     );
 
-    writer::build(&workspace.0, &workspace.db(), None).unwrap();
-    let conn = reader::open(&workspace.db(), &workspace.0).unwrap();
+    let conn = workspace.build_and_open();
     for (path, expression, status, provider, symbol) in [
         (
             "commerce/templates/page.html",
@@ -108,7 +105,7 @@ fn template_expressions_follow_proven_local_and_imported_bindings() {
 
 #[test]
 fn shared_html_template_rules_stay_external_without_framework_declarations() {
-    let workspace = Workspace::new();
+    let workspace = crate::languages::PersistedWorkspaceHarness::new();
     workspace.write(
         "page.html",
         r#"{% if active %}
@@ -120,8 +117,7 @@ fn shared_html_template_rules_stay_external_without_framework_declarations() {
 {% endif %}
 "#,
     );
-    writer::build(&workspace.0, &workspace.db(), None).unwrap();
-    let conn = reader::open(&workspace.db(), &workspace.0).unwrap();
+    let conn = workspace.build_and_open();
     let status = |expression: &str| -> String {
         conn.query_row(
             "SELECT rc.status FROM resolution_coverage rc JOIN path_dictionary pd ON pd.path_id=rc.path_id JOIN coverage_expressions ce ON ce.expression_id=rc.expression_id WHERE pd.path='page.html' AND ce.expression=?1",

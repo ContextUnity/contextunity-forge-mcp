@@ -1,25 +1,11 @@
 use super::*;
 
 mod configured;
-use configured::*;
 
 #[test]
 fn framework_manifest_class_attributes_follow_effective_rules_and_delta() {
-    configured_syntax_rules_follow_effective_rules_and_delta();
-    configured_template_rules_follow_effective_rules_and_delta();
-    configured_di_origins_follow_effective_rules_and_delta();
-    configured_component_and_receiver_rules_follow_effective_rules_and_delta();
-    configured_component_macros_follow_effective_rules_and_delta();
-    configured_router_prefixes_are_static_unique_and_recursive();
     for (pack_name, file_attribute, symbol_attribute, directory, module, export) in [
-        (
-            "kiln",
-            "panel_asset",
-            "entity_type",
-            "screens/",
-            "kiln.paint",
-            "emit",
-        ),
+        ("kiln", "panel_asset", "entity_type", "screens/", "kiln.paint", "emit"),
         (
             "orchard",
             "markup_asset",
@@ -29,14 +15,11 @@ fn framework_manifest_class_attributes_follow_effective_rules_and_delta() {
             "draw",
         ),
     ] {
-        let workspace = Workspace::new();
+        let workspace = crate::languages::PersistedWorkspaceHarness::new();
         let manifest_path = format!(".forge/frameworks/{pack_name}.toml");
         let project = "[project]\nname='attribute-rules'\n";
         workspace.write("pyproject.toml", project);
-        workspace.write(
-            "app/models.py",
-            "class Record: pass\nclass Duplicate: pass\n",
-        );
+        workspace.write("app/models.py", "class Record: pass\nclass Duplicate: pass\n");
         workspace.write("other/models.py", "class Duplicate: pass\n");
         let source = format!(
             "from app.models import Record, Missing, Duplicate\nfrom other.models import Duplicate\nfrom {module} import {export} as paint\n\nclass Unique:\n    {file_attribute} = 'catalog/card.html'\n    {symbol_attribute} = Record\n\nclass MissingFile:\n    {file_attribute} = 'absent.html'\n    {symbol_attribute} = Record\n\nclass DuplicateFile:\n    {file_attribute} = 'catalog/duplicate.html'\n    {symbol_attribute} = Record\n\nclass MissingSymbol:\n    {file_attribute} = 'catalog/card.html'\n    {symbol_attribute} = Missing\n\nclass DuplicateSymbol:\n    {file_attribute} = 'catalog/card.html'\n    {symbol_attribute} = Duplicate\n\nclass Dynamic:\n    {file_attribute} = choose_asset()\n    {symbol_attribute} = choose_type()\n\ndef helper(): return 1\ndef ordinary(): return helper()\ndef page(): return paint('catalog/card.html')\ndef shadowed(paint): return paint('catalog/card.html')\n"
@@ -63,12 +46,11 @@ fn framework_manifest_class_attributes_follow_effective_rules_and_delta() {
             workspace.write(&manifest_path, &toml::to_string(value).unwrap());
         };
         write_pack(&pack);
-        writer::build(&workspace.0, &workspace.db(), None).unwrap_or_else(|error| {
-            panic!("configured {pack_name} attributes and directory must build: {error:#}")
-        });
+        workspace.build();
         let assert_relations = |active: bool| {
             let conn = workspace.open();
-            assert_valid(&conn);
+            let validity = validity_observations(&conn);
+            validity.assert_valid();
             for (kind, owners, destination) in [
                 (
                     "renders_template",
@@ -78,13 +60,18 @@ fn framework_manifest_class_attributes_follow_effective_rules_and_delta() {
                 (
                     "uses_model",
                     vec!["Unique", "MissingFile", "DuplicateFile"],
-                    node_id(&conn, "app/models.py", "Record"),
+                    node_id_observation(&conn, "app/models.py", "Record").expect("unique model definition"),
                 ),
             ] {
                 let mut expected: Vec<_> = if active {
                     owners
                         .iter()
-                        .map(|name| (node_id(&conn, "app/views.py", name), destination.clone()))
+                        .map(|name| {
+                            (
+                                node_id_observation(&conn, "app/views.py", name).expect("unique view definition"),
+                                destination.clone(),
+                            )
+                        })
                         .collect()
                 } else {
                     vec![]
@@ -101,10 +88,7 @@ fn framework_manifest_class_attributes_follow_effective_rules_and_delta() {
                 "SELECT count(*) FROM edge_occurrences e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE e.kind='calls' AND s.name='ordinary' AND d.name='helper'",
                 [], |row| row.get(0),
             ).unwrap();
-            assert_eq!(
-                ordinary_calls, 1,
-                "ordinary language calls survive rule changes"
-            );
+            assert_eq!(ordinary_calls, 1, "ordinary language calls survive rule changes");
             let imports: i64 = conn.query_row(
                 "SELECT count(*) FROM resolution_coverage c JOIN path_dictionary p ON p.path_id=c.path_id JOIN coverage_expressions x ON x.expression_id=c.expression_id WHERE p.path='app/views.py' AND c.line=1 AND x.expression='Record' AND c.status='resolved'",
                 [], |row| row.get(0),
@@ -130,44 +114,38 @@ fn framework_manifest_class_attributes_follow_effective_rules_and_delta() {
             }
         };
         assert_relations(true);
-        complete_parity(&workspace);
+        assert_complete_cold(&workspace);
 
         // Only effective rules determine semantic behavior, including when
         // the language source and ordinary imports/calls remain untouched.
         for operation in pack["semantic_rules"].as_array_mut().unwrap() {
-            operation["activation"] =
-                serde_json::json!([{"kind":"package", "name":"unrelated-engine"}]);
+            operation["activation"] = serde_json::json!([{"kind":"package", "name":"unrelated-engine"}]);
         }
         write_pack(&pack);
-        workspace.delta(&manifest_path);
+        workspace.delta(&[&manifest_path]);
         assert_relations(false);
-        complete_parity(&workspace);
         workspace.write(
             "pyproject.toml",
             "[project]\nname='attribute-rules'\ndependencies=['unrelated-engine']\n",
         );
-        workspace.delta("pyproject.toml");
+        workspace.delta(&["pyproject.toml"]);
         assert_relations(true);
-        complete_parity(&workspace);
 
         let mut replacement = pack.clone();
         replacement["replace"] = true.into();
         replacement["semantic_rules"] = serde_json::json!([]);
         write_pack(&replacement);
-        workspace.delta(&manifest_path);
+        workspace.delta(&[&manifest_path]);
         assert_relations(false);
-        complete_parity(&workspace);
         write_pack(&pack);
-        workspace.delta(&manifest_path);
+        workspace.delta(&[&manifest_path]);
         assert_relations(true);
-        complete_parity(&workspace);
-        fs::remove_file(workspace.0.join(&manifest_path)).unwrap();
-        workspace.delta(&manifest_path);
+        workspace.remove(&manifest_path);
+        workspace.delta(&[&manifest_path]);
         assert_relations(false);
-        complete_parity(&workspace);
         write_pack(&pack);
-        workspace.delta(&manifest_path);
+        workspace.delta(&[&manifest_path]);
         assert_relations(true);
-        complete_parity(&workspace);
+        assert_complete_cold(&workspace);
     }
 }

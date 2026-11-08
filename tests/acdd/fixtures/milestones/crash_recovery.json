@@ -1,0 +1,6 @@
+{
+  "forge-mcp.yaml": "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+  "src/lib.rs": "pub fn retained() {}\n",
+  "docs/milestones/010-close.md": "---\nid: m-close\ntitle: Crash recovery\nstatus: active\nstarted_at: 2026-10-01T10:00:00Z\n---\n# Crash recovery\n\n### task: first\n```yaml\ntask_ref: first\ntarget: Cancelled work\nproof_policy: seam-test-first\nscope: [src/]\nstatus: cancelled\n```\n\n### task: second\n```yaml\ntask_ref: second\ntarget: Cancelled work\nproof_policy: seam-test-first\nscope: [src/]\nstatus: cancelled\n```\n",
+  "docs/milestones/011-wait.md": "---\nid: m-wait\ntitle: Dependent milestone\nstatus: active\nstarted_at: 2026-10-01T10:00:00Z\n---\n# Dependent milestone\n\n### task: next\n```yaml\ntask_ref: next\ntarget: Wait for terminal milestone\nproof_policy: seam-test-first\nscope: [consumer/]\ndepends_on: ['forge-mcp/m-close:__milestone__']\n```\n\n### task: busy\n```yaml\ntask_ref: busy\ntarget: Preserve independent live claim\nproof_policy: seam-test-first\nscope: [busy/]\n```\n"
+}

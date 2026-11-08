@@ -7,7 +7,8 @@ fn compact_inspect_and_explain_omit_repeated_empty_data_without_losing_edges() {
         "graph.py",
         "def target(): pass\ndef caller(): target(); target()\n",
     );
-    let conn = workspace.build();
+    workspace.build();
+    let conn = workspace.open();
     let compact = reader::inspect_paged(&conn, "target", false, &options(10)).unwrap();
     assert_eq!(compact["documents"], serde_json::json!({"total": 0}));
     let incoming = reader::explain_with_options(
@@ -73,7 +74,8 @@ fn compact_symbol_summary_and_coverage_are_bounded_and_opt_in() {
         "docs/reference/mcp-tools.md",
         "---\ntitle: MCP tools\ndoc_type: reference\n---\n# MCP tools\n## Overview one\n[`code_map_overview`](../../overview.py#L1)\n\n## Overview two\n[`code_map_overview`](../../overview.py#L1)\n\n## Overview three\n[`code_map_overview`](../../overview.py#L1)\n\n## Overview four\n[`code_map_overview`](../../overview.py#L1)\n\n## Ambiguous candidates\n[`shared`](../../ambiguous.py#L1)\n",
     );
-    let conn = workspace.build();
+    workspace.build();
+    let conn = workspace.open();
     let source = SourceOptions::resolve(&ResponsePolicy::default(), None, None, None, 0).unwrap();
 
     let mut full_doc_options = options(20);
@@ -226,7 +228,7 @@ fn compact_symbol_summary_and_coverage_are_bounded_and_opt_in() {
 
     let inspected = symbols::inspect_with_options(
         &conn,
-        &workspace.0,
+        workspace.root(),
         "target",
         &symbols::InspectOptions {
             show_doc: false,
@@ -270,7 +272,7 @@ fn compact_symbol_summary_and_coverage_are_bounded_and_opt_in() {
 
     let explained = symbols::explain_with_options(
         &conn,
-        &workspace.0,
+        workspace.root(),
         "target",
         &symbols::ExplainOptions {
             direction: None,
@@ -288,7 +290,7 @@ fn compact_symbol_summary_and_coverage_are_bounded_and_opt_in() {
 
     let with_coverage = symbols::inspect_with_options(
         &conn,
-        &workspace.0,
+        workspace.root(),
         "target",
         &symbols::InspectOptions {
             show_doc: false,
@@ -308,7 +310,7 @@ fn compact_symbol_summary_and_coverage_are_bounded_and_opt_in() {
         let inspect = |page: &QueryOptions| match operation {
             "code_map_inspect" => symbols::inspect_with_options(
                 &conn,
-                &workspace.0,
+                workspace.root(),
                 "target",
                 &symbols::InspectOptions {
                     show_doc: true,
@@ -437,7 +439,8 @@ fn compact_summary_preserves_the_exact_nested_python_container() {
         "nested.py",
         "class A:\n    class Item:\n        def handle(self): return 1\n\nclass B:\n    class Item:\n        def handle(self): return 2\n",
     );
-    let conn = workspace.build();
+    workspace.build();
+    let conn = workspace.open();
     let (method_id, receiver_type): (String, String) = conn
         .query_row(
             "SELECT n.id,json_extract(n.details,'$.receiver_type') FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path='nested.py' AND n.name='handle' AND n.kind='method' ORDER BY n.line DESC LIMIT 1",
@@ -458,7 +461,7 @@ fn compact_summary_preserves_the_exact_nested_python_container() {
     let source = SourceOptions::resolve(&ResponsePolicy::default(), None, None, None, 0).unwrap();
     let inspected = symbols::inspect_with_options(
         &conn,
-        &workspace.0,
+        workspace.root(),
         &method_id,
         &symbols::InspectOptions {
             show_doc: false,
@@ -480,7 +483,8 @@ fn compact_summary_preserves_the_exact_nested_python_container() {
 fn compact_summary_call_counts_obey_vm_budget_and_reset_connection() {
     let workspace = Workspace::new();
     workspace.write("graph.py", "def target(): pass\n");
-    drop(workspace.build());
+    workspace.build();
+    drop(workspace.open());
 
     let conn = Connection::open(workspace.db()).unwrap();
     let target_id: String = conn
@@ -519,7 +523,7 @@ fn compact_summary_call_counts_obey_vm_budget_and_reset_connection() {
     let started = std::time::Instant::now();
     let error = symbols::inspect_with_options(
         &conn,
-        &workspace.0,
+        workspace.root(),
         &target_id,
         &symbols::InspectOptions {
             show_doc: false,
@@ -559,7 +563,8 @@ fn query_sql_operation_pages_secure_selects_and_validates_impact_direction() {
         "def helper(): return 1\ndef target(): return helper()\ndef caller(): return target()\n",
     );
     workspace.write("graph.py", &code);
-    let conn = workspace.build();
+    workspace.build();
+    let conn = workspace.open();
     let sql = "SELECT name FROM nodes WHERE kind='function' AND name LIKE 'f%' ORDER BY name";
     let mut query = options(6);
     let mut names = Vec::new();
@@ -679,7 +684,8 @@ fn document_excerpt_is_opt_in_and_bounded_around_match() {
             "after ".repeat(80)
         ),
     );
-    let conn = workspace.build();
+    workspace.build();
+    let conn = workspace.open();
     let basic = reader::search_docs_with_options(
         &conn,
         "needle",
@@ -756,7 +762,8 @@ fn search_path_scopes_file_and_descendants_without_changing_page_contract() {
     workspace.write("pkg/a.py", "def lookup(): pass\n");
     workspace.write("pkg/sub/b.py", "def lookup(): pass\n");
     workspace.write("other.py", "def lookup(): pass\n");
-    let conn = workspace.build();
+    workspace.build();
+    let conn = workspace.open();
     let all = symbols::search_with_options(
         &conn,
         "lookup",
@@ -824,7 +831,8 @@ fn line_anchor_prefers_exact_path_and_fails_closed_for_ambiguous_suffixes() {
     workspace.write("alpha/shared.py", "def target(): return 'alpha'\n");
     workspace.write("beta/shared.py", "def target(): return 'beta'\n");
     workspace.write("nested/alpha/shared.py", "def target(): return 'nested'\n");
-    let conn = workspace.build();
+    workspace.build();
+    let conn = workspace.open();
 
     let exact = reader::select(&conn, "alpha/shared.py#L1").unwrap();
     assert_eq!(exact["path"], "alpha/shared.py");
@@ -843,7 +851,8 @@ fn line_anchor_prefers_exact_path_and_fails_closed_for_ambiguous_suffixes() {
 fn line_anchor_does_not_match_a_partial_filename_component() {
     let workspace = Workspace::new();
     workspace.write("notshared.py", "def target(): return 'wrong file'\n");
-    let conn = workspace.build();
+    workspace.build();
+    let conn = workspace.open();
 
     let error = reader::select(&conn, "shared.py#L1").unwrap_err();
     assert!(
@@ -863,7 +872,8 @@ fn line_anchor_does_not_fall_back_when_exact_file_has_no_node_on_the_line() {
         "nested/alpha/shared.py",
         "def target():\n    return 'nested'\n",
     );
-    let conn = workspace.build();
+    workspace.build();
+    let conn = workspace.open();
 
     let error = reader::select(&conn, "alpha/shared.py#L2").unwrap_err();
     assert!(
@@ -880,7 +890,8 @@ fn selector_propagates_candidate_enrichment_row_budget_errors() {
     let workspace = Workspace::new();
     workspace.write("alpha.py", "def repeated(): return 'alpha'\n");
     workspace.write("beta.py", "def repeated(): return 'beta'\n");
-    drop(workspace.build());
+    workspace.build();
+    drop(workspace.open());
 
     // NULs fit under SQLite's per-cell limit but expand to more than the JSON row budget.
     let oversized_details = "\0".repeat(1_500_000);
@@ -915,7 +926,8 @@ fn rust_trait_object_and_macro_dispatch_expose_scoped_analysis_gaps() {
              invoke!(value);\n\
          }\n",
     );
-    let conn = workspace.build();
+    workspace.build();
+    let conn = workspace.open();
     let macro_id: String = conn
         .query_row(
             "SELECT n.id FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path='dispatch.rs' AND n.name='invoke' LIMIT 1",
@@ -942,7 +954,7 @@ fn rust_trait_object_and_macro_dispatch_expose_scoped_analysis_gaps() {
     page.detail = Detail::Full;
     let explained = symbols::explain_with_options(
         &conn,
-        &workspace.0,
+        workspace.root(),
         "caller",
         &symbols::ExplainOptions {
             direction: Some("outgoing"),
@@ -1004,7 +1016,7 @@ fn rust_trait_object_and_macro_dispatch_expose_scoped_analysis_gaps() {
     let mut gap_page_options = options(1);
     let first_gap_page = symbols::explain_with_options(
         &conn,
-        &workspace.0,
+        workspace.root(),
         "caller",
         &symbols::ExplainOptions {
             direction: Some("outgoing"),
@@ -1029,7 +1041,7 @@ fn rust_trait_object_and_macro_dispatch_expose_scoped_analysis_gaps() {
     ));
     let second_gap_page = symbols::explain_with_options(
         &conn,
-        &workspace.0,
+        workspace.root(),
         "caller",
         &symbols::ExplainOptions {
             direction: Some("outgoing"),
@@ -1048,7 +1060,7 @@ fn rust_trait_object_and_macro_dispatch_expose_scoped_analysis_gaps() {
 
     let inspected = symbols::inspect_with_options(
         &conn,
-        &workspace.0,
+        workspace.root(),
         "caller",
         &symbols::InspectOptions {
             show_doc: false,
@@ -1069,13 +1081,14 @@ fn explain_pages_possible_calls_as_distinct_navigation_edges() {
         "branch.py",
         "class Alpha:\n    def execute(self): pass\nclass Beta:\n    def execute(self): pass\ndef run(condition):\n    if condition:\n        receiver = Alpha()\n    else:\n        receiver = Beta()\n    receiver.execute()\n",
     );
-    let conn = workspace.build();
+    workspace.build();
+    let conn = workspace.open();
     let source = SourceOptions::resolve(&ResponsePolicy::default(), None, None, None, 0).unwrap();
     let mut page_options = options(1);
 
     let first = symbols::explain_with_options(
         &conn,
-        &workspace.0,
+        workspace.root(),
         "run",
         &symbols::ExplainOptions {
             direction: Some("outgoing"),
@@ -1093,7 +1106,7 @@ fn explain_pages_possible_calls_as_distinct_navigation_edges() {
     while continue_page(&mut page_options, &current["outgoing"]) {
         current = symbols::explain_with_options(
             &conn,
-            &workspace.0,
+            workspace.root(),
             "run",
             &symbols::ExplainOptions {
                 direction: Some("outgoing"),
@@ -1128,7 +1141,7 @@ fn explain_pages_possible_calls_as_distinct_navigation_edges() {
     assert_ne!(possible[0]["dst_public_id"], possible[1]["dst_public_id"]);
     let all = symbols::explain_with_options(
         &conn,
-        &workspace.0,
+        workspace.root(),
         "run",
         &symbols::ExplainOptions {
             direction: Some("outgoing"),

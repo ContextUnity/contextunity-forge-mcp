@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn jinja_builtins_follow_imported_filesystem_loader_roots() {
-    let workspace = Workspace::new();
+    let workspace = crate::languages::PersistedWorkspaceHarness::new();
     workspace.write(
         "shop/pyproject.toml",
         "[project]\nname = 'shop'\ndependencies = ['jinja2>=3']\n",
@@ -19,8 +19,7 @@ fn jinja_builtins_follow_imported_filesystem_loader_roots() {
         "shop/site/templates/partials/card.html",
         "<article>{{ row.name }}</article>\n",
     );
-    writer::build(&workspace.0, &workspace.db(), None).unwrap();
-    let conn = reader::open(&workspace.db(), &workspace.0).unwrap();
+    let conn = workspace.build_and_open();
     let status = |conn: &rusqlite::Connection, path: &str, expression: &str| -> String {
         conn.query_row(
             "SELECT rc.status FROM resolution_coverage rc JOIN path_dictionary pd ON pd.path_id=rc.path_id JOIN coverage_expressions ce ON ce.expression_id=rc.expression_id WHERE pd.path=?1 AND ce.expression=?2",
@@ -64,16 +63,11 @@ fn jinja_builtins_follow_imported_filesystem_loader_roots() {
         "shop/site/templates/page.html",
         &format!("{rooted_source}<p>Changed</p>\n"),
     );
-    writer::delta(
-        &workspace.0,
-        &workspace.db(),
-        &[PathBuf::from("shop/site/templates/page.html")],
-    )
-    .unwrap();
-    let cold_db = workspace.0.join("jinja-cold.sqlite");
-    writer::build(&workspace.0, &cold_db, None).unwrap();
-    let delta = reader::open(&workspace.db(), &workspace.0).unwrap();
-    let cold = reader::open(&cold_db, &workspace.0).unwrap();
+    workspace.delta(&["shop/site/templates/page.html"]);
+    let cold_db = workspace.root().join("jinja-cold.sqlite");
+    workspace.build_to(&cold_db);
+    let delta = workspace.open();
+    let cold = workspace.open_at(&cold_db);
     assert_eq!(
         include_targets(&delta, "shop/site/templates/page.html"),
         expected_include,
@@ -106,15 +100,10 @@ fn jinja_builtins_follow_imported_filesystem_loader_roots() {
         "shop/site/environment.py",
         "from pathlib import Path\nfrom jinja2 import Environment, FileSystemLoader\nTEMPLATES = Path(__file__).parent / 'other' / 'templates'\nenv = Environment(loader=FileSystemLoader(str(TEMPLATES)))\n",
     );
-    writer::delta(
-        &workspace.0,
-        &workspace.db(),
-        &[PathBuf::from("shop/site/environment.py")],
-    )
-    .unwrap();
-    writer::build(&workspace.0, &cold_db, None).unwrap();
-    let delta = reader::open(&workspace.db(), &workspace.0).unwrap();
-    let cold = reader::open(&cold_db, &workspace.0).unwrap();
+    workspace.delta(&["shop/site/environment.py"]);
+    workspace.build_to(&cold_db);
+    let delta = workspace.open();
+    let cold = workspace.open_at(&cold_db);
     for (path, expected) in [
         ("shop/site/templates/page.html", "unresolved"),
         ("shop/site/other/templates/page.html", "external"),
@@ -141,7 +130,7 @@ fn jinja_builtins_follow_imported_filesystem_loader_roots() {
 
 #[test]
 fn jinja_loader_roots_fail_closed_without_a_unique_imported_provider() {
-    let workspace = Workspace::new();
+    let workspace = crate::languages::PersistedWorkspaceHarness::new();
     let source = "{% set rows = [] %}\n{{ rows|selectattr('active')|list }}\n";
     for project in [
         "ambiguous",
@@ -171,8 +160,7 @@ fn jinja_loader_roots_fail_closed_without_a_unique_imported_provider() {
     workspace.write("src_jinja_shadow/environment.py", provider);
     workspace.write("src_path_shadow/src/pathlib.py", "class Path:\n    pass\n");
     workspace.write("src_path_shadow/environment.py", provider);
-    writer::build(&workspace.0, &workspace.db(), None).unwrap();
-    let conn = reader::open(&workspace.db(), &workspace.0).unwrap();
+    let conn = workspace.build_and_open();
     for project in [
         "ambiguous",
         "rebound",
@@ -201,7 +189,7 @@ fn jinja_loader_roots_fail_closed_without_a_unique_imported_provider() {
 
 #[test]
 fn jinja_loader_roots_follow_literal_parent_chains_and_local_loader_flow() {
-    let workspace = Workspace::new();
+    let workspace = crate::languages::PersistedWorkspaceHarness::new();
     let template = "{% set rows = [] %}\n{{ rows|e }}\n";
     for project in [
         "proven",
@@ -275,7 +263,7 @@ fn jinja_loader_roots_follow_literal_parent_chains_and_local_loader_flow() {
             "    if False:\n        return Environment(loader=loader)",
         ),
     );
-    writer::build(&workspace.0, &workspace.db(), None).unwrap();
+    workspace.build();
     let status = |conn: &rusqlite::Connection, path: &str, expression: &str| -> String {
         conn.query_row(
             "SELECT rc.status FROM resolution_coverage rc JOIN path_dictionary pd ON pd.path_id=rc.path_id JOIN coverage_expressions ce ON ce.expression_id=rc.expression_id WHERE pd.path=?1 AND ce.expression=?2",
@@ -283,7 +271,7 @@ fn jinja_loader_roots_follow_literal_parent_chains_and_local_loader_flow() {
             |row| row.get(0),
         ).unwrap()
     };
-    let conn = reader::open(&workspace.db(), &workspace.0).unwrap();
+    let conn = workspace.open();
     for expression in ["template.tag.set", "template.filter.e"] {
         assert_eq!(
             status(&conn, "proven/src/pkg/templates/spec/page.html", expression),
@@ -313,16 +301,11 @@ fn jinja_loader_roots_follow_literal_parent_chains_and_local_loader_flow() {
         "proven/src/pkg/templates/spec/page.html",
         "{% set rows = [] %}\n{{ rows|e }}\n<p>Changed</p>\n",
     );
-    writer::delta(
-        &workspace.0,
-        &workspace.db(),
-        &[PathBuf::from("proven/src/pkg/templates/spec/page.html")],
-    )
-    .unwrap();
-    let cold_db = workspace.0.join("parent-chain-cold.sqlite");
-    writer::build(&workspace.0, &cold_db, None).unwrap();
-    let delta = reader::open(&workspace.db(), &workspace.0).unwrap();
-    let cold = reader::open(&cold_db, &workspace.0).unwrap();
+    workspace.delta(&["proven/src/pkg/templates/spec/page.html"]);
+    let cold_db = workspace.root().join("parent-chain-cold.sqlite");
+    workspace.build_to(&cold_db);
+    let delta = workspace.open();
+    let cold = workspace.open_at(&cold_db);
     for expression in ["template.tag.set", "template.filter.e"] {
         let path = "proven/src/pkg/templates/spec/page.html";
         assert_eq!(status(&delta, path, expression), "external", "{expression}");

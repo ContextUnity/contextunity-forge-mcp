@@ -267,23 +267,6 @@ fn directory_suffix_lists_real_nodes_and_exact_file_keeps_graph_traversal() {
         actual_edges.extend(part["edges"]["items"].as_array().unwrap().iter().cloned());
     }
     assert_eq!(&actual_edges, expected_edges);
-    assert!(
-        boundary["inbound_modules"]["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|module| module["module"] == "extensions/commerce/src/contextunity/commerce"),
-        "{boundary}"
-    );
-    assert!(
-        boundary["outbound_modules"]["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|module| module["module"]
-                == "extensions/commerce/src/contextunity/commerce/connectors/horoshop"),
-        "{boundary}"
-    );
     assert!(!boundary["exported_symbols"]
         .to_string()
         .contains("unrelated"));

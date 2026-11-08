@@ -1,0 +1,11 @@
+{
+  "AGENTS.md": "# Rules\n",
+  "forge-mcp.yaml": "task_repository: test\ntask_project: test\nroots: []\nmilestones:\n  - docs/milestones\n  - extensions/*/docs/milestones\nowners:\n  \"extensions/base\": base\naliases:\n  legacy: base\n",
+  "docs/milestones/001-root.md": "---\nid: M-ROOT\ntitle: Root Milestone\ndoc_type: contract\n---\n# Root Milestone\n\n### task: root-task\n```yaml\ntask_ref: root-task\ntarget: Root target\nproof_policy: direct-proof\nscope: [src/]\n```\n",
+  "extensions/base/docs/milestones/README.md": "# Base Milestones\nThis document describes milestones for the base extension.\n",
+  "extensions/readme-only/docs/milestones/README.md": "# Future milestones\n",
+  "extensions/empty/docs/milestones": null,
+  "extensions/base/docs/milestones/BS-103-owners-milestone.md": "---\nid: BS-103\ntitle: Base Milestone via Owners\ndoc_type: contract\n---\n# Base Milestone via Owners\n\n### task: owners-task\n```yaml\ntask_ref: owners-task\ntarget: Owners target\nproof_policy: seam-test-first\nscope: [extensions/base/src/]\n```\n",
+  "extensions/base/docs/milestones/BS-104-aliased-milestone.md": "---\nid: BS-104\ntitle: Base Milestone via Aliases\ndoc_type: contract\nproject: legacy\n---\n# Base Milestone via Aliases\n\n### task: alias-task\n```yaml\ntask_ref: alias-task\ntarget: Alias target\nproof_policy: seam-test-first\nscope: [extensions/base/src/]\n```\n",
+  "extensions/base/docs/milestones/BS-106-other-project.md": "---\nid: BS-106\ntitle: Other project in the same directory\ndoc_type: contract\nproject: other\n---\n# Other project in the same directory\n\n### task: other-task\n```yaml\ntask_ref: other-task\ntarget: Deliver the declared project\nproof_policy: seam-test-first\nscope: [extensions/base/src/]\n```\n"
+}

@@ -1,44 +1,28 @@
-use super::{commitments, writer, Connection, Workspace};
-use rusqlite::ffi;
+use crate::common::Workspace;
+use super::harness::*;
+use contextunity_forge_mcp::engine::pipeline;
+use rusqlite::{ffi, Connection};
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     ffi::{c_char, c_int, c_void, CStr},
     path::PathBuf,
     sync::Mutex,
     thread::ThreadId,
 };
 
-struct FtsReads {
-    directory: PathBuf,
-    published: PathBuf,
-    domains: BTreeMap<&'static str, HashSet<ThreadId>>,
-    invalid_reader: bool,
-    deny_domain: Option<&'static str>,
+pub(super) struct FtsReads {
+    pub(super) directory: PathBuf,
+    pub(super) published: PathBuf,
+    pub(super) domains: BTreeMap<&'static str, HashSet<ThreadId>>,
+    pub(super) invalid_reader: bool,
+    pub(super) deny_domain: Option<&'static str>,
 }
 
-static FTS_READS: Mutex<Option<FtsReads>> = Mutex::new(None);
+pub(super) static FTS_READS: Mutex<Option<FtsReads>> = Mutex::new(None);
 
 // Observe actual SQLite reads without adding production telemetry or replacing
 // any part of the build. The extension is restricted to this fixture directory.
-struct ObserveFts;
-
-impl ObserveFts {
-    fn start(directory: PathBuf, published: PathBuf) -> Self {
-        *FTS_READS.lock().unwrap() = Some(FtsReads {
-            directory,
-            published,
-            domains: BTreeMap::new(),
-            invalid_reader: false,
-            deny_domain: None,
-        });
-        // SAFETY: the callback has SQLite's extension ABI and static lifetime.
-        assert_eq!(
-            unsafe { ffi::sqlite3_auto_extension(Some(observe_connection)) },
-            ffi::SQLITE_OK
-        );
-        Self
-    }
-}
+pub(super) struct ObserveFts;
 
 impl Drop for ObserveFts {
     fn drop(&mut self) {
@@ -48,7 +32,7 @@ impl Drop for ObserveFts {
     }
 }
 
-unsafe extern "C" fn observe_connection(
+pub(super) unsafe extern "C" fn observe_connection(
     db: *mut ffi::sqlite3,
     _: *mut *const c_char,
     _: *const ffi::sqlite3_api_routines,
@@ -128,16 +112,32 @@ unsafe extern "C" fn observe_read(
     ffi::SQLITE_OK
 }
 
-fn domain_rows(conn: &Connection) -> Vec<(String, i64, Vec<u8>)> {
-    conn.prepare("SELECT domain,owner_id,digest FROM domain_commitments ORDER BY domain,owner_id")
-        .unwrap()
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
-        .unwrap()
-        .collect::<rusqlite::Result<_>>()
-        .unwrap()
+pub const FTS_DOMAINS: [&str; 4] = [
+    "node_search_postings",
+    "node_search_config",
+    "doc_search_postings",
+    "doc_search_config",
+];
+
+fn start_observer(directory: PathBuf, published: PathBuf) -> Result<ObserveFts, c_int> {
+    *FTS_READS.lock().unwrap() = Some(FtsReads {
+        directory,
+        published,
+        domains: BTreeMap::new(),
+        invalid_reader: false,
+        deny_domain: None,
+    });
+    let result = unsafe { ffi::sqlite3_auto_extension(Some(observe_connection)) };
+    if result == ffi::SQLITE_OK {
+        Ok(ObserveFts)
+    } else {
+        *FTS_READS.lock().unwrap() = None;
+        Err(result)
+    }
 }
 
-pub fn assert_disk_build_matches_serial_seal() {
+#[test]
+fn cold_disk_build_sealing_matches_serial_and_preserves_previous_generation() {
     let workspace = Workspace::new();
     let source = workspace.path("source");
     let code: String = (0..8192)
@@ -157,105 +157,166 @@ pub fn assert_disk_build_matches_serial_seal() {
         "source/page.html",
         "<button onclick=\"missing()\">Go</button>\n<script>missing();</script>\n",
     );
-    let mut expected = None;
+
+    let domain_rows = |conn: &Connection| -> Vec<(String, i64, Vec<u8>)> {
+        conn.prepare(
+            "SELECT domain,owner_id,digest FROM domain_commitments ORDER BY domain,owner_id",
+        )
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap()
+    };
+
+    let extraction_cache = workspace.path(".forge/extraction-cache-cold");
+    let mut expected_disk_root = None;
     let mut expected_domains = None;
+    let mut control_domain_workers = BTreeMap::new();
+    let mut control_read_published_database = false;
+
     for threads in [1, 2, 4] {
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
             .build()
             .unwrap();
         let db = workspace.path(format!("cold-{threads}.sqlite"));
-        let observation = ObserveFts::start(workspace.path(""), db.clone());
-        let report = pool.install(|| writer::build(&source, &db, None)).unwrap();
+        let observation = start_observer(workspace.path(""), db.clone())
+            .expect("SQLite FTS observer registration succeeds");
+        let report = pool
+            .install(|| pipeline::build_with_cache_dir(&source, &db, None, &extraction_cache))
+            .expect("cold production pipeline builds the disk fixture");
         let reads = FTS_READS.lock().unwrap().take().unwrap();
         drop(observation);
-        assert!(report["nodes"].as_u64().unwrap() >= 8192);
+
+        let reported_nodes = report["nodes"].as_u64().unwrap();
+        assert!(reported_nodes >= 8192);
         let root = report["output_root"].as_str().unwrap().to_owned();
-        if let Some(expected) = &expected {
+
+        let conn = Connection::open(&db).unwrap();
+        let domain_rows_before = domain_rows(&conn);
+        commitments::verify(&conn).expect("each cold database verifies before resealing");
+        let serial_seal = commitments::seal(&conn)
+            .expect("serial sealing succeeds for each cold database");
+        let domain_rows_after = domain_rows(&conn);
+        drop(conn);
+
+        assert_eq!(
+            serial_seal, root,
+            "serial sealing reproduces the published output root for {threads} threads"
+        );
+        assert_eq!(
+            domain_rows_before, domain_rows_after,
+            "serial sealing preserves the published domain digests for {threads} threads"
+        );
+
+        let reopened = Connection::open_with_flags(&db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .expect("open read-only succeeds");
+        commitments::verify(&reopened).expect("each published database verifies after reopen");
+        drop(reopened);
+
+        if let Some(expected_root) = &expected_disk_root {
             assert_eq!(
-                &root, expected,
+                &root, expected_root,
                 "cold sealing is independent of thread count"
             );
         } else {
-            expected = Some(root.clone());
+            expected_disk_root = Some(root.clone());
         }
-        let conn = Connection::open(&db).unwrap();
-        let domains = domain_rows(&conn);
-        if let Some(expected) = &expected_domains {
+
+        if let Some(expected_doms) = &expected_domains {
             assert_eq!(
-                &domains, expected,
-                "all owner and FTS digests are thread-independent"
+                &domain_rows_before, expected_doms,
+                "owner and FTS digests are thread-independent"
             );
         } else {
-            expected_domains = Some(domains.clone());
+            expected_domains = Some(domain_rows_before.clone());
         }
-        commitments::verify(&conn).unwrap();
-        assert_eq!(commitments::seal(&conn).unwrap(), root);
-        assert_eq!(
-            domain_rows(&conn),
-            domains,
-            "projection equals the SQL oracle in every domain"
-        );
-        drop(conn);
-        commitments::verify(&Connection::open(&db).unwrap()).unwrap();
+
         if threads == 1 {
             // Calibrate the observer against real reads before using its absence
             // as red proof. This control intentionally reads the published file.
-            let control = ObserveFts::start(workspace.path(""), db.clone());
+            let control = start_observer(workspace.path(""), db.clone())
+                .expect("SQLite FTS observer registration succeeds");
             let conn = Connection::open_with_flags(&db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
                 .unwrap();
-            commitments::verify(&conn).unwrap();
+            commitments::verify(&conn).expect("the read-only observer control verifies");
             let control_reads = FTS_READS.lock().unwrap().take().unwrap();
             drop(conn);
             drop(control);
-            assert_eq!(
-                control_reads.domains.len(),
-                4,
-                "observer must see every real FTS domain"
-            );
-            assert!(
-                control_reads.invalid_reader,
-                "observer must identify the published file"
-            );
-        }
-        if threads > 1 {
-            for domain in [
-                "node_search_postings",
-                "node_search_config",
-                "doc_search_postings",
-                "doc_search_config",
-            ] {
-                assert!(reads.domains.contains_key(domain), "assertion failed: cold FTS domain {domain} must be computed through a stage-private read-only connection");
+            control_domain_workers = control_reads.domains;
+            control_read_published_database = control_reads.invalid_reader;
+        } else {
+            for domain in FTS_DOMAINS {
+                assert!(
+                    reads.domains.contains_key(domain),
+                    "cold FTS domain {domain} uses a stage-private read-only connection"
+                );
             }
-            let workers: HashSet<_> = reads.domains.values().flatten().collect();
-            assert!(reads.domains["node_search_postings"]
-                .is_disjoint(&reads.domains["doc_search_postings"]));
+            let node_workers = reads
+                .domains
+                .get("node_search_postings")
+                .expect("node posting readers were observed");
+            let doc_workers = reads
+                .domains
+                .get("doc_search_postings")
+                .expect("document posting readers were observed");
             assert!(
-                (2..=4).contains(&workers.len()),
-                "independent FTS domains must use bounded workers: {workers:?}"
+                node_workers.is_disjoint(doc_workers),
+                "node and document postings use disjoint workers"
             );
-            assert!(
-                !reads.invalid_reader,
-                "digest workers must not read the published database"
-            );
+            let worker_count = reads
+                .domains
+                .values()
+                .flatten()
+                .collect::<HashSet<_>>()
+                .len();
+            assert!((2..=4).contains(&worker_count));
+            assert!(!reads.invalid_reader);
         }
     }
 
+    let control_fts_domains: BTreeSet<_> = control_domain_workers.keys().copied().collect();
+    assert_eq!(control_fts_domains.len(), 4, "observer sees each real FTS domain");
+    assert_eq!(control_fts_domains, FTS_DOMAINS.into_iter().collect());
+    assert!(
+        control_read_published_database,
+        "observer identifies the published database"
+    );
+
     // A real reader failure must leave the previous published generation intact.
     let db = workspace.path("cold-4.sqlite");
-    let published = std::fs::read(&db).unwrap();
-    let observation = ObserveFts::start(workspace.path(""), db.clone());
+    let previous_generation_before = std::fs::read(&db).unwrap();
+    let observation = start_observer(workspace.path(""), db.clone())
+        .expect("SQLite FTS observer registration succeeds");
     FTS_READS.lock().unwrap().as_mut().unwrap().deny_domain = Some("node_search_config");
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(4)
-        .build()
-        .unwrap();
-    let result = pool.install(|| writer::build(&source, &db, None));
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+    let failed_build_result =
+        pool.install(|| pipeline::build_with_cache_dir(&source, &db, None, &extraction_cache));
     let reads = FTS_READS.lock().unwrap().take().unwrap();
     drop(observation);
-    assert!(result.is_err(), "FTS reader failures must abort the build");
+
+    let previous_generation_after = std::fs::read(&db).unwrap();
+    assert_eq!(
+        previous_generation_before, previous_generation_after,
+        "failed build preserves the exact previous published bytes"
+    );
+    let conn = Connection::open(&db).unwrap();
+    commitments::verify(&conn).expect("the preserved previous generation still verifies");
+    drop(conn);
+
+    assert_eq!(
+        failed_build_result
+            .expect_err("the denied FTS reader must abort the build")
+            .chain()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        [
+            "authorization denied".to_owned(),
+            "Error code 23: Authorization denied".to_owned()
+        ],
+        "the exact denied-reader error chain is retained"
+    );
     assert!(reads.domains.contains_key("node_search_config"));
     assert!(!reads.invalid_reader);
-    assert_eq!(std::fs::read(&db).unwrap(), published);
-    commitments::verify(&Connection::open(&db).unwrap()).unwrap();
 }

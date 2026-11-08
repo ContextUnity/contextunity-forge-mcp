@@ -1,8 +1,8 @@
 use super::*;
 
-pub(in crate::languages::html::manifest_relations) fn configured_component_and_receiver_rules_follow_effective_rules_and_delta(
-) {
-    let workspace = Workspace::new();
+#[test]
+fn configured_component_and_receiver_rules_follow_effective_rules_and_delta() {
+    let workspace = HtmlWorkspaceHarness::new();
     workspace.write(
         "package.json",
         r#"{"name":"configured-components","dependencies":{"@atelier/ui-kit":"*"}}"#,
@@ -64,13 +64,13 @@ pub(in crate::languages::html::manifest_relations) fn configured_component_and_r
         {"id":"implicit","language":"typescript","activation":[{"kind":"package","name":"@atelier/ui-kit"}],"operation":{"kind":"implicit_receivers","names":["$signal"]}}
     ]});
     let manifest = ".forge/frameworks/atelier-components.toml";
-    let write =
-        |value: &serde_json::Value| workspace.write(manifest, &toml::to_string(value).unwrap());
+    let write = |value: &serde_json::Value| workspace.write(manifest, &toml::to_string(value).unwrap());
     write(&pack);
-    writer::build(&workspace.0, &workspace.db(), None).unwrap();
+    workspace.build();
     let assert_active = |active: bool| {
-        let conn = workspace.open();
-        assert_valid(&conn);
+        let observations = workspace.observe();
+        let validity = &observations.validity();
+        validity.assert_valid();
         for (path, expression) in [
             ("page.vue", "CardView"),
             ("page.vue", "ConfiguredShell"),
@@ -79,7 +79,11 @@ pub(in crate::languages::html::manifest_relations) fn configured_component_and_r
             ("app.ts", "event.payload.get"),
             ("app.ts", "$signal"),
         ] {
-            let statuses:Vec<String>=conn.prepare("SELECT c.status FROM resolution_coverage c JOIN path_dictionary p ON p.path_id=c.path_id JOIN coverage_expressions x ON x.expression_id=c.expression_id WHERE p.path=?1 AND x.expression=?2 ORDER BY c.line").unwrap().query_map(params![path,expression],|row|row.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+            let statuses: Vec<_> = observations.coverage()
+                .iter()
+                .filter(|coverage| coverage.path == path && coverage.expression == expression)
+                .map(|coverage| coverage.status.as_str())
+                .collect();
             assert!(!statuses.is_empty(), "coverage {path}:{expression}");
             if path == "app.ts" && expression == "CardView" {
                 assert_eq!(
@@ -91,73 +95,87 @@ pub(in crate::languages::html::manifest_relations) fn configured_component_and_r
             }
             let admitted = statuses
                 .iter()
-                .any(|status| status == "resolved" || status == "external");
+                .any(|status| *status == "resolved" || *status == "external");
             assert_eq!(
                 admitted, active,
                 "configured components/receiver {path}:{expression}: {statuses:?}"
             );
         }
-        let shadow:usize=conn.query_row("SELECT count(*) FROM edge_occurrences e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash JOIN path_dictionary p ON p.path_id=s.path_id WHERE e.kind='calls' AND p.path='shadow.ts' AND s.name='ordinary' AND d.name='configuredRef'",[],|row|row.get(0)).unwrap();
+        let shadow = observations.edges()
+            .iter()
+            .filter(|edge| {
+                edge.source_path == "shadow.ts"
+                    && edge.source_name == "ordinary"
+                    && edge.kind == "calls"
+                    && edge.target_name == "configuredRef"
+            })
+            .count();
         assert_eq!(
             shadow, 1,
             "configured builtin spelling preserves local declaration calls"
         );
         for (path, caller, target_path, target) in [
-            (
-                "receiver-local.ts",
-                "localReceiver",
-                "receiver-local.ts",
-                "$signal",
-            ),
+            ("receiver-local.ts", "localReceiver", "receiver-local.ts", "$signal"),
             (
                 "receiver-import.ts",
                 "importedReceiver",
                 "receiver-provider.ts",
                 "providedSignal",
             ),
-            (
-                "receiver-member.ts",
-                "runReceiver",
-                "receiver-member.ts",
-                "$signal",
-            ),
+            ("receiver-member.ts", "runReceiver", "receiver-member.ts", "$signal"),
         ] {
-            let canonical: String = conn.query_row("SELECT n.id FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path=?1 AND n.name=?2", params![target_path,target], |row| row.get(0)).unwrap();
-            let targets: Vec<String> = conn.prepare("SELECT d.id FROM edge_occurrences e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash JOIN path_dictionary p ON p.path_id=s.path_id WHERE p.path=?1 AND s.name=?2 AND e.kind='calls' ORDER BY d.id").unwrap().query_map(params![path,caller], |row| row.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+            let canonical_ids: Vec<_> = observations.nodes()
+                .iter()
+                .filter(|node| node.path == target_path && node.name == target)
+                .map(|node| node.id.as_str())
+                .collect();
+            assert_eq!(canonical_ids.len(), 1, "unique lexical target: {target_path}:{target}");
+            let targets: Vec<_> = observations.edges()
+                .iter()
+                .filter(|edge| edge.source_path == path && edge.source_name == caller && edge.kind == "calls")
+                .map(|edge| edge.target_id.as_str())
+                .collect();
             assert_eq!(
-                targets,
-                [canonical],
+                targets, canonical_ids,
                 "ordinary lexical/import/member authority precedes implicit receiver, active={active}: {path}"
             );
-            let external: usize = conn.query_row("SELECT count(*) FROM resolution_coverage c JOIN path_dictionary p ON p.path_id=c.path_id JOIN coverage_expressions x ON x.expression_id=c.expression_id WHERE p.path=?1 AND x.expression IN ('$signal','this.$signal') AND c.status='external'", [path], |row| row.get(0)).unwrap();
-            assert_eq!(
-                external, 0,
-                "local receiver cannot become configured external: {path}"
-            );
+            let external = observations.coverage()
+                .iter()
+                .filter(|coverage| {
+                    coverage.path == path
+                        && matches!(coverage.expression.as_str(), "$signal" | "this.$signal")
+                        && coverage.status == "external"
+                })
+                .count();
+            assert_eq!(external, 0, "local receiver cannot become configured external: {path}");
         }
         for path in ["receiver-parameter.ts", "receiver-write.ts"] {
-            let statuses: Vec<String> = conn.prepare("SELECT c.status FROM resolution_coverage c JOIN path_dictionary p ON p.path_id=c.path_id JOIN coverage_expressions x ON x.expression_id=c.expression_id WHERE p.path=?1 AND x.expression='$signal' ORDER BY c.line,c.status,c.evidence_id").unwrap().query_map([path], |row| row.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+            let statuses: Vec<_> = observations.coverage()
+                .iter()
+                .filter(|coverage| coverage.path == path && coverage.expression == "$signal")
+                .map(|coverage| coverage.status.as_str())
+                .collect();
             assert!(
-                !statuses.is_empty() && statuses.iter().all(|status| status == "unresolved"),
+                !statuses.is_empty() && statuses.iter().all(|status| *status == "unresolved"),
                 "unknown lexical receiver stays nonexternal, active={active}: {path}: {statuses:?}"
             );
-            let guessed: usize = conn.query_row("SELECT count(*) FROM edge_occurrences e JOIN nodes s ON s.node_hash=e.src_hash JOIN path_dictionary p ON p.path_id=s.path_id WHERE p.path=?1 AND e.kind='calls'", [path], |row| row.get(0)).unwrap();
-            assert_eq!(
-                guessed, 0,
-                "unknown lexical receiver has no guessed exact call: {path}"
-            );
+            let guessed = observations.edges()
+                .iter()
+                .filter(|edge| edge.source_path == path && edge.kind == "calls")
+                .count();
+            assert_eq!(guessed, 0, "unknown lexical receiver has no guessed exact call: {path}");
         }
-        let same_object:usize=conn.query_row("SELECT count(*) FROM edge_occurrences e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE e.kind='calls' AND s.name='start' AND d.name='finish'",[],|row|row.get(0)).unwrap();
+        let same_object = observations.edges()
+            .iter()
+            .filter(|edge| edge.kind == "calls" && edge.source_name == "start" && edge.target_name == "finish")
+            .count();
         assert_eq!(
             same_object,
             usize::from(active),
             "configured object factory owns this member proof"
         );
-        let cached = persisted_facts(&conn);
-        let public_cached: Vec<_> = cached
-            .iter()
-            .map(crate::common::assertions::projected_facts)
-            .collect();
+        let cached = &observations.persisted_facts();
+        let public_cached: Vec<_> = cached.iter().map(crate::common::assertions::projected_facts).collect();
         let origins = public_cached
             .iter()
             .flat_map(|facts| facts["nodes"].as_array().into_iter().flatten())
@@ -202,32 +220,41 @@ pub(in crate::languages::html::manifest_relations) fn configured_component_and_r
             "options references retain actual rule origin and canonical imported alias"
         );
         for path in ["registered.vue", "bare.vue"] {
-            let references = edge_occurrence_rows(&conn, path, "references");
+            let references: Vec<_> = observations.edges()
+                .iter()
+                .filter(|edge| edge.owner_path == path && edge.kind == "references")
+                .map(|edge| (edge.source_id.as_str(), edge.target_id.as_str(), edge.line))
+                .collect();
             assert_eq!(
                 references.len(),
                 usize::from(active),
                 "configured options own exact component reference: {path}"
             );
             if active {
-                let target:String=conn.query_row("SELECT n.id FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path='widgets/CardView.vue' AND n.kind='module'",[],|row|row.get(0)).unwrap();
+                let target_ids: Vec<_> = observations.nodes()
+                    .iter()
+                    .filter(|node| node.path == "widgets/CardView.vue" && node.kind == "module")
+                    .map(|node| node.id.as_str())
+                    .collect();
+                assert_eq!(target_ids.len(), 1, "unique imported component module");
                 assert_eq!(
-                    references[0].1, target,
+                    references[0].1, target_ids[0],
                     "registered alias targets its imported component module"
                 );
             }
         }
     };
     assert_active(true);
-    complete_parity(&workspace);
+    workspace.assert_cold_parity();
     for enabled in [true, false] {
         workspace.write(
             "atelier.config.ts",
             &format!("export default configureAtelier({{widgets:{enabled}, addons:[]}});\n"),
         );
-        workspace.delta("atelier.config.ts");
+        workspace.delta(&["atelier.config.ts"]);
         let frozen: Vec<_> = [manifest, "atelier.config.ts", "package.json", "page.vue"]
             .into_iter()
-            .map(|path| (path, fs::read(workspace.0.join(path)).unwrap()))
+            .map(|path| (path, fs::read(workspace.root().join(path)).unwrap()))
             .collect();
         for content in [
             Some("<template><p>Added</p></template>\n"),
@@ -238,10 +265,9 @@ pub(in crate::languages::html::manifest_relations) fn configured_component_and_r
             if let Some(content) = content {
                 workspace.write(provider, content);
             } else {
-                fs::remove_file(workspace.0.join(provider)).unwrap();
+                workspace.remove_file(provider).unwrap();
             }
-            let report =
-                writer::delta(&workspace.0, &workspace.db(), &[PathBuf::from(provider)]).unwrap();
+            let report = workspace.delta(&[provider]);
             assert_eq!(
                 report["reparsed_files"],
                 usize::from(content.is_some()),
@@ -249,36 +275,42 @@ pub(in crate::languages::html::manifest_relations) fn configured_component_and_r
             );
             for (path, bytes) in &frozen {
                 assert_eq!(
-                    fs::read(workspace.0.join(path)).unwrap(),
+                    fs::read(workspace.root().join(path)).unwrap(),
                     *bytes,
                     "unchanged cached input {path}"
                 );
             }
-            let conn = workspace.open();
-            let edges:usize=conn.query_row("SELECT count(*) FROM edge_occurrences e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash JOIN path_dictionary p ON p.path_id=s.path_id JOIN path_dictionary q ON q.path_id=d.path_id WHERE e.kind='references' AND p.path='page.vue' AND q.path='widgets/LateView.vue' AND d.kind='module'", [], |row|row.get(0)).unwrap();
+            let edges = workspace
+                .observe()
+                .edges()
+                .iter()
+                .filter(|edge| {
+                    edge.source_path == "page.vue"
+                        && edge.target_path == provider
+                        && edge.target_kind == "module"
+                        && edge.kind == "references"
+                })
+                .count();
             assert_eq!(
                 edges,
                 usize::from(enabled && content.is_some()),
                 "cached configuration admits the canonical provider, enabled={enabled}, content={content:?}"
             );
-            drop(conn);
-            complete_parity(&workspace);
         }
     }
     workspace.write(
         "atelier.config.ts",
         "export default configureAtelier({widgets:true, addons:[]});\n",
     );
-    workspace.delta("atelier.config.ts");
+    workspace.delta(&["atelier.config.ts"]);
     let mut empty = pack.clone();
     empty["replace"] = true.into();
     empty["syntax_rules"] = serde_json::json!([]);
     write(&empty);
-    workspace.delta(manifest);
+    workspace.delta(&[manifest]);
     assert_active(false);
-    complete_parity(&workspace);
     write(&pack);
-    workspace.delta(manifest);
+    workspace.delta(&[manifest]);
     assert_active(true);
-    complete_parity(&workspace);
+    workspace.assert_cold_parity();
 }

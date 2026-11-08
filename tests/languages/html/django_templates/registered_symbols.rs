@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn registered_django_template_symbols_use_loaded_project_library() {
-    let workspace = Workspace::new();
+    let workspace = crate::languages::PersistedWorkspaceHarness::new();
     let library = "from django import template\nregister = template.Library()\n@register.filter(name='display_price')\ndef format_price(value):\n    return value\n@register.simple_tag(name='badge')\ndef render_badge(value):\n    return value\n";
     for project in ["commerce", "other"] {
         workspace.write(
@@ -19,10 +19,7 @@ fn registered_django_template_symbols_use_loaded_project_library() {
         "other/templates/page.html",
         "{% load pricing %}\n{{ total|display_price }}\n",
     );
-    workspace.write(
-        "commerce/templates/unloaded.html",
-        "{{ total|display_price }}\n",
-    );
+    workspace.write("commerce/templates/unloaded.html", "{{ total|display_price }}\n");
     workspace.write(
         "isolated/pyproject.toml",
         "[project]\nname = 'isolated'\ndependencies = ['django>=5']\n",
@@ -40,10 +37,7 @@ fn registered_django_template_symbols_use_loaded_project_library() {
         "[project]\nname = 'ambiguous'\ndependencies = ['django>=5']\n",
     );
     for package in ["shop", "billing"] {
-        workspace.write(
-            format!("ambiguous/{package}/templatetags/pricing.py"),
-            library,
-        );
+        workspace.write(format!("ambiguous/{package}/templatetags/pricing.py"), library);
     }
     workspace.write(
         "ambiguous/templates/page.html",
@@ -62,8 +56,7 @@ fn registered_django_template_symbols_use_loaded_project_library() {
         "{% load pricing %}\n{{ total|format_price }}\n",
     );
 
-    writer::build(&workspace.0, &workspace.db(), None).unwrap();
-    let conn = reader::open(&workspace.db(), &workspace.0).unwrap();
+    let conn = workspace.build_and_open();
     for (path, expression, status, provider, function) in [
         (
             "commerce/templates/page.html",
@@ -156,16 +149,13 @@ fn registered_django_template_symbols_use_loaded_project_library() {
                     |row| row.get(0),
                 )
                 .unwrap();
-            assert!(
-                target_count > 0,
-                "{path}: {expression} has no edge to {provider}"
-            );
+            assert!(target_count > 0, "{path}: {expression} has no edge to {provider}");
         }
     }
     // Registry assignments and decorator libraries share the persisted template
     // seam, while retaining distinct admission and scope proof.
     for renamed in [false, true] {
-        let registry = Workspace::new();
+        let registry = crate::languages::PersistedWorkspaceHarness::new();
         let keys = if renamed {
             ["payload_key", "decimal_key", "short_key"]
         } else {
@@ -186,14 +176,17 @@ activation = [{kind="package",name="jinja2"}]
 operation = {kind="named_binding",domain="local_filters",binding={kind="template_reference",symbol_kind="filter"}}
 "#;
         registry.write(".forge/frameworks/local-filters.toml", manifest);
-        registry.write(
-            "app/pyproject.toml",
-            "[project]\nname='app'\ndependencies=['jinja2']\n",
-        );
+        registry.write("app/pyproject.toml", "[project]\nname='app'\ndependencies=['jinja2']\n");
         registry.write("app/site/filters.py", "def json_script(value):\n    return value\ndef floatformat(value):\n    return value\ndef truncatechars(value):\n    return value\n");
-        let provider = format!("from jinja2 import Environment as Env\nfrom .filters import json_script, floatformat, truncatechars\ndef install(env: Env):\n    env.filters['{}'] = json_script\n    env.filters['{}'] = floatformat\n    env.filters['{}'] = truncatechars\n", keys[0], keys[1], keys[2]);
+        let provider = format!(
+            "from jinja2 import Environment as Env\nfrom .filters import json_script, floatformat, truncatechars\ndef install(env: Env):\n    env.filters['{}'] = json_script\n    env.filters['{}'] = floatformat\n    env.filters['{}'] = truncatechars\n",
+            keys[0], keys[1], keys[2]
+        );
         registry.write("app/site/jinja_env.py", &provider);
-        let template = format!("{{{{ value|{} }}}}\n{{{{ value|{} }}}}\n{{{{ value|{} }}}}\n{{{{ value|{} }}}}\n{{{{ value|{} }}}}\n{{{{ value|{} }}}}\n{{{{ value|{} }}}}\n{{{{ value|safe }}}}\n", keys[0], keys[0], keys[1], keys[2], keys[2], keys[2], keys[2]);
+        let template = format!(
+            "{{{{ value|{} }}}}\n{{{{ value|{} }}}}\n{{{{ value|{} }}}}\n{{{{ value|{} }}}}\n{{{{ value|{} }}}}\n{{{{ value|{} }}}}\n{{{{ value|{} }}}}\n{{{{ value|safe }}}}\n",
+            keys[0], keys[0], keys[1], keys[2], keys[2], keys[2], keys[2]
+        );
         registry.write("app/site/templates/page.html", &template);
         registry.write("app/outside/page.html", &template);
         registry.write(
@@ -203,36 +196,74 @@ operation = {kind="named_binding",domain="local_filters",binding={kind="template
         registry.write("app/site/templates/nested/page.html", &template);
         for (project, body) in [
             ("missing", "    env.filters['json_script'] = absent\n"),
-            ("duplicate", "    env.filters['json_script'] = json_script\n    env.filters['json_script'] = floatformat\n"),
-            ("conditional", "    if enabled:\n        env.filters['json_script'] = json_script\n"),
+            (
+                "duplicate",
+                "    env.filters['json_script'] = json_script\n    env.filters['json_script'] = floatformat\n",
+            ),
+            (
+                "conditional",
+                "    if enabled:\n        env.filters['json_script'] = json_script\n",
+            ),
             ("dynamic", "    env.filters[key] = json_script\n"),
-            ("rebound", "    env = object()\n    env.filters['json_script'] = json_script\n"),
+            (
+                "rebound",
+                "    env = object()\n    env.filters['json_script'] = json_script\n",
+            ),
             ("wrongtype", "    env.filters['json_script'] = json_script\n"),
             ("wrongexport", "    env.filters['json_script'] = json_script\n"),
-            ("delete", "    env.filters['json_script'] = json_script\n    del env.filters['json_script']\n"),
-            ("replace", "    env.filters['json_script'] = json_script\n    env.filters = {}\n"),
-            ("unknownwrite", "    env.filters['json_script'] = json_script\n    env.filters[key] = floatformat\n"),
-            ("augmented", "    env.filters['json_script'] = json_script\n    env.filters['json_script'] += floatformat\n"),
-            ("aliasdelete", "    alias = env\n    env.filters['json_script'] = json_script\n    del alias.filters['json_script']\n"),
-            ("targetwrite", "    json_script = object()\n    env.filters['json_script'] = json_script\n"),
+            (
+                "delete",
+                "    env.filters['json_script'] = json_script\n    del env.filters['json_script']\n",
+            ),
+            (
+                "replace",
+                "    env.filters['json_script'] = json_script\n    env.filters = {}\n",
+            ),
+            (
+                "unknownwrite",
+                "    env.filters['json_script'] = json_script\n    env.filters[key] = floatformat\n",
+            ),
+            (
+                "augmented",
+                "    env.filters['json_script'] = json_script\n    env.filters['json_script'] += floatformat\n",
+            ),
+            (
+                "aliasdelete",
+                "    alias = env\n    env.filters['json_script'] = json_script\n    del alias.filters['json_script']\n",
+            ),
+            (
+                "targetwrite",
+                "    json_script = object()\n    env.filters['json_script'] = json_script\n",
+            ),
         ] {
-            registry.write(format!("{project}/pyproject.toml"), "[project]\nname='negative'\ndependencies=['jinja2']\n");
-            registry.write(format!("{project}/site/filters.py"), "def json_script(value):\n    return value\ndef floatformat(value):\n    return value\n");
+            registry.write(
+                format!("{project}/pyproject.toml"),
+                "[project]\nname='negative'\ndependencies=['jinja2']\n",
+            );
+            registry.write(
+                format!("{project}/site/filters.py"),
+                "def json_script(value):\n    return value\ndef floatformat(value):\n    return value\n",
+            );
             let annotation = match project {
                 "wrongtype" => "object",
                 "wrongexport" => "Other",
                 _ => "Env",
             };
-            let imported = if project == "wrongexport" { "Environment as Env, FileSystemLoader as Other" } else { "Environment as Env" };
+            let imported = if project == "wrongexport" {
+                "Environment as Env, FileSystemLoader as Other"
+            } else {
+                "Environment as Env"
+            };
             registry.write(format!("{project}/site/registry.py"), &format!("from jinja2 import {imported}\nfrom .filters import json_script, floatformat\ndef install(env: {annotation}):\n{body}"));
-            registry.write(format!("{project}/site/templates/page.html"), "{{ value|json_script }}\n");
+            registry.write(
+                format!("{project}/site/templates/page.html"),
+                "{{ value|json_script }}\n",
+            );
         }
         let readback = |connection: &rusqlite::Connection, active: bool| {
-            for (index, key) in [
-                keys[0], keys[0], keys[1], keys[2], keys[2], keys[2], keys[2],
-            ]
-            .iter()
-            .enumerate()
+            for (index, key) in [keys[0], keys[0], keys[1], keys[2], keys[2], keys[2], keys[2]]
+                .iter()
+                .enumerate()
             {
                 let line = index as i64 + 1;
                 let expression = format!("template.filter.{key}");
@@ -280,39 +311,35 @@ operation = {kind="named_binding",domain="local_filters",binding={kind="template
                 };
                 let statuses: Vec<String> = connection.prepare("SELECT rc.status FROM resolution_coverage rc JOIN path_dictionary p ON p.path_id=rc.path_id JOIN coverage_expressions e ON e.expression_id=rc.expression_id WHERE p.path=?1 AND e.expression=?2").unwrap().query_map([path, &expression], |row| row.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
                 assert!(!statuses.is_empty(), "{path}");
-                assert!(
-                    statuses.iter().all(|status| status == expected),
-                    "{path}: {statuses:?}"
-                );
+                assert!(statuses.iter().all(|status| status == expected), "{path}: {statuses:?}");
             }
             let safe: String = connection.query_row("SELECT rc.status FROM resolution_coverage rc JOIN path_dictionary p ON p.path_id=rc.path_id JOIN coverage_expressions e ON e.expression_id=rc.expression_id WHERE p.path='app/site/templates/page.html' AND e.expression='template.filter.safe'", [], |row| row.get(0)).unwrap();
             assert_eq!(safe, "external");
             commitments::verify(connection).unwrap();
         };
-        readback(&registry.build(), true);
+        registry.build();
+        readback(&registry.open(), true);
         // A changed consumer must hydrate the unchanged registration and target.
         registry.write("app/site/templates/page.html", &format!("{template}\n"));
-        registry.delta("app/site/templates/page.html");
+        registry.delta(&["app/site/templates/page.html"]);
         readback(&registry.open(), true);
-        registry.assert_cold_equivalent();
         // A provider-only removal must invalidate all cached consumers.
         registry.write("app/site/jinja_env.py", "from jinja2 import Environment as Env\nfrom .filters import json_script, floatformat, truncatechars\ndef install(env: Env):\n    pass\n");
-        registry.delta("app/site/jinja_env.py");
+        registry.delta(&["app/site/jinja_env.py"]);
         let connection = registry.open();
-        let remaining: i64 = connection.query_row("SELECT count(*) FROM edge_occurrences e JOIN path_dictionary p ON p.path_id=e.owner_id WHERE p.path='app/site/templates/page.html' AND e.kind='references'", [], |row| row.get(0)).unwrap();
+        let remaining: i64 = connection
+            .query_row("SELECT count(*) FROM edge_occurrences e JOIN path_dictionary p ON p.path_id=e.owner_id WHERE p.path='app/site/templates/page.html' AND e.kind='references'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
         assert_eq!(remaining, 0);
         drop(connection);
-        registry.assert_cold_equivalent();
         registry.write("app/site/jinja_env.py", &provider);
-        registry.delta("app/site/jinja_env.py");
+        registry.delta(&["app/site/jinja_env.py"]);
         readback(&registry.open(), true);
-        registry.assert_cold_equivalent();
-        registry.write(
-            ".forge/frameworks/local-filters.toml",
-            "enabled=true\nreplace=true\n",
-        );
-        registry.delta(".forge/frameworks/local-filters.toml");
+        registry.write(".forge/frameworks/local-filters.toml", "enabled=true\nreplace=true\n");
+        registry.delta(&[".forge/frameworks/local-filters.toml"]);
         readback(&registry.open(), false);
-        registry.assert_cold_equivalent();
+        assert_cold_observations(crate::languages::harness::cold_relations(&registry));
     }
 }

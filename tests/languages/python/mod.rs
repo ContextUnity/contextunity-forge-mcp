@@ -1,22 +1,21 @@
 #![cfg(feature = "lang-python")]
 
-use super::support::Workspace as PythonWorkspace;
-use contextunity_forge_mcp::{
-    core::models::ReceiverHint,
-    engine::{ast, linker},
+use crate::languages::harness::{
+    fixture_workspace, query_scalar, query_strings, remove_fixture, ExtractorHarness,
 };
+use crate::languages::PersistedWorkspaceHarness;
+use contextunity_forge_mcp::{core::models::ReceiverHint, engine::ast};
 use serde_json::json;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 
-fn linked_python_roots() -> (PythonWorkspace, PythonWorkspace) {
-    let primary = PythonWorkspace::new();
-    let second = PythonWorkspace::new();
+fn linked_python_roots() -> (PersistedWorkspaceHarness, PersistedWorkspaceHarness) {
+    let primary = fixture_workspace(&[]);
+    let second = fixture_workspace(&[]);
     primary.write(
         "forge-mcp.yaml",
         &format!(
         "roots: [src]\nlinked_workspaces:\n  - name: second\n    path: '{}'\n    roots: [src]\n",
-        second.0.display()
+        second.root().display()
     ),
     );
     (primary, second)
@@ -32,9 +31,7 @@ fn persisted_import(
         "SELECT c.status FROM resolution_coverage c JOIN path_dictionary p ON p.path_id=c.path_id JOIN coverage_expressions x ON x.expression_id=c.expression_id WHERE p.path=?1 AND c.line=?2 AND x.expression=?3",
         rusqlite::params![path, line, name], |row| row.get(0),
     ).unwrap_or_else(|_| panic!("missing import coverage {path}:{line} {name}"));
-    let targets = conn.prepare(
-        "SELECT (SELECT path FROM path_dictionary WHERE path_id=dst.path_id) || ':' || dst.name FROM edge_occurrences e JOIN path_dictionary p ON p.path_id=e.owner_id JOIN nodes dst ON dst.node_hash=e.dst_hash JOIN coverage_evidence v ON v.evidence_id=e.evidence_id WHERE p.path=?1 AND e.line=?2 AND e.kind='imports' AND v.evidence=?3 ORDER BY (SELECT path FROM path_dictionary WHERE path_id=dst.path_id),dst.name",
-    ).unwrap().query_map(rusqlite::params![path, line, name], |row| row.get(0)).unwrap().map(Result::unwrap).collect();
+    let targets = query_strings(conn, "SELECT (SELECT path FROM path_dictionary WHERE path_id=dst.path_id) || ':' || dst.name FROM edge_occurrences e JOIN path_dictionary p ON p.path_id=e.owner_id JOIN nodes dst ON dst.node_hash=e.dst_hash JOIN coverage_evidence v ON v.evidence_id=e.evidence_id WHERE p.path=?1 AND e.line=?2 AND e.kind='imports' AND v.evidence=?3 ORDER BY (SELECT path FROM path_dictionary WHERE path_id=dst.path_id),dst.name", rusqlite::params![path, line, name]);
     (status, targets)
 }
 
@@ -68,9 +65,7 @@ fn persisted_status_rows(
     line: i64,
     expression: &str,
 ) -> Vec<String> {
-    conn.prepare(
-        "SELECT c.status FROM resolution_coverage c JOIN path_dictionary p ON p.path_id=c.path_id JOIN coverage_expressions x ON x.expression_id=c.expression_id WHERE p.path=?1 AND c.line=?2 AND x.expression=?3 ORDER BY c.status",
-    ).unwrap().query_map(rusqlite::params![path, line, expression], |row| row.get(0)).unwrap().map(Result::unwrap).collect()
+    query_strings(conn, "SELECT c.status FROM resolution_coverage c JOIN path_dictionary p ON p.path_id=c.path_id JOIN coverage_expressions x ON x.expression_id=c.expression_id WHERE p.path=?1 AND c.line=?2 AND x.expression=?3 ORDER BY c.status", rusqlite::params![path, line, expression])
 }
 
 mod frameworks;

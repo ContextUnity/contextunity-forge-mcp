@@ -19,6 +19,12 @@ by the repository's test instructions.
 Before adding a helper, factory, or fixture, use the one already in the suite.
 `test-suite-refactor` owns the inventory of factories, fixtures, and duplicate
 helpers. Do not add a second factory for the same production object.
+Put assertions in the `#[test]` function. Helpers may construct shared state and
+return observable values; they must not hide contract assertions, own a
+single-caller scenario wrapper, dump static non-domain utilities onto
+`<Domain>Harness`, alias harness types (`use McpTestHarness as Client`), or
+silently fabricate fallback digests on setup failure. Follow the repository's
+test-harness architecture when present.
 
 ## Admission
 

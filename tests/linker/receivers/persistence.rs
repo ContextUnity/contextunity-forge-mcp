@@ -60,44 +60,90 @@ fn assert_factory_delta(
 
 #[cfg(feature = "lang-python")]
 #[test]
-fn python_factory_contract_changes_relink_consumers_like_cold_builds() {
-    assert_factory_delta(
-        "provider.py",
-        "consumer.py",
-        "class Client:\n    def execute(self): return 1\ndef make_client():\n    return Client()\n",
-        "class Client:\n    def execute(self): return 1\ndef make_client():\n    return 0\n",
-        "from provider import make_client\nclient = make_client()\nclient.execute()\n",
-        "client.execute",
-        ("resolved", None),
+fn python_factory_and_constructor_contract_deltas_match_cold_builds() {
+    let limit_before = format!(
+        "class Client:\n    def execute(self): return 1\ndef make_client():\n    {} = 0\n    return Client()\n",
+        "x".repeat(4_096)
     );
-}
+    let limit_after = format!(
+        "class Client:\n    def execute(self): return 1\ndef make_client():\n    {} = 0\n    return Client()\n",
+        "x".repeat(4_097)
+    );
 
-#[cfg(feature = "lang-python")]
-#[test]
-fn python_literal_factory_changes_relink_consumers_like_cold_builds() {
-    assert_factory_delta(
-        "provider.py",
-        "consumer.py",
-        "def make():\n    return {}\n",
-        "def make():\n    return []\n",
-        "from provider import make\nvalue = make()\nvalue.get('key')\n",
-        "value.get",
-        ("external", Some("Python standard library")),
-    );
-}
+    let cases = [
+        (
+            "factory_contract_changes",
+            "provider.py",
+            "consumer.py",
+            "class Client:\n    def execute(self): return 1\ndef make_client():\n    return Client()\n",
+            "class Client:\n    def execute(self): return 1\ndef make_client():\n    return 0\n",
+            "from provider import make_client\nclient = make_client()\nclient.execute()\n",
+            "client.execute",
+            ("resolved", None),
+        ),
+        (
+            "literal_factory_changes",
+            "provider.py",
+            "consumer.py",
+            "def make():\n    return {}\n",
+            "def make():\n    return []\n",
+            "from provider import make\nvalue = make()\nvalue.get('key')\n",
+            "value.get",
+            ("external", Some("Python standard library")),
+        ),
+        (
+            "constructor_field_contract_changes",
+            "provider.py",
+            "consumer.py",
+            "class Client:\n    def execute(self): return 1\nclass Other: pass\nclass Wrapper:\n    def __init__(self):\n        client = Client()\n        self.client = client\n",
+            "class Client:\n    def execute(self): return 1\nclass Other: pass\nclass Wrapper:\n    def __init__(self):\n        client = Other()\n        self.client = client\n",
+            "from provider import Wrapper\nwrapper = Wrapper()\nwrapper.client.execute()\n",
+            "wrapper.client.execute",
+            ("resolved", None),
+        ),
+        (
+            "declared_builtin_shadowing",
+            "provider.py",
+            "consumer.py",
+            "def make_text() -> str:\n    return ''\n",
+            "def make_text() -> str:\n    str = 0\n    return ''\n",
+            "from provider import make_text\ntext = make_text()\ntext.upper()\n",
+            "text.upper",
+            ("external", Some("Python standard library")),
+        ),
+        (
+            "scoped_factory_import_changes",
+            "provider.py",
+            "consumer.py",
+            "class Client:\n    def execute(self): return 1\nclass Other: pass\ndef make_client():\n    from provider import Client as Product\n    return Product()\n",
+            "class Client:\n    def execute(self): return 1\nclass Other: pass\ndef make_client():\n    from provider import Other as Product\n    return Product()\n",
+            "from provider import make_client\nclient = make_client()\nclient.execute()\n",
+            "client.execute",
+            ("resolved", None),
+        ),
+        (
+            "factory_scope_name_limits",
+            "provider.py",
+            "consumer.py",
+            limit_before.as_str(),
+            limit_after.as_str(),
+            "from provider import make_client\nclient = make_client()\nclient.execute()\n",
+            "client.execute",
+            ("resolved", None),
+        ),
+    ];
 
-#[cfg(feature = "lang-python")]
-#[test]
-fn python_constructor_field_contract_changes_relink_consumers_like_cold_builds() {
-    assert_factory_delta(
-        "provider.py",
-        "consumer.py",
-        "class Client:\n    def execute(self): return 1\nclass Other: pass\nclass Wrapper:\n    def __init__(self):\n        client = Client()\n        self.client = client\n",
-        "class Client:\n    def execute(self): return 1\nclass Other: pass\nclass Wrapper:\n    def __init__(self):\n        client = Other()\n        self.client = client\n",
-        "from provider import Wrapper\nwrapper = Wrapper()\nwrapper.client.execute()\n",
-        "wrapper.client.execute",
-        ("resolved", None),
-    );
+    for (_case_name, provider, consumer, before, after, source, expression, expected_initial) in cases {
+        assert_factory_delta(
+            provider,
+            consumer,
+            before,
+            after,
+            source,
+            expression,
+            expected_initial,
+        );
+    }
 }
 
 #[cfg(feature = "lang-typescript")]
@@ -133,50 +179,6 @@ fn rust_tuple_field_contract_changes_relink_nominal_consumers_like_cold_builds()
         "pub struct Client; pub struct Other; pub struct Holder(pub Other); impl Client { pub fn execute(&self) {} }",
         "use crate::provider::Holder; fn run(holder: &Holder) { holder.0.execute(); }",
         "holder.0.execute",
-        ("resolved", None),
-    );
-}
-
-#[cfg(feature = "lang-python")]
-#[test]
-fn python_declared_builtin_shadowing_relinks_consumers_like_cold_builds() {
-    assert_factory_delta(
-        "provider.py",
-        "consumer.py",
-        "def make_text() -> str:\n    return ''\n",
-        "def make_text() -> str:\n    str = 0\n    return ''\n",
-        "from provider import make_text\ntext = make_text()\ntext.upper()\n",
-        "text.upper",
-        ("external", Some("Python standard library")),
-    );
-}
-
-#[cfg(feature = "lang-python")]
-#[test]
-fn python_scoped_factory_import_changes_relink_consumers_like_cold_builds() {
-    assert_factory_delta(
-        "provider.py",
-        "consumer.py",
-        "class Client:\n    def execute(self): return 1\nclass Other: pass\ndef make_client():\n    from provider import Client as Product\n    return Product()\n",
-        "class Client:\n    def execute(self): return 1\nclass Other: pass\ndef make_client():\n    from provider import Other as Product\n    return Product()\n",
-        "from provider import make_client\nclient = make_client()\nclient.execute()\n",
-        "client.execute",
-        ("resolved", None),
-    );
-}
-
-#[cfg(feature = "lang-python")]
-#[test]
-fn python_factory_scope_name_limits_relink_consumers_like_cold_builds() {
-    let before = format!("class Client:\n    def execute(self): return 1\ndef make_client():\n    {} = 0\n    return Client()\n", "x".repeat(4_096));
-    let after = format!("class Client:\n    def execute(self): return 1\ndef make_client():\n    {} = 0\n    return Client()\n", "x".repeat(4_097));
-    assert_factory_delta(
-        "provider.py",
-        "consumer.py",
-        &before,
-        &after,
-        "from provider import make_client\nclient = make_client()\nclient.execute()\n",
-        "client.execute",
         ("resolved", None),
     );
 }

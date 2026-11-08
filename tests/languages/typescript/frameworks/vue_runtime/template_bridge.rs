@@ -1,9 +1,10 @@
 use super::super::*;
+use crate::languages::harness::ExtractorHarness;
 
 #[cfg(feature = "lang-vue")]
 #[test]
 fn vue_options_api_registered_components_use_imported_aliases() {
-    let w = Workspace::new();
+    let w = crate::languages::PersistedWorkspaceHarness::new();
     w.write("LeafCard.vue", "<template><article /></template>");
     w.write(
         "Plain.vue",
@@ -29,7 +30,8 @@ fn vue_options_api_registered_components_use_imported_aliases() {
         "Duplicate.vue",
         "<template><DuplicateAlias /></template>\n<script>import LeafCard from './LeafCard.vue'; export default { components: { DuplicateAlias: LeafCard, DuplicateAlias: LeafCard } };</script>",
     );
-    let conn = w.build();
+    w.build();
+    let conn = w.open();
     let status = |path: &str, expression: &str| -> String {
         conn.query_row(
             "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)=?1 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)=?2 AND line=1",
@@ -40,11 +42,7 @@ fn vue_options_api_registered_components_use_imported_aliases() {
     };
     for path in ["Plain.vue", "Wrapped.vue"] {
         assert_eq!(status(path, "LeafCard"), "resolved", "{path}");
-        let template_edge: i64 = conn.query_row(
-            "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)=?1 AND e.kind='references' AND e.line=1 AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)='LeafCard.vue'",
-            [path],
-            |row| row.get(0),
-        ).unwrap();
+        let template_edge: i64 = query_scalar(&conn, "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)=?1 AND e.kind='references' AND e.line=1 AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)='LeafCard.vue'", [path]);
         assert_eq!(
             template_edge, 1,
             "{path} template tag points to the imported component file"
@@ -60,7 +58,7 @@ fn vue_options_api_registered_components_use_imported_aliases() {
 #[cfg(feature = "lang-vue")]
 #[test]
 fn vue_sfc_template_bridge_resolves_setup_bindings_and_component_imports() {
-    let w = Workspace::new();
+    let w = crate::languages::PersistedWorkspaceHarness::new();
     w.write(
         "MyButton.vue",
         "<template><button /></template><script setup>const label = 'ok';</script>",
@@ -82,12 +80,9 @@ function onlyInside() { const hidden = 'private'; return hidden; }
 </script>
 "#,
     );
-    let facts = ast::extract(
-        "App.vue",
-        "vue",
-        &fs::read_to_string(w.0.join("App.vue")).unwrap(),
-    )
-    .unwrap();
+    let facts = ExtractorHarness::for_lang("vue")
+        .at_path("App.vue")
+        .extract(&fs::read_to_string(w.root().join("App.vue")).unwrap());
     assert_eq!(
         facts
             .references
@@ -104,11 +99,9 @@ function onlyInside() { const hidden = 'private'; return hidden; }
             .any(|reference| { reference.expression == "buttonText" && reference.line == 4 }),
         "template interpolation retains its setup binding reference: {facts:#?}"
     );
-    let conn = w.build();
-    let calls: i64 = conn.query_row(
-        "SELECT COALESCE(sum(e.occurrence_count),0) FROM edges e JOIN nodes n ON n.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.path_id)='App.vue' AND e.kind='calls' AND n.name='run'",
-        [], |row| row.get(0),
-    ).unwrap();
+    w.build();
+    let conn = w.open();
+    let calls: i64 = query_scalar(&conn, "SELECT COALESCE(sum(e.occurrence_count),0) FROM edges e JOIN nodes n ON n.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.path_id)='App.vue' AND e.kind='calls' AND n.name='run'", []);
     let mut statement = conn.prepare("SELECT (SELECT id FROM nodes WHERE node_hash=edge_occurrences.src_hash),(SELECT id FROM nodes WHERE node_hash=edge_occurrences.dst_hash),line,(SELECT evidence FROM coverage_evidence WHERE evidence_id=edge_occurrences.evidence_id) FROM edge_occurrences WHERE (SELECT path FROM path_dictionary WHERE path_id=edge_occurrences.owner_id)='App.vue' AND kind='calls'").unwrap();
     let occurrences: Vec<(String, String, usize, String)> = statement
         .query_map([], |row| {
@@ -118,15 +111,9 @@ function onlyInside() { const hidden = 'private'; return hidden; }
         .map(Result::unwrap)
         .collect();
     assert_eq!(calls, 2, "{occurrences:#?}");
-    let components: i64 = conn.query_row(
-        "SELECT count(*) FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='App.vue' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='MyButton' AND status='resolved'",
-        [], |row| row.get(0),
-    ).unwrap();
+    let components: i64 = query_scalar(&conn, "SELECT count(*) FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='App.vue' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='MyButton' AND status='resolved'", []);
     assert_eq!(components, 1);
-    let component_edge: i64 = conn.query_row(
-        "SELECT count(*) FROM edges e JOIN nodes src ON src.node_hash=e.src_hash JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE e.kind='imports' AND src.id='module:App.vue' AND dst.id='module:MyButton.vue'",
-        [], |row| row.get(0),
-    ).unwrap();
+    let component_edge: i64 = query_scalar(&conn, "SELECT count(*) FROM edges e JOIN nodes src ON src.node_hash=e.src_hash JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE e.kind='imports' AND src.id='module:App.vue' AND dst.id='module:MyButton.vue'", []);
     assert_eq!(
         component_edge, 1,
         "local component import links to MyButton.vue"
@@ -145,10 +132,7 @@ function onlyInside() { const hidden = 'private'; return hidden; }
             .any(|(status, _)| status == "resolved"),
         "template interpolation resolves to the local setup binding: {binding_coverages:#?}"
     );
-    let hidden_status: String = conn.query_row(
-        "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='App.vue' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='hidden' AND line=5",
-        [], |row| row.get(0),
-    ).unwrap();
+    let hidden_status: String = query_scalar(&conn, "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='App.vue' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='hidden' AND line=5", []);
     assert_eq!(
         hidden_status, "unresolved",
         "nested script local is outside template scope"
@@ -166,12 +150,13 @@ fn vue_sfc_template_bridge_resolves_large_setup_scope() {
     let source = format!(
         "<template><p>{{{{ item191 }}}}</p></template><script setup>{declarations}</script>"
     );
-    let facts = ast::extract("Large.vue", "vue", &source).unwrap();
-    let graph =
-        contextunity_forge_mcp::engine::linker::link(&std::collections::BTreeMap::from([(
-            "Large.vue".to_owned(),
-            facts,
-        )]));
+    let facts = ExtractorHarness::for_lang("vue")
+        .at_path("Large.vue")
+        .extract(&source);
+    let graph = ExtractorHarness::link_graph(&std::collections::BTreeMap::from([(
+        "Large.vue".to_owned(),
+        facts,
+    )]));
     assert!(
         graph
             .coverage

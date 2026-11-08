@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn unrelated_html_delta_does_not_hydrate_jinja_loader_providers() {
-    let workspace = Workspace::new();
+    let workspace = crate::languages::PersistedWorkspaceHarness::new();
     workspace.write(
         "shop/pyproject.toml",
         "[project]\nname = 'shop'\ndependencies = ['jinja2>=3']\n",
@@ -16,25 +16,20 @@ fn unrelated_html_delta_does_not_hydrate_jinja_loader_providers() {
         "{% set title = 'Welcome' %}{{ title }}\n",
     );
     workspace.write("shop/unrelated.html", "<p>Before</p>\n");
-    writer::build(&workspace.0, &workspace.db(), None).unwrap();
+    workspace.build();
     workspace.write("shop/unrelated.html", "<p>After</p>\n");
-    let delta = writer::delta(
-        &workspace.0,
-        &workspace.db(),
-        &[PathBuf::from("shop/unrelated.html")],
-    )
-    .unwrap();
+    let delta = workspace.delta(&["shop/unrelated.html"]);
     assert_eq!(
         delta["loaded_fact_files"], 0,
         "unrelated HTML must not load Jinja providers: {delta}"
     );
-    let conn = reader::open(&workspace.db(), &workspace.0).unwrap();
+    let conn = workspace.open();
     commitments::verify(&conn).unwrap();
 }
 
 #[test]
 fn html_delta_does_not_reinsert_render_dependencies_for_context_only_loader_facts() {
-    let workspace = Workspace::new();
+    let workspace = crate::languages::PersistedWorkspaceHarness::new();
     workspace.write(
         "shop/pyproject.toml",
         "[project]\nname = 'shop'\ndependencies = ['django>=5', 'jinja2>=3']\n",
@@ -45,7 +40,7 @@ fn html_delta_does_not_reinsert_render_dependencies_for_context_only_loader_fact
     );
     workspace.write("shop/templates/page.html", "<p>Before</p>\n");
     workspace.write("shop/templates/other.html", "<p>Other</p>\n");
-    writer::build(&workspace.0, &workspace.db(), None).unwrap();
+    workspace.build();
 
     let render_dependencies = |conn: &rusqlite::Connection| {
         conn.query_row(
@@ -55,7 +50,7 @@ fn html_delta_does_not_reinsert_render_dependencies_for_context_only_loader_fact
         )
         .unwrap()
     };
-    let before = reader::open(&workspace.db(), &workspace.0).unwrap();
+    let before = workspace.open();
     let before_count = render_dependencies(&before);
     assert!(
         before_count > 0,
@@ -64,14 +59,9 @@ fn html_delta_does_not_reinsert_render_dependencies_for_context_only_loader_fact
     drop(before);
 
     workspace.write("shop/templates/page.html", "<p>After</p>\n");
-    writer::delta(
-        &workspace.0,
-        &workspace.db(),
-        &[PathBuf::from("shop/templates/page.html")],
-    )
-    .unwrap();
+    workspace.delta(&["shop/templates/page.html"]);
 
-    let delta = reader::open(&workspace.db(), &workspace.0).unwrap();
+    let delta = workspace.open();
     assert_eq!(render_dependencies(&delta), before_count);
     commitments::verify(&delta).unwrap();
 }

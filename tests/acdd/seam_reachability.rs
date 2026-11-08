@@ -1,6 +1,4 @@
-use super::support::{
-    commit_handoff_fixture_inputs, evidence, fixture, writer, Milestone, ScopedWorkspace,
-};
+use super::support::{commit_handoff_fixture_inputs, evidence, fixture, Milestone, Workspace};
 use contextunity_forge_mcp::{
     core::response::{QueryOptions, ResponsePolicy},
     db::{reader, tasks_store::TasksStore},
@@ -9,7 +7,8 @@ use serde_json::json;
 
 #[test]
 fn contract_seam_follows_public_reexports_from_test_helpers() {
-    let (root, mut store, _): (ScopedWorkspace, TasksStore, Milestone) = fixture();
+    let (root, mut store, _): (Workspace, TasksStore, Milestone) =
+        fixture("src/seam.rs::test_connected");
     root.write(
         "src/lib.rs",
         "pub mod api;\npub mod caller;\n#[cfg(test)] mod test_helpers;\n#[cfg(test)] mod seam;\n",
@@ -39,10 +38,10 @@ fn contract_seam_follows_public_reexports_from_test_helpers() {
             "src/seam.rs",
         ],
     );
-    writer::build(&root.0, &root.0.join(".forge/code-map.sqlite"), None).unwrap();
+    root.build_to(root.path(".forge/code-map.sqlite"));
 
     let page = QueryOptions::resolve(&ResponsePolicy::default(), Some(20), 0, None, None).unwrap();
-    let code_map = reader::open(&root.0.join(".forge/code-map.sqlite"), &root.0).unwrap();
+    let code_map = reader::open(&root.root().join(".forge/code-map.sqlite"), root.root()).unwrap();
     let explanation = reader::explain_with_options(
         &code_map,
         "src/seam.rs::test_connected",
@@ -63,7 +62,8 @@ fn contract_seam_follows_public_reexports_from_test_helpers() {
         task_id,
         "contract",
         "contract-author",
-        &root.0.to_string_lossy(),
+        &root.root().to_string_lossy(),
+        Some("test-session-contract-author"),
     )
     .unwrap();
     let task = TasksStore::inspect(&store, task_id).unwrap();
@@ -74,7 +74,14 @@ fn contract_seam_follows_public_reexports_from_test_helpers() {
             "red_exit_code": 101
         }
     });
-    let submitted = store.submit(task_id, "contract", &proof, "pass", None);
+    let submitted = store.submit(
+        task_id,
+        "contract",
+        &proof,
+        "pass",
+        None,
+        Some("test-session-contract-author"),
+    );
     assert!(
         submitted.is_ok(),
         "contract gate should follow the current test-helper and public-reexport path: {submitted:?}"

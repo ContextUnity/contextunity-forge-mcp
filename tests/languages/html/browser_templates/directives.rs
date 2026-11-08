@@ -1,4 +1,5 @@
 use super::*;
+use crate::languages::harness::ExtractorHarness;
 
 #[test]
 fn django_jinja_directives_are_external_while_template_targets_remain_local() {
@@ -20,7 +21,9 @@ fn django_jinja_directives_are_external_while_template_targets_remain_local() {
 </section>
 {% endblock %}
 "#;
-    let facts = ast::extract(path, "html", source).unwrap();
+    let facts = ExtractorHarness::for_lang("html")
+        .at_path(path)
+        .extract(source);
     assert!(facts.errors.is_empty(), "{:#?}", facts.errors);
     assert!(facts.nodes.iter().any(|node| node.kind == "module"));
     for (kind, target) in [("extends", "base.html"), ("includes", "partials/card.html")] {
@@ -38,10 +41,12 @@ fn django_jinja_directives_are_external_while_template_targets_remain_local() {
     for target in ["templates/base.html", "templates/partials/card.html"] {
         all.insert(
             target.to_owned(),
-            ast::extract(target, "html", "<main>Local template</main>").unwrap(),
+            ExtractorHarness::for_lang("html")
+                .at_path(target)
+                .extract("<main>Local template</main>"),
         );
     }
-    let graph = contextunity_forge_mcp::engine::linker::link(&all);
+    let graph = ExtractorHarness::link_graph(&all);
     for (kind, target) in [
         ("extends", "templates/base.html"),
         ("includes", "templates/partials/card.html"),
@@ -111,7 +116,7 @@ fn django_jinja_directives_are_external_while_template_targets_remain_local() {
 
 #[test]
 fn template_targets_resolve_within_the_owning_template_tree() {
-    let workspace = Workspace::new();
+    let workspace = crate::languages::PersistedWorkspaceHarness::new();
     workspace.write(
         "commerce/templates/page.html",
         "{% extends 'base.html' %}\n{% include 'partials/card.html' %}\n{% import 'macros/forms.html' as forms %}\n{% from 'macros/forms.html' import field %}\n",
@@ -137,8 +142,7 @@ fn template_targets_resolve_within_the_owning_template_tree() {
         "{% include 'partials/card.html' %}",
     );
 
-    writer::build(&workspace.0, &workspace.db(), None).unwrap();
-    let conn = reader::open(&workspace.db(), &workspace.0).unwrap();
+    let conn = workspace.build_and_open();
     for (path, target, status, expected_target) in [
         (
             "commerce/templates/page.html",

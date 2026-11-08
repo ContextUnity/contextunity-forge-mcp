@@ -1,10 +1,8 @@
-use super::super::*;
-
 #[test]
 fn nuxt_autoimports_require_declared_project_and_preserve_local_shadow() {
-    use contextunity_forge_mcp::db::{reader, writer};
+    use contextunity_forge_mcp::db::reader;
 
-    let workspace = Workspace::new();
+    let workspace = crate::languages::PersistedWorkspaceHarness::new();
     for (path, source) in [
         (
             "forge-mcp.yaml",
@@ -72,13 +70,9 @@ fn nuxt_autoimports_require_declared_project_and_preserve_local_shadow() {
             "const value = computed(() => 1); const state = ref(0);",
         ),
     ] {
-        let target = workspace.join(path);
-        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
-        std::fs::write(target, source).unwrap();
+        workspace.write(path, source);
     }
-    let database = workspace.join(".forge/code-map.sqlite");
-    writer::build(&workspace, &database, None).unwrap();
-    let conn = reader::open(&database, &workspace).unwrap();
+    let conn = workspace.build_and_open();
     let coverage = |path: &str, expression: &str| -> Vec<(String, String)> {
         let mut stmt = conn.prepare("SELECT status,(SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id) FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)=?1 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)=?2").unwrap();
         let rows = stmt

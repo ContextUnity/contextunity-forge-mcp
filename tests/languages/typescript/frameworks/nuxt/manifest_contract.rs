@@ -1,12 +1,6 @@
-use super::super::*;
-
 #[cfg(feature = "lang-vue")]
-#[test]
-fn nuxt_vue_pinia_manifest_contract_reaches_persisted_graph() {
-    use contextunity_forge_mcp::{
-        core::commitments,
-        db::{reader, writer},
-    };
+fn assert_nuxt_vue_pinia_manifest_family(family: &str, renamed: bool) {
+    use contextunity_forge_mcp::{core::commitments, db::reader};
     use rusqlite::params;
     use serde_json::Value;
 
@@ -17,7 +11,9 @@ fn nuxt_vue_pinia_manifest_contract_reaches_persisted_graph() {
         ),
         (
             "vue-runtime",
-            include_str!("../../../../../crates/forge-index/src/languages/manifests/vue-runtime.toml"),
+            include_str!(
+                "../../../../../crates/forge-index/src/languages/manifests/vue-runtime.toml"
+            ),
         ),
     ];
     let cases: [(&str, &[(&str, &str)]); 4] = [
@@ -69,8 +65,15 @@ fn nuxt_vue_pinia_manifest_contract_reaches_persisted_graph() {
         ("checkout", "purchase"),
     ];
     let mut failures = Vec::new();
-    for (family, files) in cases {
-        for renamed in [false, true] {
+    for (case_family, files) in cases {
+        if case_family != family {
+            continue;
+        }
+        for candidate_renamed in [false, true] {
+            if candidate_renamed != renamed {
+                continue;
+            }
+            let renamed = candidate_renamed;
             let phase = format!("{family}, renamed={renamed}");
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let rewrite = |input: &str| {
@@ -82,7 +85,7 @@ fn nuxt_vue_pinia_manifest_contract_reaches_persisted_graph() {
                         }
                     })
                 };
-                let workspace = Workspace::new();
+                let workspace = crate::languages::PersistedWorkspaceHarness::new();
                 let package =
                     rewrite("{\"dependencies\":{\"nuxt\":\"^3\",\"vue\":\"^3\",\"pinia\":\"^3\"}}");
                 workspace.write("package.json", &package);
@@ -120,10 +123,10 @@ fn nuxt_vue_pinia_manifest_contract_reaches_persisted_graph() {
                         override_pack(name, source, false);
                     }
                 }
-                writer::build(&workspace.0, &workspace.db(), None).unwrap();
+                workspace.build();
                 let observe = |rules: bool, packages: bool, changed: bool| {
                     // This direct production reader is the admitted canonical seam witness.
-                    let conn = reader::open(&workspace.db(), &workspace.0).unwrap();
+                    let conn = workspace.open();
                     commitments::verify(&conn).unwrap();
                     let errors: i64 = conn
                         .query_row("SELECT count(*) FROM errors", [], |row| row.get(0))
@@ -361,55 +364,63 @@ fn nuxt_vue_pinia_manifest_contract_reaches_persisted_graph() {
                             &rewrite(&original.replace("count", "removedField")),
                         );
                     } else {
-                        fs::remove_file(workspace.join(rewrite(provider))).unwrap();
+                        workspace.remove(rewrite(provider));
                     }
-                    workspace.delta(&rewrite(provider));
+                    workspace.delta(&[&rewrite(provider)]);
                     observe(true, true, true);
-                    workspace.assert_cold_equivalent();
+                    let parity = crate::languages::harness::cold_relations(&workspace);
+                    assert_eq!(parity.incremental_verification, Ok(()));
+                    assert_eq!(parity.cold_verification, Ok(()));
+                    assert_eq!(parity.incremental, parity.cold);
                     workspace.write(rewrite(provider), &rewrite(original));
-                    workspace.delta(&rewrite(provider));
+                    workspace.delta(&[&rewrite(provider)]);
                     observe(true, true, false);
-                    workspace.assert_cold_equivalent();
+                    let parity = crate::languages::harness::cold_relations(&workspace);
+                    assert_eq!(parity.incremental_verification, Ok(()));
+                    assert_eq!(parity.cold_verification, Ok(()));
+                    assert_eq!(parity.incremental, parity.cold);
                 }
                 workspace.write("package.json", "{\"dependencies\":{\"vue\":\"^3\"}}");
-                workspace.delta("package.json");
+                workspace.delta(&["package.json"]);
                 observe(true, false, false);
-                workspace.assert_cold_equivalent();
+                let parity = crate::languages::harness::cold_relations(&workspace);
+                assert_eq!(parity.incremental_verification, Ok(()));
+                assert_eq!(parity.cold_verification, Ok(()));
+                assert_eq!(parity.incremental, parity.cold);
                 workspace.write("package.json", &package);
-                workspace.delta("package.json");
+                workspace.delta(&["package.json"]);
                 observe(true, true, false);
                 for (name, source) in packs {
                     override_pack(name, source, true);
                 }
-                writer::delta(
-                    &workspace.0,
-                    &workspace.db(),
-                    &[
-                        ".forge/frameworks/nuxt.toml".into(),
-                        ".forge/frameworks/vue-runtime.toml".into(),
-                    ],
-                )
-                .unwrap();
+                workspace.delta(&[
+                    ".forge/frameworks/nuxt.toml",
+                    ".forge/frameworks/vue-runtime.toml",
+                ]);
                 observe(false, true, false);
-                workspace.assert_cold_equivalent();
+                let parity = crate::languages::harness::cold_relations(&workspace);
+                assert_eq!(parity.incremental_verification, Ok(()));
+                assert_eq!(parity.cold_verification, Ok(()));
+                assert_eq!(parity.incremental, parity.cold);
                 for (name, source) in packs {
                     override_pack(name, source, false);
                 }
-                writer::delta(
-                    &workspace.0,
-                    &workspace.db(),
-                    &[
-                        ".forge/frameworks/nuxt.toml".into(),
-                        ".forge/frameworks/vue-runtime.toml".into(),
-                    ],
-                )
-                .unwrap();
+                workspace.delta(&[
+                    ".forge/frameworks/nuxt.toml",
+                    ".forge/frameworks/vue-runtime.toml",
+                ]);
                 observe(true, true, false);
-                workspace.assert_cold_equivalent();
+                let parity = crate::languages::harness::cold_relations(&workspace);
+                assert_eq!(parity.incremental_verification, Ok(()));
+                assert_eq!(parity.cold_verification, Ok(()));
+                assert_eq!(parity.incremental, parity.cold);
                 workspace.write("control.ts","import {helper} from './ordinary';\nexport function ordinary() { return helper() + 1; }\n");
-                workspace.delta("control.ts");
+                workspace.delta(&["control.ts"]);
                 observe(true, true, false);
-                workspace.assert_cold_equivalent();
+                let parity = crate::languages::harness::cold_relations(&workspace);
+                assert_eq!(parity.incremental_verification, Ok(()));
+                assert_eq!(parity.cold_verification, Ok(()));
+                assert_eq!(parity.incremental, parity.cold);
             }));
             if let Err(error) = result {
                 failures.push(format!(
@@ -424,4 +435,47 @@ fn nuxt_vue_pinia_manifest_contract_reaches_persisted_graph() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[cfg(feature = "lang-vue")]
+fn assert_nuxt_vue_pinia_manifest_family_variants(family: &str) {
+    let mut failures = Vec::new();
+    for renamed in [false, true] {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            assert_nuxt_vue_pinia_manifest_family(family, renamed);
+        }));
+        if let Err(error) = result {
+            let message = error
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| error.downcast_ref::<&str>().map(|message| (*message).into()))
+                .unwrap_or_else(|| "panic".into());
+            failures.push(format!("{family}, renamed={renamed}: {message}"));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[cfg(feature = "lang-vue")]
+#[test]
+fn nuxt_vue_pinia_manifest_contract_reaches_persisted_graph() {
+    assert_nuxt_vue_pinia_manifest_family_variants("pages");
+}
+
+#[cfg(feature = "lang-vue")]
+#[test]
+fn nuxt_vue_pinia_manifest_contract_composables_reaches_persisted_graph() {
+    assert_nuxt_vue_pinia_manifest_family_variants("composables");
+}
+
+#[cfg(feature = "lang-vue")]
+#[test]
+fn nuxt_vue_pinia_manifest_contract_sfc_reaches_persisted_graph() {
+    assert_nuxt_vue_pinia_manifest_family_variants("sfc");
+}
+
+#[cfg(feature = "lang-vue")]
+#[test]
+fn nuxt_vue_pinia_manifest_contract_store_reaches_persisted_graph() {
+    assert_nuxt_vue_pinia_manifest_family_variants("store");
 }

@@ -3,7 +3,7 @@ use super::super::*;
 #[cfg(feature = "lang-vue")]
 #[test]
 fn vue_composable_return_members_follow_setup_aliases() {
-    let w = Workspace::new();
+    let w = crate::languages::PersistedWorkspaceHarness::new();
     w.write(
         "Good.vue",
         "<template><button @click=\"alias.save\" /></template>\n<script setup>function makeActions() { function save() { return 1; } return { save }; } const actions = makeActions(); const alias = actions;</script>",
@@ -28,7 +28,8 @@ fn vue_composable_return_members_follow_setup_aliases() {
         "MutatedMember.vue",
         "<template><button @click=\"alias.save\" /></template>\n<script setup>function makeActions() { function save() { return 1; } save = () => 2; return { save }; } const actions = makeActions(); const alias = actions;</script>",
     );
-    let conn = w.build();
+    w.build();
+    let conn = w.open();
     let status = |path: &str| -> String {
         conn.query_row(
             "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)=?1 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='alias.save' AND line=1",
@@ -37,10 +38,7 @@ fn vue_composable_return_members_follow_setup_aliases() {
     };
     for path in ["Good.vue", "Arrow.vue"] {
         assert_eq!(status(path), "resolved", "{path}");
-        let exact_save_edge: i64 = conn.query_row(
-            "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)=?1 AND e.kind='calls' AND e.line=1 AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)=?1 AND dst.kind='function' AND dst.name='save'",
-            [path], |row| row.get(0),
-        ).unwrap();
+        let exact_save_edge: i64 = query_scalar(&conn, "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)=?1 AND e.kind='calls' AND e.line=1 AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)=?1 AND dst.kind='function' AND dst.name='save'", [path]);
         assert_eq!(
             exact_save_edge, 1,
             "{path} template alias.save points to its returned local function"
@@ -60,7 +58,7 @@ fn vue_composable_return_members_follow_setup_aliases() {
 #[cfg(feature = "lang-vue")]
 #[test]
 fn vue_imported_composable_return_members_follow_unique_provider() {
-    let w = Workspace::new();
+    let w = crate::languages::PersistedWorkspaceHarness::new();
     w.write(
         "app/actions.ts",
         "export function buildActions() { function save() { return 1; } return { save }; }",
@@ -73,16 +71,11 @@ fn vue_imported_composable_return_members_follow_unique_provider() {
         "other/actions.ts",
         "export function buildActions() { function save() { return 2; } return { save }; }",
     );
-    let conn = w.build();
-    let status: String = conn.query_row(
-        "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='app/View.vue' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='alias.save' AND line=1",
-        [], |row| row.get(0),
-    ).unwrap();
+    w.build();
+    let conn = w.open();
+    let status: String = query_scalar(&conn, "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='app/View.vue' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='alias.save' AND line=1", []);
     assert_eq!(status, "resolved");
-    let exact_edge: i64 = conn.query_row(
-        "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='app/View.vue' AND e.kind='calls' AND e.line=1 AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)='app/actions.ts' AND dst.kind='function' AND dst.name='save'",
-        [], |row| row.get(0),
-    ).unwrap();
+    let exact_edge: i64 = query_scalar(&conn, "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='app/View.vue' AND e.kind='calls' AND e.line=1 AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)='app/actions.ts' AND dst.kind='function' AND dst.name='save'", []);
     assert_eq!(
         exact_edge, 1,
         "template call points to the uniquely imported provider"

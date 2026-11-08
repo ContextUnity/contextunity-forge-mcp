@@ -1,13 +1,12 @@
 #![cfg(feature = "lang-proto")]
 
-use super::support::Workspace;
-use contextunity_forge_mcp::engine::ast;
+use crate::languages::harness::ExtractorHarness;
 use std::fs;
 
 #[cfg(feature = "lang-proto")]
 #[test]
 fn proto_package_qualified_types_and_fields() {
-    let w = Workspace::new();
+    let w = crate::languages::PersistedWorkspaceHarness::new();
     w.write(
         "protos/auth.proto",
         r#"syntax = "proto3";
@@ -29,12 +28,9 @@ service AuthService {
 "#,
     );
 
-    let facts = ast::extract(
-        "protos/auth.proto",
-        "proto",
-        &fs::read_to_string(w.0.join("protos/auth.proto")).unwrap(),
-    )
-    .unwrap();
+    let facts = ExtractorHarness::for_lang("proto")
+        .at_path("protos/auth.proto")
+        .extract(&fs::read_to_string(w.root().join("protos/auth.proto")).unwrap());
 
     // Verify module qualname is package
     let module_node = facts.nodes.iter().find(|n| n.kind == "module").unwrap();
@@ -54,7 +50,8 @@ service AuthService {
     );
 
     // Verify build & link
-    let conn = w.build();
+    w.build();
+    let conn = w.open();
     let ref_edges: Vec<(String, String)> = {
         let mut stmt = conn
             .prepare("SELECT (SELECT id FROM nodes WHERE node_hash=src_hash), (SELECT id FROM nodes WHERE node_hash=dst_hash) FROM edges WHERE kind='references'")
@@ -95,7 +92,9 @@ service RouterService {
 }
 "#;
 
-    let facts = ast::extract("core/protos/test.proto", "proto", source).expect("proto extract");
+    let facts = ExtractorHarness::for_lang("proto")
+        .at_path("core/protos/test.proto")
+        .extract(source);
 
     // Check nodes extracted
     let node_names: Vec<&str> = facts.nodes.iter().map(|n| n.name.as_str()).collect();

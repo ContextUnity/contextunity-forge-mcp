@@ -1,0 +1,76 @@
+roles:
+  architect: {}
+commands:
+  test:
+    command: ": --seam-ref tests/acdd/tasks.rs {scope_target} && rustc --test tests/runner_fixture.rs -o .forge/runner_fixture && if test -f .forge/runner_fixture_green; then .forge/runner_fixture; else FORGE_FIXTURE_RED=1 .forge/runner_fixture --nocapture; fi"
+    output:
+      require_counts: false
+      seam_ref_pattern: '--seam-ref (\\S+)'
+  rust-check-and-test:
+    command: ": {scope_target} && rustc --test tests/runner_fixture.rs -o .forge/runner_fixture && .forge/runner_fixture"
+    output:
+      require_counts: true
+      counts: {passed: '(\d+) passed', failed: '(\d+) failed'}
+  check_full_repo:
+    command: "mkdir -p .forge && printf '%4096s' '' | tr ' ' x && echo full-output-tail && echo check >> .forge/verification-order && test ! -f .forge/fail-check"
+    description: "Fixture check command for milestone verification."
+    timeout_seconds: 30
+    output:
+      require_counts: false
+gates:
+  - tasks:
+      gates:
+        - id: contract
+          role: contract_author
+          command: test
+          expected_failure:
+            exit_codes: [1, 101, 134]
+            stderr_contains: "assertion failed"
+          save: snapshot
+        - id: build
+          role: builder
+          command: rust-check-and-test
+          save:
+            pre: snapshot
+            post: snapshot
+        - id: review
+          role: independent_reviewer
+          policy: default_review
+          contours: guidance.contours
+          independent_from: build
+          fail: build
+          save:
+            immutable: true
+        - id: deliver
+          role: independent_reviewer
+          receipt: true
+          need:
+            - review
+          independent_from: build
+          fail: build
+          save:
+            immutable: true
+            post: commit
+  - id: verify
+    command: check_full_repo
+    max_attempts: 2
+    pass: milestone_review
+    fail: polish
+  - id: polish
+    role: architect
+    pass: verify
+  - id: milestone_review
+    role: independent_reviewer
+    policy: default_review
+    contours: guidance.contours
+    independent_from: verify
+    pass: handoff
+    fail: polish
+  - id: documentation
+    role: doc_writer
+    when: doc
+    pass: handoff
+  - id: handoff
+    receipt: true
+    absorb: true
+    save: commit

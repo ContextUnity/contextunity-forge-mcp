@@ -1,4 +1,5 @@
 use super::*;
+use crate::languages::harness::ExtractorHarness;
 
 #[test]
 fn two_phase_semantic_facts_reach_persisted_consumers_and_follow_provider_deltas() {
@@ -6,7 +7,7 @@ fn two_phase_semantic_facts_reach_persisted_consumers_and_follow_provider_deltas
     // a valid import and a real target are prerequisites, never substitutes for
     // the exact persisted occurrence. The alias and shadow share a spelling.
     {
-        let workspace = Workspace::new();
+        let workspace = crate::languages::PersistedWorkspaceHarness::new();
         workspace.write(
             "pyproject.toml",
             "[project]\nname='call-file-fixture'\ndependencies=['django']\n",
@@ -16,21 +17,81 @@ fn two_phase_semantic_facts_reach_persisted_consumers_and_follow_provider_deltas
         workspace.write("app/views.py", SOURCE);
         workspace.write(TARGET, "<p>Card</p>\n");
         let binding_cases = [
-            ("nested-sibling", "def page(request):\n    def inner(show_page):\n        return show_page\n    return show_page(request, 'catalog/card.html')\n", Some(6)),
-            ("module-rebound-before", "show_page = lambda *args: None\ndef page(request):\n    return show_page(request, 'catalog/card.html')\n", None),
-            ("module-rebound-after", "def page(request):\n    return show_page(request, 'catalog/card.html')\nshow_page = lambda *args: None\n", None),
-            ("local-rebound-before", "def page(request):\n    show_page = lambda *args: None\n    return show_page(request, 'catalog/card.html')\n", None),
-            ("local-rebound-after", "def page(request):\n    value = show_page(request, 'catalog/card.html')\n    show_page = lambda *args: None\n    return value\n", None),
-            ("lambda", "def page(request):\n    return (lambda show_page: show_page(request, 'catalog/card.html'))(request)\n", None),
-            ("class", "class Local:\n    def page(self, request):\n        return show_page(request, 'catalog/card.html')\n", None),
-            ("dynamic", "def page(request, name):\n    return show_page(request, name)\n", None),
-            ("escaped", "def page(request):\n    return show_page(request, 'catalog/\\x63ard.html')\n", None),
-            ("interpolated", "def page(request):\n    return show_page(request, f'catalog/{request}.html')\n", None),
-            ("raw", "def page(request):\n    return show_page(request, r'catalog/card.html')\n", None),
-            ("traversal", "def page(request):\n    return show_page(request, 'catalog/../card.html')\n", None),
-            ("absolute", "def page(request):\n    return show_page(request, '/catalog/card.html')\n", None),
-            ("keyword", "def page(request):\n    return show_page(request, template_name='catalog/card.html')\n", None),
-            ("dictionary-expansion", "def page(request, options):\n    return show_page(request, 'catalog/card.html', **options)\n", None),
+            (
+                "nested-sibling",
+                "def page(request):\n    def inner(show_page):\n        return show_page\n    return show_page(request, 'catalog/card.html')\n",
+                Some(6),
+            ),
+            (
+                "module-rebound-before",
+                "show_page = lambda *args: None\ndef page(request):\n    return show_page(request, 'catalog/card.html')\n",
+                None,
+            ),
+            (
+                "module-rebound-after",
+                "def page(request):\n    return show_page(request, 'catalog/card.html')\nshow_page = lambda *args: None\n",
+                None,
+            ),
+            (
+                "local-rebound-before",
+                "def page(request):\n    show_page = lambda *args: None\n    return show_page(request, 'catalog/card.html')\n",
+                None,
+            ),
+            (
+                "local-rebound-after",
+                "def page(request):\n    value = show_page(request, 'catalog/card.html')\n    show_page = lambda *args: None\n    return value\n",
+                None,
+            ),
+            (
+                "lambda",
+                "def page(request):\n    return (lambda show_page: show_page(request, 'catalog/card.html'))(request)\n",
+                None,
+            ),
+            (
+                "class",
+                "class Local:\n    def page(self, request):\n        return show_page(request, 'catalog/card.html')\n",
+                None,
+            ),
+            (
+                "dynamic",
+                "def page(request, name):\n    return show_page(request, name)\n",
+                None,
+            ),
+            (
+                "escaped",
+                "def page(request):\n    return show_page(request, 'catalog/\\x63ard.html')\n",
+                None,
+            ),
+            (
+                "interpolated",
+                "def page(request):\n    return show_page(request, f'catalog/{request}.html')\n",
+                None,
+            ),
+            (
+                "raw",
+                "def page(request):\n    return show_page(request, r'catalog/card.html')\n",
+                None,
+            ),
+            (
+                "traversal",
+                "def page(request):\n    return show_page(request, 'catalog/../card.html')\n",
+                None,
+            ),
+            (
+                "absolute",
+                "def page(request):\n    return show_page(request, '/catalog/card.html')\n",
+                None,
+            ),
+            (
+                "keyword",
+                "def page(request):\n    return show_page(request, template_name='catalog/card.html')\n",
+                None,
+            ),
+            (
+                "dictionary-expansion",
+                "def page(request, options):\n    return show_page(request, 'catalog/card.html', **options)\n",
+                None,
+            ),
         ];
         for (label, body, _) in binding_cases {
             workspace.write(
@@ -41,7 +102,6 @@ fn two_phase_semantic_facts_reach_persisted_consumers_and_follow_provider_deltas
         // Imported API identity and configured argument position are proved at
         // the complete persisted boundary for every equivalent binding form.
         let mut syntax_cases: Vec<(String, String, Option<usize>)> = [
-            ("positive.py", "\ndef page(request):\n    return show_page(request, 'catalog/card.html')\n", Some(4)),
             ("comment-wrong-index.py", "\ndef page(request):\n    return show_page(\n        # ignored syntax trivia\n        'catalog/card.html',\n        request,\n    )\n", None),
             ("comment-valid-index.py", "\ndef page(request):\n    return show_page(\n        request,\n        # ignored syntax trivia\n        'catalog/card.html',\n    )\n", Some(4)),
             ("match-module.py", "\nmatch object():\n    case show_page:\n        pass\n\ndef page(request):\n    return show_page(request, 'catalog/card.html')\n", None),
@@ -76,11 +136,7 @@ fn two_phase_semantic_facts_reach_persisted_consumers_and_follow_provider_deltas
             ("capture-as", "_ as show_page", false),
             ("capture-union", "[show_page] | (show_page,)", false),
             ("capture-class-positional", "list([show_page])", false),
-            (
-                "capture-class-keyword-value",
-                "object(__class__=show_page)",
-                false,
-            ),
+            ("capture-class-keyword-value", "object(__class__=show_page)", false),
             ("control-class-head", "show_page()", true),
             ("control-dotted-value", "holder.show_page", true),
             ("control-keyword-label", "object(show_page=_)", true),
@@ -90,9 +146,13 @@ fn two_phase_semantic_facts_reach_persisted_consumers_and_follow_provider_deltas
         ] {
             for local in [false, true] {
                 let body = if local {
-                    format!("\ndef page(request):\n    match request:\n        case {pattern}: pass\n    return show_page(request, 'catalog/card.html')\n")
+                    format!(
+                        "\ndef page(request):\n    match request:\n        case {pattern}: pass\n    return show_page(request, 'catalog/card.html')\n"
+                    )
                 } else {
-                    format!("\nmatch object():\n    case {pattern}: pass\n\ndef page(request):\n    return show_page(request, 'catalog/card.html')\n")
+                    format!(
+                        "\nmatch object():\n    case {pattern}: pass\n\ndef page(request):\n    return show_page(request, 'catalog/card.html')\n"
+                    )
                 };
                 syntax_cases.push((
                     format!("{label}-{local}.py"),
@@ -103,25 +163,39 @@ fn two_phase_semantic_facts_reach_persisted_consumers_and_follow_provider_deltas
         }
         workspace.write("unknown_provider.py", "def show_page(*args): return None\n");
         for (label, source, _) in &syntax_cases {
-            assert_source_valid(label, "python", source, &["page"]);
+            let facts = ExtractorHarness::for_lang("python").at_path(label).extract(source);
+            assert!(facts.errors.is_empty(), "{label} must parse: {:?}", facts.errors);
+            assert_eq!(
+                facts.nodes.iter().filter(|node| node.name == "page").count(),
+                1,
+                "{label} expected the page definition: {:?}",
+                facts.nodes
+            );
             workspace.write(format!("syntax/{label}"), source);
         }
-        assert_source_valid(
-            "app/views.py",
-            "python",
-            SOURCE,
-            &[
-                "page",
-                "shadowed",
-                "local_render",
-                "unrelated",
-                "starred",
-                "comprehension",
-            ],
-        );
-        writer::build(&workspace.0, &workspace.db(), None).unwrap();
+        let facts = ExtractorHarness::for_lang("python")
+            .at_path("app/views.py")
+            .extract(SOURCE);
+        assert!(facts.errors.is_empty(), "app/views.py must parse: {:?}", facts.errors);
+        for name in [
+            "page",
+            "shadowed",
+            "local_render",
+            "unrelated",
+            "starred",
+            "comprehension",
+        ] {
+            assert_eq!(
+                facts.nodes.iter().filter(|node| node.name == name).count(),
+                1,
+                "app/views.py expected definition {name}: {:?}",
+                facts.nodes
+            );
+        }
+        workspace.build();
         let conn = workspace.open();
-        assert_valid(&conn);
+        let validity = validity_observations(&conn);
+        validity.assert_valid();
         let canonical_facts = persisted_facts(&conn);
         let mut call_fact_counts = std::collections::BTreeMap::new();
         for facts in &canonical_facts {
@@ -139,26 +213,23 @@ fn two_phase_semantic_facts_reach_persisted_consumers_and_follow_provider_deltas
                     .or_insert(0usize) += count;
             }
         }
-        let navigation_dtos: i64 = conn.query_row(
-            "SELECT count(*) FROM nodes WHERE json_type(details,'$.semantic_facts') IS NOT NULL",
-            [], |row| row.get(0),
-        ).unwrap();
-        assert_eq!(
-            navigation_dtos, 0,
-            "semantic DTOs belong to canonical local facts"
-        );
+        let navigation_dtos: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM nodes WHERE json_type(details,'$.semantic_facts') IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(navigation_dtos, 0, "semantic DTOs belong to canonical local facts");
         for (label, _, expected_line) in binding_cases {
             let path = format!("cases/{label}.py");
             let occurrences = edge_occurrence_rows(&conn, &path, "renders_template");
-            let facts = call_fact_counts
-                .get(path.as_str())
-                .copied()
-                .unwrap_or_default();
+            let facts = call_fact_counts.get(path.as_str()).copied().unwrap_or_default();
             if let Some(line) = expected_line {
                 assert_eq!(
                     occurrences,
                     [(
-                        node_id(&conn, &path, "page"),
+                        node_id_observation(&conn, &path, "page").expect("unique page definition"),
                         format!("module:{TARGET}"),
                         line
                     )],
@@ -176,16 +247,13 @@ fn two_phase_semantic_facts_reach_persisted_consumers_and_follow_provider_deltas
         for (label, _, expected_line) in syntax_cases {
             let path = format!("syntax/{label}");
             let occurrences = edge_occurrence_rows(&conn, &path, "renders_template");
-            let facts = call_fact_counts
-                .get(path.as_str())
-                .copied()
-                .unwrap_or_default();
+            let facts = call_fact_counts.get(path.as_str()).copied().unwrap_or_default();
             let coverage: i64 = conn.query_row("SELECT count(*) FROM resolution_coverage c JOIN path_dictionary p ON p.path_id=c.path_id WHERE p.path=?1 AND c.status='resolved' AND c.evidence_id=(SELECT evidence_id FROM coverage_evidence WHERE evidence='declarative file identity; unique proven target required')", [&path], |row| row.get(0)).unwrap();
             if let Some(line) = expected_line {
                 assert_eq!(
                     occurrences,
                     [(
-                        node_id(&conn, &path, "page"),
+                        node_id_observation(&conn, &path, "page").expect("unique page definition"),
                         format!("module:{TARGET}"),
                         line
                     )],
@@ -202,22 +270,15 @@ fn two_phase_semantic_facts_reach_persisted_consumers_and_follow_provider_deltas
                 assert_eq!(coverage, 0, "{label}");
             }
         }
-        let source = node_id(&conn, "app/views.py", "page");
+        let source = node_id_observation(&conn, "app/views.py", "page").expect("unique page definition");
         let target: (String, String) = conn
-            .query_row(
-                "SELECT n.id,n.qualname FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path=?1 AND n.kind='module'",
-                params![TARGET],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
+            .query_row("SELECT n.id,n.qualname FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path=?1 AND n.kind='module'", params![TARGET], |row| Ok((row.get(0)?, row.get(1)?)))
             .expect("actual persisted HTML module target");
         assert_eq!(target.0, format!("module:{TARGET}"));
-        assert_eq!(
-            target.1, "app.templates.catalog.card.html",
-            "actual target qualname"
-        );
+        assert_eq!(target.1, "app.templates.catalog.card.html", "actual target qualname");
         let rows = edge_occurrence_rows(&conn, "app/views.py", "renders_template");
         let forbidden: Vec<_> = ["shadowed", "unrelated", "starred", "comprehension"]
-            .map(|name| node_id(&conn, "app/views.py", name))
+            .map(|name| node_id_observation(&conn, "app/views.py", name).expect("unique definition"))
             .into_iter()
             .collect();
         assert!(
@@ -229,66 +290,141 @@ fn two_phase_semantic_facts_reach_persisted_consumers_and_follow_provider_deltas
             [(source, target.0, 4)],
             "imported alias must link the exact source occurrence to the actual module, with no guessed edges"
         );
+        let coverage: i64 = conn.query_row("SELECT count(*) FROM resolution_coverage c JOIN path_dictionary p ON p.path_id=c.path_id WHERE p.path=?1 AND c.status='resolved' AND c.evidence_id=(SELECT evidence_id FROM coverage_evidence WHERE evidence='declarative file identity; unique proven target required')", ["app/views.py"], |row| row.get(0)).unwrap();
+        assert_eq!(coverage, 1, "imported alias resolves the actual template target");
         drop(conn);
         workspace.write(TARGET, "<p>Changed provider</p>\n");
-        workspace.delta(TARGET);
-        complete_parity(&workspace);
-        file_edges(&workspace, "app/views.py", Some((TARGET, 4)));
-        fs::remove_file(workspace.0.join(TARGET)).unwrap();
-        workspace.delta(TARGET);
-        complete_parity(&workspace);
-        file_edges(&workspace, "app/views.py", None);
+        workspace.delta(&[TARGET]);
+        assert_complete_cold(&workspace);
+        let edge_observations = file_edge_observations(&workspace, "app/views.py");
+        edge_observations.validity.assert_valid();
+        assert_eq!(
+            edge_observations.page_ids.len(),
+            1,
+            "unique persisted page node at app/views.py: {:?}",
+            edge_observations.page_ids
+        );
+        assert_eq!(
+            edge_observations.edges,
+            [(edge_observations.page_ids[0].clone(), format!("module:{TARGET}"), 4)],
+            "persisted file edge at app/views.py"
+        );
+        workspace.remove(TARGET);
+        workspace.delta(&[TARGET]);
+        assert_complete_cold(&workspace);
+        let edge_observations = file_edge_observations(&workspace, "app/views.py");
+        edge_observations.validity.assert_valid();
+        assert!(
+            edge_observations.edges.is_empty(),
+            "unexpected persisted file edges at app/views.py: {:?}",
+            edge_observations.edges
+        );
         workspace.write(TARGET, "");
-        workspace.delta(TARGET);
-        complete_parity(&workspace);
-        file_edges(&workspace, "app/views.py", Some((TARGET, 4)));
+        workspace.delta(&[TARGET]);
+        assert_complete_cold(&workspace);
+        let edge_observations = file_edge_observations(&workspace, "app/views.py");
+        edge_observations.validity.assert_valid();
+        assert_eq!(
+            edge_observations.page_ids.len(),
+            1,
+            "unique persisted page node at app/views.py: {:?}",
+            edge_observations.page_ids
+        );
+        assert_eq!(
+            edge_observations.edges,
+            [(edge_observations.page_ids[0].clone(), format!("module:{TARGET}"), 4)],
+            "persisted file edge at app/views.py"
+        );
         const MOVED: &str = "app/templates/catalog/renamed.html";
-        fs::rename(workspace.0.join(TARGET), workspace.0.join(MOVED)).unwrap();
-        writer::delta(
-            &workspace.0,
-            &workspace.db(),
-            &[PathBuf::from(TARGET), PathBuf::from(MOVED)],
-        )
-        .unwrap();
-        complete_parity(&workspace);
-        file_edges(&workspace, "app/views.py", None);
+        std::fs::rename(workspace.path(TARGET), workspace.path(MOVED)).unwrap();
+        workspace.delta(&[TARGET, MOVED]);
+        assert_complete_cold(&workspace);
+        let edge_observations = file_edge_observations(&workspace, "app/views.py");
+        edge_observations.validity.assert_valid();
+        assert!(
+            edge_observations.edges.is_empty(),
+            "unexpected persisted file edges at app/views.py: {:?}",
+            edge_observations.edges
+        );
         let updated = SOURCE.replace("catalog/card.html", "catalog/renamed.html");
         workspace.write("app/views.py", &updated);
-        workspace.delta("app/views.py");
-        complete_parity(&workspace);
-        file_edges(&workspace, "app/views.py", Some((MOVED, 4)));
-        fs::rename(
-            workspace.0.join("app/views.py"),
-            workspace.0.join("app/pages.py"),
-        )
-        .unwrap();
-        writer::delta(
-            &workspace.0,
-            &workspace.db(),
-            &[PathBuf::from("app/views.py"), PathBuf::from("app/pages.py")],
-        )
-        .unwrap();
-        complete_parity(&workspace);
-        file_edges(&workspace, "app/pages.py", Some((MOVED, 4)));
-        fs::remove_file(workspace.0.join("app/pages.py")).unwrap();
-        workspace.delta("app/pages.py");
-        complete_parity(&workspace);
-        assert!(
-            edge_occurrence_rows(&workspace.open(), "app/pages.py", "renders_template").is_empty()
+        workspace.delta(&["app/views.py"]);
+        assert_complete_cold(&workspace);
+        let edge_observations = file_edge_observations(&workspace, "app/views.py");
+        edge_observations.validity.assert_valid();
+        assert_eq!(
+            edge_observations.page_ids.len(),
+            1,
+            "unique persisted page node at app/views.py: {:?}",
+            edge_observations.page_ids
         );
+        assert_eq!(
+            edge_observations.edges,
+            [(edge_observations.page_ids[0].clone(), format!("module:{MOVED}"), 4)],
+            "persisted file edge at app/views.py"
+        );
+        std::fs::rename(workspace.path("app/views.py"), workspace.path("app/pages.py")).unwrap();
+        workspace.delta(&["app/views.py", "app/pages.py"]);
+        assert_complete_cold(&workspace);
+        let edge_observations = file_edge_observations(&workspace, "app/pages.py");
+        edge_observations.validity.assert_valid();
+        assert_eq!(
+            edge_observations.page_ids.len(),
+            1,
+            "unique persisted page node at app/pages.py: {:?}",
+            edge_observations.page_ids
+        );
+        assert_eq!(
+            edge_observations.edges,
+            [(edge_observations.page_ids[0].clone(), format!("module:{MOVED}"), 4)],
+            "persisted file edge at app/pages.py"
+        );
+        workspace.remove("app/pages.py");
+        workspace.delta(&["app/pages.py"]);
+        assert_complete_cold(&workspace);
+        assert!(edge_occurrence_rows(&workspace.open(), "app/pages.py", "renders_template").is_empty());
         workspace.write("app/pages.py", &updated);
-        workspace.delta("app/pages.py");
-        complete_parity(&workspace);
-        file_edges(&workspace, "app/pages.py", Some((MOVED, 4)));
+        workspace.delta(&["app/pages.py"]);
+        assert_complete_cold(&workspace);
+        let edge_observations = file_edge_observations(&workspace, "app/pages.py");
+        edge_observations.validity.assert_valid();
+        assert_eq!(
+            edge_observations.page_ids.len(),
+            1,
+            "unique persisted page node at app/pages.py: {:?}",
+            edge_observations.page_ids
+        );
+        assert_eq!(
+            edge_observations.edges,
+            [(edge_observations.page_ids[0].clone(), format!("module:{MOVED}"), 4)],
+            "persisted file edge at app/pages.py"
+        );
         const REPLACE: &str = ".forge/frameworks/django.toml";
         workspace.write(REPLACE, "replace=true\n");
-        workspace.delta(REPLACE);
-        complete_parity(&workspace);
-        file_edges(&workspace, "app/pages.py", None);
-        fs::remove_file(workspace.0.join(REPLACE)).unwrap();
-        workspace.delta(REPLACE);
-        complete_parity(&workspace);
-        file_edges(&workspace, "app/pages.py", Some((MOVED, 4)));
+        workspace.delta(&[REPLACE]);
+        assert_complete_cold(&workspace);
+        let edge_observations = file_edge_observations(&workspace, "app/pages.py");
+        edge_observations.validity.assert_valid();
+        assert!(
+            edge_observations.edges.is_empty(),
+            "unexpected persisted file edges at app/pages.py: {:?}",
+            edge_observations.edges
+        );
+        workspace.remove(REPLACE);
+        workspace.delta(&[REPLACE]);
+        assert_complete_cold(&workspace);
+        let edge_observations = file_edge_observations(&workspace, "app/pages.py");
+        edge_observations.validity.assert_valid();
+        assert_eq!(
+            edge_observations.page_ids.len(),
+            1,
+            "unique persisted page node at app/pages.py: {:?}",
+            edge_observations.page_ids
+        );
+        assert_eq!(
+            edge_observations.edges,
+            [(edge_observations.page_ids[0].clone(), format!("module:{MOVED}"), 4)],
+            "persisted file edge at app/pages.py"
+        );
     }
-    custom_file_rules();
 }

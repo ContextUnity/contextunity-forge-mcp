@@ -5,7 +5,7 @@ use super::super::*;
 fn vue_destructured_composable_call_uses_indexed_return_member() {
     use contextunity_forge_mcp::core::commitments;
 
-    let w = Workspace::new();
+    let w = crate::languages::PersistedWorkspaceHarness::new();
     w.write(
         "app/i18n.ts",
         "export function useI18n() { function t(key: string) { return key; } return { t }; }",
@@ -38,18 +38,21 @@ fn vue_destructured_composable_call_uses_indexed_return_member() {
         "other/i18n.ts",
         "export function useI18n() { function t(key: string) { return key; } return { t }; }",
     );
-    let conn = w.build();
+    w.build();
+    let conn = w.open();
     commitments::verify(&conn).unwrap();
     for (path, expression) in [("app/View.vue", "t"), ("app/Alias.vue", "translate")] {
-        let status: String = conn.query_row(
+        let status: String = query_scalar(
+            &conn,
             "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)=?1 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)=?2 AND line=1",
-            rusqlite::params![path, expression], |row| row.get(0),
-        ).unwrap();
+            rusqlite::params![path, expression],
+        );
         assert_eq!(status, "resolved", "{path} {expression}");
-        let edge_count: i64 = conn.query_row(
+        let edge_count: i64 = query_scalar(
+            &conn,
             "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)=?1 AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)=?2 AND e.kind='calls' AND dst.name='t'",
-            rusqlite::params![path, "app/i18n.ts"], |row| row.get(0),
-        ).unwrap();
+            rusqlite::params![path, "app/i18n.ts"],
+        );
         assert_eq!(edge_count, 1, "{path} call edge count to t");
     }
     for path in [
@@ -58,18 +61,20 @@ fn vue_destructured_composable_call_uses_indexed_return_member() {
         "app/TypeOnly.vue",
         "app/SpecifierTypeOnly.vue",
     ] {
-        let status: String = conn.query_row(
+        let status: String = query_scalar(
+            &conn,
             "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)=?1 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='t' AND line=1",
-            rusqlite::params![path], |row| row.get(0),
-        ).unwrap();
+            rusqlite::params![path],
+        );
         assert!(
             matches!(status.as_str(), "unresolved" | "ambiguous"),
             "{path} t status={status}"
         );
-        let edge_count: i64 = conn.query_row(
+        let edge_count: i64 = query_scalar(
+            &conn,
             "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)=?1 AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)='app/i18n.ts' AND e.kind='calls' AND dst.name='t'",
-            rusqlite::params![path], |row| row.get(0),
-        ).unwrap();
+            rusqlite::params![path],
+        );
         assert_eq!(edge_count, 0, "{path} negative call edge count to t");
     }
 
@@ -196,15 +201,14 @@ language="typescript"
 operation={kind="factory_members",callee={kind="global",name="defineStore"},argument=1,shape="setup_return",configured_module="@pinia/nuxt"}
 "##,
     );
-    w.write("app/Configured.vue", "<script setup lang=\"ts\">\nconst uiStore = useUiStore();\nconst { t } = useI18n();\nconst { toast } = useToast();\nuiStore.toggleSidebar();\nasync function handleCopy() {\n  const success = await copyToClipboard(props.text);\n  if (success) {\n    toast.success(t('chat.actions.copied'), t('chat.actions.copiedDescription'));\n  } else {\n    toast.error(t('chat.actions.copyFailed'), t('chat.actions.copyFailedDescription'));\n  }\n}\n</script>\n<template>{{ t('save') }}</template>\n");
-    w.write("stores/aliases.ts", "export const useAliasStore = defineStore('alias', () => { const state = ref(0); function close() {} function abort() {} return { dismiss: close, state, abort: stream.cancel }; });\n");
-    w.write("app/ResultGuards.vue", "<script setup lang='ts'>\nconst store = useAliasStore();\nconst {t: translate} = useI18n();\nconst say = translate;\nsay('save');\nstore.dismiss();\nstore.state();\nstore.abort();\nfunction shadow(t: any) { t('shadow'); }\nfunction parameter(useI18n: any) { const {t} = useI18n(); t('parameter'); }\nfunction rebound() { let {t} = useI18n(); t = other; t('rebound'); }\n</script>\n");
-    let observe = |provider_present: bool, module_present: bool| {
-        let conn = w.open();
-        commitments::verify(&conn).unwrap();
-        let errors: i64 = conn
-            .query_row("SELECT count(*) FROM errors", [], |r| r.get(0))
-            .unwrap();
+    let configured = "<script setup lang=\"ts\">\nconst uiStore = useUiStore();\nconst { t } = useI18n();\nconst { toast } = useToast();\nuiStore.toggleSidebar();\nasync function handleCopy() {\n  const success = await copyToClipboard(props.text);\n  if (success) {\n    toast.success(t('chat.actions.copied'), t('chat.actions.copiedDescription'));\n  } else {\n    toast.error(t('chat.actions.copyFailed'), t('chat.actions.copyFailedDescription'));\n  }\n}\n</script>\n<template>{{ t('save') }}</template>\n";
+    w.write("app/Configured.vue", configured);
+    let aliases = "export const useAliasStore = defineStore('alias', () => { const state = ref(0); function close() {} function abort() {} return { dismiss: close, state, abort: stream.cancel }; });\n";
+    w.write("stores/aliases.ts", aliases);
+    let result_guards = "<script setup lang='ts'>\nconst store = useAliasStore();\nconst {t: translate} = useI18n();\nconst say = translate;\nsay('save');\nstore.dismiss();\nstore.state();\nstore.abort();\nfunction shadow(t: any) { t('shadow'); }\nfunction parameter(useI18n: any) { const {t} = useI18n(); t('parameter'); }\nfunction rebound() { let {t} = useI18n(); t = other; t('rebound'); }\n</script>\n";
+    w.write("app/ResultGuards.vue", result_guards);
+    let observe = |conn: &rusqlite::Connection, provider_present: bool, module_present: bool| {
+        let errors: i64 = query_scalar(conn, "SELECT count(*) FROM errors", []);
         assert_eq!(errors, 0, "configured result descriptors are valid");
         for (expression, expected) in [
             (
@@ -233,12 +237,20 @@ operation={kind="factory_members",callee={kind="global",name="defineStore"},argu
         }
         let actual: Vec<String> = conn.prepare("SELECT dst.id FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='app/Configured.vue' AND e.kind='calls' AND dst.name='toggleSidebar' ORDER BY dst.id").unwrap().query_map([], |r| r.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
         if provider_present && module_present {
-            let target: String = conn.query_row("SELECT id FROM nodes WHERE (SELECT path FROM path_dictionary WHERE path_id=nodes.path_id)='stores/ui.ts' AND name='toggleSidebar'", [], |r| r.get(0)).unwrap();
+            let target: String = query_scalar(
+                conn,
+                "SELECT id FROM nodes WHERE (SELECT path FROM path_dictionary WHERE path_id=nodes.path_id)='stores/ui.ts' AND name='toggleSidebar'",
+                [],
+            );
             assert_eq!(actual, vec![target], "actual indexed callable target");
         } else {
             assert!(actual.is_empty(), "no guessed setup target");
         }
-        let fake_t: i64 = conn.query_row("SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='app/Configured.vue' AND e.kind='calls' AND dst.name='t'", [], |r| r.get(0)).unwrap();
+        let fake_t: i64 = query_scalar(
+            conn,
+            "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='app/Configured.vue' AND e.kind='calls' AND dst.name='t'",
+            [],
+        );
         assert_eq!(fake_t, 0, "external result never becomes a local t edge");
         for (expression, expected) in [
             (
@@ -270,7 +282,11 @@ operation={kind="factory_members",callee={kind="global",name="defineStore"},argu
         }
         let alias_edges: Vec<String> = conn.prepare("SELECT dst.id FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='app/ResultGuards.vue' AND e.kind='calls' AND dst.name='close'").unwrap().query_map([], |row| row.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
         if module_present {
-            let canonical: String = conn.query_row("SELECT id FROM nodes WHERE (SELECT path FROM path_dictionary WHERE path_id=nodes.path_id)='stores/aliases.ts' AND name='close'", [], |row| row.get(0)).unwrap();
+            let canonical: String = query_scalar(
+                conn,
+                "SELECT id FROM nodes WHERE (SELECT path FROM path_dictionary WHERE path_id=nodes.path_id)='stores/aliases.ts' AND name='close'",
+                [],
+            );
             assert_eq!(
                 alias_edges,
                 [canonical],
@@ -280,26 +296,62 @@ operation={kind="factory_members",callee={kind="global",name="defineStore"},argu
             assert!(alias_edges.is_empty());
         }
     };
-    drop(w.build());
-    observe(false, true);
+    w.build();
+    let initial_connection = w.open();
+    commitments::verify(&initial_connection).unwrap();
+    observe(&initial_connection, false, true);
+    let cold_references = crate::languages::support::ColdFilesystemReferenceCache::default();
     w.write("stores/ui.ts", provider);
-    w.delta("stores/ui.ts");
-    observe(true, true);
-    w.assert_cold_equivalent();
+    w.delta(&["stores/ui.ts"]);
+    let parity = cold_references.observe(&w, w.open(), crate::languages::support::relation_rows);
+    assert_eq!(parity.incremental_verification, Ok(()));
+    assert_eq!(parity.cold_verification, Ok(()));
+    assert_eq!(parity.incremental, parity.cold);
+    observe(&parity.incremental_connection, true, true);
     w.write(
         "nuxt.config.ts",
         "export default defineNuxtConfig({components:false, modules:[]});\n",
     );
-    w.delta("nuxt.config.ts");
-    observe(true, false);
-    w.assert_cold_equivalent();
+    w.delta(&["nuxt.config.ts"]);
+    let parity = cold_references.observe(&w, w.open(), crate::languages::support::relation_rows);
+    assert_eq!(parity.incremental_verification, Ok(()));
+    assert_eq!(parity.cold_verification, Ok(()));
+    assert_eq!(parity.incremental, parity.cold);
+    observe(&parity.incremental_connection, true, false);
     w.write("nuxt.config.ts", active_config);
-    w.delta("nuxt.config.ts");
-    observe(true, true);
-    w.assert_cold_equivalent();
+    w.delta(&["nuxt.config.ts"]);
+    let parity = cold_references.observe(&w, w.open(), crate::languages::support::relation_rows);
+    assert_eq!(parity.incremental_verification, Ok(()));
+    assert_eq!(parity.cold_verification, Ok(()));
+    assert_eq!(parity.incremental, parity.cold);
+    observe(&parity.incremental_connection, true, true);
     // Observed Library health.ts:327-332 and messages.ts:67-76 initialization.
     // Reuse the configured provider and exact target/uncertainty observations.
-    for initialization in [
+    let consumer_status = |conn: &rusqlite::Connection, path: &str, expected: &str| {
+        let statuses: Vec<String> = conn
+            .prepare("SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)=?1 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='uiStore.toggleSidebar'")
+            .unwrap()
+            .query_map([path], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(!statuses.is_empty(), "{path}: retained raw identity");
+        assert!(
+            statuses.iter().all(|status| status == expected),
+            "{path}: {statuses:?}, expected {expected}"
+        );
+        let calls: i64 = query_scalar(
+            conn,
+            "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)=?1 AND e.kind='calls' AND dst.name='toggleSidebar'",
+            [path],
+        );
+        if expected == "resolved" {
+            assert_eq!(calls, 1, "{path} call edge count to toggleSidebar");
+        } else {
+            assert_eq!(calls, 0, "{path} negative call edge count to toggleSidebar");
+        }
+    };
+    let initializations = [
         r#"  if (import.meta.client) {
     // Initialize from browser status (so first paint doesn't assume online).
     _isOnline.value = navigator.onLine;
@@ -318,14 +370,8 @@ operation={kind="factory_members",callee={kind="global",name="defineStore"},argu
     }
   }
 "#,
-    ] {
-        let initialized = provider.replace("  return {", &format!("{initialization}  return {{"));
-        w.write("stores/ui.ts", &initialized);
-        w.delta("stores/ui.ts");
-        observe(true, true);
-        w.assert_cold_equivalent();
-    }
-    for unsupported in [
+    ];
+    let unsupported_bodies = [
         provider.replace("  return {", "  return { ...unknown,"),
         provider.replace("    toggleSidebar,", "    toggleSidebar, toggleSidebar,"),
         provider.replace("    toggleSidebar,", "    [key]: toggleSidebar,"),
@@ -376,19 +422,107 @@ operation={kind="factory_members",callee={kind="global",name="defineStore"},argu
             "  function deleteCaptured() { delete registry.toggleSidebar; }\n  return {",
         ),
         provider.replace("\n});", "\n  initialize();\n});"),
-    ] {
-        w.write("stores/ui.ts", &unsupported);
-        w.delta("stores/ui.ts");
-        observe(false, true);
-        w.assert_cold_equivalent();
+    ];
+
+    let mut batch_paths = Vec::new();
+    for (index, initialization) in initializations.iter().enumerate() {
+        let initialized = provider
+            .replace("  return {", &format!("{initialization}  return {{"))
+            .replacen(
+                r#"export const useUiStore = defineStore("ui""#,
+                &format!(r#"export const useInit{index}Store = defineStore("init{index}""#),
+                1,
+            );
+        let store = format!("stores/init{index}.ts");
+        let consumer = format!("app/Init{index}.vue");
+        w.write(&store, &initialized);
+        w.write(
+            &consumer,
+            &format!(
+                "<script setup lang=\"ts\">\nconst uiStore = useInit{index}Store();\nuiStore.toggleSidebar();\n</script>\n"
+            ),
+        );
+        batch_paths.push(store);
+        batch_paths.push(consumer);
     }
-    w.write("stores/ui.ts", provider);
-    w.delta("stores/ui.ts");
-    observe(true, true);
+    for (index, _) in unsupported_bodies.iter().enumerate() {
+        let source = provider.replacen(
+            r#"export const useUiStore = defineStore("ui""#,
+            &format!(r#"export const useBad{index}Store = defineStore("bad{index}""#),
+            1,
+        );
+        let store = format!("stores/bad{index}.ts");
+        let consumer = format!("app/Bad{index}.vue");
+        w.write(&store, &source);
+        w.write(
+            &consumer,
+            &format!(
+                "<script setup lang=\"ts\">\nconst uiStore = useBad{index}Store();\nuiStore.toggleSidebar();\n</script>\n"
+            ),
+        );
+        batch_paths.push(store);
+        batch_paths.push(consumer);
+    }
+
+    let delta_paths: Vec<&str> = batch_paths.iter().map(String::as_str).collect();
+    let batch_delta = w.delta(&delta_paths);
+    assert_eq!(
+        batch_delta["changed_files"],
+        2 * (initializations.len() + unsupported_bodies.len())
+    );
+    let parity =
+        cold_references.observe(&w, w.open(), crate::languages::support::relation_rows);
+    assert_eq!(parity.incremental_verification, Ok(()));
+    assert_eq!(parity.cold_verification, Ok(()));
+    assert_eq!(parity.incremental, parity.cold);
+    for index in 0..initializations.len() {
+        let consumer = format!("app/Init{index}.vue");
+        consumer_status(&parity.incremental_connection, &consumer, "resolved");
+    }
+    for index in 0..unsupported_bodies.len() {
+        let consumer = format!("app/Bad{index}.vue");
+        consumer_status(&parity.incremental_connection, &consumer, "resolved");
+    }
+
+    // Mutate only the providers to their unsupported variants, leaving consumers untouched to test existing-provider invalidation.
+    let mut mutate_paths = Vec::new();
+    for (index, unsupported) in unsupported_bodies.iter().enumerate() {
+        let source = unsupported.replacen(
+            r#"export const useUiStore = defineStore("ui""#,
+            &format!(r#"export const useBad{index}Store = defineStore("bad{index}""#),
+            1,
+        );
+        let store = format!("stores/bad{index}.ts");
+        w.write(&store, &source);
+        mutate_paths.push(store);
+    }
+    let mutate_refs: Vec<&str> = mutate_paths.iter().map(String::as_str).collect();
+    let mutate_delta = w.delta(&mutate_refs);
+    assert_eq!(mutate_delta["changed_files"], unsupported_bodies.len());
+    let parity =
+        cold_references.observe(&w, w.open(), crate::languages::support::relation_rows);
+    assert_eq!(parity.incremental_verification, Ok(()));
+    assert_eq!(parity.cold_verification, Ok(()));
+    assert_eq!(parity.incremental, parity.cold);
+    for index in 0..unsupported_bodies.len() {
+        let consumer = format!("app/Bad{index}.vue");
+        consumer_status(&parity.incremental_connection, &consumer, "unresolved");
+        let conn = &parity.incremental_connection;
+        let calls: i64 = crate::languages::harness::query_scalar(
+            conn,
+            "SELECT count(*) FROM edge_occurrences WHERE (SELECT path FROM path_dictionary WHERE path_id=edge_occurrences.owner_id)=?1 AND kind='calls'",
+            [&consumer],
+        );
+        assert_eq!(calls, 0, "{consumer} should have 0 calls after provider invalidation");
+    }
     w.write("stores/duplicate.ts", provider);
-    w.delta("stores/duplicate.ts");
+    w.delta(&["stores/duplicate.ts"]);
+    let parity = cold_references.observe(&w, w.open(), crate::languages::support::relation_rows);
+    assert_eq!(parity.incremental_verification, Ok(()));
+    assert_eq!(parity.cold_verification, Ok(()));
+    assert_eq!(parity.incremental, parity.cold);
     {
-        let conn = w.open();
+        let conn = &parity.incremental_connection;
         let statuses: Vec<String> = conn.prepare("SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='app/Configured.vue' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='uiStore.toggleSidebar'").unwrap().query_map([], |row| row.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
         assert_eq!(
             statuses,
@@ -396,9 +530,11 @@ operation={kind="factory_members",callee={kind="global",name="defineStore"},argu
             "duplicate exported factories cannot choose a provider"
         );
     }
-    w.assert_cold_equivalent();
-    std::fs::remove_file(w.join("stores/duplicate.ts")).unwrap();
-    w.delta("stores/duplicate.ts");
-    observe(true, true);
-    w.assert_cold_equivalent();
+    w.remove("stores/duplicate.ts");
+    w.delta(&["stores/duplicate.ts"]);
+    let parity = cold_references.observe(&w, w.open(), crate::languages::support::relation_rows);
+    assert_eq!(parity.incremental_verification, Ok(()));
+    assert_eq!(parity.cold_verification, Ok(()));
+    assert_eq!(parity.incremental, parity.cold);
+    observe(&parity.incremental_connection, true, true);
 }

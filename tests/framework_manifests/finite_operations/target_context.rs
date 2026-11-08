@@ -1,27 +1,26 @@
 use super::*;
-use serde_json::json;
 
-pub(super) fn run() {
+#[test]
+fn target_context_resolves_only_routes_in_declared_workspace_scope() {
     // Real test-client shape: identical paths in independent applications are
     // ambiguous until explicit owner policy asserts the intended application.
-    let scoped = Workspace::new();
-    let linked = Workspace::new();
+    let scoped = FrameworkHarness::persisted(&[]);
     scoped.write(
         "forge-mcp.yaml",
         &format!(
-            "roots: [.]\nlinked_workspaces:\n  - name: service\n    path: '{}'\n    roots: [.]\n",
-            linked.0.display()
+            "roots: [.]\nexcluded_directory_names: [service]\nlinked_workspaces:\n  - name: service\n    path: '{}'\n    roots: [.]\n",
+            scoped.path("service").display()
         ),
     );
-    for workspace in [&scoped, &linked] {
-        workspace.write(
-            "pyproject.toml",
+    for prefix in ["", "service/"] {
+        scoped.write(
+            format!("{prefix}pyproject.toml"),
             "[project]\nname='route-proof'\ndependencies=['fastapi']\n",
         );
     }
     let route_source = "from fastapi import FastAPI\napp = FastAPI()\n@app.get('/test')\ndef handler(): return 1\n";
     scoped.write("app.py", route_source);
-    linked.write("app.py", route_source);
+    scoped.write("service/app.py", route_source);
     let client_source = "def request(client): return client.get('/test')\ndef missing(client): return client.get('/missing')\ndef wrong_method(client): return client.post('/test')\n";
     scoped.write("tests/test_api.py", client_source);
     scoped.write("outside.py", client_source);
@@ -29,11 +28,11 @@ pub(super) fn run() {
         "ordinary.py",
         "def helper(): return 1\ndef ordinary(): return helper()\n",
     );
-    writer::build(&scoped.0, &scoped.db(), None).unwrap();
+    scoped.build();
     let check_scope = |status: &str, target_path: Option<&str>| {
         let conn = scoped.open();
         commitments::verify(&conn).unwrap();
-        assert!(query_rows(&conn, "SELECT message FROM errors").is_empty());
+        assert!(error_messages(&conn).is_empty());
         assert_eq!(
             coverage_statuses_for_path(&conn, "tests/test_api.py", "GET /test"),
             [status]
@@ -58,9 +57,9 @@ pub(super) fn run() {
             targets, expected,
             "same context selects the actual canonical route"
         );
-        assert_eq!(query_rows(&conn, "SELECT d.name FROM edge_occurrences e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name='ordinary' AND e.kind='calls'"), ["helper"]);
+        assert_eq!(call_target_names(&conn, None, "ordinary"), ["helper"]);
         drop(conn);
-        assert_delta_cold_parity(&scoped);
+        operations::check_cold(delta_cold_observations(&scoped), "filesystem cold");
     };
     check_scope("ambiguous", None);
     let web: Value = toml::from_str::<toml::Value>(include_str!(
@@ -92,35 +91,42 @@ pub(super) fn run() {
         (vec!["app.py"], "resolved", Some("app.py")),
     ] {
         scoped.write(manifest, &policy(&owners));
-        scoped.delta(manifest);
+        scoped.delta(&[manifest]);
         check_scope(status, target);
     }
     // Provider removal/addition leaves the client unchanged and cannot fall back
     // to the equally shaped route in another workspace.
-    fs::remove_file(scoped.0.join("app.py")).unwrap();
-    scoped.delta("app.py");
+    scoped.remove("app.py");
+    scoped.delta(&["app.py"]);
     // The outside request now has only the linked provider; preserve that old policy.
     let conn = scoped.open();
     assert_eq!(
         coverage_statuses_for_path(&conn, "tests/test_api.py", "GET /test"),
         ["unresolved"]
     );
-    assert_eq!(query_count(&conn, "SELECT count(*) FROM edge_occurrences e JOIN path_dictionary p ON p.path_id=e.owner_id WHERE p.path='tests/test_api.py' AND e.kind='calls_endpoint'", []), 0);
+    assert_eq!(
+        query_count(
+            &conn,
+            "SELECT count(*) FROM edge_occurrences e JOIN path_dictionary p ON p.path_id=e.owner_id WHERE p.path='tests/test_api.py' AND e.kind='calls_endpoint'",
+            [],
+        ),
+        0
+    );
     drop(conn);
-    assert_delta_cold_parity(&scoped);
+    operations::check_cold(delta_cold_observations(&scoped), "filesystem cold");
     scoped.write("app.py", route_source);
-    scoped.delta("app.py");
+    scoped.delta(&["app.py"]);
     check_scope("resolved", Some("app.py"));
     scoped.write(
         "tests/test_api.py",
         &format!("{client_source}\n# cached application provider\n"),
     );
-    scoped.delta("tests/test_api.py");
+    scoped.delta(&["tests/test_api.py"]);
     check_scope("resolved", Some("app.py"));
-    fs::remove_file(scoped.0.join(manifest)).unwrap();
-    scoped.delta(manifest);
+    scoped.remove(manifest);
+    scoped.delta(&[manifest]);
     check_scope("ambiguous", None);
     scoped.write(manifest, &policy(&["app.py"]));
-    scoped.delta(manifest);
+    scoped.delta(&[manifest]);
     check_scope("resolved", Some("app.py"));
 }

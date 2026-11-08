@@ -45,12 +45,7 @@ enum Corruption {
 
 fn build_workspace() -> Workspace {
     let workspace = workspace();
-    let build = cli(&workspace, &["build"]);
-    assert!(
-        build.status.success(),
-        "{}",
-        String::from_utf8_lossy(&build.stderr)
-    );
+    workspace.build();
     workspace
 }
 

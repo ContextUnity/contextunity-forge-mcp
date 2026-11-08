@@ -8,9 +8,9 @@ use contextunity_forge_mcp::{
     db::{reader, symbols, writer},
     engine::{ast, scanner},
 };
-use std::{collections::BTreeMap, fs, path::PathBuf};
+use std::{collections::BTreeMap, fs};
 
-use super::support::Workspace;
+use crate::languages::PersistedWorkspaceHarness;
 
 #[cfg(feature = "lang-typescript")]
 fn coverage_aggregate_rows(conn: &rusqlite::Connection) -> (Vec<String>, Vec<String>) {

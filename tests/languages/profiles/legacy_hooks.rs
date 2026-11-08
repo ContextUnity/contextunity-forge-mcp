@@ -1,10 +1,11 @@
+use crate::languages::harness::ExtractorHarness;
 use contextunity_forge_mcp::{
     core::{
         models::Facts,
         semantic::{BindingFact, SourcePosition, TypeExpr, ValueExpr, ValueFlowFacts},
     },
     engine::{
-        ast::{self, ScopeBindings},
+        ast::ScopeBindings,
         languages::{self, FileContext, ImportPath, LanguageProfile, SymbolMetadata},
     },
 };
@@ -225,130 +226,148 @@ impl LanguageProfile for CombinedHooks {
     }
 }
 
+type Case = (bool, bool, Prepared);
+
+fn cases() -> impl Iterator<Item = Case> {
+    [false, true].into_iter().flat_map(|combined| {
+        [false, true].into_iter().flat_map(move |flow_return| {
+            [Prepared::Absent, Prepared::Matching, Prepared::Mismatched]
+                .into_iter()
+                .map(move |prepared| (combined, flow_return, prepared))
+        })
+    })
+}
+
+fn extract((combined, flow_return, prepared): Case) -> (Facts, Vec<&'static str>) {
+    let default = DefaultHooks::new(prepared, flow_return);
+    let combined_profile = CombinedHooks(DefaultHooks::new(prepared, flow_return));
+    let (profile, trace): (&dyn LanguageProfile, _) = if combined {
+        (&combined_profile, &combined_profile.0.calls)
+    } else {
+        (&default, &default.calls)
+    };
+    let extracted = ExtractorHarness::for_lang("javascript")
+        .at_path(PATH)
+        .extract("");
+    let mut facts: Facts =
+        serde_json::from_value(serde_json::to_value(extracted).expect("public facts serialize"))
+            .expect("public facts round-trip");
+    let module = facts.nodes.iter_mut().find(|n| n.kind == "module").unwrap();
+    module.details["bindings"] = json!(["existing_binding"]);
+    module.details["rebindings"] = json!(["existing_rebound"]);
+    languages::parse_file(profile, PATH, SOURCE, "legacy", &mut facts).unwrap();
+    let calls = trace.lock().unwrap().clone();
+    (facts, calls)
+}
+
 #[test]
-fn legacy_declaration_and_exact_root_preparation_preserve_public_facts() {
-    let mut failures = Vec::new();
-    for combined in [false, true] {
-        for flow_return in [false, true] {
-            for prepared in [Prepared::Absent, Prepared::Matching, Prepared::Mismatched] {
-                let default = DefaultHooks::new(prepared, flow_return);
-                let combined_profile = CombinedHooks(DefaultHooks::new(prepared, flow_return));
-                let (profile, trace): (&dyn LanguageProfile, _) = if combined {
-                    (&combined_profile, &combined_profile.0.calls)
-                } else {
-                    (&default, &default.calls)
-                };
-                let label =
-                    format!("combined={combined}/flow_return={flow_return}/prepared={prepared:?}");
-                let extracted = ast::extract(PATH, "javascript", "").unwrap();
-                let mut facts: Facts = serde_json::from_value(
-                    serde_json::to_value(extracted).expect("public facts serialize"),
-                )
-                .expect("public facts round-trip");
-                let module = facts.nodes.iter_mut().find(|n| n.kind == "module").unwrap();
-                module.details["bindings"] = json!(["existing_binding"]);
-                module.details["rebindings"] = json!(["existing_rebound"]);
-                languages::parse_file(profile, PATH, SOURCE, "legacy", &mut facts).unwrap();
-                let mut check = |ok: bool, message: &str| {
-                    if !ok {
-                        failures.push(format!("{label}: {message}"));
-                    }
-                };
-                check(facts.errors.is_empty(), "real grammar parse diagnostics");
-                let symbol = facts.nodes.iter().find(|n| n.name == "sample").unwrap();
-                check(
-                    symbol.qualname == "legacy.ReceiverType.sample",
-                    "metadata receiver qualification",
-                );
-                let details = crate::common::assertions::projected_node_details(&facts, symbol);
-                for (key, expected) in [
-                    ("receiver_name", json!("receiver_name")),
-                    ("receiver_type", json!("ReceiverType")),
-                    ("receiver", json!("receiver")),
-                    ("decorators", json!(["decorate"])),
-                    ("bases", json!("Base")),
-                    ("param_types", json!({"input":"InputType"})),
-                    ("default_export", json!(true)),
-                    ("async", json!(true)),
-                    ("prototype", json!(true)),
-                    ("is_method", json!(true)),
-                    ("is_static", json!(true)),
-                    ("is_overload", json!(true)),
-                    ("is_stub", json!(true)),
-                    ("is_conditional", json!(true)),
-                ] {
-                    check(details[key] == expected, &format!("metadata field {key}"));
-                }
-                let flow: ValueFlowFacts =
-                    serde_json::from_value(details["value_flow"].clone()).unwrap();
-                check(
-                    flow.alias_type == Some(named("ContextAlias")),
-                    "contextual flow preserved with metadata",
-                );
-                check(
-                    flow.return_type
-                        == Some(named(if flow_return {
-                            "FlowReturn"
-                        } else {
-                            "MetadataReturn"
-                        })),
-                    "flow precedence / metadata return fallback",
-                );
-                check(
-                    flow.bindings.len() == 1
-                        && flow.bindings[0].name == "flow_local"
-                        && flow.bindings[0].position.line == 4,
-                    "serialized typed binding and source position",
-                );
-                check(
-                    flow.return_position == Some(SourcePosition { line: 5, column: 2 }),
-                    "serialized return source position",
-                );
-                let module = facts.nodes.iter().find(|n| n.kind == "module").unwrap();
-                let details = crate::common::assertions::projected_node_details(&facts, module);
-                let matching = matches!(prepared, Prepared::Matching);
-                check(
-                    details["bindings"]
-                        == if matching {
-                            json!(["existing_binding", "prepared_only"])
-                        } else {
-                            json!(["existing_binding", "fallback"])
-                        },
-                    "matching prepared bindings / canonical fallback merge",
-                );
-                check(
-                    details["rebindings"]
-                        == if matching {
-                            json!(["existing_rebound", "prepared_rebound"])
-                        } else {
-                            json!(["existing_rebound", "fallback"])
-                        },
-                    "matching prepared rebindings / canonical fallback merge",
-                );
-                let calls = trace.lock().unwrap();
-                check(
-                    calls.iter().filter(|c| **c == "root_fallback").count()
-                        == usize::from(!matching),
-                    "prepared guard chooses canonical root fallback exactly",
-                );
-                check(
-                    calls
-                        .iter()
-                        .filter(|c| **c == "combined_declaration")
-                        .count()
-                        == usize::from(combined),
-                    "combined declaration called once",
-                );
-                check(
-                    !calls.contains(&"separate_metadata"),
-                    "combined metadata must not be replaced by separate hook",
-                );
-                check(
-                    calls.iter().filter(|c| **c == "metadata").count() == usize::from(!combined),
-                    "default metadata called once",
-                );
-            }
+fn legacy_and_combined_declaration_hooks_preserve_public_metadata() {
+    for case in cases() {
+        let (facts, _) = extract(case);
+        assert!(facts.errors.is_empty(), "{case:?}: {:?}", facts.errors);
+        let symbol = facts.nodes.iter().find(|n| n.name == "sample").unwrap();
+        assert_eq!(symbol.qualname, "legacy.ReceiverType.sample", "{case:?}");
+        let details = crate::common::assertions::projected_node_details(&facts, symbol);
+        for (key, expected) in [
+            ("receiver_name", json!("receiver_name")),
+            ("receiver_type", json!("ReceiverType")),
+            ("receiver", json!("receiver")),
+            ("decorators", json!(["decorate"])),
+            ("bases", json!("Base")),
+            ("param_types", json!({"input":"InputType"})),
+            ("default_export", json!(true)),
+            ("async", json!(true)),
+            ("prototype", json!(true)),
+            ("is_method", json!(true)),
+            ("is_static", json!(true)),
+            ("is_overload", json!(true)),
+            ("is_stub", json!(true)),
+            ("is_conditional", json!(true)),
+        ] {
+            assert_eq!(details[key], expected, "{case:?}: {key}");
         }
     }
-    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn contextual_flow_keeps_precedence_bindings_and_source_positions() {
+    for case in cases() {
+        let (facts, _) = extract(case);
+        let symbol = facts.nodes.iter().find(|n| n.name == "sample").unwrap();
+        let details = crate::common::assertions::projected_node_details(&facts, symbol);
+        let flow: ValueFlowFacts = serde_json::from_value(details["value_flow"].clone()).unwrap();
+        assert_eq!(flow.alias_type, Some(named("ContextAlias")), "{case:?}");
+        assert_eq!(
+            flow.return_type,
+            Some(named(if case.1 {
+                "FlowReturn"
+            } else {
+                "MetadataReturn"
+            })),
+            "{case:?}"
+        );
+        assert_eq!(flow.bindings.len(), 1, "{case:?}");
+        assert_eq!(flow.bindings[0].name, "flow_local", "{case:?}");
+        assert_eq!(flow.bindings[0].position.line, 4, "{case:?}");
+        assert_eq!(
+            flow.return_position,
+            Some(SourcePosition { line: 5, column: 2 }),
+            "{case:?}"
+        );
+    }
+}
+
+#[test]
+fn exact_prepared_root_bindings_merge_with_existing_public_bindings() {
+    for case in cases() {
+        let (facts, _) = extract(case);
+        let module = facts.nodes.iter().find(|n| n.kind == "module").unwrap();
+        let details = crate::common::assertions::projected_node_details(&facts, module);
+        let matching = matches!(case.2, Prepared::Matching);
+        assert_eq!(
+            details["bindings"],
+            if matching {
+                json!(["existing_binding", "prepared_only"])
+            } else {
+                json!(["existing_binding", "fallback"])
+            },
+            "{case:?}"
+        );
+        assert_eq!(
+            details["rebindings"],
+            if matching {
+                json!(["existing_rebound", "prepared_rebound"])
+            } else {
+                json!(["existing_rebound", "fallback"])
+            },
+            "{case:?}"
+        );
+    }
+}
+
+#[test]
+fn declaration_hooks_and_root_fallback_execute_exactly_once() {
+    for case in cases() {
+        let (_, calls) = extract(case);
+        let matching = matches!(case.2, Prepared::Matching);
+        assert_eq!(
+            calls.iter().filter(|c| **c == "root_fallback").count(),
+            usize::from(!matching),
+            "{case:?}"
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|c| **c == "combined_declaration")
+                .count(),
+            usize::from(case.0),
+            "{case:?}"
+        );
+        assert!(!calls.contains(&"separate_metadata"), "{case:?}");
+        assert_eq!(
+            calls.iter().filter(|c| **c == "metadata").count(),
+            usize::from(!case.0),
+            "{case:?}"
+        );
+    }
 }

@@ -10,7 +10,8 @@ fn exact_symbol_match_filters_text_only_candidates_by_default() {
     );
     workspace.write("b.py", "def _as_str(): pass\n");
     workspace.write("z.py", "def as_str(): pass\n");
-    let conn = workspace.build();
+    workspace.build();
+    let conn = workspace.open();
     let mut page_options = options(1);
     let mut names = Vec::new();
     let mut reasons = Vec::new();
@@ -107,7 +108,8 @@ fn exact_symbol_match_filters_text_only_candidates_by_default() {
     );
     workspace.write("types.py", "class as_str: pass\n");
     workspace.write("README.md", "# as_str\n\nConversion.\n");
-    let conn = workspace.build();
+    workspace.build();
+    let conn = workspace.open();
     let qualified: String = conn.query_row(
         "SELECT n.qualname FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.name='as_str' AND p.path='pkg/a.py'",
         [], |row| row.get(0),
@@ -268,7 +270,8 @@ fn natural_document_search_ignores_stop_words_and_boosts_section_titles() {
         "b.md",
         "# Architecture\n\nRequest processing routes subscribers.\n",
     );
-    let conn = workspace.build();
+    workspace.build();
+    let conn = workspace.open();
     let result = reader::search_docs_with_options(
         &conn,
         "How is the request processing for subscribers?",
@@ -306,7 +309,8 @@ fn natural_document_search_ignores_stop_words_and_boosts_section_titles() {
     }
 
     workspace.write("c.md", "# Delivery\n\nSubscribers receive events.\n");
-    let conn = workspace.build();
+    workspace.build();
+    let conn = workspace.open();
     let conceptual = reader::search_docs_with_options(
         &conn,
         "request subscribers",
@@ -370,7 +374,8 @@ fn search_ranking_applies_to_other_names_and_wildcard_pages() {
     workspace.write("z.py", "def resolve_conflict(): pass\n");
     workspace.write("build.py", "def unrelated(): pass\n");
     workspace.write("zz.py", "def build_target(): pass\n");
-    let conn = workspace.build();
+    workspace.build();
+    let conn = workspace.open();
 
     let ranked = symbols::search_with_options(
         &conn,
@@ -567,7 +572,8 @@ function shadowed(test: Function) {
 "#,
         );
     }
-    let conn = workspace.build();
+    workspace.build();
+    let conn = workspace.open();
     let inbound = symbols::tests_paged(&conn, "target", "inbound", &options(10)).unwrap();
     let items = inbound["nodes"]["items"].as_array().unwrap();
     let direct = items
@@ -879,7 +885,7 @@ function shadowed(test: Function) {
         SourceOptions::resolve(&ResponsePolicy::default(), Some(false), None, None, 0).unwrap();
     let dispatch = symbols::explain_with_options(
         &conn,
-        &workspace.0,
+        workspace.root(),
         "surface.py:dispatch",
         &symbols::ExplainOptions {
             direction: Some("outgoing"),
@@ -1009,7 +1015,8 @@ fn test_mapping_uses_lexical_fallback_when_no_test_edges_exist() {
         "tests/test_service.py",
         "def test_ChannelSyncEntry(): pass\n",
     );
-    let conn = workspace.build();
+    workspace.build();
+    let conn = workspace.open();
     let inbound = symbols::tests_paged(&conn, "ChannelSyncEntry", "inbound", &options(10)).unwrap();
     assert_eq!(inbound["discovery_method"], "lexical_fallback");
     assert_eq!(inbound["nodes"]["total"], 1);
@@ -1060,7 +1067,8 @@ fn test_mapping_places_direct_evidence_before_earlier_transitive_tests() {
         "tests/z_test_service.py",
         "from service import target\ndef test_direct(): target()\n",
     );
-    let conn = workspace.build();
+    workspace.build();
+    let conn = workspace.open();
     let first = symbols::tests_paged(&conn, "target", "inbound", &options(1)).unwrap();
     assert_eq!(first["nodes"]["items"][0]["name"], "test_direct");
     assert_eq!(
@@ -1109,7 +1117,8 @@ fn analyze_cycles_option_and_explain_direction_filtering() {
     let workspace = Workspace::new();
     workspace.write("pkg/a.py", "def a(): from pkg.b import b; b()\n");
     workspace.write("pkg/b.py", "def b(): from pkg.a import a; a()\n");
-    let conn = workspace.build();
+    workspace.build();
+    let conn = workspace.open();
 
     let summary_no_cycles = reader::analyze_paged(&conn, "pkg", None, &options(10)).unwrap();
     assert_eq!(summary_no_cycles["cycles"]["omitted"], true);
@@ -1125,7 +1134,7 @@ fn analyze_cycles_option_and_explain_direction_filtering() {
         SourceOptions::resolve(&ResponsePolicy::default(), Some(false), None, None, 0).unwrap();
     let both = symbols::explain_with_options(
         &conn,
-        &workspace.0,
+        workspace.root(),
         "a",
         &symbols::ExplainOptions {
             direction: Some("both"),
@@ -1143,7 +1152,7 @@ fn analyze_cycles_option_and_explain_direction_filtering() {
 
     let incoming_only = symbols::explain_with_options(
         &conn,
-        &workspace.0,
+        workspace.root(),
         "a",
         &symbols::ExplainOptions {
             direction: Some("incoming"),
@@ -1160,7 +1169,7 @@ fn analyze_cycles_option_and_explain_direction_filtering() {
 
     let outgoing_only = symbols::explain_with_options(
         &conn,
-        &workspace.0,
+        workspace.root(),
         "a",
         &symbols::ExplainOptions {
             direction: Some("outgoing"),
@@ -1183,7 +1192,8 @@ fn tests_reports_unresolved_references_in_symbol_scope() {
         "test_foo.py",
         "def test_one():\n    unresolved_call_target()\n",
     );
-    let conn = workspace.build();
+    workspace.build();
+    let conn = workspace.open();
     let res = symbols::tests_paged(&conn, "test_one", "inbound", &options(10)).unwrap();
     assert!(res["unresolved_references"].as_u64().unwrap() >= 1);
     assert!(res["scope"]
@@ -1199,7 +1209,8 @@ fn compact_coverage_keeps_scope_counts_and_full_detail_keeps_evidence() {
         "target.py",
         "def target_func():\n    return unresolved_dependency()\n",
     );
-    let conn = workspace.build();
+    workspace.build();
+    let conn = workspace.open();
     let inspected = reader::inspect_paged(&conn, "target_func", false, &options(10)).unwrap();
     let coverage = &inspected["coverage"];
     assert!(coverage["total"].as_u64().unwrap() >= 1);
@@ -1228,7 +1239,8 @@ fn compact_search_preserves_distinct_selectors_and_locations() {
         "a.py",
         "class First:\n    def shared(self): pass\nclass Second:\n    def shared(self): pass\n",
     );
-    let conn = workspace.build();
+    workspace.build();
+    let conn = workspace.open();
     let compact = symbols::search_with_options(
         &conn,
         "shared",
@@ -1281,7 +1293,8 @@ fn compact_coverage_pages_keep_scope_totals_and_every_reference() {
         code.push_str(&format!("    missing_{i:02}()\n"));
     }
     workspace.write("code.py", &code);
-    let conn = workspace.build();
+    workspace.build();
+    let conn = workspace.open();
     let mut query = options(4);
     let mut references = Vec::new();
     loop {
@@ -1319,12 +1332,13 @@ fn coverage_is_opt_in_and_snippet_preserves_source_continuation() {
         code.push_str(&format!("    missing_{i:02}()\n"));
     }
     workspace.write("code.py", &code);
-    let conn = workspace.build();
+    workspace.build();
+    let conn = workspace.open();
     let policy = ResponsePolicy::default();
     let source = SourceOptions::resolve(&policy, Some(true), Some(0), Some(35), 0).unwrap();
     let inspect = symbols::inspect_with_options(
         &conn,
-        &workspace.0,
+        workspace.root(),
         "target",
         &symbols::InspectOptions {
             show_doc: false,
@@ -1349,7 +1363,7 @@ fn coverage_is_opt_in_and_snippet_preserves_source_continuation() {
     }));
     let compact = symbols::inspect_with_options(
         &conn,
-        &workspace.0,
+        workspace.root(),
         "target",
         &symbols::InspectOptions {
             show_doc: false,
@@ -1363,7 +1377,7 @@ fn coverage_is_opt_in_and_snippet_preserves_source_continuation() {
     assert_eq!(compact["analysis_gaps"]["total"], 0);
     let explained = symbols::explain_with_options(
         &conn,
-        &workspace.0,
+        workspace.root(),
         "target",
         &symbols::ExplainOptions {
             direction: None,
@@ -1377,7 +1391,7 @@ fn coverage_is_opt_in_and_snippet_preserves_source_continuation() {
     assert!(explained.get("coverage").is_none());
     assert!(symbols::inspect_with_options(
         &conn,
-        &workspace.0,
+        workspace.root(),
         "target",
         &symbols::InspectOptions {
             show_doc: false,
@@ -1390,7 +1404,7 @@ fn coverage_is_opt_in_and_snippet_preserves_source_continuation() {
     )
     .is_err());
     let snippet =
-        symbols::snippet_paged(&conn, &workspace.0, "target", &source, &options(30)).unwrap();
+        symbols::snippet_paged(&conn, workspace.root(), "target", &source, &options(30)).unwrap();
     assert_eq!(snippet["source"], inspect["source"]);
     assert_eq!(snippet["source_preview"], inspect["source_preview"]);
     assert_eq!(snippet["node"], inspect["node"]);
@@ -1404,12 +1418,18 @@ fn coverage_is_opt_in_and_snippet_preserves_source_continuation() {
         .unwrap() as usize;
     let next_source =
         SourceOptions::resolve(&policy, Some(true), Some(0), Some(35), offset).unwrap();
-    assert!(
-        symbols::snippet_paged(&conn, &workspace.0, "target", &next_source, &options(30)).is_err()
-    );
+    assert!(symbols::snippet_paged(
+        &conn,
+        workspace.root(),
+        "target",
+        &next_source,
+        &options(30)
+    )
+    .is_err());
     let mut query = options(30);
     query.generation = Some(snippet["generation"].as_str().unwrap().to_owned());
-    let next = symbols::snippet_paged(&conn, &workspace.0, "target", &next_source, &query).unwrap();
+    let next =
+        symbols::snippet_paged(&conn, workspace.root(), "target", &next_source, &query).unwrap();
     assert_eq!(next["source_preview"]["has_more"], false);
     assert_eq!(
         format!(
@@ -1420,9 +1440,13 @@ fn coverage_is_opt_in_and_snippet_preserves_source_continuation() {
         code
     );
     query.generation = Some("stale-generation".to_owned());
-    assert!(symbols::snippet_paged(&conn, &workspace.0, "target", &next_source, &query).is_err());
+    assert!(
+        symbols::snippet_paged(&conn, workspace.root(), "target", &next_source, &query).is_err()
+    );
     workspace.write("code.py", "def target(): pass\n");
-    assert!(symbols::snippet_paged(&conn, &workspace.0, "target", &source, &options(30)).is_err());
+    assert!(
+        symbols::snippet_paged(&conn, workspace.root(), "target", &source, &options(30)).is_err()
+    );
 }
 
 #[test]
@@ -1434,7 +1458,8 @@ fn search_docs_prioritizes_all_term_matches_above_single_term_title_hits() {
         "docs/overview.md",
         "# Overview\n\nAlpha beta gamma pipeline.\n",
     );
-    let conn = workspace.build();
+    workspace.build();
+    let conn = workspace.open();
     let result = reader::search_docs_with_options(
         &conn,
         "alpha beta gamma",
@@ -1499,7 +1524,8 @@ aliases:
         "# ADR-0001: Core Architecture\n\nCore architecture documentation.\n",
     );
 
-    let conn = workspace.build();
+    workspace.build();
+    let conn = workspace.open();
 
     let query_options = QueryOptions {
         limit: 10,

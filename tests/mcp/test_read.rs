@@ -1,78 +1,164 @@
 //! Contract tests for the layered reader.
 
-use crate::common::{mcp_client::StdioClient, Workspace};
-use forge_core::model::{ReadBounds, ReadMode, ReadResult};
-use forge_core::subsystems::{
-    disabled_read_mode_error, disabled_tool_error, filter_subsystem_tools, SubsystemPreset,
-    SubsystemRegistry,
-};
-use serde_json::json;
+use crate::common::Workspace;
+use crate::harness::McpTestHarness;
+use contextunity_forge_mcp::engine::reader::ReadRequest;
+use forge_core::model::ReadMode;
+use forge_core::subsystems::{SubsystemPreset, SubsystemRegistry, filter_subsystem_tools};
+use serde_json::{Value, json};
+
+fn read_response(client: &mut McpTestHarness, arguments: Value) -> Value {
+    client
+        .call("forge_read", arguments)
+        .expect("MCP transport")
+        .1
+}
+
+fn read_tool(client: &mut McpTestHarness, arguments: Value) -> Value {
+    client
+        .payload("forge_read", arguments)
+        .expect("MCP tool should succeed")
+}
 
 #[test]
-fn read_models_and_core_tool_are_available_with_minimal_subsystems() {
-    let registry = SubsystemRegistry {
-        profile: SubsystemPreset::Minimal,
-        ..Default::default()
-    };
-    assert!(disabled_tool_error("forge_read", &registry).is_none());
-    assert_eq!(
-        filter_subsystem_tools(["forge_read", "get_doc", "code_map_explain"], &registry),
-        ["forge_read"]
+fn forge_read_batch_snippet_exports_source() {
+    let (w, harness) =
+        McpTestHarness::with_files(&[("values.py", "def value():\n    return 42\n")]);
+    let mut client = harness.expect("MCP initialize");
+    let response = read_tool(
+        &mut client,
+        json!({"paths":["values.py"], "selector":"value", "output_file":"exports/snippets.txt"}),
     );
-    let result = ReadResult {
-        path: "notes.txt".into(),
-        mode: ReadMode::Lines,
-        content: "hello".into(),
-        truncated: false,
-    };
-    let value = serde_json::to_value(result).unwrap();
-    assert_eq!(value["mode"], "lines");
-    assert_eq!(ReadBounds::default().start_line, None);
+    let source = response["batch"][0]["source"].as_str().unwrap();
+    let exported = std::fs::read_to_string(w.path("exports/snippets.txt")).unwrap();
+    assert_eq!(exported, format!("### values.py\n\n{source}"));
+    client.finish().expect("server must finish successfully");
 }
 
 #[test]
-fn structural_reader_modes_require_their_subsystems() {
-    let mut registry = SubsystemRegistry {
-        profile: SubsystemPreset::Minimal,
-        ..Default::default()
-    };
-    assert!(disabled_read_mode_error(ReadMode::Snippet, false, &registry).is_some());
-    assert!(disabled_read_mode_error(ReadMode::Outline, false, &registry).is_some());
-    assert!(disabled_read_mode_error(ReadMode::Outline, true, &registry).is_some());
-    assert!(disabled_read_mode_error(ReadMode::Lines, false, &registry).is_none());
-    registry.enabled.insert("docs".into());
-    assert!(disabled_read_mode_error(ReadMode::Outline, true, &registry).is_none());
-    assert!(disabled_read_mode_error(ReadMode::Outline, false, &registry).is_some());
-    registry.enabled.insert("codemap".into());
-    assert!(disabled_read_mode_error(ReadMode::Snippet, false, &registry).is_none());
-    assert!(disabled_read_mode_error(ReadMode::Outline, false, &registry).is_none());
-}
+fn forge_read_validates_ranges_and_argument_names_at_the_mcp_seam() {
+    let mut lines_content = String::new();
+    for i in 1..=30 {
+        lines_content.push_str(&format!("line {i}\n"));
+    }
+    let mut client = McpTestHarness::indexed(&[
+        ("forge-mcp.yaml", "profile: minimal\n"),
+        ("notes.txt", lines_content.as_str()),
+        ("src/lib.rs", "pub fn value() {}\n"),
+        ("test.txt", "hello\n"),
+    ])
+    .expect("MCP initialize");
+    for lines in [
+        "",
+        "garbage",
+        "2-1",
+        "0-2",
+        "1-x",
+        "1-2-3",
+        "1..",
+        "-2",
+        "0",
+        "18446744073709551616",
+    ] {
+        let response = read_response(
+            &mut client,
+            json!({"path":"notes.txt", "lines":lines, "line_count":1}),
+        );
+        assert_eq!(response["result"]["isError"], true, "{lines}: {response}");
+        assert!(response.to_string().contains("lines"), "{response}");
+    }
+    for (arguments, expected) in [
+        (
+            json!({"path":"notes.txt", "start_line":2, "end_line":1}),
+            "end_line",
+        ),
+        (
+            json!({"path":"src/lib.rs", "start_line":usize::MAX, "line_count":2}),
+            "bounds",
+        ),
+        (
+            json!({"path":"src/lib.rs", "start_line":i64::MAX as usize, "line_count":2}),
+            "bounds",
+        ),
+        (
+            json!({"path":"src/lib.rs", "start_line":2, "line_count":usize::MAX}),
+            "bounds",
+        ),
+    ] {
+        let details = arguments.to_string();
+        let response = read_response(&mut client, arguments);
+        assert_eq!(response["result"]["isError"], true, "{details}: {response}");
+        assert!(
+            response.to_string().contains(expected),
+            "{details}: {response}"
+        );
+    }
+    for (arguments, expected) in [
+        (
+            json!({"path":"notes.txt", "start_line":5, "end_line":10}),
+            "5: line 5\n6: line 6\n7: line 7\n8: line 8\n9: line 9\n10: line 10\n",
+        ),
+        (
+            json!({"path":"notes.txt", "lines":"12-15"}),
+            "12: line 12\n13: line 13\n14: line 14\n15: line 15\n",
+        ),
+        (
+            json!({"path":"notes.txt", "lines":"20..22"}),
+            "20: line 20\n21: line 21\n22: line 22\n",
+        ),
+        (
+            json!({"path":"notes.txt", "start_line":1, "lines":3}),
+            "1: line 1\n2: line 2\n3: line 3\n",
+        ),
+        (
+            json!({"path":"notes.txt", "start_line":25, "max_lines":2}),
+            "25: line 25\n26: line 26\n",
+        ),
+    ] {
+        let result = read_tool(&mut client, arguments);
+        assert_eq!(result["content"], expected, "{result}");
+    }
 
-#[test]
-fn forge_read_serves_text_in_a_minimal_workspace() {
-    let workspace = Workspace::new();
-    workspace.write("forge-mcp.yaml", "profile: minimal\n");
-    workspace.write("notes.txt", "first line\nsecond line\n");
-    let registry = SubsystemRegistry {
-        profile: SubsystemPreset::Minimal,
-        ..Default::default()
-    };
-    let enabled_tools = filter_subsystem_tools(["forge_read"], &registry);
-    assert_eq!(enabled_tools, ["forge_read"]);
-    let mut client = StdioClient::new(&workspace);
-    let (_, response) = client.call("forge_read", json!({"path":"notes.txt", "mode":"lines"}));
-    assert_ne!(response["result"]["isError"], true, "{response}");
-    assert!(response.to_string().contains("first line"), "{response}");
+    let rejected = read_response(&mut client, json!({"path":"test.txt", "line_count_max":50}));
+    assert_eq!(rejected["result"]["isError"], true);
+    let rejected_json: Value =
+        serde_json::from_str(rejected["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(rejected_json["error"]["code"], "rejected_arguments");
+    assert_eq!(rejected_json["error"]["fields"], json!(["line_count_max"]));
+    let msg = rejected_json["error"]["message"].as_str().unwrap();
+    assert!(
+        msg.contains("Valid supported parameters for 'forge_read'"),
+        "expected parameter list in {msg}"
+    );
+    assert!(
+        msg.contains("path") && msg.contains("start_line") && msg.contains("line_count"),
+        "expected core params in {msg}"
+    );
+    assert!(
+        msg.contains("Did you mean:"),
+        "expected suggestion in {msg}"
+    );
+    assert!(
+        rejected_json["error"]["supported_parameters"].is_array(),
+        "expected supported_parameters list"
+    );
+    client.finish().expect("server must finish successfully");
 }
 
 #[test]
 fn forge_read_core_modes_and_cli_share_bounded_text_and_exports() {
-    use crate::common::mcp_client::run_cli_json;
-    let w = Workspace::new();
-    w.write("forge-mcp.yaml", "profile: minimal\n");
-    w.write("notes.txt", "first\r\nПривіт 42\r\nthird\r\nfourth\r\n");
-    let mut client = StdioClient::new(&w);
+    use crate::cli::run_cli_json;
+    let w = Workspace::with_files(&[
+        ("forge-mcp.yaml", "profile: minimal\n"),
+        ("notes.txt", "first\r\nПривіт 42\r\nthird\r\nfourth\r\n"),
+    ]);
+    let mut client = McpTestHarness::new(&w).expect("MCP initialize");
     for (mode, extra, expected) in [
+        (
+            "lines",
+            json!({}),
+            "1: first\r\n2: Привіт 42\r\n3: third\r\n4: fourth\r\n",
+        ),
         (
             "raw",
             json!({"start_line":2,"line_count":1}),
@@ -102,12 +188,13 @@ fn forge_read_core_modes_and_cli_share_bounded_text_and_exports() {
         let mut args = extra;
         args["path"] = json!("notes.txt");
         args["mode"] = json!(mode);
-        let result = client.payload("forge_read", args);
+        let result = read_tool(&mut client, args);
+        assert_eq!(result["mode"], mode, "{result}");
         assert_eq!(result["content"], expected, "{result}");
         assert!(result.get("Hints").is_none(), "{result}");
     }
     let args = json!({"path":"notes.txt","mode":"raw","start_line":2,"line_count":1,"output_file":"exports/read.txt"});
-    let mcp = client.payload("forge_read", args);
+    let mcp = read_tool(&mut client, args);
     assert_eq!(
         std::fs::read_to_string(w.path("exports/read.txt")).unwrap(),
         "Привіт 42\r\n"
@@ -136,123 +223,145 @@ fn forge_read_core_modes_and_cli_share_bounded_text_and_exports() {
         serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap(),
         mcp
     );
-    let (_, old) = client.call(
-        &["get_", "code_snippet"].concat(),
-        json!({"selector":"notes.txt"}),
-    );
+    let (_, old) = client
+        .call(
+            &["get_", "code_snippet"].concat(),
+            json!({"selector":"notes.txt"}),
+        )
+        .expect("MCP transport");
     assert_eq!(old["result"]["isError"], true);
     assert!(!w.db().exists(), "core reads must not create the index");
+    client.finish().expect("server must finish successfully");
 }
 
 #[test]
-fn forge_read_rejects_sensitive_binary_and_escaping_paths_before_export() {
-    let w = Workspace::new();
-    w.write(
-        "forge-mcp.yaml",
-        "profile: minimal\nsensitive: ['secrets/**', '.env*']\n",
-    );
-    w.write("notes.txt", "safe\n");
-    w.write("secrets/token.txt", "secret\n");
-    w.write(".env.local", "secret\n");
+fn forge_read_handles_path_aliases_and_rejects_unsafe_paths() {
+    let (w, harness) = McpTestHarness::with_files(&[
+        (
+            "forge-mcp.yaml",
+            "profile: minimal\nsensitive: ['secrets/**', '.env*']\n",
+        ),
+        ("notes.txt", "safe\n"),
+        ("small.txt", "inside\n"),
+        ("data.txt", "alpha\nbeta\ngamma needle\ndelta\n"),
+        ("docs/guide.md", "# Guide\n"),
+        ("secrets/token.txt", "secret\n"),
+        (".env.local", "secret\n"),
+    ]);
     w.write_bytes("binary.dat", b"abc\0def");
-    let mut client = StdioClient::new(&w);
-    for (args, error) in [
-        (json!({"path":"../outside"}), "relative"),
-        (json!({"path":"/etc/passwd"}), "relative"),
+    #[cfg(unix)]
+    let outside = Workspace::new();
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(w.path("notes.txt"), outside.path("alias.txt")).unwrap();
+        std::os::unix::fs::symlink(w.root(), outside.path("alias-dir")).unwrap();
+    }
+    let absolute_data_path = w.root().join("data.txt").display().to_string();
+    let parent_absolute = format!(
+        "/tmp/../{}/notes.txt",
+        w.root().strip_prefix("/").unwrap().display()
+    );
+    let sibling = format!("{}small.txt", w.root().display());
+    let mut client = harness.expect("MCP initialize");
+
+    for (arguments, path, content) in [
+        (
+            json!({"file_path":"data.txt", "start_line":1, "line_count":2}),
+            "data.txt",
+            "1: alpha\n2: beta\n",
+        ),
+        (
+            json!({"path":absolute_data_path.clone(), "start_line":1, "line_count":1}),
+            "data.txt",
+            "1: alpha\n",
+        ),
+        (
+            json!({"file_path":absolute_data_path, "start_line":2, "line_count":1}),
+            "data.txt",
+            "2: beta\n",
+        ),
+    ] {
+        let result = read_tool(&mut client, arguments);
+        assert_eq!(result["path"], path);
+        assert_eq!(result["content"], content);
+    }
+    let search = read_tool(
+        &mut client,
+        json!({"path":"data.txt", "mode":"search", "query":"needle"}),
+    );
+    assert!(search["content"].as_str().unwrap().contains("gamma needle"));
+
+    let mut rejected_paths = vec![
+        (json!({"path":"../notes.txt"}), Some("relative")),
+        (json!({"path":parent_absolute}), Some("relative")),
+        (json!({"path":sibling}), None),
+        (json!({"path":"/etc/passwd"}), Some("relative")),
         (
             json!({"path":"secrets/token.txt","output_file":"leaked.txt"}),
-            "SENSITIVE_FILE",
+            Some("SENSITIVE_FILE"),
         ),
-        (json!({"path":".env.local"}), "SENSITIVE_FILE"),
+        (json!({"path":".env.local"}), Some("SENSITIVE_FILE")),
         (
             json!({"path":"binary.dat","output_file":"leaked.txt"}),
-            "BINARY_FILE",
+            Some("BINARY_FILE"),
         ),
         (
             json!({"path":"notes.txt","output_file":"../escaped.txt"}),
-            "relative",
+            Some("relative"),
         ),
         (
             json!({"path":"notes.txt","output_file":".env.export"}),
-            "SENSITIVE_FILE",
+            Some("SENSITIVE_FILE"),
         ),
         (
             json!({"path":"notes.txt","mode":"snippet"}),
-            "FEATURE_DISABLED",
+            Some("FEATURE_DISABLED"),
         ),
         (
             json!({"path":"notes.txt","mode":"outline"}),
-            "FEATURE_DISABLED",
+            Some("FEATURE_DISABLED"),
+        ),
+        (
+            json!({"path":"docs/guide.md","mode":"outline"}),
+            Some("FEATURE_DISABLED"),
         ),
         (
             json!({"path":"notes.txt","mode":"search","pattern":"[","regex":true}),
-            "regex",
+            Some("regex"),
         ),
-    ] {
-        let (_, response) = client.call("forge_read", args);
-        assert_eq!(response["result"]["isError"], true, "{response}");
-        assert!(response.to_string().contains(error), "{response}");
-    }
-    assert!(!w.path("leaked.txt").exists());
+    ];
     #[cfg(unix)]
     {
-        std::os::unix::fs::symlink(w.path("notes.txt"), w.path("alias.txt")).unwrap();
-        for args in [
-            json!({"path":"alias.txt"}),
-            json!({"path":"notes.txt","output_file":"alias.txt"}),
+        for path in [
+            outside.path("alias.txt"),
+            outside.path("alias-dir/notes.txt"),
         ] {
-            let (_, response) = client.call("forge_read", args);
-            assert_eq!(response["result"]["isError"], true, "{response}");
+            rejected_paths.push((json!({"path":path}), None));
+        }
+        std::os::unix::fs::symlink(w.path("notes.txt"), w.path("alias.txt")).unwrap();
+        rejected_paths.extend([
+            (json!({"path":"alias.txt"}), None),
+            (json!({"path":"notes.txt","output_file":"alias.txt"}), None),
+        ]);
+    }
+    for (arguments, expected_error) in rejected_paths {
+        let response = read_response(&mut client, arguments);
+        assert_eq!(response["result"]["isError"], true, "{response}");
+        if let Some(expected_error) = expected_error {
+            assert!(response.to_string().contains(expected_error), "{response}");
         }
     }
-}
-
-#[test]
-fn forge_read_delta_uses_real_git_and_rejects_option_baselines() {
-    let w = Workspace::new();
-    w.write("forge-mcp.yaml", "profile: minimal\n");
-    w.write("notes.txt", "before\n");
-    for args in [
-        vec!["init", "-q"],
-        vec!["add", "."],
-        vec![
-            "-c",
-            "user.name=Reader",
-            "-c",
-            "user.email=reader@example.invalid",
-            "commit",
-            "-qm",
-            "baseline",
-        ],
-    ] {
-        assert!(forge_core::git::git_command(w.root(), &args)
-            .unwrap()
-            .status
-            .success());
-    }
-    w.write("notes.txt", "after\n");
-    let mut client = StdioClient::new(&w);
-    let result = client.payload("forge_read", json!({"path":"notes.txt","mode":"delta"}));
-    let diff = result["content"].as_str().unwrap();
-    assert!(
-        diff.contains("-before") && diff.contains("+after"),
-        "{result}"
-    );
-    let (_, response) = client.call(
-        "forge_read",
-        json!({"path":"notes.txt","mode":"delta","baseline":"--output=escaped"}),
-    );
-    assert_eq!(response["result"]["isError"], true, "{response}");
+    assert!(!w.path("leaked.txt").exists());
+    client.finish().expect("server must finish successfully");
 }
 
 #[test]
 fn forge_read_delta_never_exposes_sensitive_sibling_through_git_pathspec() {
-    use crate::common::mcp_client::run_cli_json;
-    let w = Workspace::new();
-    w.write(
+    use crate::cli::run_cli_json;
+    let w = Workspace::with_files(&[(
         "forge-mcp.yaml",
         "profile: minimal\nsensitive: ['secrets/**']\n",
-    );
+    )]);
     let paths = [
         ":(glob)**",
         "*",
@@ -265,33 +374,16 @@ fn forge_read_delta_never_exposes_sensitive_sibling_through_git_pathspec() {
         w.write(path, &format!("safe-before-{index}\n"));
     }
     w.write("secrets/token.txt", "old-secret\n");
-    for args in [
-        vec!["init", "-q"],
-        vec!["add", "."],
-        vec![
-            "-c",
-            "user.name=Reader",
-            "-c",
-            "user.email=reader@example.invalid",
-            "commit",
-            "-qm",
-            "baseline",
-        ],
-    ] {
-        assert!(forge_core::git::git_command(w.root(), &args)
-            .unwrap()
-            .status
-            .success());
-    }
+    w.seed_git().expect("seed real Git baseline");
     for (index, path) in paths.iter().enumerate() {
         w.write(path, &format!("safe-after-{index}\n"));
     }
     w.write("secrets/token.txt", "new-secret\n");
-    let mut client = StdioClient::new(&w);
+    let mut client = McpTestHarness::new(&w).expect("MCP initialize");
     for (index, path) in paths.iter().enumerate() {
         let export = format!("exports/delta-{index}.txt");
-        let result = client.payload(
-            "forge_read",
+        let result = read_tool(
+            &mut client,
             json!({"path":path,"mode":"delta","output_file":export}),
         );
         let content = result["content"].as_str().unwrap();
@@ -325,61 +417,44 @@ fn forge_read_delta_never_exposes_sensitive_sibling_through_git_pathspec() {
             "CLI/MCP delta diverged for {path}"
         );
     }
+    client.finish().expect("server must finish successfully");
 }
 
 #[test]
 fn forge_read_delta_uses_the_admitted_linked_git_context() {
-    use crate::common::mcp_client::run_cli_json;
-    let primary = Workspace::new();
-    let linked = Workspace::new();
-    primary.write(
+    use crate::cli::run_cli_json;
+    let linked = Workspace::with_files(&[]);
+    let primary = Workspace::with_files(&[(
         "forge-mcp.yaml",
-        &format!("profile: minimal\nsensitive: ['**/secrets/**']\nlinked_workspaces:\n  - name: linked\n    path: {}\n", linked.root().display()),
-    );
+        &format!(
+            "profile: minimal\nsensitive: ['**/secrets/**']\nlinked_workspaces:\n  - name: linked\n    path: {}\n",
+            linked.root().display()
+        ),
+    )]);
     let paths = ["nested/notes.txt", "nested/:(glob)**"];
     for path in paths {
         linked.write(path, "linked-before\n");
         primary.write(format!("[linked]/{path}"), "decoy-before\n");
     }
     linked.write("nested/secrets/token.txt", "secret-before\n");
-    for workspace in [&primary, &linked] {
-        for args in [
-            vec!["init", "-q"],
-            vec!["add", "."],
-            vec![
-                "-c",
-                "user.name=Reader",
-                "-c",
-                "user.email=reader@example.invalid",
-                "commit",
-                "-qm",
-                "baseline",
-            ],
-        ] {
-            assert!(forge_core::git::git_command(workspace.root(), &args)
-                .unwrap()
-                .status
-                .success());
-        }
-    }
-    for (workspace, tag) in [(&primary, "primary-only"), (&linked, "linked-only")] {
-        assert!(
-            forge_core::git::git_command(workspace.root(), &["tag", tag])
-                .unwrap()
-                .status
-                .success()
-        );
-    }
+    primary.seed_git().expect("seed primary Git baseline");
+    linked.seed_git().expect("seed linked Git baseline");
+    primary
+        .create_git_tags(&["primary-only"])
+        .expect("tag primary baseline");
+    linked
+        .create_git_tags(&["linked-only"])
+        .expect("tag linked baseline");
     for path in paths {
         linked.write(path, "linked-after\n");
         primary.write(format!("[linked]/{path}"), "decoy-after\n");
     }
     linked.write("nested/secrets/token.txt", "secret-after\n");
-    let mut client = StdioClient::new(&primary);
+    let mut client = McpTestHarness::new(&primary).expect("MCP initialize");
     let mut failures = Vec::new();
     for path in paths {
         let alias = format!("[linked]/{path}");
-        let raw = client.payload("forge_read", json!({"path":alias,"mode":"raw"}));
+        let raw = read_tool(&mut client, json!({"path":alias,"mode":"raw"}));
         assert_eq!(raw["content"], "linked-after\n");
         for baseline in [None, Some("linked-only")] {
             let mut request = json!({"path":alias,"mode":"delta"});
@@ -389,7 +464,7 @@ fn forge_read_delta_uses_the_admitted_linked_git_context() {
                 args.extend(["--baseline", baseline]);
             }
             args.extend(["--", &alias]);
-            let (_, response) = client.call("forge_read", request);
+            let (_, response) = client.call("forge_read", request).expect("MCP transport");
             let output = run_cli_json(&primary, &args);
             let cli: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap_or_default();
             // Exercise both real transports before reporting a runtime-red failure.
@@ -412,10 +487,12 @@ fn forge_read_delta_uses_the_admitted_linked_git_context() {
         }
     }
     for baseline in ["primary-only", "--output=escaped", "missing-revision"] {
-        let (_, response) = client.call(
-            "forge_read",
-            json!({"path":"[linked]/nested/notes.txt","mode":"delta","baseline":baseline}),
-        );
+        let (_, response) = client
+            .call(
+                "forge_read",
+                json!({"path":"[linked]/nested/notes.txt","mode":"delta","baseline":baseline}),
+            )
+            .expect("MCP transport");
         let output = run_cli_json(
             &primary,
             &[
@@ -432,25 +509,158 @@ fn forge_read_delta_uses_the_admitted_linked_git_context() {
             ));
         }
     }
-    let (_, response) = client.call(
-        "forge_read",
-        json!({"path":"[linked]/nested/secrets/token.txt","mode":"delta"}),
-    );
+    let (_, response) = client
+        .call(
+            "forge_read",
+            json!({"path":"[linked]/nested/secrets/token.txt","mode":"delta"}),
+        )
+        .expect("MCP transport");
     assert_eq!(response["result"]["isError"], true, "{response}");
     assert!(response.to_string().contains("SENSITIVE_FILE"));
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+    client.finish().expect("server must finish successfully");
 }
 
 #[test]
-fn forge_read_implementation_hints_select_an_executable_type() {
-    use crate::common::mcp_client::run_cli_json;
-    let w = Workspace::new();
-    w.write(
-        "forge-mcp.yaml",
-        "profile: minimal\nmodules: {codemap: true}\nroots: [.]\n",
+fn forge_read_enclosing_hints_resolve_exact_symbols_and_paths() {
+    let cases = [("distinct.py", "Second"), ("repeated.py", "First")];
+    let mut files: Vec<_> = cases
+        .iter()
+        .map(|(path, second)| {
+            (
+                *path,
+                format!("class First:\n    def value(self):\n        return 1\n\nclass {second}:\n    def value(self):\n        return 2\n"),
+            )
+        })
+        .collect();
+    files.push(("requirements.txt", "django\n".to_owned()));
+    files.push((
+        "calculator.py",
+        "def compute_total(a, b):\n    x = a * 2\n    y = b * 3\n    return x + y\n\nclass TaxCalculator:\n    def calculate_tax(self, amount):\n        return amount * 0.2\n".to_owned(),
+    ));
+    files.extend([
+        ("exact.py", "def exact():\n    return 1\n".to_owned()),
+        (
+            "nested/exact.py",
+            "def shadow():\n    x = 1\n    y = 2\n    return x + y\n".to_owned(),
+        ),
+    ]);
+    let file_refs: Vec<_> = files
+        .iter()
+        .map(|(path, text)| (*path, text.as_str()))
+        .collect();
+    let (_workspace, harness) = McpTestHarness::with_files(&file_refs);
+    let mut client = harness.expect("MCP initialize");
+    for (path, second) in cases {
+        for (line, expected) in [(3, "return 1"), (7, "return 2")] {
+            let response = read_tool(
+                &mut client,
+                json!({"path":path, "start_line":line, "line_count":1}),
+            );
+            assert_eq!(response["path"], path, "{response}");
+            assert_eq!(response["content"], format!("{line}:         {expected}\n"));
+            let footer = response["footer"].as_str().unwrap();
+            let selector = footer
+                .split("selector=\"")
+                .nth(1)
+                .unwrap()
+                .split('"')
+                .next()
+                .unwrap();
+            let snippet = read_tool(&mut client, json!({"path":path, "selector":selector}));
+            assert_eq!(snippet["node"]["path"], path, "{snippet}");
+            let (leading, class) = if line == 3 {
+                ("", "First")
+            } else {
+                ("\n", second)
+            };
+            assert_eq!(
+                snippet["source"],
+                format!("{leading}class {class}:\n    def value(self):\n        {expected}\n"),
+                "{snippet}"
+            );
+        }
+    }
+
+    let response = read_tool(
+        &mut client,
+        json!({"path":"calculator.py", "start_line":2, "line_count":2}),
     );
-    w.write("model.py", "class Base:\n    pass\n\nclass Child(Base):\n    pass\n\ndef standalone():\n    pass\n\nclass InvalidBase(standalone):\n    pass\n");
-    let mut client = StdioClient::new(&w);
+    assert_eq!(response["mode"], "lines");
+    let footer = response["footer"]
+        .as_str()
+        .expect("footer should be present");
+    assert!(
+        footer.contains("💡 Enclosing symbol: 'fn compute_total'"),
+        "unexpected footer: {footer}"
+    );
+    assert!(
+        footer.contains("forge_read(path=\"calculator.py\", selector=\"compute_total\")"),
+        "unexpected footer: {footer}"
+    );
+
+    let (_, markdown_response) = client
+        .call(
+            "forge_read",
+            json!({"path":"calculator.py", "start_line":2, "line_count":2}),
+        )
+        .expect("MCP transport");
+    let markdown = markdown_response["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap();
+    assert!(
+        markdown.contains("💡 Enclosing symbol: 'fn compute_total'"),
+        "unexpected markdown: {markdown}"
+    );
+
+    let response = read_tool(
+        &mut client,
+        json!({"path":"calculator.py", "start_line":8, "line_count":1}),
+    );
+    let footer = response["footer"]
+        .as_str()
+        .expect("footer should be present for method");
+    assert!(
+        footer.contains("💡 Enclosing symbol: 'fn calculate_tax'"),
+        "unexpected footer: {footer}"
+    );
+    assert!(
+        footer.contains("selector=\"calculate_tax\""),
+        "unexpected footer: {footer}"
+    );
+    for line_count in [1, 3] {
+        let response = read_tool(
+            &mut client,
+            json!({"path":"exact.py", "start_line":2, "line_count":line_count}),
+        );
+        let footer = response["footer"].as_str().expect("enclosing symbol");
+        assert!(footer.contains("fn exact"), "{response}");
+    }
+    client.finish().expect("server must finish successfully");
+}
+
+#[test]
+fn forge_read_codemap_hints_and_outline_use_verified_graph_signals() {
+    use crate::cli::run_cli_json;
+    let (w, harness) = McpTestHarness::indexed_workspace(&[
+        (
+            "forge-mcp.yaml",
+            "profile: minimal\nmodules: {codemap: true}\nroots: [.]\n",
+        ),
+        (
+            "model.py",
+            "class Base:\n    pass\n\nclass Child(Base):\n    pass\n\ndef standalone():\n    pass\n\nclass InvalidBase(standalone):\n    pass\n",
+        ),
+        (
+            "service.py",
+            "def compute():\n    return 42\n\ndef invoke():\n    return compute()\n",
+        ),
+        (
+            "tests/test_service.py",
+            "from service import compute\ndef test_compute():\n    assert compute() == 42\n",
+        ),
+    ]);
+    let mut client = harness.expect("MCP initialize");
     for (arguments, expected) in [
         (json!({"path":"model.py","mode":"outline"}), false),
         (json!({"path":"model.py","mode":"lines"}), false),
@@ -464,7 +674,7 @@ fn forge_read_implementation_hints_select_an_executable_type() {
         (json!({"selector":"Child"}), false),
         (json!({"selector":"standalone"}), false),
     ] {
-        let read = client.payload("forge_read", arguments);
+        let read = read_tool(&mut client, arguments);
         let hints = read["Hints"].as_str().unwrap_or("");
         let implementation = hints
             .split(';')
@@ -479,10 +689,12 @@ fn forge_read_implementation_hints_select_an_executable_type() {
                 .next()
                 .unwrap();
             let selector: String = serde_json::from_str(selector).unwrap();
-            let followed = client.payload(
-                "code_map_query",
-                json!({"operation":"implementations","selector":selector,"worktree":w.root()}),
-            );
+            let followed = client
+                .payload(
+                    "code_map_query",
+                    json!({"operation":"implementations","selector":selector,"worktree":w.root()}),
+                )
+                .expect("MCP tool should succeed");
             assert_eq!(followed["nodes"]["total"], 1, "{followed}");
         }
     }
@@ -506,22 +718,49 @@ fn forge_read_implementation_hints_select_an_executable_type() {
             "{read}"
         );
     }
+
+    let outline = read_tool(&mut client, json!({"path":"service.py","mode":"outline"}));
+    assert!(
+        outline["content"].as_str().unwrap().contains("compute"),
+        "{outline}"
+    );
+    assert!(
+        !outline["content"].as_str().unwrap().contains("return 42"),
+        "{outline}"
+    );
+    let snippet = read_tool(&mut client, json!({"selector":"compute"}));
+    assert_eq!(snippet["source"], "def compute():\n    return 42\n");
+    let hints = snippet["Hints"].as_str().unwrap();
+    assert!(
+        hints.contains("code_map_explain(") && hints.contains("code_map_tests("),
+        "{snippet}"
+    );
+    assert!(
+        !hints.contains("get_doc") && !hints.contains("task_"),
+        "{snippet}"
+    );
+    assert!(hints.lines().count() <= 3);
+    assert!(snippet["graph_pulse"]["callers"].as_u64().unwrap() >= 2);
+    assert_eq!(snippet["graph_pulse"]["covering_tests"], 1);
+    client.finish().expect("server must finish successfully");
 }
 
 #[test]
 fn forge_read_docs_outline_keeps_hierarchy_and_filters_disabled_navigation() {
-    let w = Workspace::new();
-    w.write(
-        "forge-mcp.yaml",
-        "profile: minimal\nmodules: {docs: true}\nroots: [.]\ndocs: [docs]\n",
-    );
-    w.write(
-        "docs/guide.md",
-        "# Guide\n\nText\n\n## Setup\n\n### Install\n\n```md\n## Code example\n```\n",
-    );
-    let mut client = StdioClient::new(&w);
-    let result = client.payload(
-        "forge_read",
+    let mut client = McpTestHarness::indexed(&[
+        (
+            "forge-mcp.yaml",
+            "profile: minimal\nmodules: {docs: true}\nroots: [.]\ndocs: [docs]\n",
+        ),
+        (
+            "docs/guide.md",
+            "# Guide\n\nText\n\n## Setup\n\n### Install\n\n```md\n## Code example\n```\n",
+        ),
+        ("service.py", "def compute():\n    return 42\n"),
+    ])
+    .expect("MCP initialize");
+    let result = read_tool(
+        &mut client,
         json!({"path":"docs/guide.md","mode":"outline"}),
     );
     let outline = result["content"].as_str().unwrap();
@@ -541,59 +780,47 @@ fn forge_read_docs_outline_keeps_hierarchy_and_filters_disabled_navigation() {
         !hints.contains("code_map_") && !hints.contains("task_"),
         "{result}"
     );
-}
-
-#[test]
-fn forge_read_codemap_outline_and_snippet_use_verified_graph_signals() {
-    let w = Workspace::new();
-    w.write(
-        "forge-mcp.yaml",
-        "profile: minimal\nmodules: {codemap: true}\nroots: [.]\n",
-    );
-    w.write(
-        "service.py",
-        "def compute():\n    return 42\n\ndef invoke():\n    return compute()\n",
-    );
-    w.write(
-        "tests/test_service.py",
-        "from service import compute\ndef test_compute():\n    assert compute() == 42\n",
-    );
-    let mut client = StdioClient::new(&w);
-    let outline = client.payload("forge_read", json!({"path":"service.py","mode":"outline"}));
+    let (_, rejected) = client
+        .call("forge_read", json!({"path":"service.py","mode":"outline"}))
+        .expect("MCP transport");
+    assert_eq!(rejected["result"]["isError"], true, "{rejected}");
     assert!(
-        outline["content"].as_str().unwrap().contains("compute"),
-        "{outline}"
+        rejected.to_string().contains("FEATURE_DISABLED"),
+        "{rejected}"
     );
-    assert!(
-        !outline["content"].as_str().unwrap().contains("return 42"),
-        "{outline}"
-    );
-    let snippet = client.payload("forge_read", json!({"selector":"compute"}));
-    assert_eq!(snippet["source"], "def compute():\n    return 42\n");
-    let hints = snippet["Hints"].as_str().unwrap();
-    assert!(
-        hints.contains("code_map_explain(") && hints.contains("code_map_tests("),
-        "{snippet}"
-    );
-    assert!(
-        !hints.contains("get_doc") && !hints.contains("task_"),
-        "{snippet}"
-    );
-    assert!(hints.lines().count() <= 3);
-    assert!(snippet["graph_pulse"]["callers"].as_u64().unwrap() >= 2);
-    assert_eq!(snippet["graph_pulse"]["covering_tests"], 1);
+    client.finish().expect("server must finish successfully");
 }
 
 #[test]
 fn forge_read_acdd_badges_and_hints_follow_the_unique_claimed_worktree() {
     use contextunity_forge_mcp::engine::tasks;
     for with_command in [false, true] {
-        let w = Workspace::new();
-        w.write("forge-mcp.yaml", "profile: minimal\nmodules: {acdd: true, blackboard: true}\nroots: [.]\ndocs: [docs]\nmilestones: [docs/milestones]\n");
-        if with_command {
+        let w = Workspace::with_files(&[(
+            "forge-mcp.yaml",
+            "profile: minimal\nmodules: {acdd: true, blackboard: true}\nroots: [.]\ndocs: [docs]\nmilestones: [docs/milestones]\n",
+        )]);
+        {
             let profile = forge_tasks::tasks::profile::load_for_workspace(w.root()).unwrap();
             let mut profile = serde_json::to_value(profile.as_ref()).unwrap();
-            profile["gates"][0]["command"] = json!("reader-check");
+            if let Some(gate) = profile["gates"]
+                .as_array_mut()
+                .and_then(|arr| arr.iter_mut().find(|g| g["id"] == "contract"))
+            {
+                gate["command"] = json!(with_command.then_some("reader-check"));
+            } else if let Some(tasks) = profile["gates"]
+                .as_array_mut()
+                .and_then(|arr| {
+                    arr.iter_mut()
+                        .find_map(|g| g.get_mut("tasks")?.get_mut("gates"))
+                })
+                .and_then(|g| g.as_array_mut())
+            {
+                if let Some(gate) = tasks.iter_mut().find(|g| g["id"] == "contract") {
+                    gate["command"] = json!(with_command.then_some("reader-check"));
+                }
+            } else {
+                profile["gates"][0]["command"] = json!(with_command.then_some("reader-check"));
+            }
             profile["commands"]["reader-check"] =
                 json!({"command":"true","output":{"require_counts":false}});
             w.write(
@@ -607,7 +834,7 @@ fn forge_read_acdd_badges_and_hints_follow_the_unique_claimed_worktree() {
         w.write("allowed.txt", "allowed\n");
         w.write("other.txt", "other\n");
         w.write("docs/milestones/010-reader.md", "---\nid: m-reader\ntitle: Reader\ndoc_type: contract\nstatus: active\n---\n```yaml\ntask_ref: read\ntarget: Read scoped text\nproof_policy: seam-test-first\nscope: [allowed.txt]\n```\n");
-        let sync = crate::common::mcp_client::run_cli_json(
+        let sync = crate::cli::run_cli_json(
             &w,
             &["task", "sync", "--file", "docs/milestones/010-reader.md"],
         );
@@ -623,15 +850,16 @@ fn forge_read_acdd_badges_and_hints_follow_the_unique_claimed_worktree() {
                 task_id: task_id.into(),
                 stage: "contract".into(),
                 worker_id: "reader-contract".into(),
+                session_fingerprint: Some("test-session-reader-contract".into()),
                 worktree: w.root().to_string_lossy().into_owned(),
                 bundle: Some(false),
             },
         )
         .unwrap();
-        let mut client = StdioClient::new(&w);
-        let allowed = client.payload("forge_read", json!({"path":"allowed.txt"}));
+        let mut client = McpTestHarness::new(&w).expect("MCP initialize");
+        let allowed = read_tool(&mut client, json!({"path":"allowed.txt"}));
         assert_eq!(allowed["write_scope"], "ALLOWED", "{allowed}");
-        let outside = client.payload("forge_read", json!({"path":"other.txt"}));
+        let outside = read_tool(&mut client, json!({"path":"other.txt"}));
         assert_eq!(outside["write_scope"], "OUT_OF_SCOPE", "{outside}");
         let hints = outside["Hints"].as_str().unwrap();
         assert!(
@@ -643,5 +871,62 @@ fn forge_read_acdd_badges_and_hints_follow_the_unique_claimed_worktree() {
             "{outside}"
         );
         assert_eq!(hints.contains("verify"), with_command, "{outside}");
+        client.finish().expect("server must finish successfully");
     }
+}
+
+#[test]
+fn minimal_subsystems_filter_tools_and_check_batch_outline_admission() {
+    let mut registry = SubsystemRegistry {
+        profile: SubsystemPreset::Minimal,
+        ..Default::default()
+    };
+    assert_eq!(
+        filter_subsystem_tools(["forge_read", "get_doc", "code_map_explain"], &registry),
+        ["forge_read"]
+    );
+    // Minimal has no docs, no codemap
+    let req = ReadRequest {
+        mode: ReadMode::Outline,
+        paths: Some(vec!["README.md".into(), "src/lib.rs".into()]),
+        ..Default::default()
+    };
+    // Should fail because neither subsystem is enabled
+    assert!(
+        req.requires_index(&forge_core::config::Adapter {
+            modules: registry.clone(),
+            ..Default::default()
+        })
+        .is_err()
+    );
+
+    // Enable docs only
+    registry.enabled.insert("docs".into());
+    let adapter_docs = forge_core::config::Adapter {
+        modules: registry.clone(),
+        ..Default::default()
+    };
+    // Batch with only markdown paths succeeds with docs enabled
+    let req_md = ReadRequest {
+        mode: ReadMode::Outline,
+        paths: Some(vec!["README.md".into(), "GUIDE.markdown".into()]),
+        ..Default::default()
+    };
+    assert!(req_md.requires_index(&adapter_docs).is_ok());
+
+    // Batch with mixed markdown and code paths must fail because code requires codemap
+    let req_mixed = ReadRequest {
+        mode: ReadMode::Outline,
+        paths: Some(vec!["README.md".into(), "src/lib.rs".into()]),
+        ..Default::default()
+    };
+    assert!(req_mixed.requires_index(&adapter_docs).is_err());
+
+    // Enable codemap as well -> now both docs and codemap are enabled, mixed paths succeed
+    registry.enabled.insert("codemap".into());
+    let adapter_both = forge_core::config::Adapter {
+        modules: registry,
+        ..Default::default()
+    };
+    assert!(req_mixed.requires_index(&adapter_both).is_ok());
 }

@@ -1,51 +1,33 @@
 use super::super::*;
+use crate::languages::harness::ExtractorHarness;
 
 #[cfg(feature = "lang-vue")]
 #[test]
 fn vue_compiler_macros_are_setup_scoped_and_lexically_shadowable() {
-    let w = Workspace::new();
+    let w = crate::languages::PersistedWorkspaceHarness::new();
     w.write(
         "Macro.vue",
         r#"<script>defineProps();</script><script data-note="a setup b">defineEmits();</script><script setup>defineEmits(); function defineModel() {} defineModel();</script>"#,
     );
     w.write("plain.js", "defineProps();");
-    let conn = w.build();
+    w.build();
+    let conn = w.open();
 
     let count = |expression: &str, status: &str| -> i64 {
-        conn.query_row(
-            "SELECT count(*) FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='Macro.vue' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)=?1 AND status=?2",
-            rusqlite::params![expression, status],
-            |row| row.get(0),
-        )
-        .unwrap()
+        query_scalar(&conn, "SELECT count(*) FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='Macro.vue' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)=?1 AND status=?2", rusqlite::params![expression, status])
     };
     assert_eq!(count("defineProps", "unresolved"), 1);
-    let plain_status: String = conn.query_row(
-        "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='plain.js' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='defineProps'",
-        [], |row| row.get(0),
-    ).unwrap();
+    let plain_status: String = query_scalar(&conn, "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='plain.js' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='defineProps'", []);
     assert_eq!(plain_status, "unresolved");
     assert_eq!(count("defineEmits", "unresolved"), 1);
     assert_eq!(count("defineEmits", "external"), 1);
-    let macro_evidence: String = conn
-        .query_row(
-            "SELECT (SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id) FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='Macro.vue' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='defineEmits' AND status='external'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
+    let macro_evidence: String = query_scalar(&conn, "SELECT (SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id) FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='Macro.vue' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='defineEmits' AND status='external'", []);
     assert!(
         macro_evidence.contains("builtin:vue_macro"),
         "{macro_evidence}"
     );
     assert_eq!(count("defineModel", "resolved"), 1);
-    let local_call: i64 = conn
-        .query_row(
-            "SELECT count(*) FROM edges e JOIN nodes n ON n.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.path_id)='Macro.vue' AND e.kind='calls' AND n.name='defineModel'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
+    let local_call: i64 = query_scalar(&conn, "SELECT count(*) FROM edges e JOIN nodes n ON n.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.path_id)='Macro.vue' AND e.kind='calls' AND n.name='defineModel'", []);
     assert_eq!(local_call, 1);
 }
 
@@ -53,7 +35,7 @@ fn vue_compiler_macros_are_setup_scoped_and_lexically_shadowable() {
 #[cfg(feature = "lang-vue")]
 #[test]
 fn vue_setup_composable_callable_provenance() {
-    let w = Workspace::new();
+    let w = crate::languages::PersistedWorkspaceHarness::new();
     w.write(
         "App.vue",
         r#"<template>
@@ -89,7 +71,8 @@ emit('unbound');
         "<script>const emit = defineEmits(['save']); emit('ordinary');</script>",
     );
     w.write("plain.ts", "emit('plain');");
-    let conn = w.build();
+    w.build();
+    let conn = w.open();
     let coverage = |path: &str, expression: &str| -> Vec<(i64, String, String)> {
         let mut statement = conn.prepare(
             "SELECT line,status,(SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id) FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)=?1 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)=?2 ORDER BY line",
@@ -167,13 +150,14 @@ function run() {
     items.map(item => item);
 }
 </script>"#;
-    let facts = ast::extract("Platform.vue", "vue", source).unwrap();
+    let facts = ExtractorHarness::for_lang("vue")
+        .at_path("Platform.vue")
+        .extract(source);
     assert!(facts.errors.is_empty(), "{:?}", facts.errors);
-    let graph =
-        contextunity_forge_mcp::engine::linker::link(&std::collections::BTreeMap::from([(
-            "Platform.vue".to_owned(),
-            facts,
-        )]));
+    let graph = ExtractorHarness::link_graph(&std::collections::BTreeMap::from([(
+        "Platform.vue".to_owned(),
+        facts,
+    )]));
     for expression in ["items.map", "fetch"] {
         let coverage = graph
             .coverage

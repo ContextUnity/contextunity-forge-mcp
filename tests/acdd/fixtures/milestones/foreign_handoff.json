@@ -1,0 +1,5 @@
+{
+  "docs/milestones/020-foreign.md": "---\nid: m-foreign\ntitle: Foreign active handoff\nproject: other\nstatus: active\nstarted_at: 2026-10-01T10:00:00Z\n---\n# Foreign active handoff\n\n### task: transfer\n```yaml\ntask_ref: transfer\ntarget: Transferred work\nproof_policy: seam-test-first\nscope: [foreign/]\nstatus: cancelled\n```\n",
+  "docs/milestones/022-same-id.md": "---\nid: m-close\ntitle: Foreign same-ID authority\nproject: other\nstatus: active\n---\n# Foreign same-ID authority\n\n### task: waiting\n```yaml\ntask_ref: waiting\ntarget: Wait for foreign milestone\nproof_policy: seam-test-first\nscope: [foreign/]\nstatus: ready\n```\n",
+  "docs/milestones/021-proof.md": "---\nid: m-proof\ntitle: Active foreign task\nproject: other\nstatus: active\nstarted_at: 2026-10-01T10:00:00Z\n---\n# Active foreign task\n\n### task: proof\n```yaml\ntask_ref: proof\ntarget: Keep an active proof\nproof_policy: seam-test-first\nscope: [foreign/]\n```\n"
+}

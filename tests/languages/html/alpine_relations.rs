@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn alpine_magic_members_require_declared_alpine_dependency() {
-    let workspace = Workspace::new();
+    let workspace = crate::languages::PersistedWorkspaceHarness::new();
     let script = "<script>const refs = this.$refs; this.$dispatch('shown');</script>\n";
     workspace.write(
         "declared/package.json",
@@ -12,8 +12,7 @@ fn alpine_magic_members_require_declared_alpine_dependency() {
     workspace.write("plain/package.json", r#"{"dependencies":{"vue":"^3.5.0"}}"#);
     workspace.write("plain/index.html", script);
 
-    writer::build(&workspace.0, &workspace.db(), None).unwrap();
-    let conn = reader::open(&workspace.db(), &workspace.0).unwrap();
+    let conn = workspace.build_and_open();
     let observations = [
         ("declared/index.html", "this.$refs", "external"),
         ("declared/index.html", "this.$dispatch", "external"),

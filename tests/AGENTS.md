@@ -1,72 +1,135 @@
 # Tests — Invariants and Test Creation Boundaries
 
-This document defines the rules for placing, creating, refactoring, and maintaining tests in `contextunity-forge-mcp`.
+Rules for placing, creating, refactoring, and maintaining tests in
+`contextunity-forge-mcp`.
 
-## 1. Positive Contract Specifications
-- Tests prove observable positive contracts, formal specifications, valid boundaries, and real fail-closed error states.
-- Verify defect fixes through existing domain contract seams. Structure tests around permanent specification requirements rather than transient historical incidents.
-- Prove admitted milestone requirements. Do not add a test that invents an uncontracted requirement in order to justify a new subsystem.
+## 1. Positive contract specifications
+
+- Prove observable positive contracts, valid boundaries, and real fail-closed errors.
+- Verify defect fixes through existing domain seams. Structure tests around
+  permanent specifications, not transient incidents.
+- Prove admitted milestone requirements. Do not invent uncontracted requirements
+  to justify a new subsystem.
 <!-- acdd-forge:test-invariants:start -->
-- **Additive seam evolution**: When extending existing capabilities, extend existing domain seam tests by adding parameterized test cases (table rows in `for case in cases`) ONLY for new input variations of the same unit/capability.
-- **Domain decomposition over monoliths**: NEVER append unrelated sub-scenarios, review remediation blocks, or multi-step integration workflows into an existing test function. Each distinct capability or task contract MUST be authored as a separate, descriptively-named `#[test]` function in the appropriate domain module. This preserves test independence, thread parallelization, and pinpoint failure diagnostics.
-- **Fixture boundaries**: Keep unit and extractor tests fast and in-memory. Do not construct heavy filesystem fixtures, multi-crate workspaces (`Workspace::new()`), or thread pools inside syntax/AST extractor tests; isolate integration and workspace probes into dedicated integration modules or tests.
-- **Subsume duplicate tests**: When a strengthened seam covers the full contract, remove or replace weaker/duplicate tests in the same test diff rather than leaving redundant assertions and duplicate setups.
-- **Runtime-red contract proof**: Contract tests for extensions or greenfield must compile cleanly and fail at runtime on assertions (exit code 101). Never introduce compilation failures or unresolvable imports, as this breaks AST indexing and blocks gate submission.
+- **Additive seam evolution**: Extend an existing table-driven case
+  (`for case in cases`) only for new input variations of the same capability.
+- **Domain decomposition**: Never append unrelated sub-scenarios or multi-step
+  workflows into an existing test. Author a separate `#[test]` in the owning
+  domain module.
+- **Fixture boundaries**: Keep unit/extractor tests in-memory. Do not build
+  heavy filesystem fixtures or `Workspace::new()` inside pure syntax/AST tests.
+- **Subsume duplicates**: When a stronger seam covers the contract, delete the
+  weaker test in the same diff.
+- **Runtime-red contract proof**: Contract tests compile and fail at runtime
+  (exit 101). Do not use compile failures as red proof.
+- **Anti-fake-gating**: Do not hide unoptimized matrices behind `#[ignore]` or
+  env filters. Build shared base state once; mutate one field per row.
+- **No inline milestone heredocs**: Use fixtures / `MilestoneFixtureBuilder`,
+  not raw multi-line milestone strings in tests.
+- **In-process engine**: Prefer `milestone_engine::*` / `tasks::*`. Reserve
+  `std::process::Command` for dedicated CLI smoke tests.
+- **Harness discipline**: Shared setup lives in `tests/common` or a domain
+  harness. A harness function needs ≥2 callers. The `#[test]` keeps the mutation
+  and every assertion. Never dump static non-domain functions onto `<Domain>Harness`,
+  never alias harness types (`use McpTestHarness as Client`), and never inline
+  single-caller helpers as 100-line IIFE blocks returning one-off `*Observation`
+  structs. See [test harness architecture](../docs/architecture/test-harness.md).
+- **Bounded loop & cache discipline**: Do not run full-DB dumps (`persisted_state`)
+  or $O(N^2)$ cold index rebuilds inside per-row loops when lightweight checks or
+  batched deltas prove the same invariant. Clean up temporary `.forge/cold-*` files
+  and avoid 0%-hit `Weak<Workspace>` or per-iteration directory-walk caches.
+- **Seam-preserving decomposition**: Do not replace production seams with
+  mockist unit doubles, and do not author multi-hundred-line meta-test suites for
+  test-only helpers.
+- **In-process MCP**: Prefer in-process handlers / `McpTestHarness`. Reserve
+  `StdioClient` / `mkfifo` for dedicated transport smoke tests.
+- **Zero-disk AST**: Language extraction and framework-manifest unit tests stay
+  in-memory (no tempdir Git/SQLite) unless the claim requires disk.
+- **Plan/workflow fixtures**: Keep Markdown/profile extract fixtures thin until
+  AC-003 admits execution. Do not grow execution harnesses ahead of the engine.
 <!-- acdd-forge:test-invariants:end -->
-- For semantic receiver evidence, cover exact resolution separately from possible targets. Exercise complete and incomplete joins, unknown alternatives, overflow, and later unconditional writes through the linker and persisted query seam; possible targets must not appear as exact `calls` edges.
+- For semantic receiver evidence, cover exact resolution separately from
+  possible targets through the linker and persisted query seam.
 
-## 2. Compilation and Binary Budget (Coherent Domain Modules)
-- In Cargo, every `.rs` file directly in `tests/` is compiled and linked as an independent test executable.
-- Organize tests into coherent domain modules:
-  - `tests/acdd.rs` (`tests/acdd/`): Task lifecycles, subtasks, blackboard coordination, and milestone operations (`INV-ACDD-SUITE-COHESION`). Read [tests/acdd/AGENTS.md](acdd/AGENTS.md) for ACDD sub-suite partitioning and authoring rules.
-  - `tests/cli_roots.rs`: CLI entrypoints, root discovery, and path normalization across subcommands.
-  - `tests/core.rs` (`tests/core/`): Storage engine, SQLite schema, adapters, scanner limits, and coverage diagnostics.
-  - `tests/impact_context.rs`: Impact analysis, traversal reachability, and blast-radius evaluation context.
-  - `tests/incremental.rs` (`tests/incremental/`): Delta indexing, resolution identity, module and directory scoping.
-  - `tests/languages.rs` (`tests/languages/`): Language extraction, AST patterns, and language-specific semantics (`INV-CENTRAL-VS-LANGUAGE-ISOLATION`).
-  - `tests/framework_manifests.rs` (`tests/framework_manifests/`): Framework manifest activation and operations, dependency discovery, CommonJS, and manifest deltas.
-  - `tests/linked_workspaces.rs`: Multi-workspace links, cross-root dependencies, and workspace boundaries.
-  - `tests/linker.rs` (`tests/linker/`, `tests/receivers/`): Cross-file symbol linking, receiver inference, and overload disambiguation.
-  - `tests/mcp.rs` (`tests/mcp/`, `tests/mcp_context/`): MCP JSON-RPC protocol server, tool contracts, freshness, and response compaction (includes `tests/mcp_context/ast_search.rs` via `tests/mcp/context.rs`).
-  - `tests/query_context.rs` (`tests/query_context/`): Query options, symbol search filtering, and query execution context.
-  - `tests/commitment_integrity.rs`: Merkle trees, leaf digest stability, and deterministic cryptographic commitments.
-  - `tests/common/`: Shared fixtures, RAII temp workspaces, and MCP test clients (`INV-SHARED-HARNESS`).
-- Group new task tests into existing domain test suites.
-- **Domain modularity over monolithic files**: Organize test files strictly along cohesive architectural and domain boundaries. Do not accumulate unrelated test concerns into single monolithic files; when distinct behavioral domains emerge (e.g. lifecycle, reachability, boundaries, workspaces), split them into domain sub-directories with their own `mod.rs` and local `AGENTS.md`.
-- Keep framework-manifest tests in `tests/framework_manifests/`; keep HTML template and relation tests in `tests/languages/html/`.
-- Keep TypeScript framework tests under `tests/languages/typescript/frameworks/`, with parser-selection coverage in `grammar.rs`.
-- Keep receiver tests under `tests/receivers/{rust,python}/`; Rust module-path cases stay under `rust/module_paths.rs`.
-- Each test subtree maintains its own local `AGENTS.md` specifying module scope, shared helpers, and verification rules:
-  - [`tests/acdd/AGENTS.md`](acdd/AGENTS.md): ACDD gate AST, runners, and task lifecycle domain partitioning.
-  - [`tests/acdd/tasks/AGENTS.md`](acdd/tasks/AGENTS.md): Decomposed ACDD task suite modules (`boundaries.rs`, `guidance.rs`, `lifecycle.rs`, `seams.rs`, `workspaces.rs`).
-  - [`tests/framework_manifests/AGENTS.md`](framework_manifests/AGENTS.md): Declarative framework packs and TOML manifests.
-  - [`tests/languages/html/AGENTS.md`](languages/html/AGENTS.md): HTML templates, Django/Jinja syntax, and HTMX/Alpine relations.
-  - [`tests/languages/typescript/frameworks/AGENTS.md`](languages/typescript/frameworks/AGENTS.md): NestJS, Nuxt, and Vue runtime test suites.
-  - [`tests/receivers/AGENTS.md`](receivers/AGENTS.md): Value flow receiver tests routing and structure.
-  - [`tests/receivers/rust/AGENTS.md`](receivers/rust/AGENTS.md): Rust field chains, trait dispatch, deref pointers, and module paths.
-  - [`tests/receivers/python/AGENTS.md`](receivers/python/AGENTS.md): Python C3 MRO, mixins, and decorator flow.
-- Fast submodule test execution commands:
-  ```bash
-  cargo test --test framework_manifests manifests::<module>::
-  cargo test --test languages html::<module>::
-  cargo test --test languages typescript::frameworks::<module>::
-  cargo test --test linker typed_receivers::rust::<module>::
-  cargo test --test linker typed_receivers::python::<module>::
-  cargo test --test linker value_flow::
-  ```
-- Table-driven tests over function duplication: iterate over structured data tables (`for case in cases { ... }`) for permutations and error codes.
-- Shared test harnesses over repeated boilerplate: common setups (temporary SQLite stores, worktree layouts) belong in shared test helpers (`tests/common/`, `tests/acdd/support.rs`).
-- Domain cohesion: keep coherent test suites unified within their subsystem domain. Split tests strictly along natural architectural sub-boundaries when distinct domains emerge.
+## 2. Domain modules and binary budget
+
+Every `.rs` file directly under `tests/` is a separate Cargo test binary.
+Prefer coherent domain modules:
+
+- `tests/acdd.rs` (`tests/acdd/`): tasks, milestones, blackboard, runners
+- `tests/cli_roots.rs`: CLI roots and path normalization
+- `tests/core.rs` (`tests/core/`): storage, adapters, scanner limits
+- `tests/impact_context.rs`: impact / blast-radius context
+- `tests/incremental.rs` (`tests/incremental/`): delta indexing and scopes
+- `tests/languages.rs` (`tests/languages/`): extraction and language semantics
+- `tests/framework_manifests.rs` (`tests/framework_manifests/`): packs and manifests
+- `tests/linked_workspaces.rs`: multi-root links
+- `tests/linker.rs` (`tests/linker/`, `tests/receivers/`): linking and receivers
+- `tests/mcp.rs` (`tests/mcp/`, `tests/mcp_context/`): MCP protocol and tools
+- `tests/query_context.rs` (`tests/query_context/`): query options and search
+- `tests/commitment_integrity.rs`: Merkle / commitment integrity
+- `tests/common/`: shared workspace, SQLite, MCP harness substrate
+
+Subtree `AGENTS.md` files own local partitioning:
+
+- [`tests/acdd/AGENTS.md`](acdd/AGENTS.md)
+- [`tests/acdd/milestones/AGENTS.md`](acdd/milestones/AGENTS.md)
+- [`tests/acdd/tasks/AGENTS.md`](acdd/tasks/AGENTS.md)
+- [`tests/acdd/tasks/workspaces/AGENTS.md`](acdd/tasks/workspaces/AGENTS.md)
+- [`tests/framework_manifests/AGENTS.md`](framework_manifests/AGENTS.md)
+- [`tests/languages/html/AGENTS.md`](languages/html/AGENTS.md)
+- [`tests/languages/typescript/frameworks/AGENTS.md`](languages/typescript/frameworks/AGENTS.md)
+- [`tests/receivers/AGENTS.md`](receivers/AGENTS.md)
+- [`tests/receivers/rust/AGENTS.md`](receivers/rust/AGENTS.md)
+- [`tests/receivers/python/AGENTS.md`](receivers/python/AGENTS.md)
+
+Focused commands:
+
+```bash
+cargo test --test framework_manifests manifests::<module>::
+cargo test --test languages html::<module>::
+cargo test --test languages typescript::frameworks::<module>::
+cargo test --test linker typed_receivers::rust::<module>::
+cargo test --test linker typed_receivers::python::<module>::
+cargo test --test linker value_flow::
+```
+
+Use tables for permutations. Put shared setup in `tests/common/` or the suite
+harness. Split files on real domain boundaries, not line-count theater.
 
 ## 3. Suite moves
-- When moving, renaming, splitting, or removing a test suite or test file, update this file and TESTS.md in the same `build`.
-- Keep public value-flow reducer cases in `tests/linker/value_flow.rs`; keep private reducer implementation checks beside their source.
 
-## 4. Public Seams Over Internal Mocks
+When moving, renaming, splitting, or removing a suite file, update this file and
+`TESTS.md` in the same change.
 
-Drive tests through public production seams, reuse shared fixtures/factories, and verify permutations through structured test case tables.
-- Drive tests through the narrowest real public or composition seam (engine scanner, linker pipeline, MCP tool context, or DB reader).
-- Use real collaborating components (live SQLite connections, engine pipelines, filesystem structures). Place protocol fakes strictly outside the boundary being proved.
+## 4. Authoring patterns
 
-## 5. Benchmarking Isolation
-- Place latency benchmarks, traversal stress tests, and tool comparisons in `benchmarks/`, managed by `benchmarks/run_benchmarks.py`.
+Read [test harness architecture](../docs/architecture/test-harness.md). Active
+refactor sequencing: [reality-reset plan](../docs/plans/test-suite-diet-and-fixture-hardening.md).
+
+1. **Extend a capability** — add a table row or a single harness mutation; do not
+   copy a 100-line test to flip one field.
+2. **New contract** — new descriptively named `#[test]` in the owning module;
+   drive the real seam through the existing harness.
+3. **Split by domain cohesion, not arbitrary line counts**: Decompose multi-subsystem
+   monoliths (>1,500–2,000 lines mixing unrelated contracts such as `tests/acdd/mcp.rs`,
+   `tests/mcp/context.rs`, `tests/mcp/tool_evolution/mcp_boundaries.rs`) or shared
+   infrastructure (`tests/acdd/support/*`) into focused domain submodules. Do NOT
+   mechanically chop a cohesive single-domain test file (e.g., 800–1,600 lines testing
+   one tool or language surface) or hide test assertions in harness helpers just to
+   hit an arbitrary line count. Keep `tests/commitment_integrity/*` under `< 500`
+   lines since its submodules are already organized by domain.
+4. **New consumer** — extend the existing harness once the production consumer
+   exists; prove the real connection. Do not mock both sides.
+5. **Return a one-caller helper cleanly** — compose shared primitives (`Workspace`,
+   `sqlite::query_rows`, domain harness methods) directly in the test and delete
+   any one-off `*Observation` struct shell.
+
+Treat ~50 lines per `#[test]` as a review prompt, not a reason to hide assertions
+inside a 1-caller wrapper. Prefer deletion of duplicates over extraction into
+god-harnesses.
+
+## 5. Benchmarking isolation
+
+Place latency benchmarks and stress probes under `benchmarks/`, managed by
+`benchmarks/run_benchmarks.py`.

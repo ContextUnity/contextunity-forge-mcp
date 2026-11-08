@@ -10,6 +10,27 @@ use forge_tasks::blackboard::BlackboardScope;
 use forge_tasks::lifecycle::{TaskStage, TaskStatus};
 use forge_tasks::verification::ProofPolicy;
 
+#[cfg(feature = "lang-rust")]
+#[test]
+fn workspace_build_cache_is_isolated_and_removed_with_its_workspace() {
+    let first = crate::common::Workspace::new();
+    let second = crate::common::Workspace::new();
+    for workspace in [&first, &second] {
+        workspace.write("src/lib.rs", "pub fn same_source() {}\n");
+    }
+    let first_cold = first.build();
+    let first_warm = first.build_to(first.path(".forge/warm.sqlite"));
+    let second_cold = second.build();
+    assert_eq!(first_cold["pipeline"]["extraction_cache_hits"], 0);
+    assert_eq!(first_warm["pipeline"]["extraction_cache_hits"], 1);
+    assert_eq!(second_cold["pipeline"]["extraction_cache_hits"], 0);
+    let cache = first.path(".forge/extraction-cache");
+    assert!(cache.is_dir());
+    drop(first);
+    assert!(!cache.exists());
+    assert!(second.path(".forge/extraction-cache").is_dir());
+}
+
 #[test]
 fn workspace_builds_and_applies_delta_in_its_owned_temp_directory() {
     let workspace = crate::common::Workspace::new();
@@ -130,13 +151,10 @@ fn cargo_workspace_declares_independent_crates_and_unidirectional_boundaries() {
     assert_eq!(ProofPolicy::DirectProof, ProofPolicy::DirectProof);
     assert_eq!(BlackboardScope::Task, BlackboardScope::Task);
 
-    let temp_path = std::env::temp_dir().join(format!("test-tasks-store-{}.sqlite", std::process::id()));
-    let store = forge_tasks::store::TasksStore::open_project(
-        &temp_path,
-        "test-repo",
-        "test-proj",
-    )
-    .unwrap();
+    let temp_path =
+        std::env::temp_dir().join(format!("test-tasks-store-{}.sqlite", std::process::id()));
+    let store =
+        forge_tasks::store::TasksStore::open_project(&temp_path, "test-repo", "test-proj").unwrap();
     assert!(forge_tasks::store::now() > 0);
     drop(store);
     let _ = std::fs::remove_file(&temp_path);
@@ -148,7 +166,9 @@ fn cargo_workspace_declares_independent_crates_and_unidirectional_boundaries() {
 
     // 1. Cargo workspace root in Cargo.toml declares members:
     //    ["crates/forge-core", "crates/forge-index", "crates/forge-tasks", "."]
-    let workspace = doc.get("workspace").expect("Cargo.toml must declare [workspace]");
+    let workspace = doc
+        .get("workspace")
+        .expect("Cargo.toml must declare [workspace]");
     let members = workspace
         .get("members")
         .and_then(|m| m.as_array())
@@ -174,9 +194,7 @@ fn cargo_workspace_declares_independent_crates_and_unidirectional_boundaries() {
     );
     let core_content =
         std::fs::read_to_string(&core_cargo_path).expect("read forge-core Cargo.toml");
-    let core_doc: toml::Value = core_content
-        .parse()
-        .expect("parse forge-core Cargo.toml");
+    let core_doc: toml::Value = core_content.parse().expect("parse forge-core Cargo.toml");
     assert_eq!(core_doc["package"]["name"].as_str(), Some("forge-core"));
     let core_deps = core_doc
         .get("dependencies")
@@ -207,9 +225,7 @@ fn cargo_workspace_declares_independent_crates_and_unidirectional_boundaries() {
     );
     let index_content =
         std::fs::read_to_string(&index_cargo_path).expect("read forge-index Cargo.toml");
-    let index_doc: toml::Value = index_content
-        .parse()
-        .expect("parse forge-index Cargo.toml");
+    let index_doc: toml::Value = index_content.parse().expect("parse forge-index Cargo.toml");
     assert_eq!(index_doc["package"]["name"].as_str(), Some("forge-index"));
     let index_deps = index_doc
         .get("dependencies")
@@ -232,9 +248,7 @@ fn cargo_workspace_declares_independent_crates_and_unidirectional_boundaries() {
     );
     let tasks_content =
         std::fs::read_to_string(&tasks_cargo_path).expect("read forge-tasks Cargo.toml");
-    let tasks_doc: toml::Value = tasks_content
-        .parse()
-        .expect("parse forge-tasks Cargo.toml");
+    let tasks_doc: toml::Value = tasks_content.parse().expect("parse forge-tasks Cargo.toml");
     assert_eq!(tasks_doc["package"]["name"].as_str(), Some("forge-tasks"));
     let tasks_deps = tasks_doc
         .get("dependencies")
@@ -260,5 +274,29 @@ fn direct_library_task_entrypoint_initializes_extractors_without_caller_bootstra
         "#[test] fn sample_seam() { assert!(true); }",
     )
     .expect("production extractor must be wired");
-    assert!(facts.facts.nodes.iter().any(|n| n.is_test && n.name == "sample_seam"));
+    assert!(facts
+        .facts
+        .nodes
+        .iter()
+        .any(|n| n.is_test && n.name == "sample_seam"));
+}
+
+#[test]
+fn workspace_writes_a_file_set_and_removes_one_member() {
+    let workspace = crate::common::Workspace::new();
+    workspace.write_all(&[
+        ("src/a.rs", "pub fn a() {}\n"),
+        ("src/b.rs", "pub fn b() {}\n"),
+    ]);
+    assert_eq!(
+        std::fs::read_to_string(workspace.path("src/a.rs")).unwrap(),
+        "pub fn a() {}\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(workspace.path("src/b.rs")).unwrap(),
+        "pub fn b() {}\n"
+    );
+    workspace.remove("src/b.rs");
+    assert!(!workspace.path("src/b.rs").exists());
+    assert!(workspace.path("src/a.rs").exists());
 }

@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn django_named_url_references_resolve_only_to_unique_routes() {
-    let workspace = Workspace::new();
+    let workspace = crate::languages::PersistedWorkspaceHarness::new();
     workspace.write(
         "pyproject.toml",
         "[project]\nname='django-named-routes'\ndependencies=['django']\n",
@@ -29,8 +29,7 @@ fn django_named_url_references_resolve_only_to_unique_routes() {
     )
     .unwrap();
     assert!(html_facts.references.iter().any(|reference| {
-        reference.kind == "references_route"
-            && reference.expression == "django.route_name.product-list"
+        reference.kind == "references_route" && reference.expression == "django.route_name.product-list"
     }));
 
     let python = &contextunity_forge_mcp::engine::languages::python::PYTHON;
@@ -44,25 +43,22 @@ fn django_named_url_references_resolve_only_to_unique_routes() {
     )
     .unwrap();
     assert!(python_facts.references.iter().any(|reference| {
-        reference.kind == "references_route"
-            && reference.expression == "django.route_name.product-list"
+        reference.kind == "references_route" && reference.expression == "django.route_name.product-list"
     }));
 
-    writer::build(&workspace.0, &workspace.db(), None).unwrap();
+    workspace.build();
     let assert_state = |python_active: bool, template_active: bool| {
         let conn = workspace.open();
-        assert_valid(&conn);
+        let validity = validity_observations(&conn);
+        validity.assert_valid();
+        let coverage_observations = html_coverage_observations(&conn);
         let product_routes = named_route_ids(&conn, "product-list");
         assert_eq!(product_routes.len(), 1, "one named route must be indexed");
         assert_eq!(named_route_ids(&conn, "duplicate").len(), 2);
         assert_eq!(
             edge_occurrence_rows(&conn, "templates/product.html", "references_route"),
             if template_active {
-                vec![(
-                    "module:templates/product.html".into(),
-                    product_routes[0].clone(),
-                    1,
-                )]
+                vec![("module:templates/product.html".into(), product_routes[0].clone(), 1)]
             } else {
                 vec![]
             }
@@ -74,7 +70,7 @@ fn django_named_url_references_resolve_only_to_unique_routes() {
                     .into_iter()
                     .map(|(name, line)| {
                         (
-                            node_id(&conn, "consumer.py", name),
+                            node_id_observation(&conn, "consumer.py", name).expect("unique route caller definition"),
                             product_routes[0].clone(),
                             line,
                         )
@@ -86,10 +82,16 @@ fn django_named_url_references_resolve_only_to_unique_routes() {
         );
         if python_active {
             for line in [4, 9, 11] {
-                assert_eq!(
-                    named_route_coverage(&conn, "consumer.py", line, "product-list"),
-                    "resolved"
-                );
+                let statuses: Vec<_> = coverage_observations
+                    .iter()
+                    .filter(|coverage| {
+                        coverage.path == "consumer.py"
+                            && coverage.line == line
+                            && coverage.expression == "django.route_name.product-list"
+                    })
+                    .map(|coverage| coverage.status.as_str())
+                    .collect();
+                assert_eq!(statuses, ["resolved"]);
             }
         }
         if template_active {
@@ -98,7 +100,13 @@ fn django_named_url_references_resolve_only_to_unique_routes() {
                 ("templates/missing.html", "missing", "unresolved"),
                 ("templates/duplicate.html", "duplicate", "ambiguous"),
             ] {
-                assert_eq!(named_route_coverage(&conn, path, 1, name), status);
+                let expression = format!("django.route_name.{name}");
+                let statuses: Vec<_> = coverage_observations
+                    .iter()
+                    .filter(|coverage| coverage.path == path && coverage.line == 1 && coverage.expression == expression)
+                    .map(|coverage| coverage.status.as_str())
+                    .collect();
+                assert_eq!(statuses, [status], "{path}: {expression}");
             }
         }
         for path in ["templates/missing.html", "templates/duplicate.html"] {
@@ -116,32 +124,30 @@ fn django_named_url_references_resolve_only_to_unique_routes() {
             references,
             3 * usize::from(python_active) + 3 * usize::from(template_active)
         );
-        let coverage: usize = conn.query_row(
-            "SELECT count(*) FROM resolution_coverage c JOIN coverage_expressions x ON x.expression_id=c.expression_id WHERE x.expression LIKE 'django.route_name.%'",
-            [], |row| row.get(0),
-        ).unwrap();
-        assert_eq!(
-            coverage, references,
-            "removed rules leave no semantic coverage"
-        );
+        let coverage = coverage_observations
+            .iter()
+            .filter(|coverage| coverage.expression.starts_with("django.route_name."))
+            .count();
+        assert_eq!(coverage, references, "removed rules leave no semantic coverage");
         assert_eq!(
             edge_occurrence_rows(&conn, "consumer.py", "calls"),
             [(
-                node_id(&conn, "consumer.py", "ordinary"),
-                node_id(&conn, "urls.py", "product_list"),
+                node_id_observation(&conn, "consumer.py", "ordinary").expect("unique ordinary caller definition"),
+                node_id_observation(&conn, "urls.py", "product_list")
+                    .expect("unique ordinary route handler definition"),
                 17
             )]
         );
-        let import_status: String = conn.query_row(
-            "SELECT c.status FROM resolution_coverage c JOIN path_dictionary p ON p.path_id=c.path_id JOIN coverage_expressions x ON x.expression_id=c.expression_id WHERE p.path='consumer.py' AND c.line=16 AND x.expression='product_list'",
-            [], |row| row.get(0),
-        ).unwrap();
-        assert_eq!(
-            import_status, "resolved",
-            "ordinary import survives rule changes"
-        );
+        let import_status: Vec<_> = coverage_observations
+            .iter()
+            .filter(|coverage| {
+                coverage.path == "consumer.py" && coverage.line == 16 && coverage.expression == "product_list"
+            })
+            .map(|coverage| coverage.status.as_str())
+            .collect();
+        assert_eq!(import_status, ["resolved"], "ordinary import survives rule changes");
         drop(conn);
-        complete_parity(&workspace);
+        assert_complete_cold(&workspace);
     };
     assert_state(true, true);
 
@@ -150,21 +156,14 @@ fn django_named_url_references_resolve_only_to_unique_routes() {
         "../../../../crates/forge-index/src/languages/manifests/django.toml"
     ))
     .unwrap();
-    pack.as_table_mut()
-        .unwrap()
-        .insert("replace".into(), true.into());
+    pack.as_table_mut().unwrap().insert("replace".into(), true.into());
     let mut removed = pack.clone();
     removed["syntax_rules"]
         .as_array_mut()
         .unwrap()
-        .retain(|rule| {
-            !matches!(
-                rule["id"].as_str(),
-                Some("named-route-call" | "named-route-tag")
-            )
-        });
+        .retain(|rule| !matches!(rule["id"].as_str(), Some("named-route-call" | "named-route-tag")));
     workspace.write(manifest, &toml::to_string(&removed).unwrap());
-    workspace.delta(manifest);
+    workspace.delta(&[manifest]);
     assert_state(false, false);
 
     let call = pack["syntax_rules"]
@@ -176,7 +175,7 @@ fn django_named_url_references_resolve_only_to_unique_routes() {
     call["operation"]["module"] = "atelier.links".into();
     call["operation"]["export"] = "locate".into();
     workspace.write(manifest, &toml::to_string(&pack).unwrap());
-    workspace.delta(manifest);
+    workspace.delta(&[manifest]);
     assert_state(false, true);
     workspace.write(
         "consumer.py",
@@ -184,13 +183,13 @@ fn django_named_url_references_resolve_only_to_unique_routes() {
             .replace("django.urls", "atelier.links")
             .replace("reverse", "locate"),
     );
-    workspace.delta("consumer.py");
+    workspace.delta(&["consumer.py"]);
     assert_state(true, true);
 
-    fs::remove_file(workspace.0.join(manifest)).unwrap();
-    workspace.delta(manifest);
+    workspace.remove(manifest);
+    workspace.delta(&[manifest]);
     assert_state(false, true);
     workspace.write("consumer.py", consumer_source);
-    workspace.delta("consumer.py");
+    workspace.delta(&["consumer.py"]);
     assert_state(true, true);
 }

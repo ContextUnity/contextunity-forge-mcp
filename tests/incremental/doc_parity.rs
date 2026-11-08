@@ -632,7 +632,7 @@ fn source_delta_relinks_affected_docs_with_bare_suffix_references() {
     ] {
         match source {
             Some(source) => linked.write("src/header.py", source),
-            None => std::fs::remove_file(linked.path("src/header.py")).unwrap(),
+            None => linked.remove("src/header.py"),
         }
         let report = identity_workspace.delta(&["[library]/src/header.py"]);
         let cold_path = identity_workspace.path(".forge/cold-context.sqlite");

@@ -6,38 +6,30 @@ fn framework_manifest_accepts_generic_typed_rules_and_formats() {
     let mut failures = Vec::new();
     let examples = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("skills/contextunity-forge/references/frameworks");
-    for (name, extension) in [
-        ("django", "toml"),
-        ("starlette", "toml"),
-        ("fastapi", "toml"),
-        ("nuxt", "toml"),
-        ("vue-runtime", "toml"),
-        ("htmx", "toml"),
-        ("alpinejs", "toml"),
-        ("gridviewspec", "toml"),
-        ("declarative-rules", "toml"),
-        ("declarative-rules", "yaml"),
+    for (name, extension, example) in [
+        ("django","toml",include_str!("../../../skills/contextunity-forge/references/frameworks/django.toml.example")),
+        ("starlette","toml",include_str!("../../../skills/contextunity-forge/references/frameworks/starlette.toml.example")),
+        ("fastapi","toml",include_str!("../../../skills/contextunity-forge/references/frameworks/fastapi.toml.example")),
+        ("nuxt","toml",include_str!("../../../skills/contextunity-forge/references/frameworks/nuxt.toml.example")),
+        ("vue-runtime","toml",include_str!("../../../skills/contextunity-forge/references/frameworks/vue-runtime.toml.example")),
+        ("htmx","toml",include_str!("../../../skills/contextunity-forge/references/frameworks/htmx.toml.example")),
+        ("alpinejs","toml",include_str!("../../../skills/contextunity-forge/references/frameworks/alpinejs.toml.example")),
+        ("gridviewspec","toml",include_str!("../../../skills/contextunity-forge/references/frameworks/gridviewspec.toml.example")),
+        ("declarative-rules","toml",include_str!("../../../skills/contextunity-forge/references/frameworks/declarative-rules.toml.example")),
+        ("declarative-rules","yaml",include_str!("../../../skills/contextunity-forge/references/frameworks/declarative-rules.yaml.example")),
     ] {
         let path = examples.join(format!("{name}.{extension}.example"));
-        let example = match std::fs::read_to_string(&path) {
-            Ok(example) => example,
-            Err(error) => {
-                failures.push(format!("{}: {error}", path.display()));
-                continue;
-            }
-        };
-        let workspace = Workspace::new();
-        workspace.write("index.html", "<p>Example manifest</p>");
         let identity = if name == "declarative-rules" {
             "project-rules"
         } else {
             name
         };
-        workspace.write(
-            format!(".forge/frameworks/{identity}.{extension}"),
-            &example,
-        );
-        if let Err(error) = writer::build(&workspace.0, &workspace.db(), None) {
+        let manifest = format!(".forge/frameworks/{identity}.{extension}");
+        let result =
+            FrameworkHarness::from_manifests(&[(&manifest, example)]).and_then(|harness| {
+                harness.link_sources(&[("index.html", "html", "<p>Example manifest</p>")])
+            });
+        if let Err(error) = result {
             failures.push(format!(
                 "{} failed production loading: {error:#}",
                 path.display()
@@ -79,15 +71,15 @@ fn framework_manifest_accepts_generic_typed_rules_and_formats() {
         ),
     ] {
         let pack = serde_json::json!({"syntax_rules":[{"id":"strict","language":language,"operation":operation}]});
-        if assert_manifest_build_rejected(
+        let mut sources =
+            VirtualWorkspace::from_files(&[("index.html", "<p>Strict residual schema</p>")]);
+        sources.write(
             ".forge/frameworks/strict.toml",
             &toml::to_string(&pack).unwrap(),
-            &[("index.html", "<p>Strict residual schema</p>")],
-        )
-        .is_err()
-        {
+        );
+        if sources.index().is_ok() {
             failures.push(format!(
-                "malformed residual descriptor accepted/published: {pack}"
+                "malformed residual descriptor accepted by the in-memory production linker: {pack}"
             ));
         }
     }
@@ -120,25 +112,28 @@ syntax_rules:
         ("yaml", complete_yaml),
         ("yml", complete_yaml),
     ] {
-        let workspace = Workspace::new();
-        workspace.write(
-            "pyproject.toml",
-            "[project]\nname = 'sample'\ndependencies = ['django>=5']\n",
-        );
-        workspace.write("index.html", "{% csrf_token %}{{ value|safe }}\n");
-        workspace.write(
+        let mut sources = VirtualWorkspace::from_files(&[
+            (
+                "pyproject.toml",
+                "[project]\nname = 'sample'\ndependencies = ['django>=5']\n",
+            ),
+            ("index.html", "{% csrf_token %}{{ value|safe }}\n"),
+        ]);
+        sources.write(
             format!(".forge/frameworks/django.{extension}"),
             complete_manifest,
         );
-        if let Err(error) = writer::build(&workspace.0, &workspace.db(), None) {
-            failures.push(format!(
-                "valid .{extension} generic manifest failed to build: {error:#}"
-            ));
-            continue;
-        }
-
-        let dependencies = DependencyRegistry::collect_with_scan_config(&workspace.0, None);
-        if dependencies
+        let indexed = match sources.index() {
+            Ok(indexed) => indexed,
+            Err(error) => {
+                failures.push(format!(
+                    "valid .{extension} generic manifest failed to build: {error:#}"
+                ));
+                continue;
+            }
+        };
+        if indexed
+            .registry
             .framework_manifest_for_path(LanguageFamily("python"), "index.html", "django", "django")
             .is_none()
         {
@@ -146,11 +141,10 @@ syntax_rules:
                 "generic .{extension} manifest did not reach its linker"
             ));
         }
-        let conn = reader::open(&workspace.db(), &workspace.0).unwrap();
         let indexed_file = query_count(
-            &conn,
-            "SELECT count(*) FROM path_dictionary WHERE path='index.html'",
-            [],
+            &indexed.conn,
+            "SELECT count(*) FROM path_dictionary WHERE path=?1",
+            ["index.html"],
         );
         if indexed_file != 1 {
             failures.push(format!(
@@ -166,38 +160,38 @@ syntax_rules:
             } else {
                 format!("{legacy_section}: []\n")
             };
-            if assert_manifest_build_rejected(
-                &format!(".forge/frameworks/django.{extension}"),
-                &manifest,
-                &[
-                    (
-                        "pyproject.toml",
-                        "[project]\nname = 'sample'\ndependencies = ['django>=5']\n",
-                    ),
-                    ("index.html", "<p>Legacy manifest section</p>\n"),
-                ],
-            )
-            .is_err()
+            let manifest_path = format!(".forge/frameworks/django.{extension}");
+            if FrameworkHarness::from_manifests(&[(manifest_path.as_str(), manifest.as_str())])
+                .is_ok()
             {
                 failures.push(format!(
-                    ".{extension} legacy section {legacy_section} was accepted or published index"
+                    ".{extension} legacy section {legacy_section} was accepted by the production manifest parser"
                 ));
             }
         }
     }
 
-    let empty = Workspace::new();
-    empty.write("index.html", "<p>Empty typed rule manifest</p>\n");
-    empty.write(".forge/frameworks/django.toml", "enabled = false\n");
-    if let Err(error) = writer::build(&empty.0, &empty.db(), None) {
+    let empty =
+        FrameworkHarness::from_manifests(&[(".forge/frameworks/django.toml", "enabled = false\n")])
+            .and_then(|harness| {
+                harness.link_sources(&[(
+                    "index.html",
+                    "html",
+                    "<p>Empty typed rule manifest</p>\n",
+                )])
+            });
+    if let Err(error) = empty {
         failures.push(format!("empty disabled manifest was rejected: {error:#}"));
     }
 
-    let undeclared = Workspace::new();
-    undeclared.write("index.html", "<p>No framework declaration</p>\n");
-    undeclared.write(".forge/frameworks/django.toml", complete_toml);
-    let undeclared_dependencies = DependencyRegistry::collect_with_scan_config(&undeclared.0, None);
-    if undeclared_dependencies
+    let undeclared =
+        FrameworkHarness::from_manifests(&[(".forge/frameworks/django.toml", complete_toml)])
+            .unwrap();
+    undeclared
+        .link_sources(&[("index.html", "html", "<p>No framework declaration</p>\n")])
+        .unwrap();
+    if undeclared
+        .registry
         .framework_manifest_for_path(LanguageFamily("python"), "index.html", "django", "django")
         .is_none()
     {
@@ -265,19 +259,30 @@ fn invalid_user_framework_manifest_fails_before_index_publication() {
             "syntax_rules: [\n".to_owned(),
         ),
     ];
+    let project_files = [
+        (
+            "pyproject.toml",
+            "[project]\nname = 'sample'\ndependencies = ['django>=5']\n",
+        ),
+        (
+            "shop/views.py",
+            "from django.shortcuts import render\ndef page(request):\n    return render(request, 'templates/page.html', {'title': 'Welcome'})\n",
+        ),
+        ("shop/templates/page.html", "<h1>{{ title }}</h1>\n"),
+    ];
 
     for (invalid_kind, extension, manifest) in invalid_manifests {
-        if assert_manifest_build_rejected(
-            &format!(".forge/frameworks/django.{extension}"),
-            &manifest,
-            &[
-                ("pyproject.toml", "[project]\nname = 'sample'\ndependencies = ['django>=5']\n"),
-                ("shop/views.py", "from django.shortcuts import render\ndef page(request):\n    return render(request, 'templates/page.html', {'title': 'Welcome'})\n"),
-                ("shop/templates/page.html", "<h1>{{ title }}</h1>\n"),
-            ],
-        )
-        .is_err()
-        {
+        let manifest_path = format!(".forge/frameworks/django.{extension}");
+        let workspace = FrameworkHarness::persisted(&[]);
+        workspace.write(manifest_path.as_str(), manifest.as_str());
+        workspace.write_all(&project_files);
+        let result = contextunity_forge_mcp::engine::pipeline::build_with_cache_dir(
+            workspace.root(),
+            &workspace.db(),
+            None,
+            &workspace.path(".forge/extraction-cache"),
+        );
+        if result.is_ok() || workspace.db().exists() {
             failures.push(format!("a declared Django project with {invalid_kind} in its .{extension} manifest was accepted or published index"));
         }
     }

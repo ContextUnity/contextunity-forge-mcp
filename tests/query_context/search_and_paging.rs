@@ -5,7 +5,8 @@ fn exact_symbol_search_uses_fts_candidates_and_keeps_scope_and_kind_filters() {
     let workspace = Workspace::new();
     workspace.write("pkg/service.py", "class Server:\n    def admit(self): pass\n\ndef admission():\n    \"\"\"admit clients\"\"\"\n    pass\n");
     workspace.write("other/service.py", "def admit(): pass\n");
-    let conn = workspace.build();
+    workspace.build();
+    let conn = workspace.open();
     conn.authorizer(Some(|context: AuthContext<'_>| match context.action {
         AuthAction::Read {
             table_name: "edges" | "shared_owners",
@@ -84,7 +85,8 @@ fn exact_symbol_search_handles_underscore_only_identifiers() {
     workspace.write("symbols.py", "def _(): pass\ndef __(): pass\n");
     workspace.write("two.py", "def _(): pass\n");
     workspace.write("README.md", "# _\n\nDocumentation section.\n");
-    let conn = workspace.build();
+    workspace.build();
+    let conn = workspace.open();
 
     for name in ["_", "__"] {
         let found = symbols::search_with_options(
@@ -223,7 +225,8 @@ fn prefix_search_finds_namespaced_rust_methods_using_fts_candidates() {
         "server.rs",
         "struct Server;\nimpl Server { fn admit(&self) {} fn reject(&self) {} }\n",
     );
-    drop(workspace.build());
+    workspace.build();
+    drop(workspace.open());
     let conn = Connection::open(workspace.db()).unwrap();
     conn.execute(
         "UPDATE nodes SET name='Server::admit',qualname='Server::admit' WHERE name='admit'",
@@ -268,7 +271,8 @@ fn persisted_search_and_traversal_pages_have_exact_totals_without_gaps() {
         code.push_str(&format!("    leaf_{i:03}()\n"));
     }
     workspace.write("graph.py", &code);
-    let conn = workspace.build();
+    workspace.build();
+    let conn = workspace.open();
     let mut query = options(11);
     let mut names = Vec::new();
     loop {
@@ -363,7 +367,8 @@ fn broad_slice_is_rejected_before_recursive_pagination() {
         source.push_str(&format!("    leaf_{i}()\n"));
     }
     workspace.write("graph.py", &source);
-    let conn = workspace.build();
+    workspace.build();
+    let conn = workspace.open();
     let error = traversal::traverse_with_options(
         &conn,
         "entry",
@@ -416,7 +421,8 @@ fn compact_queries_never_read_heavy_columns_and_full_detail_is_explicit() {
         "README.md",
         "# Contract\n\nArchitecture contract for target.\n",
     );
-    let conn = workspace.build();
+    workspace.build();
+    let conn = workspace.open();
     conn.authorizer(Some(|context: AuthContext<'_>| match context.action {
         AuthAction::Read {
             column_name: "details" | "content" | "invariants" | "referenced_symbols",
@@ -499,7 +505,8 @@ fn natural_symbol_queries_use_bm25_and_skip_markdown_by_default() {
         "README.md",
         "# Architecture\n\nThe architecture describes request processing.\n",
     );
-    let conn = workspace.build();
+    workspace.build();
+    let conn = workspace.open();
     let natural = symbols::search_with_options(
         &conn,
         "publish request messages connected clients",

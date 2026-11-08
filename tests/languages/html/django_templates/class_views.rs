@@ -2,15 +2,12 @@ use super::*;
 
 #[test]
 fn django_cbv_attributes_link_only_unique_templates_and_models() {
-    let workspace = Workspace::new();
+    let workspace = crate::languages::PersistedWorkspaceHarness::new();
     workspace.write(
         "pyproject.toml",
         "[project]\nname='django-cbv'\ndependencies=['django']\n",
     );
-    workspace.write(
-        "app/models.py",
-        "from django.db import models\nclass Product(models.Model):\n    pass\nclass Duplicate(models.Model):\n    pass\n",
-    );
+    workspace.write("app/models.py", "from django.db import models\nclass Product(models.Model):\n    pass\nclass Duplicate(models.Model):\n    pass\n");
     workspace.write(
         "other/models.py",
         "from django.db import models\nclass Duplicate(models.Model):\n    pass\n",
@@ -21,25 +18,36 @@ fn django_cbv_attributes_link_only_unique_templates_and_models() {
     workspace.write("app/templates/products/duplicate.html", "<p>First</p>\n");
     workspace.write("other/templates/products/duplicate.html", "<p>Second</p>\n");
 
-    writer::build(&workspace.0, &workspace.db(), None).unwrap();
-    let conn = workspace.open();
-    assert_valid(&conn);
+    let conn = workspace.build_and_open();
+    let validity = validity_observations(&conn);
+    validity.assert_valid();
+    let product_view =
+        node_id_observation(&conn, "app/views.py", "ProductView").expect("unique ProductView definition");
+    let missing_model_view =
+        node_id_observation(&conn, "app/views.py", "MissingModelView").expect("unique MissingModelView definition");
+    let duplicate_template_view = node_id_observation(&conn, "app/views.py", "DuplicateTemplateView")
+        .expect("unique DuplicateTemplateView definition");
+    let duplicate_model_view =
+        node_id_observation(&conn, "app/views.py", "DuplicateModelView").expect("unique DuplicateModelView definition");
+    let product_model =
+        node_id_observation(&conn, "app/models.py", "Product").expect("unique Product model definition");
+    let route_observations = html_coverage_observations(&conn);
 
     assert_eq!(
         edge_occurrence_rows(&conn, "app/views.py", "renders_template"),
         [
             (
-                node_id(&conn, "app/views.py", "ProductView"),
+                product_view.clone(),
                 "module:app/templates/products/detail.html".into(),
                 5
             ),
             (
-                node_id(&conn, "app/views.py", "MissingModelView"),
+                missing_model_view.clone(),
                 "module:app/templates/products/detail.html".into(),
                 17
             ),
             (
-                node_id(&conn, "app/views.py", "DuplicateModelView"),
+                duplicate_model_view.clone(),
                 "module:app/templates/products/detail.html".into(),
                 21
             ),
@@ -48,21 +56,14 @@ fn django_cbv_attributes_link_only_unique_templates_and_models() {
     assert_eq!(
         edge_occurrence_rows(&conn, "app/views.py", "uses_model"),
         [
+            (product_view.clone(), product_model.clone(), 6),
             (
-                node_id(&conn, "app/views.py", "ProductView"),
-                node_id(&conn, "app/models.py", "Product"),
-                6
-            ),
-            (
-                node_id(&conn, "app/views.py", "MissingTemplateView"),
-                node_id(&conn, "app/models.py", "Product"),
+                node_id_observation(&conn, "app/views.py", "MissingTemplateView")
+                    .expect("unique MissingTemplateView definition"),
+                product_model.clone(),
                 10
             ),
-            (
-                node_id(&conn, "app/views.py", "DuplicateTemplateView"),
-                node_id(&conn, "app/models.py", "Product"),
-                14
-            ),
+            (duplicate_template_view, product_model, 14),
         ]
     );
     for (line, expression, status) in [
@@ -71,29 +72,29 @@ fn django_cbv_attributes_link_only_unique_templates_and_models() {
         (18, "Missing", "unresolved"),
         (22, "Duplicate", "ambiguous"),
     ] {
-        let actual: String = conn
-            .query_row(
-                "SELECT status FROM resolution_coverage c JOIN path_dictionary p ON p.path_id=c.path_id JOIN coverage_expressions x ON x.expression_id=c.expression_id WHERE p.path='app/views.py' AND c.line=?1 AND x.expression=?2",
-                params![line, expression],
-                |row| row.get(0),
-            )
-            .unwrap_or_else(|error| panic!("missing coverage at app/views.py:{line} for {expression}: {error}"));
-        assert_eq!(actual, status, "{expression}");
+        let actual: Vec<_> = route_observations
+            .iter()
+            .filter(|coverage| {
+                coverage.path == "app/views.py" && coverage.line == line && coverage.expression == expression
+            })
+            .map(|coverage| coverage.status.as_str())
+            .collect();
+        assert_eq!(actual, [status], "{expression}");
     }
     for (line, expression) in [(25, "choose_template()"), (26, "choose_model()")] {
-        let status: String = conn
-            .query_row(
-                "SELECT status FROM resolution_coverage c JOIN path_dictionary p ON p.path_id=c.path_id JOIN coverage_expressions x ON x.expression_id=c.expression_id WHERE p.path='app/views.py' AND c.line=?1 AND x.expression=?2",
-                params![line, expression],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(status, "unresolved", "{expression}");
+        let statuses: Vec<_> = route_observations
+            .iter()
+            .filter(|coverage| {
+                coverage.path == "app/views.py" && coverage.line == line && coverage.expression == expression
+            })
+            .map(|coverage| coverage.status.as_str())
+            .collect();
+        assert_eq!(statuses, ["unresolved"], "{expression}");
     }
     assert!(
         edge_occurrence_rows(&conn, "app/views.py", "uses_model")
             .iter()
-            .all(|(source, _, _)| source != &node_id(&conn, "app/views.py", "DuplicateModelView")),
+            .all(|(source, _, _)| source != &duplicate_model_view),
         "ambiguous duplicate model declarations must not produce an edge"
     );
 }

@@ -1,0 +1,15 @@
+# Canonical Rejection Routing Workflow Fixture (ADR 0021 / AC-003)
+version: 2
+inherit: none
+save: none
+roles:
+  builder: {}
+  independent_reviewer: {}
+gates:
+  - id: build
+    role: builder
+  - id: review
+    role: independent_reviewer
+    proof: review
+    independent_from: build
+    fail: build

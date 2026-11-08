@@ -1,0 +1,6 @@
+{
+  "AGENTS.md": "# Rules\n",
+  "forge-mcp.yaml": "task_repository: test\ntask_project: test\nroots: []\nmilestones:\n  - docs/milestones\n  - extensions/*/docs/milestones\nowners:\n  \"extensions\": ext\n  \"extensions/base\": base\naliases:\n  base: base\n",
+  "docs/milestones/001-root.md": "---\nid: M-ROOT\ntitle: Root Milestone\ndoc_type: contract\n---\n# Root Milestone\n\n### task: root-task\n```yaml\ntask_ref: root-task\ntarget: Root target\nproof_policy: direct-proof\nscope: [src/]\n```\n",
+  "extensions/base/docs/milestones/BS-102-document-loaders.md": "---\nid: BS-102\ntitle: Base Milestone\ndoc_type: contract\nproject: base\n---\n# Base Milestone\n\n### task: base-task\n```yaml\ntask_ref: base-task\ntarget: Base target\nproof_policy: direct-proof\nscope: [extensions/base/]\n```\n"
+}

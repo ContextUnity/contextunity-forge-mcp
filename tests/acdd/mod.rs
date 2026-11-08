@@ -1,8 +1,11 @@
+pub(crate) mod snapshot;
 pub(crate) mod support;
 
 mod blackboard;
+mod command_gate_harness;
 mod contract_synthesis;
 mod gates_ast;
+mod harness;
 mod mcp;
 mod milestones;
 mod persistence;

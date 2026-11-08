@@ -6,7 +6,7 @@ This document defines the architectural boundaries and test authoring invariants
 
 - **Blackboard Coordination**: [blackboard.rs](blackboard.rs) — Targeted routing, topics, RFC message delivery, and payload size bounds (`INV-PAYLOAD-OVERFLOW-GUARD`).
 - **MCP Tool Contracts**: [mcp.rs](mcp.rs) — JSON-RPC tool contracts (`task_claim`, `task_submit`, `task_manage`, `task_blackboard`, `task_list`).
-- **Milestone Lifecycles**: [milestones.rs](milestones.rs) — Milestone initialization, synthesis, DAG verification, handoff, and recovery.
+- **Milestone Lifecycles**: [milestones/AGENTS.md](milestones/AGENTS.md) — Milestone initialization, synthesis, DAG verification, handoff, and recovery.
 - **Subtask Lifecycle**: [subtasks.rs](subtasks.rs) — Subtask state transitions, evidence validation, and dependency ordering.
 - **Task Engine & Lifecycles**: [tasks/AGENTS.md](tasks/AGENTS.md) — Task state machine, seam reachability, signature boundaries, workspaces, and retirement.
 - **Shared Test Harnesses**: [support.rs](support.rs) and [tests/common/](../common/) — Reusable workspace builders, temp stores, and fixture factories.
@@ -19,7 +19,7 @@ This document defines the architectural boundaries and test authoring invariants
 
 ### 2. Shared Harness Reuse (`INV-TEST-HARNESS-REUSE`)
 - **Zero Boilerplate Copy-Paste**: Do not inline repetitive file tree construction (e.g. `root.write("src/api.rs", ...)`).
-- Use `tests/acdd/support.rs` and `tests/common/` factories (`ScopedWorkspace`, fixture builders). Common setup must be parameterized, not duplicated.
+- Use `tests/acdd/support.rs` and `tests/common/` factories (`acdd_workspace`, `Workspace`, and fixture builders). Common setup must be parameterized, not duplicated.
 
 ### 3. Table-Driven Permutations (`INV-TABLE-DRIVEN-PERMUTATION`)
 - When testing permutations across languages (TypeScript, Python, JavaScript), status codes, or error states, use structured test case tables:

@@ -1,16 +1,18 @@
 #![cfg(any(feature = "lang-python", feature = "lang-rust"))]
 
-use contextunity_forge_mcp::engine::{ast, languages, linker};
-use std::collections::BTreeMap;
+use crate::languages::harness::ExtractorHarness;
+use contextunity_forge_mcp::engine::languages;
 
 fn assert_builtin_calls(path: &str, language: &str, names: &[&str], source: &str) {
     let profile = languages::require(language).unwrap();
     for name in names {
         assert!(profile.builtin(name), "missing {language} builtin {name}");
     }
-    let facts = ast::extract(path, language, source).unwrap();
+    let graph = ExtractorHarness::for_lang(language)
+        .at_path(path)
+        .linked(source);
+    let facts = &graph.facts;
     assert!(facts.errors.is_empty(), "{:?}", facts.errors);
-    let graph = linker::link(&BTreeMap::from([(path.to_owned(), facts)]));
     for name in names {
         let coverage = graph
             .coverage
@@ -86,9 +88,11 @@ fn rust_prelude_variants_and_macros_have_stdlib_provenance() {
 "#;
     let profile = languages::require("rust").unwrap();
     assert!(profile.builtin("None"));
-    let facts = ast::extract("builtins.rs", "rust", source).unwrap();
+    let graph = ExtractorHarness::for_lang("rust")
+        .at_path("builtins.rs")
+        .linked(source);
+    let facts = &graph.facts;
     assert!(facts.errors.is_empty(), "{:?}", facts.errors);
-    let graph = linker::link(&BTreeMap::from([("builtins.rs".to_owned(), facts)]));
     for name in ["Some", "Ok", "Err"] {
         assert!(profile.builtin(name), "missing Rust builtin {name}");
     }
@@ -275,9 +279,11 @@ fn rust_stdlib_calls_are_external_and_local_shadow_is_resolved() {
         ),
     ];
     for (path, source, expression, status, origin, local_target) in cases {
-        let facts = ast::extract(path, "rust", source).unwrap();
+        let graph = ExtractorHarness::for_lang("rust")
+            .at_path(path)
+            .linked(source);
+        let facts = &graph.facts;
         assert!(facts.errors.is_empty(), "{path}: {facts:#?}");
-        let graph = linker::link(&BTreeMap::from([(path.to_owned(), facts.clone())]));
         let coverage = graph
             .coverage
             .iter()
@@ -296,5 +302,30 @@ fn rust_stdlib_calls_are_external_and_local_shadow_is_resolved() {
                 "{path}: {graph:#?}"
             );
         }
+    }
+    let prelude_source = r#"
+fn run() {
+    let text = String::from("hello");
+    text.clone();
+    let _default: i32 = Default::default();
+    let numbers = Vec::new();
+    numbers.iter();
+}
+"#;
+    let prelude_graph = ExtractorHarness::for_lang("rust")
+        .at_path("prelude_traits.rs")
+        .linked(prelude_source);
+    assert!(
+        prelude_graph.facts.errors.is_empty(),
+        "{:#?}",
+        prelude_graph.facts.errors
+    );
+    for expression in ["text.clone", "Default::default", "numbers.iter"] {
+        let coverage = prelude_graph
+            .coverage
+            .iter()
+            .find(|row| row.expression == expression)
+            .unwrap_or_else(|| panic!("missing {expression}: {prelude_graph:#?}"));
+        assert_eq!(coverage.status, "external", "{expression}: {coverage:#?}");
     }
 }

@@ -1,5 +1,4 @@
-use crate::common::Workspace;
-use contextunity_forge_mcp::db::{reader, writer};
+use contextunity_forge_mcp::db::reader;
 
 #[cfg(feature = "lang-python")]
 #[test]
@@ -7,28 +6,32 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
     use contextunity_forge_mcp::core::response::{Detail, QueryOptions, ResponsePolicy};
     use contextunity_forge_mcp::db::symbols;
 
-    let ws = Workspace::new();
-    ws.write(
-        "a.py",
-        "def process():\n    return 1\ndef process_work():\n    return 1\n",
-    );
-    ws.write(
-        "z.py",
-        "def process():\n    \"\"\"Processes one request. Further details stay out of the preview.\"\"\"\n    return 1\ndef process_work():\n    return 1\n",
-    );
-    ws.write(
-        "caller.py",
-        "from z import process, process_work\n\ndef run():\n    process_work()\n    return process()\n",
-    );
-    ws.write(
-        "signature.py",
-        "@pytest.fixture\ndef typed_query(order: GateProfile) -> Result:\n    return order\n\ndef returns_gate() -> GateProfile:\n    return None\n\ndef takes_result(value: Result) -> Other:\n    return value\n\n@pytest.other\ndef other_decorator():\n    return 1\n\n@other.fixture\ndef unrelated_fixture():\n    return 1\n",
-    );
-    ws.write("types.py", "class GateProfile:\n    pass\n");
-    ws.write("underscored.py", "class Gate_Profile:\n    pass\ndef accepts_profile(value: Gate_Profile):\n    return value\n");
-    ws.write("types.rs", "#[derive(Debug)]\nstruct Example {}\n");
+    let ws = crate::common::Workspace::with_files(&[
+        (
+            "a.py",
+            "def process():\n    return 1\ndef process_work():\n    return 1\n",
+        ),
+        (
+            "z.py",
+            "def process():\n    \"\"\"Processes one request. Further details stay out of the preview.\"\"\"\n    return 1\ndef process_work():\n    return 1\n",
+        ),
+        (
+            "caller.py",
+            "from z import process, process_work\n\ndef run():\n    process_work()\n    return process()\n",
+        ),
+        (
+            "signature.py",
+            "@pytest.fixture\ndef typed_query(order: GateProfile) -> Result:\n    return order\n\ndef returns_gate() -> GateProfile:\n    return None\n\ndef takes_result(value: Result) -> Other:\n    return value\n\n@pytest.other\ndef other_decorator():\n    return 1\n\n@other.fixture\ndef unrelated_fixture():\n    return 1\n",
+        ),
+        ("types.py", "class GateProfile:\n    pass\n"),
+        (
+            "underscored.py",
+            "class Gate_Profile:\n    pass\ndef accepts_profile(value: Gate_Profile):\n    return value\n",
+        ),
+        ("types.rs", "#[derive(Debug)]\nstruct Example {}\n"),
+    ]);
+    ws.build();
     let db_path = ws.root().join(".forge/code-map.sqlite");
-    writer::build(ws.root(), &db_path, None).unwrap();
     let conn = reader::open(&db_path, ws.root()).unwrap();
     let options = QueryOptions::resolve(
         &ResponsePolicy::default(),
@@ -139,21 +142,39 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
     let mut generation = None;
     for offset in 0..all_names.len() {
         let page = QueryOptions::resolve(
-            &ResponsePolicy::default(), Some(1), offset, Some(Detail::Full), generation.clone(),
-        ).unwrap();
+            &ResponsePolicy::default(),
+            Some(1),
+            offset,
+            Some(Detail::Full),
+            generation.clone(),
+        )
+        .unwrap();
         let result = symbols::search_with_options(
             &conn,
             "GateProfile",
             &symbols::SearchOptions {
-                kind: None, path: None, include_docs: false, exact: false, page: &page,
+                kind: None,
+                path: None,
+                include_docs: false,
+                exact: false,
+                page: &page,
             },
-        ).unwrap();
+        )
+        .unwrap();
         if generation.is_none() {
             generation = result["nodes"]["generation"].as_str().map(str::to_owned);
         }
-        paged_names.push(result["nodes"]["items"][0]["name"].as_str().unwrap().to_owned());
+        paged_names.push(
+            result["nodes"]["items"][0]["name"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+        );
     }
-    assert_eq!(paged_names, all_names, "pagination must retain ranked order");
+    assert_eq!(
+        paged_names, all_names,
+        "pagination must retain ranked order"
+    );
     let underscored = symbols::search_with_options(
         &conn,
         "Gate_Profile",
@@ -188,14 +209,16 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
     .unwrap();
     assert_eq!(attributes["nodes"]["items"][0]["name"], "Example");
     {
-        let mut client = crate::common::mcp_client::StdioClient::new(&ws);
-        let mcp = client.payload(
-            "code_map_search",
-            serde_json::json!({
-                "pattern":"returns:Result", "kind":"function", "format":"json"
-            }),
-        );
-        let cli = crate::common::mcp_client::run_cli_json(
+        let mut client = crate::harness::McpTestHarness::new(&ws).expect("MCP initialize");
+        let mcp = client
+            .payload(
+                "code_map_search",
+                serde_json::json!({
+                    "pattern":"returns:Result", "kind":"function", "format":"json"
+                }),
+            )
+            .expect("MCP tool should succeed");
+        let cli = crate::cli::run_cli_json(
             &ws,
             &["query", "search", "returns:Result", "--kind", "function"],
         );
@@ -219,6 +242,7 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
             .collect();
         assert_eq!(mcp_names, ["typed_query"]);
         assert_eq!(mcp_names, cli_names);
+        client.finish().expect("server must finish successfully");
     }
     let prefix = symbols::search_with_options(
         &conn,
@@ -287,36 +311,18 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
     )
     .unwrap();
     assert_eq!(removed_attribute["nodes"]["total"], 0);
-    let incremental_root: String = incremental
-        .query_row(
-            "SELECT value FROM metadata WHERE key='output_root'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
+    let incremental_root = crate::sqlite_fixture::output_root(&incremental).unwrap();
     drop(incremental);
     let cold_path = ws.root().join(".forge/signature-cold.sqlite");
     ws.build_to(&cold_path);
     let cold = reader::open(&cold_path, ws.root()).unwrap();
-    let cold_root: String = cold
-        .query_row(
-            "SELECT value FROM metadata WHERE key='output_root'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
+    let cold_root = crate::sqlite_fixture::output_root(&cold).unwrap();
     assert_eq!(
         incremental_root, cold_root,
         "signature FTS must be cold/delta deterministic"
     );
     drop(cold);
-    let stale = rusqlite::Connection::open(&cold_path).unwrap();
-    stale.execute(
-        "UPDATE metadata SET value='10:compact-storage-v8:legacy' WHERE key='index_semantics_version'",
-        [],
-    ).unwrap();
-    contextunity_forge_mcp::core::commitments::seal(&stale).unwrap();
-    drop(stale);
+    crate::sqlite_fixture::mark_legacy_index_semantics(&cold_path).unwrap();
     let error = reader::open(&cold_path, ws.root()).unwrap_err();
     assert!(
         error.to_string().contains("incompatible index semantics"),
@@ -333,7 +339,7 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
         "def rankterm():\n    \"\"\"Prioritizes the exact rank. Additional prose is omitted.\"\"\"\n    return 1\n",
     );
     ws.write("rank_caller.py", "from exact_z import rankterm\nfrom catalog import rankterm_500\ndef run_ranked():\n    rankterm_500()\n    return rankterm()\n");
-    let linked = Workspace::new();
+    let linked = crate::common::Workspace::with_files(&[]);
     linked.write(
         "linked module+%#1.py",
         "def linked_uri_symbol():\n    return 1\n",
@@ -353,7 +359,7 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
         "space/pyproject.toml",
         "[project]\nname = 'linked-search-test'\n",
     );
-    writer::build(ws.root(), &db_path, None).unwrap();
+    ws.build_to(&db_path);
     let conn = reader::open(&db_path, ws.root()).unwrap();
     let mut page_options = QueryOptions::resolve(
         &ResponsePolicy::default(),
@@ -479,8 +485,8 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
         .unwrap(),
         exact
     );
-    let mut client = crate::common::mcp_client::StdioClient::new(&ws);
-    let (_, response) = client.call("code_map_search", serde_json::json!({"pattern":"rankterm","kind":"function","limit":100,"detail":"full","format":"markdown"}));
+    let mut client = crate::harness::McpTestHarness::new(&ws).expect("MCP initialize");
+    let (_, response) = client.call("code_map_search", serde_json::json!({"pattern":"rankterm","kind":"function","limit":100,"detail":"full","format":"markdown"})).expect("MCP transport");
     assert_ne!(response["result"]["isError"], true, "{response}");
     let markdown = response["result"]["content"][0]["text"].as_str().unwrap();
     for item in exact_nodes {
@@ -514,7 +520,7 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
     let (_, json_response) = client.call(
         "code_map_search",
         serde_json::json!({"pattern":"rankterm","kind":"function","limit":100,"detail":"full","format":"json"}),
-    );
+    ).expect("MCP transport");
     assert_ne!(json_response["result"]["isError"], true, "{json_response}");
     let json_text = json_response["result"]["content"][0]["text"]
         .as_str()
@@ -542,7 +548,7 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
     let (_, test_json_response) = client.call(
         "code_map_search",
         serde_json::json!({"pattern":"test_search_role","kind":"function","limit":10,"detail":"full","format":"json"}),
-    );
+    ).expect("MCP transport");
     assert_ne!(
         test_json_response["result"]["isError"], true,
         "{test_json_response}"
@@ -566,7 +572,7 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
     let (_, linked_response) = client.call(
         "code_map_search",
         serde_json::json!({"pattern":"linked_uri_symbol","kind":"function","limit":10,"format":"markdown"}),
-    );
+    ).expect("MCP transport");
     assert_ne!(
         linked_response["result"]["isError"], true,
         "{linked_response}"
@@ -582,4 +588,5 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
         markdown.find("exact_z.py").unwrap() < markdown.find("exact_a.py").unwrap(),
         "presentation must preserve producer ranking"
     );
+    client.finish().expect("server must finish successfully");
 }

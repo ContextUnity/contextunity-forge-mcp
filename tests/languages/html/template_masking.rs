@@ -1,4 +1,4 @@
-use super::*;
+use crate::languages::harness::ExtractorHarness;
 
 #[test]
 fn html_django_template_preprocessor_avoids_syntax_errors_and_extracts_links() {
@@ -21,7 +21,9 @@ fn html_django_template_preprocessor_avoids_syntax_errors_and_extracts_links() {
 </script>
 {% endblock %}
 "#;
-    let facts = ast::extract("templates/item.html", "html", source).unwrap();
+    let facts = ExtractorHarness::for_lang("html")
+        .at_path("templates/item.html")
+        .extract(source);
     assert_eq!(
         facts.errors.len(),
         0,
@@ -56,7 +58,9 @@ fn html_truncated_template_tags_do_not_panic() {
         "{{",
         "{{ unclosed var",
     ] {
-        let facts = ast::extract("truncated.html", "html", snippet);
+        let facts = ExtractorHarness::for_lang("html")
+            .at_path("truncated.html")
+            .try_extract(snippet);
         assert!(facts.is_ok(), "must not panic on: {snippet}");
     }
 }
@@ -69,7 +73,9 @@ fn html_template_file_still_reports_syntax_error_in_plain_script() {
     function broken( {
 </script>
 "#;
-    let facts = ast::extract("template_with_broken_js.html", "html", source).unwrap();
+    let facts = ExtractorHarness::for_lang("html")
+        .at_path("template_with_broken_js.html")
+        .extract(source);
     assert!(
         facts
             .errors
@@ -83,7 +89,9 @@ fn html_template_file_still_reports_syntax_error_in_plain_script() {
 #[test]
 fn unicode_template_tags_keep_embedded_javascript_byte_coordinates() {
     let source = "<script>{% if λ %}function afterMask() { return 1; }{% endif %}</script>";
-    let facts = ast::extract("template.html", "html", source).unwrap();
+    let facts = ExtractorHarness::for_lang("html")
+        .at_path("template.html")
+        .extract(source);
     let function = facts
         .nodes
         .iter()
@@ -100,7 +108,9 @@ fn unicode_template_tags_keep_embedded_javascript_byte_coordinates() {
 #[test]
 fn vue_mask_keeps_interpolation_references_and_script_coordinates() {
     let source = "<template><p>{{ user.name }}</p></template>\n<script setup>function afterVue() {}</script>";
-    let facts = ast::extract("component.vue", "vue", source).unwrap();
+    let facts = ExtractorHarness::for_lang("vue")
+        .at_path("component.vue")
+        .extract(source);
     assert!(facts
         .references
         .iter()

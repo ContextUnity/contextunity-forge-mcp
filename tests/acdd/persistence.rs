@@ -15,7 +15,7 @@ fn primary_key_columns(connection: &rusqlite::Connection, table: &str) -> Vec<St
 
 #[test]
 fn task_store_migrates_the_ac001_gate_persistence_contract() {
-    let (_workspace, mut store, _milestone) = fixture();
+    let (_workspace, mut store, _milestone) = fixture(DEFAULT_SEAM);
     let schema_version: String = store
         .connection
         .query_row(

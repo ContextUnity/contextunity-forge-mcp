@@ -255,7 +255,7 @@ fn linked_component_transfer_preserves_unmodified_containment_edges() {
     assert_eq!(before, strings(&w.open(), untouched_sql));
     assert_cold_equivalent(&w);
     for path in ["src/a.py", "src/b.py", "src/c.py"] {
-        fs::remove_file(linked.path(path)).unwrap();
+        linked.remove(path);
         w.delta(&[&format!("[linked]/{path}")]);
         assert_cold_equivalent(&w);
     }
@@ -282,7 +282,7 @@ fn provider_addition_ambiguity_and_removal_relink_consumers_and_docs() {
     }
     assert_eq!(strings(&w.open(), "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='consumer.py' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='provide' ORDER BY line"), ["ambiguous", "unresolved"]);
     for path in ["lib/__init__.py", "lib.py"] {
-        fs::remove_file(w.path(path)).unwrap();
+        w.remove(path);
         w.delta(&[path]);
         assert_cold_equivalent(&w);
     }
@@ -316,7 +316,7 @@ fn component_representative_mutations_match_cold_builds() {
     w.delta(&["part/a.py", "part/d.py"]);
     assert_cold_equivalent(&w);
     for path in ["part/b.py", "part/c.py", "part/d.py"] {
-        fs::remove_file(w.path(path)).unwrap();
+        w.remove(path);
         w.delta(&[path]);
         assert_cold_equivalent(&w);
     }
@@ -370,7 +370,7 @@ fn dyn_trait_dispatch_add_change_and_remove_impls_match_cold_builds() {
         assert_eq!(strings(&w.open(), candidates).len(), initial_count, "{operation}: fixture must resolve cross-file trait candidates");
         match replacement {
             Some(source) => w.write("src/beta.rs", source),
-            None => fs::remove_file(w.path("src/beta.rs")).unwrap(),
+            None => w.remove("src/beta.rs"),
         }
         let report = delta(w.root(), &w.db(), &["src/beta.rs".into()]).unwrap();
         let cold_path = w.path(".forge/cold-dispatch.sqlite");
@@ -405,7 +405,7 @@ fn shared_aggregate_deletion_reseals_transferred_and_unchanged_owners() {
         ("impl_b/b.rs", "impl_a/a.rs"),
     ] {
         let w = shared_aggregate_workspace();
-        fs::remove_file(w.path(deleted)).unwrap();
+        w.remove(deleted);
         let report = w.delta(&[deleted]);
         assert_eq!(report["affected_owners"], 1, "{report}");
         assert_eq!(report["reparsed_files"], 0, "{report}");
@@ -413,7 +413,7 @@ fn shared_aggregate_deletion_reseals_transferred_and_unchanged_owners() {
         assert_eq!(report["rewritten_files"], 0, "{report}");
         assert_aggregate(&w, surviving, 1);
         assert_cold_equivalent(&w);
-        fs::remove_file(w.path(surviving)).unwrap();
+        w.remove(surviving);
         w.delta(&[surviving]);
         assert_aggregate(&w, "", 0);
         assert_cold_equivalent(&w);

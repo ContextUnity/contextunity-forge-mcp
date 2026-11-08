@@ -1,9 +1,7 @@
-use super::super::*;
-
 #[cfg(feature = "lang-vue")]
 #[test]
 fn vue_nuxt_components_directory_resolves_with_project_scope() {
-    let w = Workspace::new();
+    let w = crate::languages::PersistedWorkspaceHarness::new();
     for (path, source) in [
         ("apps/nuxt/package.json", r#"{"dependencies":{"nuxt":"^3"}}"#),
         ("apps/nuxt/nuxt.config.ts", "export default defineNuxtConfig({});"),
@@ -33,7 +31,8 @@ fn vue_nuxt_components_directory_resolves_with_project_scope() {
     ] {
         w.write(path, source);
     }
-    let conn = w.build();
+    w.build();
+    let conn = w.open();
     let status = |path: &str, expression: &str| -> String {
         conn.query_row(
             "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)=?1 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)=?2 AND line=1",
@@ -79,7 +78,7 @@ fn vue_nuxt_components_directory_resolves_with_project_scope() {
 #[cfg(feature = "lang-vue")]
 #[test]
 fn vue_nuxt_builtin_components_require_project_provenance() {
-    let w = Workspace::new();
+    let w = crate::languages::PersistedWorkspaceHarness::new();
     for (path, source) in [
         ("apps/nuxt/package.json", r#"{"dependencies":{"nuxt":"^3"}}"#),
         ("apps/nuxt/nuxt.config.ts", "export default defineNuxtConfig({ components: false });"),
@@ -92,7 +91,8 @@ fn vue_nuxt_builtin_components_require_project_provenance() {
     ] {
         w.write(path, source);
     }
-    let conn = w.build();
+    w.build();
+    let conn = w.open();
     let coverage = |path: &str, expression: &str| -> (String, String) {
         conn.query_row(
             "SELECT r.status,e.evidence FROM resolution_coverage r JOIN path_dictionary p ON p.path_id=r.path_id JOIN coverage_expressions x ON x.expression_id=r.expression_id JOIN coverage_evidence e ON e.evidence_id=r.evidence_id WHERE p.path=?1 AND x.expression=?2 AND r.line=1",
@@ -135,7 +135,7 @@ fn vue_nuxt_builtin_components_require_project_provenance() {
 #[cfg(feature = "lang-vue")]
 #[test]
 fn vue_nuxt_module_components_require_registered_provider() {
-    let w = Workspace::new();
+    let w = crate::languages::PersistedWorkspaceHarness::new();
     for (path, source) in [
         ("apps/radix/package.json", r#"{"dependencies":{"nuxt":"^3","radix-vue":"^1"}}"#),
         ("apps/radix/nuxt.config.ts", "export default defineNuxtConfig({ modules: ['radix-vue/nuxt'] });"),
@@ -151,7 +151,8 @@ fn vue_nuxt_module_components_require_registered_provider() {
     ] {
         w.write(path, source);
     }
-    let conn = w.build();
+    w.build();
+    let conn = w.open();
     let coverage = |path: &str, expression: &str| -> (String, String) {
         conn.query_row(
             "SELECT r.status,e.evidence FROM resolution_coverage r JOIN path_dictionary p ON p.path_id=r.path_id JOIN coverage_expressions x ON x.expression_id=r.expression_id JOIN coverage_evidence e ON e.evidence_id=r.evidence_id WHERE p.path=?1 AND x.expression=?2 AND r.line=1",

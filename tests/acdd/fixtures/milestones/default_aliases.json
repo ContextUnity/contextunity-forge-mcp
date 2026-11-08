@@ -1,0 +1,7 @@
+{
+  "AGENTS.md": "# Rules\n",
+  "src/lib.rs": "pub fn primary() {}\n",
+  "forge-mcp.yaml": "task_repository: test\ntask_project: legacy\nroots: []\nmilestones: [docs/milestones, 'extensions/*/docs/milestones']\nowners:\n  extensions/new: old-owner\naliases:\n  legacy: base\n  old-owner: base\n  base: other\n",
+  "docs/milestones/001-default.md": "---\nid: m-default\ntitle: Default alias\ndoc_type: contract\nstatus: in_progress\n---\n# Default alias\n\n### task: first\n```yaml\ntask_ref: first\ntarget: Deliver the default project\nproof_policy: seam-test-first\nscope: [src/]\n```\n",
+  "extensions/new/docs/milestones": null
+}

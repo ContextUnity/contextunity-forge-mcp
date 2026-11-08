@@ -1,3 +1,7 @@
+use crate::common::mcp_harness as in_process;
+#[path = "../mcp/cli.rs"]
+mod in_process_cli;
+
 use super::*;
 
 #[test]
@@ -9,9 +13,10 @@ fn diagnostics_summarize_directories_and_page_exact_files() {
         for line in 0..45 {
             code.push_str(&format!("    missing_{line}()\n"));
         }
-        workspace.write(&format!("pkg/file_{file:02}.py"), &code);
+        workspace.write(format!("pkg/file_{file:02}.py"), &code);
     }
-    let conn = workspace.build();
+    workspace.build();
+    let conn = workspace.open();
     let summary = reader::analyze_paged(&conn, "pkg", None, &options(7)).unwrap();
     assert_eq!(summary["scope"], "summary");
     assert_eq!(summary["total_unresolved"], 540);
@@ -97,7 +102,8 @@ fn sql_pages_count_full_results_preserve_order_and_reject_writes() {
             .map(|i| format!("def f{i:03}(): return {i}\n"))
             .collect::<String>(),
     );
-    let conn = workspace.build();
+    workspace.build();
+    let conn = workspace.open();
     let sql = "WITH funcs AS (SELECT name FROM nodes WHERE kind='function') SELECT name FROM funcs ORDER BY name DESC";
     let mut query = options(8);
     let mut names = Vec::new();
@@ -166,7 +172,8 @@ fn removal_safety_uses_complete_evidence_when_the_visible_page_is_empty() {
         "code.py",
         "def target(): return 1\ndef caller(): return target()\n",
     );
-    let conn = workspace.build();
+    workspace.build();
+    let conn = workspace.open();
     let initial = traversal::removal_paged(&conn, "target", &options(1)).unwrap();
     assert_eq!(initial["incoming_dependencies"]["total"], 1);
     assert_eq!(initial["safe_to_remove"], false);
@@ -174,10 +181,12 @@ fn removal_safety_uses_complete_evidence_when_the_visible_page_is_empty() {
     query.offset = 20;
     query.generation = Some(initial["generation"].as_str().unwrap().to_owned());
     let empty = traversal::removal_paged(&conn, "target", &query).unwrap();
-    assert!(empty["incoming_dependencies"]["items"]
-        .as_array()
-        .unwrap()
-        .is_empty());
+    assert!(
+        empty["incoming_dependencies"]["items"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(empty["incoming_dependencies"]["total"], 1);
     assert_eq!(empty["safe_to_remove"], false);
 }
@@ -198,30 +207,33 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
             "def {name}():\r\n{}    return 'Привіт'\r\n",
             "    pass\r\n".repeat(lines - 2)
         );
-        workspace.write(&format!("preview_{lines}.py"), &body);
+        workspace.write(format!("preview_{lines}.py"), &body);
         (lines, name, body)
     });
-    let conn = workspace.build();
+    workspace.build();
+    let conn = workspace.open();
     let policy = ResponsePolicy::default();
     let disabled = SourceOptions::resolve(&policy, None, None, None, 0).unwrap();
-    assert!(symbols::inspect_with_options(
-        &conn,
-        &workspace.0,
-        "selected",
-        &symbols::InspectOptions {
-            show_doc: false,
-            source: &disabled,
-            coverage: CoverageOptions::default(),
-            page: &options(30)
-        }
-    )
-    .unwrap()
-    .get("source")
-    .is_none());
+    assert!(
+        symbols::inspect_with_options(
+            &conn,
+            workspace.root(),
+            "selected",
+            &symbols::InspectOptions {
+                show_doc: false,
+                source: &disabled,
+                coverage: CoverageOptions::default(),
+                page: &options(30)
+            }
+        )
+        .unwrap()
+        .get("source")
+        .is_none()
+    );
     let preview = SourceOptions::resolve(&policy, Some(true), None, Some(35), 0).unwrap();
     let first = symbols::inspect_with_options(
         &conn,
-        &workspace.0,
+        workspace.root(),
         "selected",
         &symbols::InspectOptions {
             show_doc: false,
@@ -242,7 +254,7 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
     let next = SourceOptions::resolve(&policy, Some(true), None, Some(35), 35).unwrap();
     let last = symbols::inspect_with_options(
         &conn,
-        &workspace.0,
+        workspace.root(),
         "selected",
         &symbols::InspectOptions {
             show_doc: false,
@@ -253,10 +265,12 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
     )
     .unwrap();
     assert_eq!(last["source_preview"]["has_more"], false);
-    assert!(last["source"]
-        .as_str()
-        .unwrap()
-        .ends_with("return 'Привіт'\r\n"));
+    assert!(
+        last["source"]
+            .as_str()
+            .unwrap()
+            .ends_with("return 'Привіт'\r\n")
+    );
     let first_body = source.split_once("def selected").unwrap().1;
     assert_eq!(
         format!(
@@ -268,7 +282,7 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
     let finished = SourceOptions::resolve(&policy, Some(true), None, Some(35), 62).unwrap();
     let empty = symbols::explain_with_options(
         &conn,
-        &workspace.0,
+        workspace.root(),
         "selected",
         &symbols::ExplainOptions {
             direction: None,
@@ -281,8 +295,8 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
     .unwrap();
     assert_eq!(empty["source"], "");
     assert!(empty["source_preview"]["end_line"].is_null());
-    let cli_first = common::mcp_client::run_cli_json(
-        &workspace.1,
+    let cli_first = in_process_cli::run_cli_json(
+        &workspace,
         &["query", "inspect", "selected_201", "--show-source"],
     );
     common::assertions::assert_command_succeeded(&cli_first);
@@ -291,8 +305,8 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
         .as_u64()
         .expect("large CLI source must produce a continuation cursor");
     let cli_generation = cli_first["generation"].as_str().unwrap();
-    let cli_missing = common::mcp_client::run_cli_json(
-        &workspace.1,
+    let cli_missing = in_process_cli::run_cli_json(
+        &workspace,
         &[
             "query",
             "inspect",
@@ -304,8 +318,8 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
     );
     assert!(!cli_missing.status.success());
     assert!(String::from_utf8_lossy(&cli_missing.stderr).contains("previous page's generation"));
-    let cli_valid = common::mcp_client::run_cli_json(
-        &workspace.1,
+    let cli_valid = in_process_cli::run_cli_json(
+        &workspace,
         &[
             "query",
             "inspect",
@@ -320,47 +334,54 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
     common::assertions::assert_command_succeeded(&cli_valid);
     let cli_valid: Value = serde_json::from_slice(&cli_valid.stdout).unwrap();
     assert_eq!(cli_valid["source_preview"]["body_offset"], cli_offset);
-    assert!(symbols::inspect_with_options(
-        &conn,
-        &workspace.0,
-        "selected",
-        &symbols::InspectOptions {
-            show_doc: false,
-            source: &next,
-            coverage: CoverageOptions::default(),
-            page: &options(30)
-        }
-    )
-    .is_err());
-    let mut client = common::mcp_client::StdioClient::new(&workspace.1);
-    let mcp_first = client.payload(
-        "forge_read",
-        serde_json::json!({"selector":"selected","max_body_lines":35,"format":"json"}),
+    assert!(
+        symbols::inspect_with_options(
+            &conn,
+            workspace.root(),
+            "selected",
+            &symbols::InspectOptions {
+                show_doc: false,
+                source: &next,
+                coverage: CoverageOptions::default(),
+                page: &options(30)
+            }
+        )
+        .is_err()
     );
+    let mut client = in_process::McpTestHarness::new(&workspace).expect("MCP initialize");
+    let mcp_first = client
+        .payload(
+            "forge_read",
+            serde_json::json!({"selector":"selected","max_body_lines":35,"format":"json"}),
+        )
+        .expect("MCP tool should succeed");
     assert_eq!(mcp_first["source_preview"]["next_source_offset"], 35);
-    let (_, inferred_response) = client.call(
-        "forge_read",
-        serde_json::json!({
-            "selector":"selected",
-            "max_body_lines":35,
-            "source_offset":mcp_first["source_preview"]["next_source_offset"],
-            "format":"json"
-        }),
-    );
+    let (_, inferred_response) = client
+        .call(
+            "forge_read",
+            serde_json::json!({
+                "selector":"selected",
+                "max_body_lines":35,
+                "source_offset":mcp_first["source_preview"]["next_source_offset"],
+                "format":"json"
+            }),
+        )
+        .expect("MCP transport");
     assert_eq!(
-        inferred_response["result"]["isError"],
-        true,
+        inferred_response["result"]["isError"], true,
         "source continuation must require an explicit generation even in the same session: {inferred_response}"
     );
-    let resumed = client.payload(
-        "forge_read",
-        serde_json::json!({
-            "selector":"selected",
-            "max_body_lines":35,
-            "source_offset":35,
-            "generation":mcp_first["generation"],
-        }),
-    );
+    let resumed = client
+        .payload(
+            "forge_read",
+            serde_json::json!({
+                "selector":"selected",
+                "max_body_lines":35,
+                "source_offset":35,
+                "generation":mcp_first["generation"],
+            }),
+        )
+        .expect("MCP tool should succeed");
     assert_eq!(resumed["source_preview"]["body_offset"], 35);
     let mut failures = Vec::new();
     let bounded_workspace = Workspace::new();
@@ -373,7 +394,8 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
         .collect::<String>();
     let bounded_source = format!("def bounded():\n{bounded_body}    return value_0000\n");
     bounded_workspace.write("bounded.py", &bounded_source);
-    let mut bounded_client = common::mcp_client::StdioClient::new(&bounded_workspace.1);
+    let mut bounded_client =
+        in_process::McpTestHarness::new(&bounded_workspace).expect("MCP initialize");
     let markdown_number = |text: &str, field: &str| -> Option<usize> {
         let marker = format!("**{field}**: `");
         let (_, remainder) = text.split_once(marker.as_str())?;
@@ -389,14 +411,19 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
         if let Some(format) = format {
             arguments["format"] = serde_json::json!(format);
         }
-        let (first_bytes, first_response) =
-            bounded_client.call("forge_read", arguments.clone());
+        let (first_bytes, first_response) = bounded_client
+            .call("forge_read", arguments.clone())
+            .expect("MCP transport");
         if first_response["result"]["isError"] == true {
-            failures.push(format!("{label} bounded first page errored: {first_response}"));
+            failures.push(format!(
+                "{label} bounded first page errored: {first_response}"
+            ));
             continue;
         }
         if first_bytes > 4096 || first_bytes <= 2048 {
-            failures.push(format!("{label} page was not a bounded 4-KiB response: {first_bytes} bytes"));
+            failures.push(format!(
+                "{label} page was not a bounded 4-KiB response: {first_bytes} bytes"
+            ));
         }
         let cursor = if format.is_some() {
             let page = common::assertions::mcp_payload(&first_response);
@@ -407,17 +434,26 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
                 .is_none_or(|(body, total)| body >= total)
                 || preview["omitted_body_lines"].as_u64().unwrap_or_default() == 0
             {
-                failures.push(format!("{label} response did not retain a trimmed source page: {preview}"));
+                failures.push(format!(
+                    "{label} response did not retain a trimmed source page: {preview}"
+                ));
             }
-            preview["next_source_offset"].as_u64().map(|offset| offset as usize)
+            preview["next_source_offset"]
+                .as_u64()
+                .map(|offset| offset as usize)
         } else {
             let text = first_response["result"]["content"][0]["text"]
                 .as_str()
                 .unwrap_or_default();
             let body_lines = markdown_number(text, "body_lines");
             let total_lines = markdown_number(text, "total_body_lines");
-            if body_lines.zip(total_lines).is_none_or(|(body, total)| body >= total) {
-                failures.push(format!("{label} response did not retain a trimmed source page"));
+            if body_lines
+                .zip(total_lines)
+                .is_none_or(|(body, total)| body >= total)
+            {
+                failures.push(format!(
+                    "{label} response did not retain a trimmed source page"
+                ));
             }
             markdown_number(text, "next_source_offset")
         };
@@ -427,20 +463,33 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
         };
         let mut continuation = arguments;
         continuation["source_offset"] = serde_json::json!(cursor);
-        let (_, missing_generation) =
-            bounded_client.call("forge_read", continuation.clone());
+        let (_, missing_generation) = bounded_client
+            .call("forge_read", continuation.clone())
+            .expect("MCP transport");
         assert_eq!(missing_generation["result"]["isError"], true);
         let generation = if format.is_some() {
             common::assertions::mcp_payload(&first_response)["generation"].clone()
         } else {
-            let text = first_response["result"]["content"][0]["text"].as_str().unwrap();
-            let encoded = text.split_once("**generation**: `").unwrap().1.split('`').next().unwrap();
+            let text = first_response["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap();
+            let encoded = text
+                .split_once("**generation**: `")
+                .unwrap()
+                .1
+                .split('`')
+                .next()
+                .unwrap();
             serde_json::from_str(encoded).unwrap()
         };
         continuation["generation"] = generation;
-        let (_, next_response) = bounded_client.call("forge_read", continuation);
+        let (_, next_response) = bounded_client
+            .call("forge_read", continuation)
+            .expect("MCP transport");
         if next_response["result"]["isError"] == true {
-            failures.push(format!("{label} trimmed page rejected explicit generation at {cursor}: {next_response}"));
+            failures.push(format!(
+                "{label} trimmed page rejected explicit generation at {cursor}: {next_response}"
+            ));
             continue;
         }
         if format.is_some() {
@@ -449,40 +498,56 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
             if next["source_preview"]["body_offset"].as_u64() != Some(cursor as u64)
                 || next["generation"] != first["generation"]
             {
-                failures.push(format!("{label} continuation lost the retained cursor/generation: {next}"));
+                failures.push(format!(
+                    "{label} continuation lost the retained cursor/generation: {next}"
+                ));
             }
         } else {
             let text = next_response["result"]["content"][0]["text"]
                 .as_str()
                 .unwrap_or_default();
             if !text.contains(&format!("**body_offset**: `{cursor}`")) {
-                failures.push(format!("{label} continuation did not resume at {cursor}: {text}"));
+                failures.push(format!(
+                    "{label} continuation did not resume at {cursor}: {text}"
+                ));
             }
         }
     }
 
     let line_workspace = Workspace::new();
-    line_workspace.write("forge-mcp.yaml", "roots: [.]\nresponse:\n  max_output_bytes: 4096\n");
+    line_workspace.write(
+        "forge-mcp.yaml",
+        "roots: [.]\nresponse:\n  max_output_bytes: 4096\n",
+    );
     line_workspace.write(
         "single_line.py",
         &format!("def budget_line():\n    return '{}'\n", "\\\\".repeat(950)),
     );
-    let mut line_client = common::mcp_client::StdioClient::new(&line_workspace.1);
-    let first_line = line_client.payload(
-        "forge_read",
-        serde_json::json!({"selector":"budget_line","leading_lines":0,"max_body_lines":1}),
-    );
-    for format in ["json", "markdown"] {
-        let (bytes, response) = line_client.call(
+    let mut line_client = in_process::McpTestHarness::new(&line_workspace).expect("MCP initialize");
+    let first_line = line_client
+        .payload(
             "forge_read",
-            serde_json::json!({
-                "selector":"budget_line","leading_lines":0,"max_body_lines":1,
-                "source_offset":1,"generation":first_line["generation"],"format":format,
-            }),
-        );
+            serde_json::json!({"selector":"budget_line","leading_lines":0,"max_body_lines":1}),
+        )
+        .expect("MCP tool should succeed");
+    for format in ["json", "markdown"] {
+        let (bytes, response) = line_client
+            .call(
+                "forge_read",
+                serde_json::json!({
+                    "selector":"budget_line","leading_lines":0,"max_body_lines":1,
+                    "source_offset":1,"generation":first_line["generation"],"format":format,
+                }),
+            )
+            .expect("MCP transport");
         assert!(bytes <= 4096, "{format}: {bytes}");
         assert_eq!(response["result"]["isError"], true, "{format}: {response}");
-        assert!(response["result"]["content"][0]["text"].as_str().unwrap().contains("line exceeds"));
+        assert!(
+            response["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("line exceeds")
+        );
     }
 
     for (lines, name, body) in cases {
@@ -498,7 +563,7 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
                     let result = if explain {
                         symbols::explain_with_options(
                             &conn,
-                            &workspace.0,
+                            workspace.root(),
                             &name,
                             &symbols::ExplainOptions {
                                 direction: None,
@@ -511,7 +576,7 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
                     } else {
                         symbols::inspect_with_options(
                             &conn,
-                            &workspace.0,
+                            workspace.root(),
                             &name,
                             &symbols::InspectOptions {
                                 show_doc: false,
@@ -563,9 +628,9 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
         "preview_201.py",
         "def selected_201():\n    replacement = True\n    return replacement\n",
     );
-    workspace.1.build();
-    let cli_stale = common::mcp_client::run_cli_json(
-        &workspace.1,
+    workspace.build();
+    let cli_stale = in_process_cli::run_cli_json(
+        &workspace,
         &[
             "query",
             "inspect",
@@ -579,19 +644,28 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
     );
     assert!(!cli_stale.status.success());
     workspace.write("code.py", "def selected(): return 99\n");
-    assert!(symbols::inspect_with_options(
-        &conn,
-        &workspace.0,
-        "selected",
-        &symbols::InspectOptions {
-            show_doc: false,
-            source: &preview,
-            coverage: CoverageOptions::default(),
-            page: &query
-        }
-    )
-    .is_err());
+    assert!(
+        symbols::inspect_with_options(
+            &conn,
+            workspace.root(),
+            "selected",
+            &symbols::InspectOptions {
+                show_doc: false,
+                source: &preview,
+                coverage: CoverageOptions::default(),
+                page: &query
+            }
+        )
+        .is_err()
+    );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+    bounded_client
+        .finish()
+        .expect("server must finish successfully");
+    client.finish().expect("server must finish successfully");
+    line_client
+        .finish()
+        .expect("server must finish successfully");
 }
 
 #[test]
@@ -601,12 +675,13 @@ fn oversized_source_lines_fail_without_partial_code() {
         "large.py",
         &format!("def huge(): return '{}'\n", "é\\\"".repeat(12000)),
     );
-    let conn = workspace.build();
+    workspace.build();
+    let conn = workspace.open();
     let source =
         SourceOptions::resolve(&ResponsePolicy::default(), Some(true), None, None, 0).unwrap();
     let error = symbols::inspect_with_options(
         &conn,
-        &workspace.0,
+        workspace.root(),
         "huge",
         &symbols::InspectOptions {
             show_doc: false,
@@ -625,7 +700,8 @@ fn oversized_source_lines_fail_without_partial_code() {
 fn continuation_rejects_a_new_index_generation() {
     let workspace = Workspace::new();
     workspace.write("code.py", "def first(): pass\ndef second(): pass\n");
-    let conn = workspace.build();
+    workspace.build();
+    let conn = workspace.open();
     let first = symbols::search_with_options(
         &conn,
         "*i*",
@@ -644,38 +720,47 @@ fn continuation_rejects_a_new_index_generation() {
         "code.py",
         "def first(): pass\ndef third(): pass\ndef second(): pass\n",
     );
-    writer::delta(&workspace.0, &workspace.db(), &[PathBuf::from("code.py")]).unwrap();
-    let conn = reader::open(&workspace.db(), &workspace.0).unwrap();
+    writer::delta(
+        workspace.root(),
+        &workspace.db(),
+        &[PathBuf::from("code.py")],
+    )
+    .unwrap();
+    let conn = reader::open(&workspace.db(), workspace.root()).unwrap();
     let mut query = options(1);
     query.offset = 1;
     query.generation = Some(generation);
-    assert!(symbols::search_with_options(
-        &conn,
-        "*i*",
-        &symbols::SearchOptions {
-            kind: Some("function"),
-            path: None,
-            include_docs: false,
-            exact: false,
-            page: &query
-        }
-    )
-    .unwrap_err()
-    .to_string()
-    .contains("generation changed"));
+    assert!(
+        symbols::search_with_options(
+            &conn,
+            "*i*",
+            &symbols::SearchOptions {
+                kind: Some("function"),
+                path: None,
+                include_docs: false,
+                exact: false,
+                page: &query
+            }
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("generation changed")
+    );
     query.generation = None;
-    assert!(symbols::search_with_options(
-        &conn,
-        "*i*",
-        &symbols::SearchOptions {
-            kind: Some("function"),
-            path: None,
-            include_docs: false,
-            exact: false,
-            page: &query
-        }
-    )
-    .is_err());
+    assert!(
+        symbols::search_with_options(
+            &conn,
+            "*i*",
+            &symbols::SearchOptions {
+                kind: Some("function"),
+                path: None,
+                include_docs: false,
+                exact: false,
+                page: &query
+            }
+        )
+        .is_err()
+    );
 }
 
 #[cfg(feature = "lang-typescript")]
@@ -683,12 +768,13 @@ fn continuation_rejects_a_new_index_generation() {
 fn source_preview_does_not_include_neighboring_symbols_on_the_same_line() {
     let workspace = Workspace::new();
     workspace.write("same.ts", "function before() { return 'SECRET'; } function selected() { return 'selected'; } function after() { return 'AFTER'; }\n");
-    let conn = workspace.build();
+    workspace.build();
+    let conn = workspace.open();
     let source =
         SourceOptions::resolve(&ResponsePolicy::default(), Some(true), None, None, 0).unwrap();
     let result = symbols::inspect_with_options(
         &conn,
-        &workspace.0,
+        workspace.root(),
         "selected",
         &symbols::InspectOptions {
             show_doc: false,
@@ -704,7 +790,8 @@ fn source_preview_does_not_include_neighboring_symbols_on_the_same_line() {
     );
     drop(conn);
     workspace.write("anonymous.ts", "(function () { return 42; })();\n");
-    let conn = workspace.build();
+    workspace.build();
+    let conn = workspace.open();
     let anonymous: String = conn
         .query_row(
             "SELECT n.id FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path='anonymous.ts' AND n.kind='function'",
@@ -714,7 +801,7 @@ fn source_preview_does_not_include_neighboring_symbols_on_the_same_line() {
         .unwrap();
     let result = symbols::inspect_with_options(
         &conn,
-        &workspace.0,
+        workspace.root(),
         &anonymous,
         &symbols::InspectOptions {
             show_doc: false,
@@ -732,12 +819,13 @@ fn source_preview_does_not_include_neighboring_symbols_on_the_same_line() {
 fn source_preview_resolves_vue_script_boundaries() {
     let workspace = Workspace::new();
     workspace.write("page.vue", "<template><div>{{ 'visible' }}</div></template>\n<script setup lang=\"ts\">function before() { return 'SECRET'; } function selected() { return 'visible'; }</script>\n");
-    let conn = workspace.build();
+    workspace.build();
+    let conn = workspace.open();
     let source =
         SourceOptions::resolve(&ResponsePolicy::default(), Some(true), None, None, 0).unwrap();
     let result = symbols::inspect_with_options(
         &conn,
-        &workspace.0,
+        workspace.root(),
         "selected",
         &symbols::InspectOptions {
             show_doc: false,
@@ -759,7 +847,8 @@ fn overview_reports_language_breakdown_and_compiled_profiles() {
     workspace.write("a.py", "def f(): return unknown_func()\n");
     #[cfg(feature = "lang-rust")]
     workspace.write("b.rs", "pub fn f() {}\n");
-    let conn = workspace.build();
+    workspace.build();
+    let conn = workspace.open();
     let overview = reader::overview_with_options(
         &conn,
         &reader::OverviewOptions {
@@ -780,16 +869,20 @@ fn overview_reports_language_breakdown_and_compiled_profiles() {
     assert_eq!(empty_aspect_overview, overview);
     assert!(empty_aspect_overview.get("cycles").is_none());
     assert!(overview["generation"].is_string());
-    assert!(overview["metadata"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|row| row["key"] == "workspace_root"));
-    assert!(!overview["metadata"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|row| row["key"] == "output_root" || row["key"] == "corpus_hash"));
+    assert!(
+        overview["metadata"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["key"] == "workspace_root")
+    );
+    assert!(
+        !overview["metadata"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["key"] == "output_root" || row["key"] == "corpus_hash")
+    );
     let langs = overview["languages"]["items"].as_array().unwrap();
     let py = langs.iter().find(|l| l["language"] == "python").unwrap();
     assert!(py["files"].as_u64().unwrap() >= 1);
@@ -826,10 +919,11 @@ fn overview_reports_language_breakdown_and_compiled_profiles() {
             "forge-mcp.yaml",
             &format!(
                 "roots: [.]\nlinked_workspaces:\n  - name: library\n    path: '{}'\n    roots: [.]\n",
-                linked.0.display()
+                linked.root().display()
             ),
         );
         fixture.build();
+        drop(fixture.open());
         let recorded = Connection::open(fixture.db()).unwrap();
         let populations = [
             (80, "resolved", "target", "exact indexed target"),
@@ -1032,7 +1126,8 @@ fn overview_reports_language_breakdown_and_compiled_profiles() {
     }
     let empty = Workspace::new();
     empty.write("empty.py", "# no references\n");
-    let empty_conn = empty.build();
+    empty.build();
+    let empty_conn = empty.open();
     let empty_overview = reader::overview_with_options(
         &empty_conn,
         &reader::OverviewOptions {
@@ -1055,7 +1150,8 @@ fn overview_reports_language_breakdown_and_compiled_profiles() {
             "def recursive(): return recursive()\ndef unresolved(): return missing_target()\n",
         );
         projected.write("syntax_error.py", "def broken(:\n    pass\n");
-        let conn = projected.build();
+        projected.build();
+        let conn = projected.open();
         let requested_aspects =
             ["components", "cycles", "languages", "metadata"].map(str::to_owned);
         let overview = reader::overview_with_options(

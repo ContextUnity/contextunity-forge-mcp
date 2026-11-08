@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn rendered_template_context_keys_follow_exact_targets_and_includes() {
-    let workspace = Workspace::new();
+    let workspace = crate::languages::PersistedWorkspaceHarness::new();
     for project in ["shop", "other"] {
         workspace.write(
             format!("{project}/pyproject.toml"),
@@ -26,8 +26,7 @@ fn rendered_template_context_keys_follow_exact_targets_and_includes() {
         "<h1>{{ title }}</h1><h2>{{ headline }}</h2>\n",
     );
     workspace.write("other/templates/page.html", "<h1>{{ title }}</h1>\n");
-    writer::build(&workspace.0, &workspace.db(), None).unwrap();
-    let conn = reader::open(&workspace.db(), &workspace.0).unwrap();
+    let conn = workspace.build_and_open();
     for (path, expected) in [
         ("shop/templates/page.html", "resolved"),
         ("shop/templates/partials/card.html", "resolved"),
@@ -55,16 +54,11 @@ fn rendered_template_context_keys_follow_exact_targets_and_includes() {
             .unwrap()
     };
     workspace.write("shop/templates/later.html", "<p>{{ late }}</p>\n");
-    writer::delta(
-        &workspace.0,
-        &workspace.db(),
-        &[PathBuf::from("shop/templates/later.html")],
-    )
-    .unwrap();
-    let added_cold = workspace.0.join("render-added-cold.sqlite");
-    writer::build(&workspace.0, &added_cold, None).unwrap();
-    let added_delta = reader::open(&workspace.db(), &workspace.0).unwrap();
-    let added_cold = reader::open(&added_cold, &workspace.0).unwrap();
+    workspace.delta(&["shop/templates/later.html"]);
+    let added_cold = workspace.root().join("render-added-cold.sqlite");
+    workspace.build_to(&added_cold);
+    let added_delta = workspace.open();
+    let added_cold = workspace.open_at(&added_cold);
     assert_eq!(
         rows(&added_delta),
         rows(&added_cold),
@@ -84,16 +78,11 @@ fn rendered_template_context_keys_follow_exact_targets_and_includes() {
         "shop/templates/page.html",
         "<h1>{{ title }}</h1><p>Changed</p>\n{% include 'partials/card.html' %}\n",
     );
-    writer::delta(
-        &workspace.0,
-        &workspace.db(),
-        &[PathBuf::from("shop/templates/page.html")],
-    )
-    .unwrap();
-    let html_cold = workspace.0.join("render-html-cold.sqlite");
-    writer::build(&workspace.0, &html_cold, None).unwrap();
-    let delta = reader::open(&workspace.db(), &workspace.0).unwrap();
-    let cold = reader::open(&html_cold, &workspace.0).unwrap();
+    workspace.delta(&["shop/templates/page.html"]);
+    let html_cold = workspace.root().join("render-html-cold.sqlite");
+    workspace.build_to(&html_cold);
+    let delta = workspace.open();
+    let cold = workspace.open_at(&html_cold);
     assert_eq!(
         rows(&delta),
         rows(&cold),
@@ -108,16 +97,11 @@ fn rendered_template_context_keys_follow_exact_targets_and_includes() {
         "shop/views.py",
         "from django.shortcuts import render\n\ndef page(request):\n    return render(request, 'templates/next.html', {'title': 'Welcome'})\n\ndef later(request):\n    return render(request, 'templates/later.html', {'late': 'Ready'})\n",
     );
-    writer::delta(
-        &workspace.0,
-        &workspace.db(),
-        &[PathBuf::from("shop/views.py")],
-    )
-    .unwrap();
-    let target_cold = workspace.0.join("render-target-cold.sqlite");
-    writer::build(&workspace.0, &target_cold, None).unwrap();
-    let delta = reader::open(&workspace.db(), &workspace.0).unwrap();
-    let cold = reader::open(&target_cold, &workspace.0).unwrap();
+    workspace.delta(&["shop/views.py"]);
+    let target_cold = workspace.root().join("render-target-cold.sqlite");
+    workspace.build_to(&target_cold);
+    let delta = workspace.open();
+    let cold = workspace.open_at(&target_cold);
     assert_eq!(
         rows(&delta),
         rows(&cold),
@@ -147,16 +131,11 @@ fn rendered_template_context_keys_follow_exact_targets_and_includes() {
         "shop/views.py",
         "from django.shortcuts import render\n\ndef page(request):\n    return render(request, 'templates/next.html', {'headline': 'Welcome'})\n\ndef later(request):\n    return render(request, 'templates/later.html', {'late': 'Ready'})\n",
     );
-    writer::delta(
-        &workspace.0,
-        &workspace.db(),
-        &[PathBuf::from("shop/views.py")],
-    )
-    .unwrap();
-    let key_cold = workspace.0.join("render-key-cold.sqlite");
-    writer::build(&workspace.0, &key_cold, None).unwrap();
-    let delta = reader::open(&workspace.db(), &workspace.0).unwrap();
-    let cold = reader::open(&key_cold, &workspace.0).unwrap();
+    workspace.delta(&["shop/views.py"]);
+    let key_cold = workspace.root().join("render-key-cold.sqlite");
+    workspace.build_to(&key_cold);
+    let delta = workspace.open();
+    let cold = workspace.open_at(&key_cold);
     assert_eq!(
         rows(&delta),
         rows(&cold),
@@ -178,7 +157,7 @@ fn rendered_template_context_keys_follow_exact_targets_and_includes() {
 
 #[test]
 fn rendered_template_with_multiple_views_stays_ambiguous() {
-    let workspace = Workspace::new();
+    let workspace = crate::languages::PersistedWorkspaceHarness::new();
     workspace.write(
         "shop/pyproject.toml",
         "[project]\nname = 'shop'\ndependencies = ['django>=5']\n",
@@ -188,8 +167,7 @@ fn rendered_template_with_multiple_views_stays_ambiguous() {
         "from django.shortcuts import render\n\ndef page(request):\n    return render(request, 'templates/page.html', {'title': 'Welcome'})\n\ndef other(request):\n    return render(request, 'templates/page.html', {'headline': 'Other'})\n",
     );
     workspace.write("shop/templates/page.html", "<h1>{{ title }}</h1>\n");
-    writer::build(&workspace.0, &workspace.db(), None).unwrap();
-    let conn = reader::open(&workspace.db(), &workspace.0).unwrap();
+    let conn = workspace.build_and_open();
     let (status, evidence): (String, String) = conn
         .query_row(
             "SELECT rc.status,ev.evidence FROM resolution_coverage rc JOIN path_dictionary pd ON pd.path_id=rc.path_id JOIN coverage_expressions ce ON ce.expression_id=rc.expression_id JOIN coverage_evidence ev ON ev.evidence_id=rc.evidence_id WHERE pd.path='shop/templates/page.html' AND ce.expression='template.variable.title'",

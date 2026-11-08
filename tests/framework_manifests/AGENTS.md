@@ -10,7 +10,7 @@ separate and do not create empty per-framework modules.
 - `activation.rs` and `activation/user_manifests.rs`: bundled-pack activation, user-manifest validation, and typed rule formats.
 - `fastapi.rs`: the standalone FastAPI dependency-injection relation contract.
 - `cross_pack_relations.rs`: the persisted multi-pack integration contract.
-- `finite_operations.rs` and its children: one sequential persisted contract; five operation cases, callable-import transitions, and linked-workspace target-context coverage share the original test wrapper.
+- `finite_operations.rs` and its children: independent persisted tests for five operation cases, callable-import transitions, and linked-workspace target-context coverage.
 - `dependencies.rs` and `dependency_discovery.rs`: package metadata and lockfile discovery.
 - `commonjs.rs`: CommonJS import/export provenance and delta behavior.
 - `manifest_deltas.rs`: manifest-only and manifest-change delta behavior.
@@ -21,8 +21,8 @@ their semantic operation tests rather than giving them pack-specific labels.
 
 ## Shared Helpers and Fixtures
 
-- `tests/common/`: Shared workspace RAII harnesses and temp directory isolation.
-- `tests/languages/support.rs`: `Workspace::new()`, file writing, commitment verification.
+- `tests/common/`: Shared `Workspace`, file writing, and temp directory isolation.
+- `tests/languages/support.rs`: Cold-build parity and commitment verification helpers.
 - `tests/framework_manifests/support.rs`: Manifest-suite SQL and canonical-edge helpers.
 - `tests/framework_manifests/finite_operations/support.rs`: Shared operation builders and cold/delta parity.
 

@@ -1,0 +1,5 @@
+{
+  "forge-mcp.yaml": "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+  "src/lib.rs": "pub fn context() {}\n",
+  "docs/milestones/012-context.md": "---\nid: m-context\ntitle: Context retention\ndoc_type: contract\nstatus: planned\ninvariants: [durable-context]\n---\n# Context retention\n\n### task: implement\n```yaml\ntask_ref: implement\ntarget: Deliver context retention\nproof_policy: seam-test-first\nscope: [src/]\nagent_type: gpt-6-sol\ninvariants: [reviewed]\n```\n"
+}

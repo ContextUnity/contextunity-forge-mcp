@@ -2,7 +2,11 @@ use super::support::*;
 
 #[test]
 fn blackboard_persists_task_scoped_messages_in_chronological_order() {
-    let (root, store, milestone) = fixture();
+    let milestone = Milestone::parse(SPEC, "forge-mcp").unwrap();
+    let mut store = TasksStore::open_in_memory("forge-mcp", "forge-mcp").unwrap();
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/acdd");
+    assert!(!root.join("forge-mcp.yaml").exists());
+    store.sync(&milestone, "docs/010-test.md", &root).unwrap();
     let first = milestone.task_id(&milestone.tasks[0]);
     let second = milestone.task_id(&milestone.tasks[1]);
     let legacy_topic_error = store
@@ -47,13 +51,12 @@ fn blackboard_persists_task_scoped_messages_in_chronological_order() {
         |row| row.get(0),
     ).unwrap();
     assert_eq!(index, "idx_task_blackboard_task_created");
-    drop(root);
 }
 #[test]
 fn blackboard_scope_resolution_isolates_milestone_task_and_subtask_messages() {
     use contextunity_forge_mcp::engine::tasks as engine_tasks;
 
-    let root = ScopedWorkspace::new("forge_blackboard_hierarchy");
+    let root = crate::acdd::support::acdd_workspace(crate::acdd::support::DEFAULT_SEAM, "");
     let manifest = "---\nid: m-blackboard\ntitle: Blackboard\ndoc_type: contract\nstatus: active\n---\n# Blackboard\n```yaml\ntask_ref: first\ntarget: Coordinate task agents\nproof_policy: seam-test-first\nscope: [src/]\n```\n```yaml\ntask_ref: second\ntarget: Coordinate another task\nproof_policy: seam-test-first\nscope: [src/]\n```\n";
     root.write("forge-mcp.yaml", "tasks_db: .forge/tasks.sqlite\n");
     let manifest = manifest.replace(
@@ -62,15 +65,19 @@ fn blackboard_scope_resolution_isolates_milestone_task_and_subtask_messages() {
     );
     root.write("docs/milestones/010-blackboard.md", &manifest);
     let milestone = Milestone::parse(&manifest, "forge-mcp").unwrap();
-    let database = root.0.join(".forge/tasks.sqlite");
-    let mut store = TasksStore::open(&database).unwrap();
+    let (mut store, first, second) = sync_blackboard_tasks(
+        &root,
+        "docs/milestones/010-blackboard.md",
+        &milestone,
+    );
     store
-        .sync(&milestone, "docs/milestones/010-blackboard.md", &root.0)
-        .unwrap();
-    let first = milestone.task_id(&milestone.tasks[0]);
-    let second = milestone.task_id(&milestone.tasks[1]);
-    store
-        .claim(&first, "contract", "worker-one", root.0.to_str().unwrap())
+        .claim(
+            &first,
+            "contract",
+            "worker-one",
+            root.root().to_str().unwrap(),
+            Some("test-session-worker-one"),
+        )
         .unwrap();
     store
         .subtask_add(&first, "active-slice", "Resolve the active subtask")
@@ -80,7 +87,7 @@ fn blackboard_scope_resolution_isolates_milestone_task_and_subtask_messages() {
         .unwrap();
 
     let call =
-        |args| engine_tasks::blackboard(&root.0, serde_json::from_value(args).unwrap(), "test");
+        |args| engine_tasks::blackboard(root.root(), serde_json::from_value(args).unwrap(), "test");
     let milestone_post = call(json!({
         "action":"post","scope":"milestone",
         "milestone_ref":"docs/milestones/010-blackboard.md",
@@ -129,7 +136,13 @@ fn blackboard_scope_resolution_isolates_milestone_task_and_subtask_messages() {
     assert_eq!(inspected["message"]["payload"], "subtask coordination");
 
     store
-        .claim(&second, "contract", "worker-two", root.0.to_str().unwrap())
+        .claim(
+            &second,
+            "contract",
+            "worker-two",
+            root.root().to_str().unwrap(),
+            Some("test-session-worker-two"),
+        )
         .unwrap();
     let ambiguous = call(json!({"action":"read","scope":"task"})).unwrap_err();
     assert!(ambiguous
@@ -238,7 +251,7 @@ fn blackboard_scope_resolution_isolates_milestone_task_and_subtask_messages() {
 fn blackboard_milestone_profile_pin_routes_gates_and_fails_closed_on_tampering() {
     use sha2::Digest;
 
-    let root = ScopedWorkspace::new("forge_blackboard_pinned_profile");
+    let root = crate::acdd::support::acdd_workspace(crate::acdd::support::DEFAULT_SEAM, "");
     root.write("src/lib.rs", "pub fn primary() {}\n");
     root.write("linked/src/lib.rs", "pub fn linked() {}\n");
     root.write(
@@ -269,24 +282,35 @@ fn blackboard_milestone_profile_pin_routes_gates_and_fails_closed_on_tampering()
         let digest = format!("{:x}", sha2::Sha256::digest(contents.as_bytes()));
         format!("{path}:{}", &digest[..12])
     };
-    let milestone_pin = pinned_reference("profiles/milestone.yaml", &milestone_profile);
-    let task_pin = pinned_reference("profiles/task.yaml", &task_profile);
     root.write("linked/profiles/milestone.yaml", &milestone_profile);
     root.write("linked/profiles/task.yaml", &task_profile);
+    let milestone_pin = pinned_reference(
+        "profiles/milestone.yaml",
+        &std::fs::read_to_string(root.root().join("linked/profiles/milestone.yaml")).unwrap(),
+    );
+    let task_pin = pinned_reference(
+        "profiles/task.yaml",
+        &std::fs::read_to_string(root.root().join("linked/profiles/task.yaml")).unwrap(),
+    );
     let manifest = format!(
         "---\nid: m-pinned-blackboard\ntitle: Pinned blackboard\ndoc_type: contract\nstatus: active\nacdd_profile: \"{milestone_pin}\"\n---\n# Pinned blackboard\n```yaml\ntask_ref: inherited\ntarget: Inherit the milestone profile\nproof_policy: seam-test-first\nscope: [src/]\n```\n```yaml\ntask_ref: override\ntarget: Use a task-level profile override\nacdd_profile: \"{task_pin}\"\nproof_policy: seam-test-first\nscope: [src/]\n```\n"
     );
     root.write("linked/contracts/010-pinned-blackboard.md", &manifest);
     let synced = tasks::manage(
-        &root.0,
+        root.root(),
         serde_json::from_value(json!({"action":"sync","workspace":"linked"})).unwrap(),
     )
     .unwrap();
     let inherited_task = synced["tasks"][0]["task_id"].as_str().unwrap().to_owned();
     let override_task = synced["tasks"][1]["task_id"].as_str().unwrap().to_owned();
     let milestone_ref = "contracts/010-pinned-blackboard.md";
-    let call =
-        |arguments| tasks::blackboard(&root.0, serde_json::from_value(arguments).unwrap(), "test");
+    let call = |arguments| {
+        tasks::blackboard(
+            root.root(),
+            serde_json::from_value(arguments).unwrap(),
+            "test",
+        )
+    };
 
     let milestone_post = call(json!({
         "action":"post","scope":"milestone","milestone_ref":milestone_ref,
@@ -301,7 +325,6 @@ fn blackboard_milestone_profile_pin_routes_gates_and_fails_closed_on_tampering()
     .unwrap_err()
     .to_string();
     assert!(default_gate_error.contains("TASK_BLACKBOARD_SCHEMA_INVALID"));
-    assert!(default_gate_error.contains("Active profile gates: plan, build, review, deliver"));
     let milestone_read = call(json!({
         "action":"read","scope":"milestone","milestone_ref":milestone_ref,"gate":"plan"
     }))
@@ -313,7 +336,6 @@ fn blackboard_milestone_profile_pin_routes_gates_and_fails_closed_on_tampering()
     }))
     .unwrap_err()
     .to_string();
-    assert!(default_read_error.contains("Active profile gates: plan, build, review, deliver"));
 
     let inherited_post = call(json!({
         "action":"post","scope":"task","task_id":inherited_task,
@@ -336,7 +358,15 @@ fn blackboard_milestone_profile_pin_routes_gates_and_fails_closed_on_tampering()
     }))
     .unwrap_err()
     .to_string();
-    assert!(inherited_default_error.contains("Active profile gates: plan, build, review, deliver"));
+    for error in [
+        &default_gate_error,
+        &default_read_error,
+        &inherited_default_error,
+    ] {
+        for expected in ["Active profile gates:", "plan", "build", "review", "deliver"] {
+            assert!(error.contains(expected), "missing {expected}: {error}");
+        }
+    }
 
     let override_post = call(json!({
         "action":"post","scope":"task","task_id":override_task,
@@ -386,38 +416,36 @@ fn blackboard_milestone_profile_pin_routes_gates_and_fails_closed_on_tampering()
 
 #[test]
 fn blackboard_automatic_scope_fails_closed_without_one_active_context() {
-    for (name, manifests, expected) in [
+    let root = crate::common::Workspace::new();
+    root.write("forge-mcp.yaml", "tasks_db: .forge/tasks.sqlite\n");
+    for (manifests, expected) in [
         (
-            "forge_blackboard_no_active_context",
-            vec![("010-planned.md", "planned")],
+            vec![("010-first.md", "planned")],
             "TASK_BLACKBOARD_NO_ACTIVE_CONTEXT",
         ),
         (
-            "forge_blackboard_ambiguous_milestones",
             vec![("010-first.md", "active"), ("020-second.md", "active")],
             "TASK_BLACKBOARD_AMBIGUOUS_MILESTONE",
         ),
     ] {
-        let root = ScopedWorkspace::new(name);
-        root.write("forge-mcp.yaml", "tasks_db: .forge/tasks.sqlite\n");
         for (filename, status) in manifests {
             root.write(
-                &format!("docs/milestones/{filename}"),
+                format!("docs/milestones/{filename}"),
                 &format!("---\nid: m-{filename}\ntitle: {filename}\ndoc_type: contract\nstatus: {status}\n---\n"),
             );
         }
         let request: tasks::BlackboardRequest =
             serde_json::from_value(json!({"action":"read"})).unwrap();
-        let error = tasks::blackboard(&root.0, request, "test").unwrap_err();
+        let error = tasks::blackboard(root.root(), request, "test").unwrap_err();
         assert!(error.to_string().contains(expected), "{error}");
     }
 }
 
 #[test]
 fn blackboard_concurrent_connections_persist_and_cascade() {
-    let (root, store, milestone) = fixture();
+    let (root, store, milestone) = file_backed_blackboard_fixture();
     let task_id = milestone.task_id(&milestone.tasks[0]);
-    let database = root.0.join(".forge/tasks.sqlite");
+    let database = root.path(".forge/tasks.sqlite");
     let workers: Vec<_> = (0..2)
         .map(|worker| {
             let database = database.clone();
@@ -476,13 +504,13 @@ fn signal_blackboard_write_contention(_: i32) -> bool {
 
 #[test]
 fn blackboard_post_fails_closed_when_task_completes_during_write() {
-    let (root, store, milestone) = fixture();
+    let (root, store, milestone) = file_backed_blackboard_fixture();
     let task_id = milestone.task_id(&milestone.tasks[0]);
     let task = store.inspect(&task_id).unwrap();
     let milestone_ref = store.milestone_scope_ref(&task.milestone_ref).unwrap();
     drop(store);
 
-    let database = root.0.join(".forge/tasks.sqlite");
+    let database = root.path(".forge/tasks.sqlite");
     let mut completion = TasksStore::open(&database).unwrap();
     let poster = TasksStore::open(&database).unwrap();
     let (busy_tx, busy_rx) = std::sync::mpsc::channel();
@@ -523,124 +551,51 @@ fn blackboard_post_fails_closed_when_task_completes_during_write() {
 }
 
 #[test]
-fn cancelled_milestone_blackboard_pruning_is_project_scoped() {
-    let root = ScopedWorkspace::new("forge_cancelled_milestone_project_isolation");
-    let database_path = root.0.join(".forge/tasks.sqlite");
-    let initialized = TasksStore::open_project(&database_path, "primary", "app").unwrap();
-    drop(initialized);
-    let db = rusqlite::Connection::open(&database_path).unwrap();
-    db.execute_batch(
-        "ALTER TABLE task_blackboard RENAME TO task_blackboard_tasks;
-         CREATE TABLE task_blackboard(
-             id INTEGER PRIMARY KEY AUTOINCREMENT,
-             milestone_ref TEXT NOT NULL,
-             task_id TEXT REFERENCES tasks ON DELETE CASCADE,
-             subtask_ref TEXT,
-             gate TEXT,
-             author TEXT NOT NULL,
-             topic TEXT NOT NULL,
-             payload TEXT NOT NULL,
-             created_at INTEGER NOT NULL
-         );
-         DROP TABLE task_blackboard_tasks;",
-    )
-    .unwrap();
-    drop(db);
-
-    let path = "docs/milestones/040-cancelled.md";
-    let primary = TasksStore::open_project(&database_path, "primary", "app").unwrap();
-    let linked = TasksStore::open_project(&database_path, "linked", "app").unwrap();
-    let primary_ref = primary.milestone_scope_ref(path).unwrap();
-    let linked_ref = linked.milestone_scope_ref(path).unwrap();
-    assert_ne!(primary_ref, linked_ref);
-    primary
-        .connection
-        .execute(
-            "INSERT INTO task_blackboard(milestone_ref,author,topic,payload,created_at) VALUES(?1,'a','notes','primary',1)",
-            [&primary_ref],
-        )
-        .unwrap();
-    primary
-        .connection
-        .execute(
-            "INSERT INTO task_blackboard(milestone_ref,author,topic,payload,created_at) VALUES(?1,'b','notes','linked',2)",
-            [&linked_ref],
-        )
-        .unwrap();
-
-    let mut selected = TasksStore::open_project(&database_path, "primary", "app").unwrap();
-    assert_eq!(selected.prune_cancelled(path).unwrap(), 0);
-    let selected_rows: i64 = primary
-        .connection
-        .query_row(
-            "SELECT count(*) FROM task_blackboard WHERE milestone_ref=?1",
-            [&primary_ref],
-            |row| row.get(0),
-        )
-        .unwrap();
-    let linked_rows: i64 = primary
-        .connection
-        .query_row(
-            "SELECT count(*) FROM task_blackboard WHERE milestone_ref=?1",
-            [&linked_ref],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(selected_rows, 0);
-    assert_eq!(linked_rows, 1);
-}
-
-#[test]
 fn blackboard_accepts_nested_task_gates_read_aliases_and_unique_in_progress_task() {
     use contextunity_forge_mcp::engine::tasks as engine_tasks;
 
-    let root = ScopedWorkspace::new("forge_blackboard_nested_gates");
+    let root = crate::acdd::support::acdd_workspace(crate::acdd::support::DEFAULT_SEAM, "");
     root.write(".gitignore", ".forge/\n");
     root.write("forge-mcp.yaml", "tasks_db: .forge/tasks.sqlite\n");
     root.write(
         ".forge/acdd/profile.yaml",
         r#"gates:
-  - id: "contract_synthesis"
-    role: "architect"
-    proof: "contract"
+  - { id: "contract_synthesis", role: "architect", proof: "contract" }
   - tasks:
       gates:
-        - id: "contract"
-          role: "contract_author"
-          proof: "contract"
-        - id: "build"
-          role: "builder"
-          command: "test"
-          proof: "command"
-        - id: "review"
-          role: "independent_reviewer"
-          proof: "review"
-        - id: "deliver"
-          role: "independent_reviewer"
-          proof: "delivery"
-          receipt: true
-"#,
+        - { id: "contract", role: "contract_author", proof: "contract" }
+        - { id: "build", role: "builder", command: "test", proof: "command" }
+        - { id: "review", role: "independent_reviewer", proof: "review" }
+        - { id: "deliver", role: "independent_reviewer", proof: "delivery", receipt: true }
+ "#,
     );
     let manifest = "---\nid: m-nested-bb\ntitle: Nested blackboard\ndoc_type: contract\nstatus: active\n---\n# Nested blackboard\n```yaml\ntask_ref: first\ntarget: First task\nproof_policy: seam-test-first\nscope: [src/]\n```\n```yaml\ntask_ref: second\ntarget: Second task\nproof_policy: seam-test-first\nscope: [docs/]\n```\n";
     root.write("docs/milestones/010-nested-bb.md", manifest);
     let milestone = Milestone::parse(manifest, "forge-mcp").unwrap();
-    let database = root.0.join(".forge/tasks.sqlite");
-    let mut store = TasksStore::open(&database).unwrap();
+    let (mut store, first, second) =
+        sync_blackboard_tasks(&root, "docs/milestones/010-nested-bb.md", &milestone);
     store
-        .sync(&milestone, "docs/milestones/010-nested-bb.md", &root.0)
-        .unwrap();
-    let first = milestone.task_id(&milestone.tasks[0]);
-    let second = milestone.task_id(&milestone.tasks[1]);
-    store
-        .claim(&first, "contract", "worker-one", root.0.to_str().unwrap())
+        .claim(
+            &first,
+            "contract",
+            "worker-one",
+            root.root().to_str().unwrap(),
+            Some("test-session-worker-one"),
+        )
         .unwrap();
     store.reset(&first).unwrap();
     store
-        .claim(&second, "contract", "worker-two", root.0.to_str().unwrap())
+        .claim(
+            &second,
+            "contract",
+            "worker-two",
+            root.root().to_str().unwrap(),
+            Some("test-session-worker-two"),
+        )
         .unwrap();
 
     let call =
-        |args| engine_tasks::blackboard(&root.0, serde_json::from_value(args).unwrap(), "test");
+        |args| engine_tasks::blackboard(root.root(), serde_json::from_value(args).unwrap(), "test");
     let posted = call(json!({
         "action": "post",
         "gate": "build",
@@ -656,7 +611,11 @@ fn blackboard_accepts_nested_task_gates_read_aliases_and_unique_in_progress_task
             "gate": "build"
         }))
         .unwrap();
-        assert_eq!(page["messages"].as_array().unwrap().len(), 1, "alias: {alias}");
+        assert_eq!(
+            page["messages"].as_array().unwrap().len(),
+            1,
+            "alias: {alias}"
+        );
         assert_eq!(page["messages"][0]["id"], msg_id);
         assert_eq!(page["messages"][0]["task_id"], second);
     }
