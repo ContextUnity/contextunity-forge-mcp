@@ -82,7 +82,10 @@ fn starlette_and_fastapi_pack_relations_are_exact() {
             ),
             ["ordinary->provide"]
         );
-        assert_eq!(persisted_coverage(&conn, "ordinary.py", 1, "provide").0, "resolved");
+        assert_eq!(
+            persisted_coverage(&conn, "ordinary.py", 1, "provide").0,
+            "resolved"
+        );
 
         let mut failures = Vec::new();
         for (source, kind, target_path, target) in [
@@ -127,21 +130,39 @@ fn starlette_and_fastapi_pack_relations_are_exact() {
                 ("@app.get('/duplicate'", "%Duplicate%", "ambiguous"),
                 ("missing_dependency(value", "%absent%", "unresolved"),
                 ("duplicate_dependency(value", "%repeated%", "ambiguous"),
-                ("@app.exception_handler(MissingFault)", "%MissingFault%", "unresolved"),
-                ("@app.exception_handler(Duplicate)", "%Duplicate%", "ambiguous"),
+                (
+                    "@app.exception_handler(MissingFault)",
+                    "%MissingFault%",
+                    "unresolved",
+                ),
+                (
+                    "@app.exception_handler(Duplicate)",
+                    "%Duplicate%",
+                    "ambiguous",
+                ),
             ] {
-                let line = consumer.lines().position(|line| line.contains(marker)).unwrap() + 1;
+                let line = consumer
+                    .lines()
+                    .position(|line| line.contains(marker))
+                    .unwrap()
+                    + 1;
                 let count: usize = query_scalar(
                     &conn,
                     "SELECT count(*) FROM resolution_coverage c JOIN path_dictionary p ON p.path_id=c.path_id JOIN coverage_expressions x ON x.expression_id=c.expression_id WHERE p.path='consumer.py' AND c.line=?1 AND x.expression LIKE ?2 AND c.status=?3",
                     (line, expression, status),
                 );
                 if count == 0 {
-                    failures.push(format!("consumer.py:{line} {expression}: missing {status} coverage"));
+                    failures.push(format!(
+                        "consumer.py:{line} {expression}: missing {status} coverage"
+                    ));
                 }
             }
         }
-        assert!(failures.is_empty(), "pack semantic contract:\n{}", failures.join("\n"));
+        assert!(
+            failures.is_empty(),
+            "pack semantic contract:\n{}",
+            failures.join("\n")
+        );
         drop(conn);
         let parity = crate::languages::harness::cold_relations(&workspace);
         assert_eq!(parity.incremental_verification, Ok(()));
@@ -168,7 +189,9 @@ fn starlette_and_fastapi_pack_relations_are_exact() {
         "../../../../crates/forge-index/src/languages/manifests/fastapi.toml"
     ))
     .unwrap();
-    pack.as_table_mut().unwrap().insert("replace".into(), true.into());
+    pack.as_table_mut()
+        .unwrap()
+        .insert("replace".into(), true.into());
     let mut removed = pack.clone();
     removed.as_table_mut().unwrap().remove("semantic_rules");
     workspace.write(manifest, &toml::to_string(&removed).unwrap());

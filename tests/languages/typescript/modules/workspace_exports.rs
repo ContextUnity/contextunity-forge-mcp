@@ -53,7 +53,10 @@ fn typescript_package_exports_paths_respect_workspace_boundaries() {
         call_targets("apps/one/src/main.ts"),
         ["apps/one/src/helper.ts", "components/tool/src/entry.ts",]
     );
-    assert_eq!(call_targets("apps/two/src/main.ts"), ["apps/two/src/helper.ts"]);
+    assert_eq!(
+        call_targets("apps/two/src/main.ts"),
+        ["apps/two/src/helper.ts"]
+    );
     drop(conn);
     workspace.write(
         "apps/one/tsconfig.json",
@@ -65,7 +68,10 @@ fn typescript_package_exports_paths_respect_workspace_boundaries() {
     let changed_targets = persisted_call_paths(&delta, "apps/one/src/main.ts");
     assert_eq!(
         changed_targets,
-        ["apps/one/alternative/helper.ts", "components/tool/src/entry.ts"]
+        [
+            "apps/one/alternative/helper.ts",
+            "components/tool/src/entry.ts"
+        ]
     );
     drop(delta);
 }
@@ -117,7 +123,10 @@ fn package_export_wildcards_select_declared_workspace_and_specific_subpath() {
 fn pnpm_workspace_globs_select_declared_package_exports_and_delta() {
     let workspace = crate::languages::PersistedWorkspaceHarness::new();
     for (path, source) in [
-        ("package.json", r#"{"private":true,"workspaces":["packages/*"]}"#),
+        (
+            "package.json",
+            r#"{"private":true,"workspaces":["packages/*"]}"#,
+        ),
         (
             "pnpm-workspace.yaml",
             "packages:\n  - 'components/*'\n  - 'apps/*'\n  - '!components/excluded'\n",
@@ -126,12 +135,18 @@ fn pnpm_workspace_globs_select_declared_package_exports_and_delta() {
             "components/tool/package.json",
             r#"{"name":"@suite/tool","exports":{"./entry":"./src/entry.ts"}}"#,
         ),
-        ("components/tool/src/entry.ts", "export function shared() {}"),
+        (
+            "components/tool/src/entry.ts",
+            "export function shared() {}",
+        ),
         (
             "components/excluded/package.json",
             r#"{"name":"@suite/tool","exports":{"./entry":"./src/excluded.ts"}}"#,
         ),
-        ("components/excluded/src/excluded.ts", "export function shared() {}"),
+        (
+            "components/excluded/src/excluded.ts",
+            "export function shared() {}",
+        ),
         (
             "packages/tool/package.json",
             r#"{"name":"@suite/tool","exports":{"./entry":"./src/decoy.ts"}}"#,
@@ -151,7 +166,10 @@ fn pnpm_workspace_globs_select_declared_package_exports_and_delta() {
     workspace.build();
     let targets = || persisted_call_paths(&workspace.open(), "apps/one/src/main.ts");
     assert_eq!(targets(), ["components/tool/src/entry.ts"]);
-    workspace.write("pnpm-workspace.yaml", "packages:\n  - 'packages/*'\n  - 'apps/*'\n");
+    workspace.write(
+        "pnpm-workspace.yaml",
+        "packages:\n  - 'packages/*'\n  - 'apps/*'\n",
+    );
     workspace.delta(&["pnpm-workspace.yaml"]);
     assert_eq!(targets(), ["packages/tool/src/decoy.ts"]);
     let conn = workspace.open();

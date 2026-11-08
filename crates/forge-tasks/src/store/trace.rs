@@ -45,6 +45,8 @@ pub struct CommandExecutionProof {
     pub failed: Option<u64>,
     pub seam_ref: Option<String>,
     #[serde(default)]
+    pub seam_verified: bool,
+    #[serde(default)]
     pub passed_tests: std::collections::BTreeSet<String>,
     pub output_spec: Option<crate::tasks::profile::CommandOutputSpec>,
     pub expected_signature: Option<String>,

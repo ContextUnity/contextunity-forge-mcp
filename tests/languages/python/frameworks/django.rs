@@ -1,6 +1,6 @@
 use super::*;
-use rusqlite::Connection;
 use crate::languages::harness::PersistedSnapshot;
+use rusqlite::Connection;
 use std::sync::OnceLock;
 
 fn baseline() -> &'static PersistedSnapshot {
@@ -104,8 +104,18 @@ def finite_returns(selection: LocalSelection, manager: ProductManager, overridde
 }
 
 const MEMBERS: &[(&str, i64, &str, &str)] = &[
-    ("app/models.py", 5, "self.filter", "django.db.models.QuerySet"),
-    ("app/models.py", 9, "self.get_queryset", "django.db.models.Manager"),
+    (
+        "app/models.py",
+        5,
+        "self.filter",
+        "django.db.models.QuerySet",
+    ),
+    (
+        "app/models.py",
+        9,
+        "self.get_queryset",
+        "django.db.models.Manager",
+    ),
     (
         "app/models.py",
         13,
@@ -124,7 +134,12 @@ const MEMBERS: &[(&str, i64, &str, &str)] = &[
         "self.is_valid",
         "rest_framework.serializers.ModelSerializer",
     ),
-    ("app/api.py", 16, "self.get_permissions", "rest_framework.views.APIView"),
+    (
+        "app/api.py",
+        16,
+        "self.get_permissions",
+        "rest_framework.views.APIView",
+    ),
     (
         "app/api.py",
         20,
@@ -163,9 +178,15 @@ const RETURNS: &[(&str, &str)] = &[
     ("ordered.exclude", "external"),
     ("Product.objects.order_by('name').filter", "external"),
     ("related.exclude", "external"),
-    ("Product.objects.select_related('parent').filter", "external"),
+    (
+        "Product.objects.select_related('parent').filter",
+        "external",
+    ),
     ("prefetched.exclude", "external"),
-    ("Product.objects.prefetch_related('children').filter", "external"),
+    (
+        "Product.objects.prefetch_related('children').filter",
+        "external",
+    ),
     ("local_ordered.own", "resolved"),
     ("selection.order_by('name').own", "resolved"),
     ("local_related.own", "resolved"),
@@ -228,14 +249,18 @@ fn external_method_returns_retain_authority_without_inventing_local_calls() {
         for (_, evidence) in statuses(&conn, expression) {
             assert!(evidence.contains("django"), "{expression}: {evidence}");
             assert!(
-                !evidence.contains("configured_receiver") && !evidence.contains("external import  at line 0"),
+                !evidence.contains("configured_receiver")
+                    && !evidence.contains("external import  at line 0"),
                 "finite receiver authority and origin: {expression}: {evidence}"
             );
         }
         let calls: i64 = conn
             .query_row("SELECT count(*) FROM edge_occurrences e JOIN coverage_evidence v ON v.evidence_id=e.evidence_id WHERE e.kind='calls' AND v.evidence=?1", [expression], |row| row.get(0))
             .unwrap();
-        assert_eq!(calls, 0, "external return never invents a local call: {expression}");
+        assert_eq!(
+            calls, 0,
+            "external return never invents a local call: {expression}"
+        );
     }
 }
 
@@ -276,7 +301,8 @@ fn external_returns_keep_the_originating_class_separate_from_the_target_rule() {
                 .strip_prefix(&prefix)
                 .unwrap_or_else(|| panic!("{expression}: {evidence}"));
             assert!(
-                configuration.len() > source_identity.len() && configuration.ends_with(&source_identity),
+                configuration.len() > source_identity.len()
+                    && configuration.ends_with(&source_identity),
                 "originating class: {expression}: {evidence}"
             );
         }

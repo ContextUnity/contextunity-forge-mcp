@@ -1,8 +1,15 @@
 use super::*;
-use crate::languages::harness::{ExtractorHarness, query_scalar};
+use crate::languages::harness::{query_scalar, ExtractorHarness};
 
 fn full_query_options() -> QueryOptions {
-    QueryOptions::resolve(&ResponsePolicy::default(), Some(20), 0, Some(Detail::Full), None).unwrap()
+    QueryOptions::resolve(
+        &ResponsePolicy::default(),
+        Some(20),
+        0,
+        Some(Detail::Full),
+        None,
+    )
+    .unwrap()
 }
 
 #[cfg(feature = "lang-typescript")]
@@ -62,9 +69,15 @@ fn classic_require_rebindings_do_not_change_independent_module_imports() {
                 )
             })
             .collect();
-        assert_eq!(imports, vec![(3, "default", Some("fs"), Some("node:fs"))], "{facts:#?}");
-        let graph =
-            ExtractorHarness::link_graph(&std::collections::BTreeMap::from([("loaders.html".to_owned(), facts)]));
+        assert_eq!(
+            imports,
+            vec![(3, "default", Some("fs"), Some("node:fs"))],
+            "{facts:#?}"
+        );
+        let graph = ExtractorHarness::link_graph(&std::collections::BTreeMap::from([(
+            "loaders.html".to_owned(),
+            facts,
+        )]));
         if declaration.starts_with("function") {
             let loader = loader.expect("classic loader function");
             assert!(
@@ -102,7 +115,10 @@ fn classic_require_rebindings_do_not_change_independent_module_imports() {
 fn overview_attributes_disjoint_script_islands_without_claiming_template_lines() {
     let workspace = crate::languages::PersistedWorkspaceHarness::new();
     workspace.write("templates/page.html", "<script>\nunknownFirst();\n</script>\n<div>{{ missingTemplate }}</div>\n<script>\nunknownSecond();\n</script>\n");
-    workspace.write("templates/inline.html", "<script>unknownInline();</script>\n");
+    workspace.write(
+        "templates/inline.html",
+        "<script>unknownInline();</script>\n",
+    );
     workspace.write(
         "templates/mixed.html",
         "<div>{{ mixedTemplate }}</div><script>unknownMixed();</script>\n",
@@ -119,13 +135,21 @@ fn overview_attributes_disjoint_script_islands_without_claiming_template_lines()
     )
     .unwrap();
     let languages = overview["languages"]["items"].as_array().unwrap();
-    let by_language = |language: &str| languages.iter().find(|entry| entry["language"] == language).unwrap();
+    let by_language = |language: &str| {
+        languages
+            .iter()
+            .find(|entry| entry["language"] == language)
+            .unwrap()
+    };
     assert_eq!(by_language("html")["unresolved"], 2, "{overview}");
     assert_eq!(by_language("javascript")["unresolved"], 4, "{overview}");
     assert_eq!(by_language("javascript")["files"], 0, "{overview}");
 
     let analysis = reader::analyze_paged(&conn, "templates/page.html", None, &options).unwrap();
-    assert_eq!(analysis["resolution_languages"]["html"]["unresolved"], 1, "{analysis}");
+    assert_eq!(
+        analysis["resolution_languages"]["html"]["unresolved"], 1,
+        "{analysis}"
+    );
     assert_eq!(
         analysis["resolution_languages"]["javascript"]["unresolved"], 2,
         "{analysis}"
@@ -136,11 +160,21 @@ fn overview_attributes_disjoint_script_islands_without_claiming_template_lines()
         "{inline}"
     );
     let mixed = reader::analyze_paged(&conn, "templates/mixed.html", None, &options).unwrap();
-    assert_eq!(mixed["resolution_languages"]["html"]["unresolved"], 1, "{mixed}");
-    assert_eq!(mixed["resolution_languages"]["javascript"]["unresolved"], 1, "{mixed}");
+    assert_eq!(
+        mixed["resolution_languages"]["html"]["unresolved"], 1,
+        "{mixed}"
+    );
+    assert_eq!(
+        mixed["resolution_languages"]["javascript"]["unresolved"], 1,
+        "{mixed}"
+    );
     let raw_count: i64 = query_scalar(&conn, "SELECT count(*) FROM resolution_coverage", []);
-    let sidecar_count: i64 = query_scalar(&conn, "SELECT count(*) FROM coverage_owner_language", []);
-    assert_eq!(sidecar_count, 1, "only the mixed script reference needs an override");
+    let sidecar_count: i64 =
+        query_scalar(&conn, "SELECT count(*) FROM coverage_owner_language", []);
+    assert_eq!(
+        sidecar_count, 1,
+        "only the mixed script reference needs an override"
+    );
     let projected_count: i64 = query_scalar(
         &conn,
         "SELECT coalesce(sum(records),0) FROM coverage_language_counts",
@@ -157,7 +191,9 @@ fn overview_attributes_disjoint_script_islands_without_claiming_template_lines()
     let delta = cold.incremental_connection;
     let cold = cold.cold_connection;
     let report = |conn: &rusqlite::Connection| {
-        reader::analyze_paged(conn, "templates/mixed.html", None, &options).unwrap()["resolution_languages"].clone()
+        reader::analyze_paged(conn, "templates/mixed.html", None, &options).unwrap()
+            ["resolution_languages"]
+            .clone()
     };
     let overview_languages = |conn: &rusqlite::Connection| {
         reader::overview_with_options(
@@ -232,8 +268,12 @@ fn overview_attributes_disjoint_script_islands_without_claiming_template_lines()
             rusqlite::params!["11", "schema_version"],
         )
         .unwrap();
-    let error = contextunity_forge_mcp::db::reader::open(&workspace.db(), workspace.root()).unwrap_err();
-    assert!(error.to_string().contains("incompatible database schema"), "{error}");
+    let error =
+        contextunity_forge_mcp::db::reader::open(&workspace.db(), workspace.root()).unwrap_err();
+    assert!(
+        error.to_string().contains("incompatible database schema"),
+        "{error}"
+    );
     workspace.delta(&["templates/mixed.html"]);
     let rebuilt = workspace.open();
     assert_eq!(report(&rebuilt)["javascript"]["unresolved"], 1);
@@ -249,8 +289,12 @@ fn same_line_coverage_with_distinct_ast_owners_fails_closed() {
     );
     let conn = workspace.build_and_open();
     let options = full_query_options();
-    let analysis = reader::analyze_paged(&conn, "templates/ambiguous.html", None, &options).unwrap();
-    assert_eq!(analysis["resolution_languages"]["html"]["unresolved"], 2, "{analysis}");
+    let analysis =
+        reader::analyze_paged(&conn, "templates/ambiguous.html", None, &options).unwrap();
+    assert_eq!(
+        analysis["resolution_languages"]["html"]["unresolved"], 2,
+        "{analysis}"
+    );
     assert!(
         analysis["resolution_languages"].get("javascript").is_none(),
         "{analysis}"
@@ -271,18 +315,24 @@ fn html_files_are_indexed_and_snippets_preserve_markup_after_delta() {
     );
     workspace.build();
     let conn = workspace.open();
-    let options = QueryOptions::resolve(&ResponsePolicy::default(), Some(10), 0, None, None).unwrap();
+    let options =
+        QueryOptions::resolve(&ResponsePolicy::default(), Some(10), 0, None, None).unwrap();
     let preview = SourceOptions {
         enabled: true,
         leading_lines: 0,
         max_body_lines: 100,
         offset: 0,
     };
-    let snippet = symbols::snippet_paged(&conn, workspace.root(), "index.html", &preview, &options).unwrap();
+    let snippet =
+        symbols::snippet_paged(&conn, workspace.root(), "index.html", &preview, &options).unwrap();
     assert_eq!(snippet["node"]["language"], "html");
     assert_eq!(snippet["source"], source);
     assert_eq!(
-        query_scalar::<i64>(&conn, "SELECT count(*) FROM files WHERE language='html'", []),
+        query_scalar::<i64>(
+            &conn,
+            "SELECT count(*) FROM files WHERE language='html'",
+            []
+        ),
         2
     );
     drop(conn);
@@ -290,13 +340,16 @@ fn html_files_are_indexed_and_snippets_preserve_markup_after_delta() {
     workspace.write("index.html", updated);
     workspace.delta(&["index.html"]);
     let conn = workspace.open();
-    let snippet = symbols::snippet_paged(&conn, workspace.root(), "index.html", &preview, &options).unwrap();
+    let snippet =
+        symbols::snippet_paged(&conn, workspace.root(), "index.html", &preview, &options).unwrap();
     assert_eq!(snippet["source"], updated);
     let rebuilt = crate::languages::support::fresh_cold(&workspace);
     let graph = |conn: &rusqlite::Connection| {
         conn.prepare("SELECT id, details FROM nodes ORDER BY id")
             .unwrap()
-            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
             .unwrap()
             .collect::<rusqlite::Result<Vec<_>>>()
             .unwrap()
@@ -311,7 +364,9 @@ fn inline_javascript_imports_resolve_without_html_namespace_collision() {
     let source = "<html>\n<script type=\"module\">\nimport { answer } from './app.js';\n</script>\n<script type=\"application/ld+json\">{\"invalidJS\": true}</script>\n<script src=\"other.js\">import ignored from 'ignored';</script>\n</html>\n";
     workspace.write("app.html", source);
     workspace.write("app.js", "export function answer() { return 42; }\n");
-    let facts = ExtractorHarness::for_lang("html").at_path("app.html").extract(source);
+    let facts = ExtractorHarness::for_lang("html")
+        .at_path("app.html")
+        .extract(source);
     assert!(facts.errors.is_empty(), "{:?}", facts.errors);
     assert_eq!(facts.references.len(), 2);
     let inline = facts
@@ -320,12 +375,10 @@ fn inline_javascript_imports_resolve_without_html_namespace_collision() {
         .find(|reference| reference.module.as_deref() == Some("./app.js"))
         .unwrap();
     assert_eq!(inline.line, 3);
-    assert!(
-        !facts
-            .references
-            .iter()
-            .any(|reference| reference.module.as_deref() == Some("ignored"))
-    );
+    assert!(!facts
+        .references
+        .iter()
+        .any(|reference| reference.module.as_deref() == Some("ignored")));
     workspace.build();
     let conn = workspace.open();
     let resolved: i64 = query_scalar(
@@ -349,20 +402,18 @@ fn html_local_script_and_link_assets_resolve_and_remote_assets_stay_out() {
     let source = "<script src='app.js?v=1'></script>\n<link rel='modulepreload' href='/app.js#module'>\n<script src='https://cdn.invalid/remote.js'></script>\n<link rel='stylesheet' href='app.css'>\n";
     workspace.write("app.html", source);
     workspace.write("app.js", "export const answer = 42;\n");
-    let facts = ExtractorHarness::for_lang("html").at_path("app.html").extract(source);
+    let facts = ExtractorHarness::for_lang("html")
+        .at_path("app.html")
+        .extract(source);
     assert_eq!(facts.references.len(), 2);
-    assert!(
-        facts
-            .references
-            .iter()
-            .any(|reference| reference.module.as_deref() == Some("./app.js"))
-    );
-    assert!(
-        facts
-            .references
-            .iter()
-            .any(|reference| reference.module.as_deref() == Some("/app.js"))
-    );
+    assert!(facts
+        .references
+        .iter()
+        .any(|reference| reference.module.as_deref() == Some("./app.js")));
+    assert!(facts
+        .references
+        .iter()
+        .any(|reference| reference.module.as_deref() == Some("/app.js")));
     workspace.build();
     let conn = workspace.open();
     let occurrences: i64 = query_scalar(
@@ -388,23 +439,34 @@ fn embedded_javascript_scopes_preserve_symbols_positions_and_receiver_edges() {
         .find(|node| node.name == "Client" && node.kind == "class")
         .unwrap();
     assert_eq!(class.line, 1);
-    assert_eq!(class.details["column"], source.find("class Client").unwrap());
+    assert_eq!(
+        class.details["column"],
+        source.find("class Client").unwrap()
+    );
     let work = facts
         .nodes
         .iter()
         .find(|node| node.name == "work" && node.kind == "method")
         .unwrap();
-    let launch = facts.nodes.iter().find(|node| node.name == "launch").unwrap();
+    let launch = facts
+        .nodes
+        .iter()
+        .find(|node| node.name == "launch")
+        .unwrap();
     assert_eq!(launch.line, 5);
     assert_eq!(
         launch.details["column"],
-        source.lines().nth(4).unwrap().find("function launch").unwrap()
+        source
+            .lines()
+            .nth(4)
+            .unwrap()
+            .find("function launch")
+            .unwrap()
     );
     assert!(
-        graph
-            .edges
-            .iter()
-            .any(|edge| edge.kind == "calls" && edge.evidence == "client.work" && edge.dst == work.id),
+        graph.edges.iter().any(|edge| edge.kind == "calls"
+            && edge.evidence == "client.work"
+            && edge.dst == work.id),
         "{graph:#?}"
     );
     assert!(
@@ -421,7 +483,11 @@ fn embedded_javascript_scopes_preserve_symbols_positions_and_receiver_edges() {
         "{graph:#?}"
     );
     assert_eq!(
-        facts.nodes.iter().filter(|node| node.kind == "template_scope").count(),
+        facts
+            .nodes
+            .iter()
+            .filter(|node| node.kind == "template_scope")
+            .count(),
         4
     );
 }
@@ -460,9 +526,13 @@ fn html_javascript_import_scope_and_boolean_handlers_survive_delta() {
     workspace.delta(&["page.html"]);
     let cold = crate::languages::support::fresh_cold(&workspace);
     let rows = |conn: &rusqlite::Connection| {
-        let mut statement = conn.prepare("SELECT id,details FROM nodes ORDER BY id").unwrap();
+        let mut statement = conn
+            .prepare("SELECT id,details FROM nodes ORDER BY id")
+            .unwrap();
         statement
-            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
             .unwrap()
             .collect::<rusqlite::Result<Vec<_>>>()
             .unwrap()
@@ -508,7 +578,11 @@ fn classic_javascript_globals_are_shared_by_scripts_and_inline_handlers() {
         .iter()
         .find(|node| node.kind == "method" && node.name == "run")
         .unwrap();
-    let launch = facts.nodes.iter().find(|node| node.name == "launch").unwrap();
+    let launch = facts
+        .nodes
+        .iter()
+        .find(|node| node.name == "launch")
+        .unwrap();
     for line in [2, 3] {
         assert!(
             graph.edges.iter().any(|edge| edge.kind == "calls"
@@ -553,7 +627,9 @@ fn embedded_javascript_uses_its_owner_profile_inside_html() {
     let workspace = crate::languages::PersistedWorkspaceHarness::new();
     let source = "<div>{{ encodeURIComponent }}</div>\n<script>\nfunction make() {\n  return { count: 0, inc() { this.count += 1; this.reset(); }, reset() { this.count = 0; } };\n}\nfunction render() { encodeURIComponent('x'); document.querySelector('#card'); return Date.now(); }\n</script>\n";
     let path = "templates/island.html";
-    let facts = ExtractorHarness::for_lang("html").at_path(path).extract(source);
+    let facts = ExtractorHarness::for_lang("html")
+        .at_path(path)
+        .extract(source);
     for expression in [
         "this.count",
         "this.reset",
@@ -600,7 +676,8 @@ fn embedded_javascript_uses_its_owner_profile_inside_html() {
         );
         if matches!(expression, "document.querySelector") {
             assert!(
-                rows.iter().all(|(_, evidence)| evidence.contains("builtin:web_api")),
+                rows.iter()
+                    .all(|(_, evidence)| evidence.contains("builtin:web_api")),
                 "{rows:?}"
             );
         }
@@ -610,5 +687,8 @@ fn embedded_javascript_uses_its_owner_profile_inside_html() {
         "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash JOIN path_dictionary target_path ON target_path.path_id=dst.path_id WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)=?1 AND e.line=4 AND e.kind='mutates' AND target_path.path=?1 AND dst.name='count' AND dst.kind='field'",
         [path],
     );
-    assert!(field_edge > 0, "this.count must link to its returned object field");
+    assert!(
+        field_edge > 0,
+        "this.count must link to its returned object field"
+    );
 }

@@ -133,7 +133,9 @@ fn python_factory_and_constructor_contract_deltas_match_cold_builds() {
         ),
     ];
 
-    for (_case_name, provider, consumer, before, after, source, expression, expected_initial) in cases {
+    for (_case_name, provider, consumer, before, after, source, expression, expected_initial) in
+        cases
+    {
         assert_factory_delta(
             provider,
             consumer,

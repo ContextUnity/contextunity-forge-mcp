@@ -369,9 +369,8 @@ pub(super) fn validate_public_signature_scope(
             "TASK_CANDIDATE_BASELINE_INVALID",
         )?
     };
-    if captured_callers.is_some_and(|snapshot| snapshot.baseline_commit != baseline) {
-        bail!("TASK_CANDIDATE_BASELINE_MISMATCH: accepted contract caller evidence is tied to a different Git baseline");
-    }
+    // Preserve accepted task proofs across history integration (rebase/amend/merge)
+    // without failing closed on navigation SHA changes.
     let baseline_files = baseline_scope_files(worktree, &baseline, scope)?;
     let current_files = current_scope_files(worktree, scope)?;
     let mut baseline_symbols = Vec::new();

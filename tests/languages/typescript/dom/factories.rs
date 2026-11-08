@@ -108,8 +108,22 @@ wrong.trim(); other.trim(); dynamic.trim(); spread.trim(); fifth.trim(); unknown
         let mut rules = Vec::new();
         for language in ["javascript", "typescript"] {
             for (id, global, method, literal, name, property) in [
-                ("original", "nodeFactory", "make", "field", "PropertyProof", "payload"),
-                ("renamed", "viewFactory", "forge", "cell", "RenamedProof", "content"),
+                (
+                    "original",
+                    "nodeFactory",
+                    "make",
+                    "field",
+                    "PropertyProof",
+                    "payload",
+                ),
+                (
+                    "renamed",
+                    "viewFactory",
+                    "forge",
+                    "cell",
+                    "RenamedProof",
+                    "content",
+                ),
             ] {
                 rules.push(serde_json::json!({
                     "id":format!("{id}-{language}"), "language":language,
@@ -191,7 +205,10 @@ fn factory_methods_and_aliases_require_verified_receiver_origin() {
     ] {
         let row = persisted_coverage(&conn, path, None, expression);
         assert_eq!(row.0, "external");
-        assert!(row.1.contains("builtin:web_api"), "{path}:{expression} {row:?}");
+        assert!(
+            row.1.contains("builtin:web_api"),
+            "{path}:{expression} {row:?}"
+        );
     }
     for (path, expression) in [
         ("factory.ts", "button.unknownMethod"),
@@ -266,7 +283,11 @@ fn property_reads_preserve_literal_factory_provenance() {
             let row = persisted_coverage(&conn, &path, None, expression);
             assert_eq!(row.0, "external");
             if !expression.ends_with(".trim") {
-                let language = if extension == "ts" { "typescript" } else { "javascript" };
+                let language = if extension == "ts" {
+                    "typescript"
+                } else {
+                    "javascript"
+                };
                 for token in [
                     format!("finite {language} configured member"),
                     "pack web".into(),
@@ -326,7 +347,11 @@ fn property_calls_aliases_and_shadowed_factories_remain_unresolved() {
             ),
             (
                 "property_shadow",
-                vec!["document.createElement('input').value", "value.trim", "direct.trim"],
+                vec![
+                    "document.createElement('input').value",
+                    "value.trim",
+                    "direct.trim",
+                ],
             ),
             (
                 "property_write",
@@ -334,7 +359,8 @@ fn property_calls_aliases_and_shadowed_factories_remain_unresolved() {
             ),
         ] {
             for expression in expressions {
-                let row = persisted_coverage(&conn, &format!("{prefix}.{extension}"), None, expression);
+                let row =
+                    persisted_coverage(&conn, &format!("{prefix}.{extension}"), None, expression);
                 assert_eq!(row.0, "unresolved");
             }
         }

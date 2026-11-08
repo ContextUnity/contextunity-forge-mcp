@@ -13,7 +13,10 @@ fn package_reexports_follow_callable_alias_targets() {
         );
         workspace.write("src/ambiguous/__init__.py", "flag = bool(input())\nif flag:\n    from .first import dispatch\nelse:\n    from .second import dispatch\n__all__ = ['dispatch']\n");
         workspace.write("src/ambiguous/first.py", "def dispatch(): return 'first'\n");
-        workspace.write("src/ambiguous/second.py", "def dispatch(): return 'second'\n");
+        workspace.write(
+            "src/ambiguous/second.py",
+            "def dispatch(): return 'second'\n",
+        );
         workspace.write(
             "src/rebound_alias.py",
             "def implementation(): return 'ready'\ndispatch = implementation\ndispatch = None\n",
@@ -104,9 +107,18 @@ fn module_assignment_exports_and_reexports_persist_exact_targets() {
         w.write("src/loop.py", "def run(): pass\nfor run in []: pass\n");
         w.write("src/aug.py", "def run(): pass\nrun += 1\n");
         w.write("src/assignment.py", "def run(): pass\nrun = other\n");
-        w.write("src/imported.py", "def run(): pass\nfrom other import run\n");
-        w.write("src/duplicate_script.py", "def run(): pass\ndef run(): pass\n");
-        w.write("src/lambda_script.py", "def run(): pass\nrun = lambda: None\n");
+        w.write(
+            "src/imported.py",
+            "def run(): pass\nfrom other import run\n",
+        );
+        w.write(
+            "src/duplicate_script.py",
+            "def run(): pass\ndef run(): pass\n",
+        );
+        w.write(
+            "src/lambda_script.py",
+            "def run(): pass\nrun = lambda: None\n",
+        );
         w.write("src/deleted.py", "def run(): pass\ndel run\n");
         w.write("src/conditional.py", "if False:\n    def run(): pass\n");
         w.write(
@@ -130,7 +142,10 @@ fn module_assignment_exports_and_reexports_persist_exact_targets() {
         w.write("src/pkg/catalog.py", "CONSTANT = 7\nfactory_value = make_value()\ndef implementation(): return 1\ncallable_alias = implementation\ndef named(): return 2\n");
         w.write("src/pkg/facade.py", "from .catalog import CONSTANT\n");
         w.write("src/pkg/duplicate.py", "VALUE = 1\nVALUE = 2\n");
-        w.write("src/pkg/rebound.py", "from .catalog import CONSTANT\nCONSTANT = 99\n");
+        w.write(
+            "src/pkg/rebound.py",
+            "from .catalog import CONSTANT\nCONSTANT = 99\n",
+        );
         w.write(
             "src/pkg/rebound_declarations.py",
             "class Foo: pass\nFoo = 1\ndef make(): return 1\nmake = lambda: 2\nPRE = 0\nclass PRE: pass\n",
@@ -168,7 +183,12 @@ fn module_assignment_exports_and_reexports_persist_exact_targets() {
         ("src/consumer.py", "src/"),
         ("[second]/src/consumer.py", "[second]/src/"),
     ] {
-        for (line, name) in [(1, "CONSTANT"), (2, "factory_value"), (4, "CONSTANT"), (5, "named")] {
+        for (line, name) in [
+            (1, "CONSTANT"),
+            (2, "factory_value"),
+            (4, "CONSTANT"),
+            (5, "named"),
+        ] {
             let (status, targets) = persisted_import(&conn, consumer, line, name);
             assert_eq!(status, "resolved", "{consumer}:{line} {name}: {targets:?}");
             assert!(
@@ -178,7 +198,11 @@ fn module_assignment_exports_and_reexports_persist_exact_targets() {
             assert!(
                 !targets
                     .iter()
-                    .any(|target| target.starts_with(if prefix == "src/" { "[second]/" } else { "src/" })),
+                    .any(|target| target.starts_with(if prefix == "src/" {
+                        "[second]/"
+                    } else {
+                        "src/"
+                    })),
                 "cross-project target: {targets:?}"
             );
         }
@@ -191,17 +215,26 @@ fn module_assignment_exports_and_reexports_persist_exact_targets() {
         assert!(
             !targets
                 .iter()
-                .any(|target| target.starts_with(if prefix == "src/" { "[second]/" } else { "src/" })),
+                .any(|target| target.starts_with(if prefix == "src/" {
+                    "[second]/"
+                } else {
+                    "src/"
+                })),
             "cross-project target: {targets:?}"
         );
-        assert_eq!(persisted_import(&conn, consumer, 6, "absent").0, "unresolved");
+        assert_eq!(
+            persisted_import(&conn, consumer, 6, "absent").0,
+            "unresolved"
+        );
         let (status, targets) = persisted_import(&conn, consumer, 7, "VALUE");
         assert!(
             matches!(status.as_str(), "unresolved" | "ambiguous"),
             "duplicate: {status} {targets:?}"
         );
         assert!(
-            !targets.iter().any(|target| target.ends_with("duplicate.py:VALUE")),
+            !targets
+                .iter()
+                .any(|target| target.ends_with("duplicate.py:VALUE")),
             "duplicate selected a target: {targets:?}"
         );
         let (status, targets) = persisted_import(&conn, consumer, 8, "CONSTANT");
@@ -210,11 +243,15 @@ fn module_assignment_exports_and_reexports_persist_exact_targets() {
             "rebound: {status} {targets:?}"
         );
         assert!(
-            !targets.iter().any(|target| target.ends_with("catalog.py:CONSTANT")),
+            !targets
+                .iter()
+                .any(|target| target.ends_with("catalog.py:CONSTANT")),
             "rebound import retained prior target: {targets:?}"
         );
         assert!(
-            !targets.iter().any(|target| target.ends_with("rebound.py:CONSTANT")),
+            !targets
+                .iter()
+                .any(|target| target.ends_with("rebound.py:CONSTANT")),
             "rebound import selected replacement arbitrarily: {targets:?}"
         );
         for (line, name) in [(9, "Foo"), (10, "make")] {
@@ -241,7 +278,10 @@ fn module_assignment_exports_and_reexports_persist_exact_targets() {
             "SELECT count(*) FROM edge_occurrences e JOIN path_dictionary p ON p.path_id=e.owner_id JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE p.path=?1 AND e.line=11 AND e.kind='imports' AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)=?2 AND dst.name='PRE' AND dst.kind='class'",
             rusqlite::params![consumer, format!("{prefix}pkg/rebound_declarations.py")],
         );
-        assert_eq!(class_targets, 1, "later class must be selected exactly once");
+        assert_eq!(
+            class_targets, 1,
+            "later class must be selected exactly once"
+        );
         let (status, targets) = persisted_import(&conn, consumer, 12, "Foo");
         assert!(
             matches!(status.as_str(), "unresolved" | "ambiguous"),
@@ -335,7 +375,11 @@ fn module_assignment_aliases_to_imported_classes_keep_exact_origin() {
             assert!(
                 !targets
                     .iter()
-                    .any(|target| target.starts_with(if prefix == "src/" { "[second]/" } else { "src/" })),
+                    .any(|target| target.starts_with(if prefix == "src/" {
+                        "[second]/"
+                    } else {
+                        "src/"
+                    })),
                 "cross-project alias target: {targets:?}"
             );
         }
@@ -372,7 +416,8 @@ fn module_assignment_aliases_to_imported_classes_keep_exact_origin() {
 }
 
 #[test]
-fn package_reexports_and_monorepo_hubs_resolve_overloads_type_aliases_and_runtime_implementations() {
+fn package_reexports_and_monorepo_hubs_resolve_overloads_type_aliases_and_runtime_implementations()
+{
     let types_src = r#"
 from typing import TypeAlias
 JsonPrimitive: TypeAlias = str | int
@@ -428,8 +473,14 @@ def admin():
             "packages/core/src/contextunity/core/grpc_error_decorators.py",
             decorators_src,
         ),
-        ("packages/core/src/contextunity/core/grpc_errors.py", grpc_errors_src),
-        ("packages/core/src/contextunity/core/__init__.py", core_init_src),
+        (
+            "packages/core/src/contextunity/core/grpc_errors.py",
+            grpc_errors_src,
+        ),
+        (
+            "packages/core/src/contextunity/core/__init__.py",
+            core_init_src,
+        ),
         (
             "extensions/commerce/src/contextunity/commerce/typing.py",
             commerce_typing_src,
@@ -440,14 +491,20 @@ def admin():
     .map(|(path, source)| {
         (
             path.to_owned(),
-            ExtractorHarness::for_lang("python").at_path(path).extract(source),
+            ExtractorHarness::for_lang("python")
+                .at_path(path)
+                .extract(source),
         )
     })
     .collect::<BTreeMap<_, _>>();
 
     let graph = ExtractorHarness::link_graph(&facts_map);
     for (name, line, provider) in [
-        ("StructData", 2, "packages/core/src/contextunity/core/types.py"),
+        (
+            "StructData",
+            2,
+            "packages/core/src/contextunity/core/types.py",
+        ),
         (
             "grpc_error_handler",
             2,

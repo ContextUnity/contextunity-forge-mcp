@@ -39,11 +39,19 @@ fn gridviewspec_pack_bindings_follow_unique_targets() {
         commitments::verify(&conn).unwrap();
         assert!(query_strings(&conn, "SELECT message FROM errors", []).is_empty());
         for (index, (module, base, member)) in families.iter().enumerate() {
-            let (status, evidence) =
-                persisted_coverage(&conn, "families.py", (index * 4 + 3) as i64, &format!("self.{member}"));
+            let (status, evidence) = persisted_coverage(
+                &conn,
+                "families.py",
+                (index * 4 + 3) as i64,
+                &format!("self.{member}"),
+            );
             assert_eq!(
                 status,
-                if family_active { "external" } else { "unresolved" },
+                if family_active {
+                    "external"
+                } else {
+                    "unresolved"
+                },
                 "{base}: {evidence}"
             );
             if family_active {
@@ -53,7 +61,13 @@ fn gridviewspec_pack_bindings_follow_unique_targets() {
                 );
             }
             assert_eq!(
-                persisted_coverage(&conn, "families.py", (index * 4 + 4) as i64, "self.unconfigured").0,
+                persisted_coverage(
+                    &conn,
+                    "families.py",
+                    (index * 4 + 4) as i64,
+                    "self.unconfigured"
+                )
+                .0,
                 "unresolved"
             );
         }
@@ -72,10 +86,19 @@ fn gridviewspec_pack_bindings_follow_unique_targets() {
             ),
             [target("backend.py", "records")]
         );
-        assert_eq!(persisted_coverage(&conn, "ordinary.py", 1, "records").0, "resolved");
+        assert_eq!(
+            persisted_coverage(&conn, "ordinary.py", 1, "records").0,
+            "resolved"
+        );
         let mut failures = Vec::new();
         for (source, kind, path, name, expected) in [
-            ("get_table", "calls_endpoint", "backend.py", "GET /api/records/", active),
+            (
+                "get_table",
+                "calls_endpoint",
+                "backend.py",
+                "GET /api/records/",
+                active,
+            ),
             (
                 "post_table",
                 "calls_endpoint",
@@ -103,7 +126,11 @@ fn gridviewspec_pack_bindings_follow_unique_targets() {
                 "SELECT d.id FROM edge_occurrences e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash JOIN path_dictionary p ON p.path_id=s.path_id WHERE p.path='spec.py' AND s.name=?1 AND e.kind=?2 ORDER BY d.id",
                 (source, kind),
             );
-            let expected = if expected { vec![target(path, name)] } else { vec![] };
+            let expected = if expected {
+                vec![target(path, name)]
+            } else {
+                vec![]
+            };
             if actual != expected {
                 failures.push(format!(
                     "{source} --{kind}--> {path}:{name}: expected {expected:?}, actual {actual:?}"
@@ -165,11 +192,17 @@ fn gridviewspec_pack_bindings_follow_unique_targets() {
                     (line, expression, status),
                 );
                 if count == 0 {
-                    failures.push(format!("spec.py:{line} {expression}: missing {status} coverage"));
+                    failures.push(format!(
+                        "spec.py:{line} {expression}: missing {status} coverage"
+                    ));
                 }
             }
         }
-        assert!(failures.is_empty(), "GridViewSpec bindings:\n{}", failures.join("\n"));
+        assert!(
+            failures.is_empty(),
+            "GridViewSpec bindings:\n{}",
+            failures.join("\n")
+        );
         drop(conn);
     };
     let persist_parity = || {
@@ -198,7 +231,13 @@ fn gridviewspec_pack_bindings_follow_unique_targets() {
         "../../../../crates/forge-index/src/languages/manifests/gridviewspec.toml"
     ))
     .unwrap();
-    assert_eq!(bundled["class_hierarchy_receivers"].as_array().unwrap().len(), 28);
+    assert_eq!(
+        bundled["class_hierarchy_receivers"]
+            .as_array()
+            .unwrap()
+            .len(),
+        28
+    );
     workspace.write(
         "extension.py",
         "from fixture_grid import Widget\nclass Extended(Widget):\n    def known(self): return self.expose\n",
@@ -253,7 +292,9 @@ fn gridviewspec_pack_bindings_follow_unique_targets() {
         "../../../../crates/forge-index/src/languages/manifests/gridviewspec.toml"
     ))
     .unwrap();
-    pack.as_table_mut().unwrap().insert("replace".into(), true.into());
+    pack.as_table_mut()
+        .unwrap()
+        .insert("replace".into(), true.into());
     let mut removed = pack.clone();
     removed.as_table_mut().unwrap().remove("semantic_rules");
     removed.as_table_mut().unwrap().remove("syntax_rules");
@@ -290,7 +331,10 @@ fn gridviewspec_pack_bindings_follow_unique_targets() {
             .replace("registerAction", "bindCommand")
     };
     for section in ["semantic_rules", "syntax_rules"] {
-        for rule in pack[section].as_array_mut().expect("pack provides binding rules") {
+        for rule in pack[section]
+            .as_array_mut()
+            .expect("pack provides binding rules")
+        {
             // Rewrite configured identities only, preserving typed schema keys.
             let mut value = serde_json::to_value(&*rule).unwrap();
             fn rewrite_values(value: &mut serde_json::Value, rewrite: &impl Fn(&str) -> String) {
@@ -355,7 +399,6 @@ fn gridviewspec_pack_bindings_follow_unique_targets() {
     workspace.delta(&["provider.js"]);
     observe(true, "resolved", true);
     persist_parity();
-
 }
 
 #[cfg(all(feature = "lang-typescript", feature = "lang-html"))]
@@ -459,7 +502,10 @@ fn assert_gridviewspec_runtime_provider_scopes(renamed: bool) {
             targets, wanted,
             "configured runtime exact canonical callback, renamed={renamed}"
         );
-        assert_eq!(persisted_coverage(&conn, "consumer.py", 2, "money").0, status);
+        assert_eq!(
+            persisted_coverage(&conn, "consumer.py", 2, "money").0,
+            status
+        );
         for function in ["missing", "dynamic", "shadow"] {
             let count: i64 = query_scalar(
                 &conn,
@@ -491,7 +537,11 @@ fn assert_gridviewspec_runtime_provider_scopes(renamed: bool) {
         provider_path,
         &format!(
             "{runtime_source}\nexport function duplicate() {{ {}('money', linkRenderer); }}\n",
-            if renamed { "bindPainter" } else { "registerRenderer" }
+            if renamed {
+                "bindPainter"
+            } else {
+                "registerRenderer"
+            }
         ),
     );
     scoped.delta(&["[runtime]/frontend/src/runtime/renderers/builtins.ts"]);
@@ -504,7 +554,10 @@ fn assert_gridviewspec_runtime_provider_scopes(renamed: bool) {
     check(Some("moneyRenderer"), "resolved");
     scoped.write(
         local_manifest,
-        &policy.replace("package = \"runtime-provider\"", "package = \"unrelated-provider\""),
+        &policy.replace(
+            "package = \"runtime-provider\"",
+            "package = \"unrelated-provider\"",
+        ),
     );
     scoped.delta(&[local_manifest]);
     check(None, "unresolved");

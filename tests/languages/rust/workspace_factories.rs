@@ -1,21 +1,56 @@
-type ModuleVisibilityCase =
-    (&'static str, &'static str, &'static [(&'static str, &'static str)], &'static str, &'static str);
+type ModuleVisibilityCase = (
+    &'static str,
+    &'static str,
+    &'static [(&'static str, &'static str)],
+    &'static str,
+    &'static str,
+);
 const MODULE_VISIBILITY_CASES: &[ModuleVisibilityCase] = &[
-    ("file-item", "VIS mod inner;", &[("inner.rs", "pub fn work() {}")], "use left::inner::work;", "work()"),
-    ("file-module", "VIS mod inner;", &[("inner.rs", "pub fn work() {}")], "use left::inner;", "inner::work()"),
-    ("inline-item", "VIS mod inner { pub fn work() {} }", &[], "use left::inner::work;", "work()"),
-    ("inline-module", "VIS mod inner { pub fn work() {} }", &[], "use left::inner;", "inner::work()"),
+    (
+        "file-item",
+        "VIS mod inner;",
+        &[("inner.rs", "pub fn work() {}")],
+        "use left::inner::work;",
+        "work()",
+    ),
+    (
+        "file-module",
+        "VIS mod inner;",
+        &[("inner.rs", "pub fn work() {}")],
+        "use left::inner;",
+        "inner::work()",
+    ),
+    (
+        "inline-item",
+        "VIS mod inner { pub fn work() {} }",
+        &[],
+        "use left::inner::work;",
+        "work()",
+    ),
+    (
+        "inline-module",
+        "VIS mod inner { pub fn work() {} }",
+        &[],
+        "use left::inner;",
+        "inner::work()",
+    ),
     (
         "file-reexport",
         "pub mod inner; VIS mod api;",
-        &[("inner.rs", "pub fn work() {}"), ("api.rs", "pub use crate::inner::work;")],
+        &[
+            ("inner.rs", "pub fn work() {}"),
+            ("api.rs", "pub use crate::inner::work;"),
+        ],
         "use left::api::work;",
         "work()",
     ),
     (
         "ancestor-module",
         "VIS mod outer;",
-        &[("outer.rs", "pub mod inner;"), ("outer/inner.rs", "pub fn work() {}")],
+        &[
+            ("outer.rs", "pub mod inner;"),
+            ("outer/inner.rs", "pub fn work() {}"),
+        ],
         "use left::outer::inner::work;",
         "work()",
     ),
@@ -29,19 +64,49 @@ const MODULE_VISIBILITY_CASES: &[ModuleVisibilityCase] = &[
 ];
 
 const OWNER_PATH_CASES: &[(&str, &str, &str)] = &[
-    ("crates/ordinary/src/probe.rs", "crates/ordinary/src/core.rs", "crate::core::work"),
-    ("crates/ordinary/src/probe.rs", "crates/ordinary/src/engine.rs", "crate::engine::work"),
+    (
+        "crates/ordinary/src/probe.rs",
+        "crates/ordinary/src/core.rs",
+        "crate::core::work",
+    ),
+    (
+        "crates/ordinary/src/probe.rs",
+        "crates/ordinary/src/engine.rs",
+        "crate::engine::work",
+    ),
     ("examples/probe.rs", "examples/core.rs", "crate::core::work"),
-    ("crates/forge-index/src/probe.rs", "crates/forge-core/src/models.rs", "forge_core::models::work"),
-    ("crates/forge-index/src/probe.rs", "crates/forge-index/src/ast.rs", "crate::ast::work"),
-    ("crates/forge-tasks/src/probe.rs", "crates/forge-tasks/src/store.rs", "crate::store::work"),
-    ("crates/ordinary/src/probe.rs", "crates/ordinary/src/db/tasks_store.rs", "crate::db::tasks_store::work"),
+    (
+        "crates/forge-index/src/probe.rs",
+        "crates/forge-core/src/models.rs",
+        "forge_core::models::work",
+    ),
+    (
+        "crates/forge-index/src/probe.rs",
+        "crates/forge-index/src/ast.rs",
+        "crate::ast::work",
+    ),
+    (
+        "crates/forge-tasks/src/probe.rs",
+        "crates/forge-tasks/src/store.rs",
+        "crate::store::work",
+    ),
+    (
+        "crates/ordinary/src/probe.rs",
+        "crates/ordinary/src/db/tasks_store.rs",
+        "crate::db::tasks_store::work",
+    ),
 ];
 
 fn two_crate_workspace() -> crate::languages::PersistedWorkspaceHarness {
     let workspace = crate::languages::PersistedWorkspaceHarness::new();
-    workspace.write("Cargo.toml", "[workspace]\nmembers=['crates/left','crates/right']\n");
-    workspace.write("crates/left/Cargo.toml", "[package]\nname='left'\nversion='0.1.0'\n");
+    workspace.write(
+        "Cargo.toml",
+        "[workspace]\nmembers=['crates/left','crates/right']\n",
+    );
+    workspace.write(
+        "crates/left/Cargo.toml",
+        "[package]\nname='left'\nversion='0.1.0'\n",
+    );
     workspace.write(
         "crates/right/Cargo.toml",
         "[package]\nname='right'\nversion='0.1.0'\n[dependencies]\nleft={path='../left'}\n",
@@ -51,7 +116,6 @@ fn two_crate_workspace() -> crate::languages::PersistedWorkspaceHarness {
 
 use super::coverage;
 use crate::languages::harness::ExtractorHarness;
-
 
 #[test]
 fn cargo_policy_controls_statement_return_authority() {
@@ -90,7 +154,10 @@ fn cargo_policy_controls_statement_return_authority() {
         );
     }
     let workspace = crate::languages::PersistedWorkspaceHarness::new();
-    workspace.write("Cargo.toml", "[package]\nname='seam-r2'\nversion='0.1.0'\n[dependencies]\nrusqlite='0.31'\n");
+    workspace.write(
+        "Cargo.toml",
+        "[package]\nname='seam-r2'\nversion='0.1.0'\n[dependencies]\nrusqlite='0.31'\n",
+    );
     let manifest = r#"enabled = true
 replace = true
 [[class_hierarchy_receivers]]
@@ -106,9 +173,17 @@ members = ['get']
 "#;
     workspace.write(".forge/frameworks/rust-cargo.toml", manifest);
     let source = "use rusqlite::Connection;\nfn f(conn: Connection) { let value = conn.prepare_cached(\"SELECT 1\").unwrap(); value.get(0); }";
-    let catalog = ExtractorHarness::linked_with_root("rust", &[("src/lib.rs", source)], Some(workspace.root()));
+    let catalog = ExtractorHarness::linked_with_root(
+        "rust",
+        &[("src/lib.rs", source)],
+        Some(workspace.root()),
+    );
     let graph = &catalog.graph;
-    let row = graph.coverage.iter().find(|r| r.expression == "value.get").unwrap();
+    let row = graph
+        .coverage
+        .iter()
+        .find(|r| r.expression == "value.get")
+        .unwrap();
     assert!(
         row.evidence.contains("rusqlite::Row"),
         "effective return policy for prepare_cached -> Row must resolve on value.get: {row:#?}"
@@ -134,16 +209,30 @@ fn crate_paths_link_to_their_actual_workspace_owner() {
             Some(workspace.root()),
         );
         let graph = &catalog.graph;
-        let caller = catalog.facts[owner].nodes.iter().find(|node| node.name == "probe").unwrap();
-        let callee = catalog.facts[target].nodes.iter().find(|node| node.name == "work").unwrap();
+        let caller = catalog.facts[owner]
+            .nodes
+            .iter()
+            .find(|node| node.name == "probe")
+            .unwrap();
+        let callee = catalog.facts[target]
+            .nodes
+            .iter()
+            .find(|node| node.name == "work")
+            .unwrap();
         assert!(
-            graph.edges.iter().any(|edge| edge.kind == "calls" && edge.src == caller.id && edge.dst == callee.id),
+            graph
+                .edges
+                .iter()
+                .any(|edge| edge.kind == "calls" && edge.src == caller.id && edge.dst == callee.id),
             "{owner}: {import}: {:#?}",
             graph.coverage
         );
     }
     let workspace = crate::languages::PersistedWorkspaceHarness::new();
-    workspace.write("Cargo.toml", "[package]\nname='my_root_crate'\nversion='0.1.0'\nedition='2021'\n");
+    workspace.write(
+        "Cargo.toml",
+        "[package]\nname='my_root_crate'\nversion='0.1.0'\nedition='2021'\n",
+    );
     workspace.write("src/lib.rs", "pub mod engine;");
     let catalog = ExtractorHarness::linked_with_root(
         "rust",
@@ -219,13 +308,22 @@ fn visibility_and_public_facades_bound_cross_crate_calls() {
             "crates/left/src/outer/api.rs",
             &format!("{visibility} use crate::outer::inner::work;\nmod leaf;\n"),
         );
-        workspace.write("crates/left/src/outer/api/leaf.rs", "use super::work;\nfn nested(){ work(); }\n");
-        workspace.write("crates/right/src/lib.rs", "use left::outer::api::work;\nfn foreign(){ work(); }\n");
+        workspace.write(
+            "crates/left/src/outer/api/leaf.rs",
+            "use super::work;\nfn nested(){ work(); }\n",
+        );
+        workspace.write(
+            "crates/right/src/lib.rs",
+            "use left::outer::api::work;\nfn foreign(){ work(); }\n",
+        );
         workspace.build();
         let db = workspace.open();
-        for (caller, allowed) in
-            [("allowed", outer_allowed), ("root_probe", root_allowed), ("foreign", external_allowed), ("nested", true)]
-        {
+        for (caller, allowed) in [
+            ("allowed", outer_allowed),
+            ("root_probe", root_allowed),
+            ("foreign", external_allowed),
+            ("nested", true),
+        ] {
             let count: i64 = db
                 .query_row(
                     "SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE e.kind='calls' AND s.name=?1 AND d.name='work'",
@@ -237,7 +335,9 @@ fn visibility_and_public_facades_bound_cross_crate_calls() {
         }
     }
     for visibility in ["pub", "pub(crate)"] {
-        for &(case, declarations, providers, foreign_import, foreign_call) in MODULE_VISIBILITY_CASES {
+        for &(case, declarations, providers, foreign_import, foreign_call) in
+            MODULE_VISIBILITY_CASES
+        {
             let workspace = two_crate_workspace();
             let local_call = match case {
                 "file-reexport" => "api::work()",
@@ -250,17 +350,26 @@ fn visibility_and_public_facades_bound_cross_crate_calls() {
                 &format!(
                     "{}\nfn local() {{ {local_call}; }}\n",
                     declarations.replace("VIS", visibility)
-                        + if case == "ancestor-module" { " use crate::outer::inner::work;" } else { "" }
+                        + if case == "ancestor-module" {
+                            " use crate::outer::inner::work;"
+                        } else {
+                            ""
+                        }
                 ),
             );
             for (path, source) in providers {
                 workspace.write(format!("crates/left/src/{path}"), source);
             }
-            workspace
-                .write("crates/right/src/lib.rs", &format!("{foreign_import}\nfn foreign() {{ {foreign_call}; }}\n"));
+            workspace.write(
+                "crates/right/src/lib.rs",
+                &format!("{foreign_import}\nfn foreign() {{ {foreign_call}; }}\n"),
+            );
             workspace.build();
             let db = workspace.open();
-            for (caller, expected) in [("local", true), ("foreign", visibility == "pub" || case == "public-facade")] {
+            for (caller, expected) in [
+                ("local", true),
+                ("foreign", visibility == "pub" || case == "public-facade"),
+            ] {
                 let count: i64 = db
                     .query_row(
                         "SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE e.kind='calls' AND s.name=?1 AND d.name='work'",
@@ -278,7 +387,10 @@ fn visibility_and_public_facades_bound_cross_crate_calls() {
 fn explicit_root_is_independent_of_process_cwd() {
     let workspace = two_crate_workspace();
     let unrelated = crate::languages::PersistedWorkspaceHarness::new();
-    workspace.write("crates/left/src/lib.rs", "pub mod models; pub use models::*; pub fn work() {}\n");
+    workspace.write(
+        "crates/left/src/lib.rs",
+        "pub mod models; pub use models::*; pub fn work() {}\n",
+    );
     workspace.write("crates/left/src/models.rs", "pub struct Node { pub visible: String, pub(crate) internal: String, private: String } impl Node { pub fn new() -> Self { Self { visible: String::new(), internal: String::new(), private: String::new() } } pub fn finish(&self) {} }\n");
     workspace.write(
                 "crates/right/src/lib.rs",
@@ -295,7 +407,11 @@ fn explicit_root_is_independent_of_process_cwd() {
             .current_dir(cwd)
             .output()
             .unwrap();
-        assert!(output.status.success(), "cwd {cwd:?}: {}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "cwd {cwd:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         let db = rusqlite::Connection::open(db_path).unwrap();
         let calls: i64 = db
             .query_row(
@@ -312,7 +428,10 @@ fn explicit_root_is_independent_of_process_cwd() {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(methods, 1, "cross-crate imported Node receiver at cwd {cwd:?}");
+        assert_eq!(
+            methods, 1,
+            "cross-crate imported Node receiver at cwd {cwd:?}"
+        );
         let borrowed: i64 = db
             .query_row(
                 "SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE e.kind='calls' AND s.name='borrowed' AND d.name='finish'",
@@ -320,7 +439,10 @@ fn explicit_root_is_independent_of_process_cwd() {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(borrowed, 1, "cross-crate glob parameter identity at cwd {cwd:?}");
+        assert_eq!(
+            borrowed, 1,
+            "cross-crate glob parameter identity at cwd {cwd:?}"
+        );
         for expression in ["node.visible", "node.internal", "node.private"] {
             let reads: i64 = db.query_row("SELECT count(*) FROM resolution_coverage c JOIN coverage_expressions x USING(expression_id) JOIN path_dictionary p USING(path_id) WHERE p.path='crates/right/src/lib.rs' AND x.expression=?1", [expression], |row| row.get(0)).unwrap();
             assert_eq!(
@@ -334,13 +456,31 @@ fn explicit_root_is_independent_of_process_cwd() {
 #[test]
 fn workspace_factories_preserve_return_identity_across_aliases() {
     let workspace = crate::languages::PersistedWorkspaceHarness::new();
-    workspace.write("tests/common/mod.rs", "#[path = \"workspace.rs\"] mod workspace; pub use workspace::Workspace;");
-    workspace.write("tests/common/workspace.rs", include_str!("../../common/workspace.rs"));
+    workspace.write(
+        "tests/common/mod.rs",
+        "#[path = \"workspace.rs\"] mod workspace; pub use workspace::Workspace;",
+    );
+    workspace.write(
+        "tests/common/workspace.rs",
+        include_str!("../../common/workspace.rs"),
+    );
     workspace.write("tests/acdd/mod.rs", "pub(crate) mod support;");
-    workspace.write("tests/acdd/support.rs", include_str!("../../acdd/support.rs"));
-    workspace.write("tests/acdd/support/builder.rs", include_str!("../../acdd/support/builder.rs"));
-    workspace.write("tests/acdd/support/fixtures.rs", include_str!("../../acdd/support/fixtures.rs"));
-    workspace.write("tests/acdd/support/git_seed.rs", include_str!("../../acdd/support/git_seed.rs"));
+    workspace.write(
+        "tests/acdd/support.rs",
+        include_str!("../../acdd/support.rs"),
+    );
+    workspace.write(
+        "tests/acdd/support/builder.rs",
+        include_str!("../../acdd/support/builder.rs"),
+    );
+    workspace.write(
+        "tests/acdd/support/fixtures.rs",
+        include_str!("../../acdd/support/fixtures.rs"),
+    );
+    workspace.write(
+        "tests/acdd/support/git_seed.rs",
+        include_str!("../../acdd/support/git_seed.rs"),
+    );
     workspace.write(
         "tests/helpers.rs",
         r#"mod common; mod acdd;
@@ -383,14 +523,22 @@ fn probe() {
         assert_eq!(status, expected, "workspace factory return: {expression}");
     }
     let workspace = crate::languages::PersistedWorkspaceHarness::new();
-    workspace
-        .write("src/lib.rs", "use tree_sitter::Node as Syntax; mod a; pub mod support; mod consumer; mod shadow;\n");
+    workspace.write(
+        "src/lib.rs",
+        "use tree_sitter::Node as Syntax; mod a; pub mod support; mod consumer; mod shadow;\n",
+    );
     workspace.write("src/a/mod.rs", "use super::Syntax as Tree; mod b;\n");
-    workspace.write("src/a/b/mod.rs", "use super::Tree as Syntax; mod named; mod glob; mod shadow;\n");
+    workspace.write(
+        "src/a/b/mod.rs",
+        "use super::Tree as Syntax; mod named; mod glob; mod shadow;\n",
+    );
     for (file, import) in [("named", "use super::{Syntax};"), ("glob", "use super::*;")] {
         workspace.write(format!("src/a/b/{file}.rs"), &format!("{import} fn probe(node: Syntax<'_>) {{ node.kind(); node.child_by_field_name(\"body\"); node.walk(); }}"));
     }
-    workspace.write("src/a/b/shadow.rs", "use super::*; struct Syntax; fn probe(node: Syntax) { node.kind(); }");
+    workspace.write(
+        "src/a/b/shadow.rs",
+        "use super::*; struct Syntax; fn probe(node: Syntax) { node.kind(); }",
+    );
     workspace.write("src/support.rs", "pub struct Root(pub std::path::PathBuf); impl Root { pub fn write(&self) {} } pub struct Store; impl Store { pub fn sync(&mut self) {} } pub struct Milestone; impl Milestone { pub fn task_id(&self) {} } pub fn fixture() -> (Root, Store, Milestone) { panic!() }");
     workspace.write(
         "src/consumer.rs",
@@ -426,10 +574,16 @@ fn probe() {
     }
     for method in ["write", "sync", "task_id"] {
         let calls: i64 = db.query_row("SELECT count(*) FROM edge_occurrences e JOIN nodes n ON n.node_hash=e.dst_hash JOIN path_dictionary owner ON owner.path_id=e.owner_id JOIN path_dictionary target ON target.path_id=n.path_id WHERE owner.path='src/consumer.rs' AND target.path='src/support.rs' AND e.kind='calls' AND n.name=?1", [method], |row| row.get(0)).unwrap();
-        assert_eq!(calls, 1, "imported tuple field must call canonical {method}");
+        assert_eq!(
+            calls, 1,
+            "imported tuple field must call canonical {method}"
+        );
     }
     let shadow_calls: i64 = db.query_row("SELECT count(*) FROM edge_occurrences e JOIN nodes n ON n.node_hash=e.dst_hash JOIN path_dictionary owner ON owner.path_id=e.owner_id JOIN path_dictionary target ON target.path_id=n.path_id WHERE owner.path='src/shadow.rs' AND target.path='src/support.rs' AND e.kind='calls'", [], |row| row.get(0)).unwrap();
-    assert_eq!(shadow_calls, 0, "shadowed factory must not acquire tuple payloads");
+    assert_eq!(
+        shadow_calls, 0,
+        "shadowed factory must not acquire tuple payloads"
+    );
 }
 
 #[test]
@@ -475,7 +629,11 @@ fn module_imports_preserve_visibility_and_receiver_boundaries() {
     let graph = ExtractorHarness::linked_with_root("rust", &files, Some(workspace.root())).graph;
     for expression in ["Workspace::new", "w.write", "helper", "par_work", "work"] {
         let entry = coverage(&graph, expression);
-        assert_eq!(entry.status, "resolved", "{entry:#?}; {:#?}", graph.coverage);
+        assert_eq!(
+            entry.status, "resolved",
+            "{entry:#?}; {:#?}",
+            graph.coverage
+        );
     }
     for expression in [
         "s.kind",

@@ -28,7 +28,10 @@ fn array_callback_dom_inference_respects_shadowed_document() {
             .filter(|row| row.expression == "e.querySelector")
             .collect();
         assert!(!rows.is_empty(), "{source}: {graph:#?}");
-        assert!(rows.iter().all(|row| row.status == expected), "{source}: {rows:#?}");
+        assert!(
+            rows.iter().all(|row| row.status == expected),
+            "{source}: {rows:#?}"
+        );
     }
 }
 
@@ -131,7 +134,10 @@ fn escaped_dom_event_property_retains_shadowed_global_facts() {
         .filter(|row| row.expression == "event.preventDefault")
         .collect();
     assert!(!rows.is_empty(), "{graph:#?}");
-    assert!(rows.iter().all(|row| row.status == "unresolved"), "{rows:#?}");
+    assert!(
+        rows.iter().all(|row| row.status == "unresolved"),
+        "{rows:#?}"
+    );
 }
 
 #[test]
@@ -219,7 +225,10 @@ class Panel {
             .iter()
             .filter(|row| row.expression == expression)
             .collect();
-        assert!(!matches.is_empty(), "expected coverage entry for {expression}");
+        assert!(
+            !matches.is_empty(),
+            "expected coverage entry for {expression}"
+        );
         for row in matches {
             assert_eq!(
                 row.status, "external",
@@ -283,7 +292,10 @@ function identity<T>(value: T): T {
         [],
         |row| row.get(0),
     ).unwrap();
-    assert_eq!(count, 0, "naked generic parameter T should have 0 coverage rows");
+    assert_eq!(
+        count, 0,
+        "naked generic parameter T should have 0 coverage rows"
+    );
 
     drop(conn);
 }
@@ -410,7 +422,10 @@ fn javascript_web_factory_results_keep_proven_receivers() {
     ] {
         let row = coverage(path, expression);
         assert_eq!(row.0, "external", "{path}:{expression}: {row:?}");
-        assert!(row.1.contains("builtin:web_api"), "{path}:{expression}: {row:?}");
+        assert!(
+            row.1.contains("builtin:web_api"),
+            "{path}:{expression}: {row:?}"
+        );
     }
     for (path, expression) in [
         ("dom_shadow.js", "element.addEventListener"),

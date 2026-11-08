@@ -54,12 +54,10 @@ fn document_detail_preserves_full_content_and_compact_outline_across_formats() {
     let document = client
         .document("README.md", json!({}))
         .expect("MCP tool should succeed");
-    assert!(
-        document["sections"]["items"][0]["content"]
-            .as_str()
-            .unwrap()
-            .contains("documented contract")
-    );
+    assert!(document["sections"]["items"][0]["content"]
+        .as_str()
+        .unwrap()
+        .contains("documented contract"));
     let outline = client
         .document("README.md", json!({"detail":"compact"}))
         .expect("MCP tool should succeed");

@@ -26,13 +26,22 @@ fn lazy_relative_package_exports_resolve_only_same_project_providers() {
             "from . import sibling\n__all__ = ['Item']\ndef __getattr__(name):\n    if name in __all__:\n        return getattr(sibling, name.lower())\n    raise AttributeError(name)\n",
         );
         w.write("src/pkg/namespace/child.py", "def operation(): return 1\n");
-        w.write("src/pkg/namespace/child.pyi", "def operation() -> int: ...\n");
-        w.write("src/pkg/importlib_facade/lazy_module.py", "class Child: pass\n");
+        w.write(
+            "src/pkg/namespace/child.pyi",
+            "def operation() -> int: ...\n",
+        );
+        w.write(
+            "src/pkg/importlib_facade/lazy_module.py",
+            "class Child: pass\n",
+        );
         w.write("src/pkg/importlib_facade/name.py", "class Nested: pass\n");
         w.write("src/pkg/name.py", "class WrongBase: pass\n");
         w.write("src/pkg/importlib_facade/__init__.py", "import importlib\n__all__ = ['lazy_module']\ndef __getattr__(name):\n    if name in __all__:\n        return importlib.import_module(f'.{name}', __name__)\n    raise AttributeError(name)\n");
         w.write("src/pkg/importlib_literal/__init__.py", "import importlib\n__all__ = ['name']\ndef __getattr__(export_name):\n    if export_name in __all__:\n        return importlib.import_module('.name', __name__)\n    raise AttributeError(export_name)\n");
-        w.write("src/pkg/importlib_literal/name.py", "class LiteralTarget: pass\n");
+        w.write(
+            "src/pkg/importlib_literal/name.py",
+            "class LiteralTarget: pass\n",
+        );
         w.write("src/consumer.py", "from pkg import Item\nfrom pkg.facade import Item as facade_item\nfrom pkg.direct import Item as direct_item\nfrom pkg import Unknown\nfrom pkg.rebound import Item as rebound_item\nfrom pkg.missing import Item as missing_item\nfrom pkg.namespace import child\nfrom pkg.dynamic import Item as dynamic_item\nfrom pkg.importlib_facade import lazy_module\nfrom pkg.importlib_literal import name\n");
     }
     primary.build();
@@ -51,12 +60,19 @@ fn lazy_relative_package_exports_resolve_only_same_project_providers() {
             assert!(
                 !targets
                     .iter()
-                    .any(|target| target.starts_with(if prefix == "src/" { "[second]/" } else { "src/" })),
+                    .any(|target| target.starts_with(if prefix == "src/" {
+                        "[second]/"
+                    } else {
+                        "src/"
+                    })),
                 "cross-project target: {targets:?}"
             );
         }
         let (status, targets) = persisted_import(&conn, consumer, 7, "child");
-        assert_eq!(status, "resolved", "{consumer} namespace child: {targets:?}");
+        assert_eq!(
+            status, "resolved",
+            "{consumer} namespace child: {targets:?}"
+        );
         assert!(
             targets
                 .iter()
@@ -70,19 +86,24 @@ fn lazy_relative_package_exports_resolve_only_same_project_providers() {
             "stub was selected over runtime: {targets:?}"
         );
         let (status, targets) = persisted_import(&conn, consumer, 9, "lazy_module");
-        assert_eq!(status, "resolved", "{consumer} importlib module: {targets:?}");
+        assert_eq!(
+            status, "resolved",
+            "{consumer} importlib module: {targets:?}"
+        );
         assert!(
-            targets
-                .iter()
-                .any(|target| target.starts_with(&format!("{prefix}pkg/importlib_facade/lazy_module.py:"))),
+            targets.iter().any(|target| target
+                .starts_with(&format!("{prefix}pkg/importlib_facade/lazy_module.py:"))),
             "{targets:?}"
         );
         let (status, targets) = persisted_import(&conn, consumer, 10, "name");
-        assert_eq!(status, "resolved", "{consumer} literal importlib module: {targets:?}");
+        assert_eq!(
+            status, "resolved",
+            "{consumer} literal importlib module: {targets:?}"
+        );
         assert!(
-            targets
-                .iter()
-                .any(|target| target.starts_with(&format!("{prefix}pkg/importlib_literal/name.py:"))),
+            targets.iter().any(
+                |target| target.starts_with(&format!("{prefix}pkg/importlib_literal/name.py:"))
+            ),
             "{targets:?}"
         );
         assert!(
@@ -95,7 +116,9 @@ fn lazy_relative_package_exports_resolve_only_same_project_providers() {
             let (status, targets) = persisted_import(&conn, consumer, line, name);
             assert_eq!(status, "unresolved", "{consumer}:{line}: {targets:?}");
             assert!(
-                !targets.iter().any(|target| target.ends_with("sibling.py:Item")),
+                !targets
+                    .iter()
+                    .any(|target| target.ends_with("sibling.py:Item")),
                 "{consumer}:{line}: {targets:?}"
             );
         }
@@ -127,7 +150,10 @@ def __getattr__(name):
                 .get("lazy_exports")
                 .and_then(|v| v.as_array())
                 .expect("module import and literal __all__ retain lazy export objects");
-            let names: Vec<_> = exports.iter().map(|v| v["name"].as_str().unwrap()).collect();
+            let names: Vec<_> = exports
+                .iter()
+                .map(|v| v["name"].as_str().unwrap())
+                .collect();
             assert!(names.contains(&"ItemA"));
             assert!(names.contains(&"ItemB"));
         } else {
@@ -389,7 +415,10 @@ fn explicit_package_reexport_resolves_import_and_call() {
     w.build();
     let conn = w.open();
     assert_eq!(status(&conn, "get_log"), "resolved");
-    assert_eq!(import_target_paths(&conn), ["pkg/__init__.py", "pkg/logging.py"]);
+    assert_eq!(
+        import_target_paths(&conn),
+        ["pkg/__init__.py", "pkg/logging.py"]
+    );
     assert_eq!(call_targets(&conn), ["pkg.logging.get_log"]);
     drop(conn);
 
@@ -419,7 +448,10 @@ fn explicit_package_reexport_resolves_import_and_call() {
 #[test]
 fn duplicate_package_reexports_do_not_choose_a_target() {
     let w = fixture_workspace(&[
-        ("pkg/__init__.py", "from .a import get_log\nfrom .b import get_log\n"),
+        (
+            "pkg/__init__.py",
+            "from .a import get_log\nfrom .b import get_log\n",
+        ),
         ("pkg/a.py", "def get_log(): return 1\n"),
         ("pkg/b.py", "def get_log(): return 2\n"),
         (

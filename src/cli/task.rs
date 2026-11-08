@@ -236,6 +236,12 @@ pub enum TaskCommand {
     Verify {
         /// Task identifier.
         task_id: String,
+        /// Explicit test file or qualified test function (e.g. 'tests/acdd/my_test.rs::test_fn').
+        #[arg(long)]
+        test: Option<String>,
+        /// Optional production seam target path or symbol when verifying CodeMap reachability.
+        #[arg(long, requires = "test")]
+        seam: Option<String>,
         /// Runtime command timeout in seconds, bounded by the active profile.
         #[arg(long = "timeout")]
         timeout_seconds: Option<u64>,
@@ -462,9 +468,17 @@ pub fn run(root: &Path, command: TaskCommand) -> Result<Value> {
         }
         TaskCommand::Verify {
             task_id,
+            test,
+            seam,
             timeout_seconds,
         } => {
-            return tasks::verify_task(root, &task_id, timeout_seconds);
+            return tasks::verify_task_with_options(
+                root,
+                &task_id,
+                test.as_deref(),
+                seam.as_deref(),
+                timeout_seconds,
+            );
         }
         TaskCommand::Submit {
             task_id,

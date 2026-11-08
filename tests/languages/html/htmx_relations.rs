@@ -14,7 +14,9 @@ fn htmx_and_alpine_renamed_pack_replacements_stay_workspace_local() {
 fn assert_htmx_and_alpine_relations(renamed_phase: bool) {
     let workspace = crate::languages::PersistedWorkspaceHarness::new();
     let methods = ["get", "post", "put", "patch", "delete"];
-    let mut backend = String::from("from fastapi import FastAPI\nfrom django.urls import path\napp = FastAPI()\n");
+    let mut backend = String::from(
+        "from fastapi import FastAPI\nfrom django.urls import path\napp = FastAPI()\n",
+    );
     let mut html = String::new();
     for method in methods {
         backend.push_str(&format!(
@@ -66,8 +68,12 @@ fn assert_htmx_and_alpine_relations(renamed_phase: bool) {
             .query_map([], |r| Ok((r.get(0)?,r.get(1)?))).unwrap().collect::<rusqlite::Result<_>>().unwrap();
         let mut expected = Vec::new();
         for (index, method) in methods.iter().enumerate() {
-            for (offset, handler) in [(0, format!("api_{method}")), (1, format!("django_{method}"))] {
-                let handler_id = node_id_observation(&conn, "backend.py", &handler).expect("unique handler definition");
+            for (offset, handler) in [
+                (0, format!("api_{method}")),
+                (1, format!("django_{method}")),
+            ] {
+                let handler_id = node_id_observation(&conn, "backend.py", &handler)
+                    .expect("unique handler definition");
                 let routes: Vec<String> = conn
                     .prepare("SELECT s.id FROM edge_occurrences e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE e.kind='handles' AND d.id=?1 ORDER BY s.id")
                     .unwrap()
@@ -75,15 +81,19 @@ fn assert_htmx_and_alpine_relations(renamed_phase: bool) {
                     .unwrap()
                     .collect::<rusqlite::Result<_>>()
                     .unwrap();
-                assert_eq!(routes.len(), 1, "actual canonical route handles {handler}: {routes:?}");
+                assert_eq!(
+                    routes.len(),
+                    1,
+                    "actual canonical route handles {handler}: {routes:?}"
+                );
                 if requests {
                     expected.push((index * 2 + offset + 1, routes[0].clone()));
                 }
             }
         }
         if requests {
-            let item_handler_id =
-                node_id_observation(&conn, "backend.py", "item").expect("unique item handler definition");
+            let item_handler_id = node_id_observation(&conn, "backend.py", "item")
+                .expect("unique item handler definition");
             let item_routes: Vec<String> = conn
                 .prepare("SELECT s.id FROM edge_occurrences e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE e.kind='handles' AND d.id=?1 ORDER BY s.id")
                 .unwrap()
@@ -119,13 +129,23 @@ fn assert_htmx_and_alpine_relations(renamed_phase: bool) {
             let contexts: usize = conn.query_row("SELECT count(*) FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path='page.html' AND n.kind='htmx_request' AND json_extract(n.details,'$.target')='#result' AND json_extract(n.details,'$.swap')='outerHTML'", [], |r|r.get(0)).unwrap();
             assert_eq!(contexts, 5, "target/swap remain context on actual requests");
         }
-        let edge_count = |source: &str, kind: &str, target_path: &str, target_name: &str| -> usize {
+        let edge_count = |source: &str,
+                          kind: &str,
+                          target_path: &str,
+                          target_name: &str|
+         -> usize {
             conn.query_row("SELECT count(*) FROM edge_occurrences e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash JOIN path_dictionary p ON p.path_id=d.path_id JOIN path_dictionary sp ON sp.path_id=s.path_id WHERE sp.path='consumer.js' AND s.name=?1 AND e.kind=?2 AND p.path=?3 AND d.name LIKE ?4", params![source,kind,target_path,target_name], |r|r.get(0)).unwrap()
         };
         let unique = bindings && target_state == "unique";
         for (source, kind, path, target, active) in [
             ("run", "calls", "stores.js", "checkout", unique),
-            ("emit", "references", "listener.html", "alpine_event@%", unique),
+            (
+                "emit",
+                "references",
+                "listener.html",
+                "alpine_event@%",
+                unique,
+            ),
             ("missingStore", "calls", "stores.js", "%", false),
             ("missingEvent", "references", "listener.html", "%", false),
             ("shadowStore", "calls", "stores.js", "%", false),
@@ -225,7 +245,9 @@ fn assert_htmx_and_alpine_relations(renamed_phase: bool) {
         for (name, source) in packs {
             let path = format!(".forge/frameworks/{name}.toml");
             let mut pack: toml::Value = toml::from_str(source).unwrap();
-            pack.as_table_mut().unwrap().insert("replace".into(), true.into());
+            pack.as_table_mut()
+                .unwrap()
+                .insert("replace".into(), true.into());
             pack["syntax_rules"] = toml::Value::Array(vec![]);
             workspace.write(&path, &toml::to_string(&pack).unwrap());
             workspace.delta(&[&path]);
@@ -253,7 +275,9 @@ fn assert_htmx_and_alpine_relations(renamed_phase: bool) {
         for (name, source) in packs {
             let path = format!(".forge/frameworks/{name}.toml");
             let mut pack: toml::Value = toml::from_str(&rename(source)).unwrap();
-            pack.as_table_mut().unwrap().insert("replace".into(), true.into());
+            pack.as_table_mut()
+                .unwrap()
+                .insert("replace".into(), true.into());
             workspace.write(&path, &toml::to_string(&pack).unwrap());
             workspace.delta(&[&path]);
         }
@@ -381,163 +405,172 @@ urlpatterns = [
         workspace.write(path, source);
     }
 
-    let check_state = |workspace: &PersistedWorkspaceHarness, tech_count: usize, active_htmx: bool| {
-        let conn = workspace.open();
-        let validity = validity_observations(&conn);
-        validity.assert_valid();
+    let check_state =
+        |workspace: &PersistedWorkspaceHarness, tech_count: usize, active_htmx: bool| {
+            let conn = workspace.open();
+            let validity = validity_observations(&conn);
+            validity.assert_valid();
 
-        let table: [(&str, usize, &str); 14] = [
-            ("channels/settings.html", 2, "channel_credentials"),
-            ("channels/settings.html", 3, "channel_diagnostic"),
-            ("channels/settings.html", 4, "channel_admin_probe"),
-            ("channels/settings.html", 5, "channel_delete"),
-            ("products/editor/_images.html", 2, "product_editor_images"),
-            ("products/editor/_images.html", 3, "product_editor_images"),
-            ("products/editor/_images.html", 4, "product_editor_images"),
-            ("products/editor/_images.html", 5, "product_editor_images"),
-            ("products/editor/_images.html", 6, "product_editor_images"),
-            ("products/editor/_images.html", 7, "product_editor_images"),
-            ("taxonomy_review/_drawer.html", 2, "taxonomy_review_resolve"),
-            ("taxonomy_review/_drawer.html", 3, "taxonomy_review_resolve"),
-            ("taxonomy_review/_drawer.html", 4, "taxonomy_review_resolve"),
-            ("technologies/_set_detail.html", 2, "technology_pane"),
-        ];
+            let table: [(&str, usize, &str); 14] = [
+                ("channels/settings.html", 2, "channel_credentials"),
+                ("channels/settings.html", 3, "channel_diagnostic"),
+                ("channels/settings.html", 4, "channel_admin_probe"),
+                ("channels/settings.html", 5, "channel_delete"),
+                ("products/editor/_images.html", 2, "product_editor_images"),
+                ("products/editor/_images.html", 3, "product_editor_images"),
+                ("products/editor/_images.html", 4, "product_editor_images"),
+                ("products/editor/_images.html", 5, "product_editor_images"),
+                ("products/editor/_images.html", 6, "product_editor_images"),
+                ("products/editor/_images.html", 7, "product_editor_images"),
+                ("taxonomy_review/_drawer.html", 2, "taxonomy_review_resolve"),
+                ("taxonomy_review/_drawer.html", 3, "taxonomy_review_resolve"),
+                ("taxonomy_review/_drawer.html", 4, "taxonomy_review_resolve"),
+                ("technologies/_set_detail.html", 2, "technology_pane"),
+            ];
 
-        if active_htmx {
-            for (file, line, handler) in table {
-                let handler_node = node_id_observation(&conn, "urls.py", handler).expect("unique handler definition");
-                let route_id: String = conn
-                    .prepare(
-                        "SELECT s.id FROM edge_occurrences e \
+            if active_htmx {
+                for (file, line, handler) in table {
+                    let handler_node = node_id_observation(&conn, "urls.py", handler)
+                        .expect("unique handler definition");
+                    let route_id: String = conn
+                        .prepare(
+                            "SELECT s.id FROM edge_occurrences e \
                          JOIN nodes s ON s.node_hash=e.src_hash \
                          JOIN nodes d ON d.node_hash=e.dst_hash \
                          WHERE e.kind='handles' AND d.id=?1",
-                    )
-                    .unwrap()
-                    .query_row([handler_node], |r| r.get(0))
-                    .unwrap();
+                        )
+                        .unwrap()
+                        .query_row([handler_node], |r| r.get(0))
+                        .unwrap();
 
-                let edge_target: String = conn
-                    .prepare(
-                        "SELECT d.id FROM edge_occurrences e \
+                    let edge_target: String = conn
+                        .prepare(
+                            "SELECT d.id FROM edge_occurrences e \
                          JOIN nodes d ON d.node_hash=e.dst_hash \
                          JOIN path_dictionary p ON p.path_id=e.owner_id \
                          WHERE p.path=?1 AND e.kind='calls_endpoint' AND e.line=?2",
-                    )
-                    .unwrap()
-                    .query_row(params![file, line], |r| r.get(0))
-                    .unwrap();
-                assert_eq!(
-                    edge_target, route_id,
-                    "target route mismatch for {file}:{line} -> {handler}"
-                );
+                        )
+                        .unwrap()
+                        .query_row(params![file, line], |r| r.get(0))
+                        .unwrap();
+                    assert_eq!(
+                        edge_target, route_id,
+                        "target route mismatch for {file}:{line} -> {handler}"
+                    );
 
-                let status: String = conn
-                    .prepare(
-                        "SELECT DISTINCT c.status FROM resolution_coverage c \
+                    let status: String = conn
+                        .prepare(
+                            "SELECT DISTINCT c.status FROM resolution_coverage c \
                          JOIN path_dictionary p ON p.path_id=c.path_id \
                          WHERE p.path=?1 AND c.line=?2",
-                    )
-                    .unwrap()
-                    .query_row(params![file, line], |r| r.get(0))
-                    .unwrap();
-                assert_eq!(status, "resolved", "coverage status mismatch for {file}:{line}");
-            }
+                        )
+                        .unwrap()
+                        .query_row(params![file, line], |r| r.get(0))
+                        .unwrap();
+                    assert_eq!(
+                        status, "resolved",
+                        "coverage status mismatch for {file}:{line}"
+                    );
+                }
 
-            let tech_edges = edge_occurrence_rows(&conn, "technologies/_set_detail.html", "calls_endpoint");
-            assert_eq!(tech_edges.len(), tech_count);
+                let tech_edges =
+                    edge_occurrence_rows(&conn, "technologies/_set_detail.html", "calls_endpoint");
+                assert_eq!(tech_edges.len(), tech_count);
 
-            let v2_handler =
-                node_id_observation(&conn, "urls.py", "version_two").expect("unique v2 handler definition");
-            let v2_route: String = conn
-                .prepare(
-                    "SELECT s.id FROM edge_occurrences e \
+                let v2_handler = node_id_observation(&conn, "urls.py", "version_two")
+                    .expect("unique v2 handler definition");
+                let v2_route: String = conn
+                    .prepare(
+                        "SELECT s.id FROM edge_occurrences e \
                      JOIN nodes s ON s.node_hash=e.src_hash \
                      JOIN nodes d ON d.node_hash=e.dst_hash \
                      WHERE e.kind='handles' AND d.id=?1",
-                )
-                .unwrap()
-                .query_row([v2_handler], |r| r.get(0))
-                .unwrap();
-            let v2_target: String = conn
-                .prepare(
-                    "SELECT d.id FROM edge_occurrences e \
+                    )
+                    .unwrap()
+                    .query_row([v2_handler], |r| r.get(0))
+                    .unwrap();
+                let v2_target: String = conn
+                    .prepare(
+                        "SELECT d.id FROM edge_occurrences e \
                      JOIN nodes d ON d.node_hash=e.dst_hash \
                      JOIN path_dictionary p ON p.path_id=e.owner_id \
                      WHERE p.path='controls.html' AND e.kind='calls_endpoint' AND e.line=6",
-                )
-                .unwrap()
-                .query_row([], |r| r.get(0))
-                .unwrap();
-            assert_eq!(v2_target, v2_route);
+                    )
+                    .unwrap()
+                    .query_row([], |r| r.get(0))
+                    .unwrap();
+                assert_eq!(v2_target, v2_route);
 
-            let item_handler =
-                node_id_observation(&conn, "urls.py", "item_detail").expect("unique item handler definition");
-            let item_route: String = conn
-                .prepare(
-                    "SELECT s.id FROM edge_occurrences e \
+                let item_handler = node_id_observation(&conn, "urls.py", "item_detail")
+                    .expect("unique item handler definition");
+                let item_route: String = conn
+                    .prepare(
+                        "SELECT s.id FROM edge_occurrences e \
                      JOIN nodes s ON s.node_hash=e.src_hash \
                      JOIN nodes d ON d.node_hash=e.dst_hash \
                      WHERE e.kind='handles' AND d.id=?1",
-                )
-                .unwrap()
-                .query_row([item_handler], |r| r.get(0))
-                .unwrap();
-            let item_target: String = conn
-                .prepare(
-                    "SELECT d.id FROM edge_occurrences e \
+                    )
+                    .unwrap()
+                    .query_row([item_handler], |r| r.get(0))
+                    .unwrap();
+                let item_target: String = conn
+                    .prepare(
+                        "SELECT d.id FROM edge_occurrences e \
                      JOIN nodes d ON d.node_hash=e.dst_hash \
                      JOIN path_dictionary p ON p.path_id=e.owner_id \
                      WHERE p.path='controls.html' AND e.kind='calls_endpoint' AND e.line=7",
-                )
-                .unwrap()
-                .query_row([], |r| r.get(0))
-                .unwrap();
-            assert_eq!(item_target, item_route);
+                    )
+                    .unwrap()
+                    .query_row([], |r| r.get(0))
+                    .unwrap();
+                assert_eq!(item_target, item_route);
 
-            for neg_line in [2, 3, 4, 5] {
-                let neg_edges: usize = conn
-                    .prepare(
-                        "SELECT count(*) FROM edge_occurrences e \
+                for neg_line in [2, 3, 4, 5] {
+                    let neg_edges: usize = conn
+                        .prepare(
+                            "SELECT count(*) FROM edge_occurrences e \
                          JOIN path_dictionary p ON p.path_id=e.owner_id \
                          WHERE p.path='controls.html' AND e.kind='calls_endpoint' AND e.line=?1",
-                    )
-                    .unwrap()
-                    .query_row([neg_line], |r| r.get(0))
-                    .unwrap();
-                assert_eq!(
-                    neg_edges, 0,
-                    "dynamic-to-fixed control line {neg_line} must emit 0 calls_endpoint edges"
-                );
+                        )
+                        .unwrap()
+                        .query_row([neg_line], |r| r.get(0))
+                        .unwrap();
+                    assert_eq!(
+                        neg_edges, 0,
+                        "dynamic-to-fixed control line {neg_line} must emit 0 calls_endpoint edges"
+                    );
 
-                let neg_status: String = conn
-                    .prepare(
-                        "SELECT DISTINCT c.status FROM resolution_coverage c \
+                    let neg_status: String = conn
+                        .prepare(
+                            "SELECT DISTINCT c.status FROM resolution_coverage c \
                          JOIN path_dictionary p ON p.path_id=c.path_id \
                          WHERE p.path='controls.html' AND c.line=?1",
+                        )
+                        .unwrap()
+                        .query_row([neg_line], |r| r.get(0))
+                        .unwrap();
+                    assert_eq!(
+                        neg_status, "unresolved",
+                        "dynamic-to-fixed control line {neg_line} must remain unresolved"
+                    );
+                }
+            } else {
+                let total_edges: usize = conn
+                    .query_row(
+                        "SELECT count(*) FROM edge_occurrences WHERE kind='calls_endpoint'",
+                        [],
+                        |r| r.get(0),
                     )
-                    .unwrap()
-                    .query_row([neg_line], |r| r.get(0))
                     .unwrap();
                 assert_eq!(
-                    neg_status, "unresolved",
-                    "dynamic-to-fixed control line {neg_line} must remain unresolved"
+                    total_edges, 0,
+                    "HTMX override should strip all calls_endpoint edges"
                 );
             }
-        } else {
-            let total_edges: usize = conn
-                .query_row(
-                    "SELECT count(*) FROM edge_occurrences WHERE kind='calls_endpoint'",
-                    [],
-                    |r| r.get(0),
-                )
-                .unwrap();
-            assert_eq!(total_edges, 0, "HTMX override should strip all calls_endpoint edges");
-        }
 
-        drop(conn);
-        assert_complete_cold(workspace);
-    };
+            drop(conn);
+            assert_complete_cold(workspace);
+        };
 
     workspace.build();
     check_state(&workspace, 1, true);
@@ -552,10 +585,13 @@ urlpatterns = [
     check_state(&workspace, 2, true);
 
     // HTMX framework pack override with replace=true and empty syntax rules
-    let htmx_pack_src = include_str!("../../../crates/forge-index/src/languages/manifests/htmx.toml");
+    let htmx_pack_src =
+        include_str!("../../../crates/forge-index/src/languages/manifests/htmx.toml");
     let override_path = ".forge/frameworks/htmx.toml";
     let mut pack: toml::Value = toml::from_str(htmx_pack_src).unwrap();
-    pack.as_table_mut().unwrap().insert("replace".into(), true.into());
+    pack.as_table_mut()
+        .unwrap()
+        .insert("replace".into(), true.into());
     pack["syntax_rules"] = toml::Value::Array(vec![]);
     workspace.write(override_path, &toml::to_string(&pack).unwrap());
     workspace.delta(&[override_path]);
@@ -599,7 +635,11 @@ def get_user(id: int): return id
         .collect::<rusqlite::Result<_>>()
         .unwrap();
 
-    assert_eq!(edges.len(), 2, "both endpoints must resolve through optimized pipeline");
+    assert_eq!(
+        edges.len(),
+        2,
+        "both endpoints must resolve through optimized pipeline"
+    );
     drop(conn);
     assert_complete_cold(&workspace);
 }

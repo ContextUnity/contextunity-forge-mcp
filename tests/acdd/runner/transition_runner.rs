@@ -44,9 +44,12 @@ fn transition_runner_compiles_proofs_and_covers_all_task3_subtasks() {
         "x".repeat(4096)
     );
     let mut profile_override = (*profile::compiled()).clone();
-    let test_output = profile_override.commands["rust-check-and-test"]
+    let mut test_output = profile_override.commands["rust-check-and-test"]
         .output()
         .cloned();
+    if let Some(ref mut spec) = test_output {
+        spec.seam_ref_pattern = Some(r"(?:--seam-ref\s+)(\S+)".into());
+    }
     profile_override.commands.insert(
         "task3-contract".into(),
         CommandDef::Detailed {
@@ -100,13 +103,17 @@ fn transition_runner_compiles_proofs_and_covers_all_task3_subtasks() {
     let ownership_db = root.root().join(".forge/tasks.sqlite");
     let mut foreign_store =
         TasksStore::open_project(&ownership_db, "forge-mcp", "another-project").unwrap();
-    let contract_execution = execute_command_gate(
-        root.root(),
-        task_id,
-        "tasks.contract",
-        &contract_commands,
-        &[],
-    );
+    let contract_execution =
+        contextunity_forge_mcp::engine::tasks::milestones::execute_command_gate_with_options(
+            root.root(),
+            task_id,
+            "tasks.contract",
+            &contract_commands,
+            &[],
+            None,
+            Some("tests/acdd/runner.rs::transition_runner_compiles_proofs_and_covers_all_task3_subtasks"),
+            None,
+        );
     let contract_run = latest_run(&store, root.root(), task_id, "tasks.contract");
     let red_entries = store
         .claim_bound_execution_traces(contract_run.run_id)
@@ -187,6 +194,7 @@ fn transition_runner_compiles_proofs_and_covers_all_task3_subtasks() {
                 < proof["green_execution_order"].as_i64().unwrap()
     });
     let mut mismatched_seam = green.clone();
+    mismatched_seam.trace.attempt_id = 9999;
     mismatched_seam.trace.command_str = mismatched_seam
         .trace
         .command_str

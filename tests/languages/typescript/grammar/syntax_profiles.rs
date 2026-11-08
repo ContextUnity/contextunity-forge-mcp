@@ -55,14 +55,18 @@ export const processUser = (u: User) => {
     let facts = ExtractorHarness::for_lang("typescript")
         .at_path("test.ts")
         .extract(source);
-    assert!(facts.nodes.iter().any(|n| n.kind == "class" && n.name == "UserService"));
-    assert!(facts.nodes.iter().any(|n| n.kind == "method" && n.name == "getUser"));
-    assert!(
-        facts
-            .nodes
-            .iter()
-            .any(|n| n.kind == "function" && n.name == "processUser")
-    );
+    assert!(facts
+        .nodes
+        .iter()
+        .any(|n| n.kind == "class" && n.name == "UserService"));
+    assert!(facts
+        .nodes
+        .iter()
+        .any(|n| n.kind == "method" && n.name == "getUser"));
+    assert!(facts
+        .nodes
+        .iter()
+        .any(|n| n.kind == "function" && n.name == "processUser"));
     let process_user = facts
         .nodes
         .iter()
@@ -88,14 +92,14 @@ fn typescript_tsx_parser_slot_reuses_cleanly_across_files() {
             "Second",
         ),
     ] {
-        let facts = ExtractorHarness::for_lang("typescript").at_path(path).extract(source);
+        let facts = ExtractorHarness::for_lang("typescript")
+            .at_path(path)
+            .extract(source);
         assert!(facts.errors.is_empty(), "{path}: {:?}", facts.errors);
-        assert!(
-            facts
-                .nodes
-                .iter()
-                .any(|node| node.name == expected_name && node.kind == "function")
-        );
+        assert!(facts
+            .nodes
+            .iter()
+            .any(|node| node.name == expected_name && node.kind == "function"));
     }
 }
 
@@ -138,7 +142,10 @@ fn typescript_lexical_this_nested_arrows() {
 }
 function outside() { const arrow = () => this.mark(); arrow(); }"#,
     );
-    w.write("other.ts", "class Counter { ready = true; missing = 1; mark() {} }");
+    w.write(
+        "other.ts",
+        "class Counter { ready = true; missing = 1; mark() {} }",
+    );
     w.write(
         "counter.js",
         "class Counter { ready = false; run() { const read = () => this.ready; read(); } }",
@@ -155,7 +162,10 @@ function outside() { const arrow = () => this.mark(); arrow(); }"#,
         ("counter.js", 1, "this.ready"),
     ] {
         let (st, ev) = persisted_coverage(&conn, path, Some(line), expression);
-        assert_eq!(st, "resolved", "{path}:{line} {expression} (evidence: {ev})");
+        assert_eq!(
+            st, "resolved",
+            "{path}:{line} {expression} (evidence: {ev})"
+        );
     }
     for (line, expression) in [
         (9, "this.ready"),
@@ -213,9 +223,14 @@ function outside() { const arrow = () => this.mark(); arrow(); }"#,
 #[cfg(feature = "lang-vue")]
 #[test]
 fn vue_profile_parser_reuse_tracks_the_selected_grammar() {
-    let profile = contextunity_forge_mcp::engine::languages::by_id("vue").expect("Vue profile is compiled");
+    let profile =
+        contextunity_forge_mcp::engine::languages::by_id("vue").expect("Vue profile is compiled");
     for (path, source, expected_name) in [
-        ("First.vue", "export function First() { return 1; }", "First"),
+        (
+            "First.vue",
+            "export function First() { return 1; }",
+            "First",
+        ),
         (
             "Second.tsx",
             "export function Second() { return <button />; }",
@@ -224,14 +239,14 @@ fn vue_profile_parser_reuse_tracks_the_selected_grammar() {
         ("Third.js", "export function Third() { return 1; }", "Third"),
     ] {
         let mut facts = contextunity_forge_mcp::core::models::Facts::default();
-        contextunity_forge_mcp::engine::languages::parse_file(profile, path, source, path, &mut facts)
-            .expect("Vue profile parse failed");
+        contextunity_forge_mcp::engine::languages::parse_file(
+            profile, path, source, path, &mut facts,
+        )
+        .expect("Vue profile parse failed");
         assert!(facts.errors.is_empty(), "{path}: {:?}", facts.errors);
-        assert!(
-            facts
-                .nodes
-                .iter()
-                .any(|node| node.name == expected_name && node.kind == "function")
-        );
+        assert!(facts
+            .nodes
+            .iter()
+            .any(|node| node.name == expected_name && node.kind == "function"));
     }
 }

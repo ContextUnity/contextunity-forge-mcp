@@ -215,13 +215,40 @@ impl TasksStore {
                         .and_then(|proof| proof.get("seam_test_ref"))
                         .and_then(serde_json::Value::as_str)
                         .context("TASK_EVIDENCE_INVALID: seam test reference required")?;
-                    validate_seam_reachability(
-                        index,
-                        id,
-                        worktree,
-                        &task.spec.scope,
-                        seam_test_ref,
-                    )?;
+                    let gate_path = format!("tasks.{stage}");
+                    let seam_already_verified = tx
+                        .query_row(
+                            "SELECT cep.payload
+                             FROM command_execution_proofs cep
+                             JOIN gate_execution_runs ger ON ger.id = cep.run_id
+                             WHERE ger.subject = ?1 AND ger.gate_path = ?2 AND ger.claim_revision = ?3
+                             ORDER BY ger.id DESC, cep.attempt_id DESC
+                             LIMIT 1",
+                            rusqlite::params![id, gate_path, task.claim_revision],
+                            |row| row.get::<_, String>(0),
+                        )
+                        .optional()
+                        .ok()
+                        .flatten()
+                        .and_then(|payload| {
+                            serde_json::from_str::<crate::store::CommandExecutionProof>(&payload)
+                                .ok()
+                        })
+                        .is_some_and(|proof| {
+                            proof.seam_verified
+                                && proof.seam_ref.as_deref() == Some(seam_test_ref.trim())
+                        });
+                    if seam_already_verified {
+                        validate_seam_file_and_symbol(id, worktree, seam_test_ref)?;
+                    } else {
+                        validate_seam_reachability(
+                            index,
+                            id,
+                            worktree,
+                            &task.spec.scope,
+                            seam_test_ref,
+                        )?;
+                    }
                 }
                 let captured_callers = if gate_def.proof.kind() == Some(ProofKind::Command) {
                     accepted_boundary_callers(&tx, id, &profile, gate_index)?

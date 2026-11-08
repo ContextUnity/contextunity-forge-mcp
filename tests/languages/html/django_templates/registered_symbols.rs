@@ -19,7 +19,10 @@ fn registered_django_template_symbols_use_loaded_project_library() {
         "other/templates/page.html",
         "{% load pricing %}\n{{ total|display_price }}\n",
     );
-    workspace.write("commerce/templates/unloaded.html", "{{ total|display_price }}\n");
+    workspace.write(
+        "commerce/templates/unloaded.html",
+        "{{ total|display_price }}\n",
+    );
     workspace.write(
         "isolated/pyproject.toml",
         "[project]\nname = 'isolated'\ndependencies = ['django>=5']\n",
@@ -37,7 +40,10 @@ fn registered_django_template_symbols_use_loaded_project_library() {
         "[project]\nname = 'ambiguous'\ndependencies = ['django>=5']\n",
     );
     for package in ["shop", "billing"] {
-        workspace.write(format!("ambiguous/{package}/templatetags/pricing.py"), library);
+        workspace.write(
+            format!("ambiguous/{package}/templatetags/pricing.py"),
+            library,
+        );
     }
     workspace.write(
         "ambiguous/templates/page.html",
@@ -149,7 +155,10 @@ fn registered_django_template_symbols_use_loaded_project_library() {
                     |row| row.get(0),
                 )
                 .unwrap();
-            assert!(target_count > 0, "{path}: {expression} has no edge to {provider}");
+            assert!(
+                target_count > 0,
+                "{path}: {expression} has no edge to {provider}"
+            );
         }
     }
     // Registry assignments and decorator libraries share the persisted template
@@ -176,7 +185,10 @@ activation = [{kind="package",name="jinja2"}]
 operation = {kind="named_binding",domain="local_filters",binding={kind="template_reference",symbol_kind="filter"}}
 "#;
         registry.write(".forge/frameworks/local-filters.toml", manifest);
-        registry.write("app/pyproject.toml", "[project]\nname='app'\ndependencies=['jinja2']\n");
+        registry.write(
+            "app/pyproject.toml",
+            "[project]\nname='app'\ndependencies=['jinja2']\n",
+        );
         registry.write("app/site/filters.py", "def json_script(value):\n    return value\ndef floatformat(value):\n    return value\ndef truncatechars(value):\n    return value\n");
         let provider = format!(
             "from jinja2 import Environment as Env\nfrom .filters import json_script, floatformat, truncatechars\ndef install(env: Env):\n    env.filters['{}'] = json_script\n    env.filters['{}'] = floatformat\n    env.filters['{}'] = truncatechars\n",
@@ -261,9 +273,11 @@ operation = {kind="named_binding",domain="local_filters",binding={kind="template
             );
         }
         let readback = |connection: &rusqlite::Connection, active: bool| {
-            for (index, key) in [keys[0], keys[0], keys[1], keys[2], keys[2], keys[2], keys[2]]
-                .iter()
-                .enumerate()
+            for (index, key) in [
+                keys[0], keys[0], keys[1], keys[2], keys[2], keys[2], keys[2],
+            ]
+            .iter()
+            .enumerate()
             {
                 let line = index as i64 + 1;
                 let expression = format!("template.filter.{key}");
@@ -311,7 +325,10 @@ operation = {kind="named_binding",domain="local_filters",binding={kind="template
                 };
                 let statuses: Vec<String> = connection.prepare("SELECT rc.status FROM resolution_coverage rc JOIN path_dictionary p ON p.path_id=rc.path_id JOIN coverage_expressions e ON e.expression_id=rc.expression_id WHERE p.path=?1 AND e.expression=?2").unwrap().query_map([path, &expression], |row| row.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
                 assert!(!statuses.is_empty(), "{path}");
-                assert!(statuses.iter().all(|status| status == expected), "{path}: {statuses:?}");
+                assert!(
+                    statuses.iter().all(|status| status == expected),
+                    "{path}: {statuses:?}"
+                );
             }
             let safe: String = connection.query_row("SELECT rc.status FROM resolution_coverage rc JOIN path_dictionary p ON p.path_id=rc.path_id JOIN coverage_expressions e ON e.expression_id=rc.expression_id WHERE p.path='app/site/templates/page.html' AND e.expression='template.filter.safe'", [], |row| row.get(0)).unwrap();
             assert_eq!(safe, "external");
@@ -337,7 +354,10 @@ operation = {kind="named_binding",domain="local_filters",binding={kind="template
         registry.write("app/site/jinja_env.py", &provider);
         registry.delta(&["app/site/jinja_env.py"]);
         readback(&registry.open(), true);
-        registry.write(".forge/frameworks/local-filters.toml", "enabled=true\nreplace=true\n");
+        registry.write(
+            ".forge/frameworks/local-filters.toml",
+            "enabled=true\nreplace=true\n",
+        );
         registry.delta(&[".forge/frameworks/local-filters.toml"]);
         readback(&registry.open(), false);
         assert_cold_observations(crate::languages::harness::cold_relations(&registry));

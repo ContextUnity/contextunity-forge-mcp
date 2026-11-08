@@ -17,7 +17,9 @@ fn configured_di_origins_follow_effective_rules_and_delta() {
     pack["semantic_rules"][0]["operation"]["kind"] = "call_to_symbol".into();
     let first = ".forge/frameworks/di-alpha.toml";
     let second = ".forge/frameworks/di-beta.toml";
-    let write = |path: &str, value: &serde_json::Value| workspace.write(path, &toml::to_string(value).unwrap());
+    let write = |path: &str, value: &serde_json::Value| {
+        workspace.write(path, &toml::to_string(value).unwrap())
+    };
     write(first, &pack);
     write(second, &pack);
     workspace.build();
@@ -25,7 +27,8 @@ fn configured_di_origins_follow_effective_rules_and_delta() {
         let observations = workspace.observe();
         let validity = &observations.validity();
         validity.assert_valid();
-        let endpoint_ids: Vec<_> = observations.nodes()
+        let endpoint_ids: Vec<_> = observations
+            .nodes()
             .iter()
             .filter(|node| node.path == "app.py" && node.name == "endpoint")
             .map(|node| node.id.as_str())
@@ -38,7 +41,9 @@ fn configured_di_origins_follow_effective_rules_and_delta() {
             .flat_map(|facts| &facts.references)
             .filter(|reference| reference.kind == "injects" && reference.source == endpoint)
             .map(|reference| match &reference.receiver_hint {
-                Some(contextunity_forge_mcp::core::models::ReceiverHint::ConfiguredReference { origin }) => {
+                Some(contextunity_forge_mcp::core::models::ReceiverHint::ConfiguredReference {
+                    origin,
+                }) => {
                     assert!(!origin.rule.is_empty());
                     origin.pack.as_str()
                 }
@@ -51,25 +56,32 @@ fn configured_di_origins_follow_effective_rules_and_delta() {
             "same-callee packs retain independent durable identity"
         );
         for (owner, expected) in [("endpoint", usize::from(active)), ("shadow", 0)] {
-            let edges = observations.edges()
+            let edges = observations
+                .edges()
                 .iter()
                 .filter(|edge| {
-                    edge.kind == "injects_dependency" && edge.source_name == owner && edge.target_name == "provider"
+                    edge.kind == "injects_dependency"
+                        && edge.source_name == owner
+                        && edge.target_name == "provider"
                 })
                 .count();
             assert_eq!(edges, expected, "DI lexical proof: {owner}");
         }
-        let helper_ids: Vec<_> = observations.nodes()
+        let helper_ids: Vec<_> = observations
+            .nodes()
             .iter()
             .filter(|node| node.path == "app.py" && node.name == "helper")
             .map(|node| node.id.as_str())
             .collect();
         assert_eq!(helper_ids.len(), 1, "unique ordinary helper definition");
         assert_eq!(
-            observations.edges()
+            observations
+                .edges()
                 .iter()
                 .filter(|edge| {
-                    edge.owner_path == "app.py" && edge.kind == "calls" && edge.target_id == helper_ids[0]
+                    edge.owner_path == "app.py"
+                        && edge.kind == "calls"
+                        && edge.target_id == helper_ids[0]
                 })
                 .count(),
             1,
@@ -98,11 +110,16 @@ fn configured_di_origins_follow_effective_rules_and_delta() {
         .collect();
     workspace.rename_file(first, renamed).unwrap();
     workspace.rename_file(second, renamed_second).unwrap();
-    let registry = contextunity_forge_mcp::engine::languages::dependency_registry::DependencyRegistry::collect(Some(
-        workspace.root(),
-    ));
-    let replay =
-        contextunity_forge_mcp::engine::linker::link_with_registry(&stale, None, Some(workspace.root()), &registry);
+    let registry =
+        contextunity_forge_mcp::engine::languages::dependency_registry::DependencyRegistry::collect(
+            Some(workspace.root()),
+        );
+    let replay = contextunity_forge_mcp::engine::linker::link_with_registry(
+        &stale,
+        None,
+        Some(workspace.root()),
+        &registry,
+    );
     assert!(
         !replay
             .edges
@@ -129,7 +146,8 @@ fn configured_di_origins_follow_effective_rules_and_delta() {
     workspace.write("app.py", &source("Select"));
     workspace.delta(&[renamed, "app.py"]);
     assert_state(&["di-renamed"], true);
-    pack["semantic_rules"][0]["activation"] = serde_json::json!([{"kind":"package","name":"missing-runtime"}]);
+    pack["semantic_rules"][0]["activation"] =
+        serde_json::json!([{"kind":"package","name":"missing-runtime"}]);
     write(renamed, &pack);
     workspace.delta(&[renamed]);
     assert_state(&["di-renamed"], false);

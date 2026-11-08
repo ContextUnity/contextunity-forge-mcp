@@ -305,7 +305,8 @@ fn concurrent_mcp_next_persists_exactly_one_claim() {
                     let barrier = &barrier;
                     let call = &call;
                     scope.spawn(move || {
-                        let mut client = McpTestHarness::new(workspace).expect("MCP new should succeed");
+                        let mut client =
+                            McpTestHarness::new(workspace).expect("MCP new should succeed");
                         barrier.wait();
                         let result = call(
                             &mut client,

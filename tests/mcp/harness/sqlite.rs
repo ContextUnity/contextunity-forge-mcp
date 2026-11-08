@@ -109,16 +109,13 @@ pub fn claim_session_fingerprint(
     task_id: &str,
     revision: u64,
 ) -> anyhow::Result<String> {
-    let store =
-        contextunity_forge_mcp::engine::tasks::store_for_task(workspace.root(), task_id)?;
+    let store = contextunity_forge_mcp::engine::tasks::store_for_task(workspace.root(), task_id)?;
     Ok(store.connection.query_row(
         "SELECT session_fingerprint FROM task_claims WHERE task_id=?1 AND revision=?2",
         rusqlite::params![task_id, revision],
         |row| row.get(0),
     )?)
 }
-
-
 
 pub fn manifest_digest_at(database: &Path) -> rusqlite::Result<String> {
     let connection = Connection::open(database)?;

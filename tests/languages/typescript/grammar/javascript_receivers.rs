@@ -36,7 +36,11 @@ fn javascript_stable_lexical_receiver_reaches_nested_callback() {
         );
         let targets: Vec<_> = graph.call_targets("receiver.run");
         if status == "resolved" {
-            assert_eq!(targets.len(), 1, "{path}: callback must call one local method");
+            assert_eq!(
+                targets.len(),
+                1,
+                "{path}: callback must call one local method"
+            );
             assert_eq!(targets[0].name, "run");
             assert_eq!(targets[0].path, path);
         } else {
@@ -78,7 +82,10 @@ function use() { const service = new Service(); service.run(); new Service().run
 
     let unknown = "class Service { finish() {} }\nfunction Other() {}\nOther.prototype.run = function() {}\nfunction use() { const service = new Service(); service.run(); }";
     let graph = linked("unknown.js", "javascript", unknown);
-    assert!(graph.statuses("service.run").contains(&"unresolved"), "{graph:#?}");
+    assert!(
+        graph.statuses("service.run").contains(&"unresolved"),
+        "{graph:#?}"
+    );
 
     for source in [
         "Service.prototype.run = function() {}; class Service {} const service = new Service(); service.run();",
@@ -99,7 +106,10 @@ function use() { const receiver = new Legacy(); receiver.run(); }
     let graph = linked("legacy.js", "javascript", legacy);
     for expression in ["receiver.run", "this.finish"] {
         assert!(
-            graph.call_targets(expression).iter().any(|node| node.kind == "method"),
+            graph
+                .call_targets(expression)
+                .iter()
+                .any(|node| node.kind == "method"),
             "{expression}: {graph:#?}"
         );
     }
@@ -138,7 +148,9 @@ fn javascript_prototype_identifier_rhs_requires_a_unique_stable_function() {
         .unwrap();
     assert!(
         graph.edges.iter().any(|edge| {
-            edge.kind == "calls" && edge.evidence == "new Service().run" && edge.dst == implementation.id
+            edge.kind == "calls"
+                && edge.evidence == "new Service().run"
+                && edge.dst == implementation.id
         }),
         "prototype assignment must reach its exact lexical function: {graph:#?}"
     );
@@ -174,7 +186,8 @@ fn javascript_prototype_arrow_rhs_is_callable_without_inheriting_receiver_this()
 
 #[test]
 fn javascript_prototype_call_requires_method_assignment_before_use() {
-    let source = "function Service() {} new Service().run(); Service.prototype.run = function() {};";
+    let source =
+        "function Service() {} new Service().run(); Service.prototype.run = function() {};";
     let graph = linked("early.js", "javascript", source);
     assert!(
         graph.statuses("new Service().run").contains(&"unresolved"),
@@ -219,10 +232,12 @@ function branch(flag) { if (flag) return { count: 0 }; return { count: 1, inc() 
             edge.line == 4
                 && edge.kind == "mutates"
                 && edge.evidence == "this.count"
-                && facts
-                    .nodes
-                    .iter()
-                    .any(|node| node.id == edge.dst && node.kind == "field" && node.name == "count" && node.line == 3)
+                && facts.nodes.iter().any(|node| {
+                    node.id == edge.dst
+                        && node.kind == "field"
+                        && node.name == "count"
+                        && node.line == 3
+                })
         }),
         "missing exact returned-object field edge: {graph:#?}"
     );
@@ -302,7 +317,10 @@ function shadow(Object) {
         "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='state.js' AND e.line=7 AND e.kind='calls' AND (SELECT evidence FROM coverage_evidence WHERE evidence_id=e.evidence_id)='state.get' AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)='state.js' AND dst.kind='function' AND dst.name='get' AND dst.line=3",
         [],
     );
-    assert_eq!(edge_count, 1, "frozen factory member must retain its indexed provider");
+    assert_eq!(
+        edge_count, 1,
+        "frozen factory member must retain its indexed provider"
+    );
     assert_eq!(
         persisted_coverage(&conn, "state.js", Some(7), "state.get").0,
         "resolved"
@@ -343,10 +361,9 @@ fn object_destructuring_of_declared_function_returns_preserves_member_types() {
         );
     }
     assert!(
-        graph
-            .coverage
-            .iter()
-            .any(|row| row.path == "consumer.ts" && row.expression == "missing.work" && row.status == "unresolved"),
+        graph.coverage.iter().any(|row| row.path == "consumer.ts"
+            && row.expression == "missing.work"
+            && row.status == "unresolved"),
         "{graph:#?}"
     );
 
@@ -371,8 +388,14 @@ fn object_destructuring_of_declared_function_returns_preserves_member_types() {
     );
 
     for (path, import_clause) in [
-        ("type-statement.ts", "import type { make } from './provider';"),
-        ("type-specifier.ts", "import { type make } from './provider';"),
+        (
+            "type-statement.ts",
+            "import type { make } from './provider';",
+        ),
+        (
+            "type-specifier.ts",
+            "import { type make } from './provider';",
+        ),
     ] {
         let consumer = format!("{import_clause}\nconst {{ first }} = make(); first.work();");
         let (_, graph) = linked_files(&[("provider.ts", provider), (path, consumer.as_str())]);
@@ -387,10 +410,9 @@ fn object_destructuring_of_declared_function_returns_preserves_member_types() {
                 "{path}: {expression}: {graph:#?}"
             );
             assert!(
-                !graph
-                    .edges
-                    .iter()
-                    .any(|edge| edge.path == path && edge.kind == "calls" && edge.evidence == expression),
+                !graph.edges.iter().any(|edge| edge.path == path
+                    && edge.kind == "calls"
+                    && edge.evidence == expression),
                 "{path}: {expression}: {graph:#?}"
             );
         }

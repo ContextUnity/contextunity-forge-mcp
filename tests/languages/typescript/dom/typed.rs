@@ -2,7 +2,8 @@ use super::*;
 
 const TYPED: &str = "function run(root: Element, event: Event, doc: Document) { root.querySelectorAll('.item'); event.stopPropagation(); doc.querySelectorAll('.item'); root.unknownMember(); doc.closest('.item'); }";
 
-const UNTYPED: &str = "function run(root, event) { root.querySelectorAll('.item'); event.stopPropagation(); }";
+const UNTYPED: &str =
+    "function run(root, event) { root.querySelectorAll('.item'); event.stopPropagation(); }";
 
 const LOCAL: &str = "class Element { querySelectorAll() {} } function run(root: Element) { root.querySelectorAll(); }";
 
@@ -37,7 +38,11 @@ fn typed_receiver_members_require_verified_dom_types() {
     let graph = linked("dom.ts", "typescript", source);
     let facts = &graph.facts;
     assert!(facts.errors.is_empty(), "{:?}", facts.errors);
-    for expression in ["root.querySelectorAll", "event.stopPropagation", "doc.querySelectorAll"] {
+    for expression in [
+        "root.querySelectorAll",
+        "event.stopPropagation",
+        "doc.querySelectorAll",
+    ] {
         let coverage = observation(&graph, expression);
         assert_eq!(coverage.status, "external", "{expression}: {coverage:#?}");
         assert!(
@@ -76,10 +81,9 @@ fn local_element_classes_keep_their_exact_method_provider() {
         graph.edges.iter().any(|edge| {
             edge.kind == "calls"
                 && edge.evidence == "root.querySelectorAll"
-                && facts
-                    .nodes
-                    .iter()
-                    .any(|node| node.id == edge.dst && node.kind == "method" && node.name == "querySelectorAll")
+                && facts.nodes.iter().any(|node| {
+                    node.id == edge.dst && node.kind == "method" && node.name == "querySelectorAll"
+                })
         }),
         "local Element method call must retain its indexed provider: {graph:#?}"
     );
@@ -88,15 +92,26 @@ fn local_element_classes_keep_their_exact_method_provider() {
 #[test]
 fn typed_untyped_and_local_receiver_statuses_survive_persistence() {
     let workspace = crate::languages::PersistedWorkspaceHarness::new();
-    for (path, source) in [("dom.ts", TYPED), ("untyped.ts", UNTYPED), ("local.ts", LOCAL)] {
+    for (path, source) in [
+        ("dom.ts", TYPED),
+        ("untyped.ts", UNTYPED),
+        ("local.ts", LOCAL),
+    ] {
         workspace.write(path, source);
     }
     workspace.build();
     let conn = workspace.open();
-    for expression in ["root.querySelectorAll", "event.stopPropagation", "doc.querySelectorAll"] {
+    for expression in [
+        "root.querySelectorAll",
+        "event.stopPropagation",
+        "doc.querySelectorAll",
+    ] {
         let row = persisted_coverage(&conn, "dom.ts", None, expression);
         assert_eq!(row.0, "external", "persisted {expression}: {row:?}");
-        assert!(row.1.contains("builtin:web_api"), "persisted {expression}: {row:?}");
+        assert!(
+            row.1.contains("builtin:web_api"),
+            "persisted {expression}: {row:?}"
+        );
     }
     for (path, expression) in [
         ("dom.ts", "root.unknownMember"),
@@ -105,10 +120,16 @@ fn typed_untyped_and_local_receiver_statuses_survive_persistence() {
         ("untyped.ts", "event.stopPropagation"),
     ] {
         let row = persisted_coverage(&conn, path, None, expression);
-        assert_eq!(row.0, "unresolved", "persisted {path}:{expression}: {row:?}");
+        assert_eq!(
+            row.0, "unresolved",
+            "persisted {path}:{expression}: {row:?}"
+        );
     }
     let local = persisted_coverage(&conn, "local.ts", None, "root.querySelectorAll");
-    assert_eq!(local.0, "resolved", "persisted local Element method: {local:?}");
+    assert_eq!(
+        local.0, "resolved",
+        "persisted local Element method: {local:?}"
+    );
     drop(conn);
 }
 
@@ -127,7 +148,10 @@ fn nested_members_and_optional_access_follow_proven_types() {
     ] {
         let row = observation(&graph, expression);
         assert_eq!(row.status, "external", "{expression}: {row:#?}");
-        assert!(row.evidence.contains("builtin:web_api"), "{expression}: {row:#?}");
+        assert!(
+            row.evidence.contains("builtin:web_api"),
+            "{expression}: {row:#?}"
+        );
     }
     for expression in [
         "element.parentElement?.invented",
@@ -153,7 +177,10 @@ fn nested_member_status_and_evidence_survive_persistence() {
     ] {
         let row = persisted_coverage(&conn, "nested.ts", None, expression);
         assert_eq!(row.0, "external", "persisted {expression}: {row:?}");
-        assert!(row.1.contains("builtin:web_api"), "persisted {expression}: {row:?}");
+        assert!(
+            row.1.contains("builtin:web_api"),
+            "persisted {expression}: {row:?}"
+        );
     }
     for expression in [
         "element.parentElement?.invented",

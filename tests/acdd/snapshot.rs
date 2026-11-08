@@ -1,7 +1,7 @@
-use crate::common::Workspace;
 pub(crate) use crate::acdd::support::{
     snapshot_git_bytes as git_bytes, snapshot_git_command, NamedSnapshotHarness,
 };
+use crate::common::Workspace;
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::OsString,

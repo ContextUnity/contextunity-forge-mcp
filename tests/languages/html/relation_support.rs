@@ -1,5 +1,5 @@
 use super::*;
-pub(super) use rusqlite::{Connection, params};
+pub(super) use rusqlite::{params, Connection};
 use std::fmt::Debug;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -47,15 +47,18 @@ pub(super) struct HtmlWorkspaceObservations {
 
 impl HtmlWorkspaceObservations {
     pub(super) fn validity(&self) -> &ValidityObservations {
-        self.validity.get_or_init(|| validity_observations(&self.connection))
+        self.validity
+            .get_or_init(|| validity_observations(&self.connection))
     }
 
     pub(super) fn edges(&self) -> &[HtmlEdgeObservation] {
-        self.edges.get_or_init(|| html_edge_observations(&self.connection))
+        self.edges
+            .get_or_init(|| html_edge_observations(&self.connection))
     }
 
     pub(super) fn nodes(&self) -> &[HtmlNodeObservation] {
-        self.nodes.get_or_init(|| html_node_observations(&self.connection))
+        self.nodes
+            .get_or_init(|| html_node_observations(&self.connection))
     }
 
     pub(super) fn coverage(&self) -> &[HtmlCoverageObservation] {
@@ -64,7 +67,8 @@ impl HtmlWorkspaceObservations {
     }
 
     pub(super) fn persisted_facts(&self) -> &[contextunity_forge_mcp::core::models::Facts] {
-        self.persisted_facts.get_or_init(|| persisted_facts(&self.connection))
+        self.persisted_facts
+            .get_or_init(|| persisted_facts(&self.connection))
     }
 }
 
@@ -112,7 +116,11 @@ impl HtmlWorkspaceHarness {
         self.workspace.try_remove(path)
     }
 
-    pub(super) fn rename_file(&self, from: impl AsRef<Path>, to: impl AsRef<Path>) -> std::io::Result<()> {
+    pub(super) fn rename_file(
+        &self,
+        from: impl AsRef<Path>,
+        to: impl AsRef<Path>,
+    ) -> std::io::Result<()> {
         std::fs::rename(self.workspace.path(from), self.workspace.path(to))
     }
 
@@ -246,7 +254,9 @@ pub(super) struct HtmlFileEdgeObservations {
     pub(super) edges: Vec<(String, String, usize)>,
 }
 
-pub(super) fn complete_cold(workspace: &PersistedWorkspaceHarness) -> crate::languages::support::ColdObservations<CompleteRows> {
+pub(super) fn complete_cold(
+    workspace: &PersistedWorkspaceHarness,
+) -> crate::languages::support::ColdObservations<CompleteRows> {
     workspace.cold_observations(|connection| {
         let rows = |sql| crate::languages::harness::query_strings(connection, sql, []);
         CompleteRows {
@@ -267,13 +277,18 @@ pub(super) fn assert_complete_cold(workspace: &PersistedWorkspaceHarness) {
     assert_cold_observations(complete_cold(workspace));
 }
 
-pub(super) fn assert_cold_observations<T: Debug + PartialEq>(parity: crate::languages::support::ColdObservations<T>) {
+pub(super) fn assert_cold_observations<T: Debug + PartialEq>(
+    parity: crate::languages::support::ColdObservations<T>,
+) {
     assert_eq!(parity.incremental_verification, Ok(()));
     assert_eq!(parity.cold_verification, Ok(()));
     assert_eq!(parity.incremental, parity.cold);
 }
 
-pub(super) fn file_edge_observations(workspace: &PersistedWorkspaceHarness, path: &str) -> HtmlFileEdgeObservations {
+pub(super) fn file_edge_observations(
+    workspace: &PersistedWorkspaceHarness,
+    path: &str,
+) -> HtmlFileEdgeObservations {
     let conn = workspace.open();
     HtmlFileEdgeObservations {
         validity: validity_observations(&conn),
@@ -293,7 +308,11 @@ pub(super) fn node_ids_observation(conn: &Connection, path: &str, name: &str) ->
     rows
 }
 
-pub(super) fn node_id_observation(conn: &Connection, path: &str, name: &str) -> Result<String, Vec<String>> {
+pub(super) fn node_id_observation(
+    conn: &Connection,
+    path: &str,
+    name: &str,
+) -> Result<String, Vec<String>> {
     let rows = node_ids_observation(conn, path, name);
     match rows.as_slice() {
         [id] => Ok(id.clone()),
@@ -301,7 +320,11 @@ pub(super) fn node_id_observation(conn: &Connection, path: &str, name: &str) -> 
     }
 }
 
-pub(super) fn edge_occurrence_rows(conn: &Connection, source_path: &str, kind: &str) -> Vec<(String, String, usize)> {
+pub(super) fn edge_occurrence_rows(
+    conn: &Connection,
+    source_path: &str,
+    kind: &str,
+) -> Vec<(String, String, usize)> {
     conn.prepare("SELECT s.id,d.id,o.line FROM edge_occurrences o JOIN path_dictionary p ON p.path_id=o.owner_id JOIN nodes s ON s.node_hash=o.src_hash JOIN nodes d ON d.node_hash=o.dst_hash WHERE p.path=?1 AND o.kind=?2 ORDER BY o.line")
         .unwrap()
         .query_map(params![source_path, kind], |row| {
@@ -312,7 +335,9 @@ pub(super) fn edge_occurrence_rows(conn: &Connection, source_path: &str, kind: &
         .unwrap()
 }
 
-pub(super) fn persisted_facts(conn: &Connection) -> Vec<contextunity_forge_mcp::core::models::Facts> {
+pub(super) fn persisted_facts(
+    conn: &Connection,
+) -> Vec<contextunity_forge_mcp::core::models::Facts> {
     let blobs: Vec<Vec<u8>> = conn
         .prepare("SELECT facts_blob FROM local_facts ORDER BY path")
         .unwrap()
@@ -345,6 +370,8 @@ pub(super) fn validity_observations(conn: &Connection) -> ValidityObservations {
         .unwrap();
     ValidityObservations {
         errors,
-        commitment_verification: commitments::verify(conn).map(|_| ()).map_err(|error| error.to_string()),
+        commitment_verification: commitments::verify(conn)
+            .map(|_| ())
+            .map_err(|error| error.to_string()),
     }
 }

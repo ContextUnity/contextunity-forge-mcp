@@ -21,16 +21,17 @@ fn django_cbv_attributes_link_only_unique_templates_and_models() {
     let conn = workspace.build_and_open();
     let validity = validity_observations(&conn);
     validity.assert_valid();
-    let product_view =
-        node_id_observation(&conn, "app/views.py", "ProductView").expect("unique ProductView definition");
-    let missing_model_view =
-        node_id_observation(&conn, "app/views.py", "MissingModelView").expect("unique MissingModelView definition");
-    let duplicate_template_view = node_id_observation(&conn, "app/views.py", "DuplicateTemplateView")
-        .expect("unique DuplicateTemplateView definition");
-    let duplicate_model_view =
-        node_id_observation(&conn, "app/views.py", "DuplicateModelView").expect("unique DuplicateModelView definition");
-    let product_model =
-        node_id_observation(&conn, "app/models.py", "Product").expect("unique Product model definition");
+    let product_view = node_id_observation(&conn, "app/views.py", "ProductView")
+        .expect("unique ProductView definition");
+    let missing_model_view = node_id_observation(&conn, "app/views.py", "MissingModelView")
+        .expect("unique MissingModelView definition");
+    let duplicate_template_view =
+        node_id_observation(&conn, "app/views.py", "DuplicateTemplateView")
+            .expect("unique DuplicateTemplateView definition");
+    let duplicate_model_view = node_id_observation(&conn, "app/views.py", "DuplicateModelView")
+        .expect("unique DuplicateModelView definition");
+    let product_model = node_id_observation(&conn, "app/models.py", "Product")
+        .expect("unique Product model definition");
     let route_observations = html_coverage_observations(&conn);
 
     assert_eq!(
@@ -75,7 +76,9 @@ fn django_cbv_attributes_link_only_unique_templates_and_models() {
         let actual: Vec<_> = route_observations
             .iter()
             .filter(|coverage| {
-                coverage.path == "app/views.py" && coverage.line == line && coverage.expression == expression
+                coverage.path == "app/views.py"
+                    && coverage.line == line
+                    && coverage.expression == expression
             })
             .map(|coverage| coverage.status.as_str())
             .collect();
@@ -85,7 +88,9 @@ fn django_cbv_attributes_link_only_unique_templates_and_models() {
         let statuses: Vec<_> = route_observations
             .iter()
             .filter(|coverage| {
-                coverage.path == "app/views.py" && coverage.line == line && coverage.expression == expression
+                coverage.path == "app/views.py"
+                    && coverage.line == line
+                    && coverage.expression == expression
             })
             .map(|coverage| coverage.status.as_str())
             .collect();

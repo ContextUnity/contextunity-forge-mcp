@@ -239,5 +239,4 @@ impl TaskHarness {
         anyhow::ensure!(changed == 1, "TASK_NOT_FOUND: {}", self.id);
         Ok(())
     }
-
 }

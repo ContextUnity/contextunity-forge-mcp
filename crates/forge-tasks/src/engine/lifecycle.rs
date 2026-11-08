@@ -420,8 +420,16 @@ fn selector_invalid_fields(p: &Manage) -> Vec<&'static str> {
             fields.push(field);
         }
     };
-    if p.action != ManageAction::Verify && p.timeout_seconds.is_some() {
-        invalid("timeout_seconds");
+    if p.action != ManageAction::Verify {
+        if p.timeout_seconds.is_some() {
+            invalid("timeout_seconds");
+        }
+        if p.test.is_some() {
+            invalid("test");
+        }
+        if p.seam.is_some() {
+            invalid("seam");
+        }
     }
     if p.action != ManageAction::Next {
         if p.worker_id.is_some() {
@@ -708,9 +716,13 @@ fn manage_inner(root: &Path, p: &mut Manage) -> Result<Value> {
     let milestone = p.milestone_ref.as_deref();
     let mut store = workspace.open(&registry.database)?;
     match p.action {
-        ManageAction::Verify => {
-            super::verify_task(root, id.context("task_id required")?, p.timeout_seconds)
-        }
+        ManageAction::Verify => super::verify_task_with_options(
+            root,
+            id.context("task_id required")?,
+            p.test.as_deref(),
+            p.seam.as_deref(),
+            p.timeout_seconds,
+        ),
         ManageAction::Next => {
             store.lock_checkpoint()?;
             let worker = p.worker_id.as_deref().context("worker_id required")?;

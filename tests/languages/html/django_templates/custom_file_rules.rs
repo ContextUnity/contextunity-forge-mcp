@@ -78,7 +78,8 @@ fn custom_file_rules() {
         assert_edges("app/views.py", None);
 
         pack["semantic_rules"][0]["operation"]["target"]["prefix"] = "views/".into();
-        pack["semantic_rules"][0]["activation"] = serde_json::json!([{"kind":"package","name":"workshop"}]);
+        pack["semantic_rules"][0]["activation"] =
+            serde_json::json!([{"kind":"package","name":"workshop"}]);
         write_pack(&pack);
         workspace.delta(&[&path]);
         assert_edges("app/views.py", None);
@@ -92,7 +93,8 @@ fn custom_file_rules() {
         let mut independent = pack.clone();
         independent["semantic_rules"][0]["id"] = "independent".into();
         independent["semantic_rules"][0]["namespace"] = "independent".into();
-        independent["semantic_rules"][0]["operation"]["callee"]["module"] = "independent.renderer".into();
+        independent["semantic_rules"][0]["operation"]["callee"]["module"] =
+            "independent.renderer".into();
         workspace.write(
             ".forge/frameworks/another.toml",
             &toml::to_string(&independent).unwrap(),
@@ -120,7 +122,10 @@ fn custom_file_rules() {
         conflicting["id"] = "conflicting-file".into();
         conflicting["namespace"] = "other".into();
         conflicting["operation"]["target"]["prefix"] = "other/".into();
-        pack["semantic_rules"].as_array_mut().unwrap().push(conflicting);
+        pack["semantic_rules"]
+            .as_array_mut()
+            .unwrap()
+            .push(conflicting);
         workspace.write("app/other/catalog/card.html", "<p>Other</p>\n");
         write_pack(&pack);
         workspace.delta(&[&path, "app/other/catalog/card.html"]);
@@ -130,7 +135,8 @@ fn custom_file_rules() {
             .coverage()
             .iter()
             .filter(|coverage| {
-                coverage.path == "app/views.py" && coverage.expression == "paint('catalog/card.html', request)"
+                coverage.path == "app/views.py"
+                    && coverage.expression == "paint('catalog/card.html', request)"
             })
             .map(|coverage| coverage.status.clone())
             .collect();
@@ -161,7 +167,10 @@ fn custom_file_rules() {
         assert_edges("app/views.py", Some(TARGET));
 
         // The canonical resolver must reject a same-spelling local module.
-        workspace.write("workshop/renderer.py", "def emit(path, request): return path\n");
+        workspace.write(
+            "workshop/renderer.py",
+            "def emit(path, request): return path\n",
+        );
         workspace.delta(&["workshop/renderer.py"]);
         workspace.assert_cold_parity();
         assert_edges("app/views.py", None);

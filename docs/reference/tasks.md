@@ -504,7 +504,13 @@ Zero runtime backward compatibility applies strictly to SQLite runtime storage a
 
 Run `task verify TASK_ID` or MCP `task_manage(action: "verify", task_id: "TASK_ID")`
 to execute the current claimed gate's registered command without advancing its
-stage. The result includes compiled evidence and command diagnostics. A later
+stage. Pass optional `--test <file.rs::test_fn>` (or MCP `test: "..."`) to execute
+only that test target; the engine resolves the command plan and `scope_args_by_pattern`
+for the test path, appends the test symbol, and persists the seam reference into durable
+execution proof. Pass optional `--seam <target>` (or MCP `seam: "..."`, requiring `--test`)
+to validate CodeMap call-graph reachability to the seam target; when omitted, the test function's
+existence is validated without requiring a static reachability edge into production scope.
+The result includes compiled evidence and command diagnostics. A later
 submission reuses fresh proof for the same claim and candidate; changes invalidate
 the cached proof. Gates without a configured registered command fail closed.
 Global `scope_args_by_pattern` applies to legacy string commands, detailed

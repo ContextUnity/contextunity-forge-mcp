@@ -426,7 +426,6 @@ fn entrypoint_overview_and_unwired_queries_preserve_provenance_across_interfaces
     let with_tests = overview_for(&["entrypoints_with_tests"]);
     let combined = overview_for(&["entrypoints", "entrypoints_with_tests"]);
     assert_eq!(combined["entrypoints"], with_tests["entrypoints"]);
-    drop(overview_for);
     let test_items = crate::json_array(&with_tests["entrypoints"]["items"]);
     assert!(
         test_items
@@ -564,7 +563,6 @@ fn entrypoint_overview_and_unwired_queries_preserve_provenance_across_interfaces
             "{overview}"
         );
     }
-    drop(inspect_node);
     let generation = overview["entrypoints"]["generation"].as_str().unwrap();
     let mut read_pages = |aspect: &str, generation: &str| {
         let mut items = Vec::new();
@@ -597,7 +595,6 @@ fn entrypoint_overview_and_unwired_queries_preserve_provenance_across_interfaces
     assert_eq!(cli["entrypoints"], overview["entrypoints"]);
     let generation = with_tests["entrypoints"]["generation"].as_str().unwrap();
     let paged_tests = read_pages("entrypoints_with_tests", generation);
-    drop(read_pages);
     assert_eq!(&paged_tests, test_items);
     let cli = cli_overview("entrypoints_with_tests");
     assert_eq!(cli["entrypoints"], with_tests["entrypoints"]);
@@ -627,7 +624,6 @@ fn entrypoint_overview_and_unwired_queries_preserve_provenance_across_interfaces
         .expect("CLI should succeed");
     assert_eq!(cli_unwired["nodes"], unwired["nodes"]);
     assert_eq!(cli_unwired["summary"], unwired["summary"]);
-    drop(call_tool);
     roots_client
         .finish()
         .expect("server must finish successfully");

@@ -150,7 +150,6 @@ commands:
       require_counts: true
       noise: ['^\s*(Compiling|Downloading|Finished|Checking)\b', '^✔']
       errors: ['^error(\[E\d+\])?:', 'panicked at', '^FAIL ']
-      seam_ref_pattern: '(?:--seam-ref\s+)(\S+)'
       tests:
         target: '(?m)(?:^\s*Running\s+(?:unittests\s+)?|"kind":\s*\[[^\]]*"test"[^\]]*\].*?"src_path":\s*"|--test\s+)([^\s"\\)]+)'
         passed: '(?m)^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+ok\b'

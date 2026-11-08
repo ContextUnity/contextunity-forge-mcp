@@ -97,7 +97,15 @@ pub(super) fn compile_evidence_for_task(
             Some(ProofKind::Contract | ProofKind::Command | ProofKind::SeamTest)
         )
     {
-        validate_execution_plan(&worktree_path, task, gate, &profile, &traces)?;
+        validate_execution_plan(
+            &worktree_path,
+            task,
+            gate,
+            &profile,
+            store,
+            run.run_id,
+            &traces,
+        )?;
     }
     let proof = match gate.proof.kind() {
         Some(ProofKind::Contract) => contract_proof(
@@ -195,6 +203,18 @@ fn ensure_command_evidence(
     task_id: &str,
     timeout_seconds: Option<u64>,
 ) -> Result<Value> {
+    ensure_command_evidence_with_options(root, task_id, None, None, timeout_seconds)
+}
+
+fn ensure_command_evidence_with_options(
+    root: &Path,
+    task_id: &str,
+    explicit_test: Option<&str>,
+    explicit_seam: Option<&str>,
+    timeout_seconds: Option<u64>,
+) -> Result<Value> {
+    let explicit_test = explicit_test.map(str::trim).filter(|s| !s.is_empty());
+    let explicit_seam = explicit_seam.map(str::trim).filter(|s| !s.is_empty());
     let store = store_for_task(root, task_id)?;
     let task = store.inspect(task_id)?;
     if task.status != "in_progress" {
@@ -224,8 +244,10 @@ fn ensure_command_evidence(
         .commands
         .get(name)
         .context("TASK_COMMAND_UNCONFIGURED: gate command is not registered")?;
-    if let Ok(evidence) = compile_evidence_envelope(root, task_id, &task.stage) {
-        return Ok(evidence);
+    if explicit_test.is_none() && explicit_seam.is_none() {
+        if let Ok(evidence) = compile_evidence_envelope(root, task_id, &task.stage) {
+            return Ok(evidence);
+        }
     }
     let paths = task
         .spec
@@ -239,44 +261,56 @@ fn ensure_command_evidence(
         .as_deref()
         .context("TASK_STALE_CLAIM: claimed worktree is missing")?;
     let worktree_path = Path::new(worktree).canonicalize()?;
-    let previous = store.latest_claim_bound_execution_run(
-        task_id,
-        &format!("tasks.{}", cursor.canonical_stage_id),
-        task.claim_revision,
-        task.contract_revision,
-        task.worker_id.as_deref().unwrap_or_default(),
-        &worktree_path.to_string_lossy(),
-    )?;
-    if let Some(previous) = previous.filter(|run| run.status == "completed") {
-        let traces = store.claim_bound_execution_traces(previous.run_id)?;
-        if previous.candidate_fingerprint == candidate_fingerprint(&worktree_path)?
-            && !traces.is_empty()
-            && validate_execution_plan(&worktree_path, &task, &cursor.gate, &profile, &traces)
+    if explicit_test.is_none() && explicit_seam.is_none() {
+        let previous = store.latest_claim_bound_execution_run(
+            task_id,
+            &format!("tasks.{}", cursor.canonical_stage_id),
+            task.claim_revision,
+            task.contract_revision,
+            task.worker_id.as_deref().unwrap_or_default(),
+            &worktree_path.to_string_lossy(),
+        )?;
+        if let Some(previous) = previous.filter(|run| run.status == "completed") {
+            let traces = store.claim_bound_execution_traces(previous.run_id)?;
+            if previous.candidate_fingerprint == candidate_fingerprint(&worktree_path)?
+                && !traces.is_empty()
+                && validate_execution_plan(
+                    &worktree_path,
+                    &task,
+                    &cursor.gate,
+                    &profile,
+                    &store,
+                    previous.run_id,
+                    &traces,
+                )
                 .is_ok()
-            && traces.iter().all(|entry| {
-                entry.trace.status == "completed"
-                    && verify_command_identity(name, command, &entry.trace, &profile).is_ok()
-                    && store
-                        .execution_proof(
-                            previous.run_id,
-                            &entry.trace.command_id,
-                            entry.trace.attempt_id,
-                        )
-                        .ok()
-                        .flatten()
-                        .is_some_and(|facts| facts.output_spec.as_ref() == command.output())
-            })
-        {
-            return compile_evidence_envelope(root, task_id, &task.stage);
+                && traces.iter().all(|entry| {
+                    entry.trace.status == "completed"
+                        && verify_command_identity(name, command, &entry.trace, &profile).is_ok()
+                        && store
+                            .execution_proof(
+                                previous.run_id,
+                                &entry.trace.command_id,
+                                entry.trace.attempt_id,
+                            )
+                            .ok()
+                            .flatten()
+                            .is_some_and(|facts| facts.output_spec.as_ref() == command.output())
+                })
+            {
+                return compile_evidence_envelope(root, task_id, &task.stage);
+            }
         }
     }
-    crate::milestones::execute_command_gate_with_timeout(
+    crate::milestones::execute_command_gate_with_options(
         Path::new(worktree),
         task_id,
         &format!("tasks.{}", cursor.canonical_stage_id),
         command,
         &paths,
         timeout_seconds,
+        explicit_test,
+        explicit_seam,
     )?;
     compile_evidence_envelope(root, task_id, &task.stage)
 }
@@ -286,6 +320,8 @@ fn validate_execution_plan(
     task: &crate::store::Task,
     gate: &crate::tasks::profile::GateDef,
     profile: &crate::tasks::profile::GateProfile,
+    store: &crate::store::TasksStore,
+    run_id: i64,
     traces: &[ClaimBoundExecutionTrace],
 ) -> Result<()> {
     let name = gate
@@ -296,6 +332,41 @@ fn validate_execution_plan(
         .commands
         .get(name)
         .context("TASK_AUTO_PROOF_UNAVAILABLE: gate command is not registered")?;
+    if let [single] = traces {
+        if let Some(proof) = store
+            .execution_proof(run_id, &single.trace.command_id, single.trace.attempt_id)
+            .ok()
+            .flatten()
+        {
+            if proof.seam_verified {
+                if let Some(test_ref) = proof.seam_ref.as_deref() {
+                    let (test_path, test_symbol) = match test_ref.trim().split_once("::") {
+                        Some((path, symbol)) => (path.trim(), Some(symbol.trim())),
+                        None => (test_ref.trim(), None),
+                    };
+                    let mut expected = crate::milestones::resolve_command_plan(
+                        root,
+                        name,
+                        command,
+                        &[test_path.to_owned()],
+                        profile,
+                    )?;
+                    if let Some(symbol) = test_symbol {
+                        for (_, cmd_str, _) in &mut expected {
+                            *cmd_str = format!("{cmd_str} {symbol}");
+                        }
+                    }
+                    if !expected.is_empty()
+                        && expected.iter().map(|(id, cmd, _)| (id, cmd)).eq(traces
+                            .iter()
+                            .map(|entry| (&entry.trace.command_id, &entry.trace.command_str)))
+                    {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+    }
     let paths = task
         .spec
         .scope
@@ -322,7 +393,17 @@ pub(super) fn verify_task(
     task_id: &str,
     timeout_seconds: Option<u64>,
 ) -> Result<Value> {
-    let evidence = ensure_command_evidence(root, task_id, timeout_seconds);
+    verify_task_with_options(root, task_id, None, None, timeout_seconds)
+}
+
+pub(super) fn verify_task_with_options(
+    root: &Path,
+    task_id: &str,
+    test: Option<&str>,
+    seam: Option<&str>,
+    timeout_seconds: Option<u64>,
+) -> Result<Value> {
+    let evidence = ensure_command_evidence_with_options(root, task_id, test, seam, timeout_seconds);
     let store = store_for_task(root, task_id)?;
     let task = store.inspect(task_id)?;
     let profile = store.profile_for_task(&task)?;
@@ -464,12 +545,9 @@ pub(super) fn verify_red_to_green(
 }
 
 fn seam_from_trace(
-    trace: &GateExecutionTrace,
+    _trace: &GateExecutionTrace,
     durable: Option<&crate::store::CommandExecutionProof>,
 ) -> Option<String> {
-    if let Some(cmd_seam) = seam_reference_from_command(&trace.command_str) {
-        return Some(cmd_seam);
-    }
     durable.and_then(|proof| proof.seam_ref.clone())
 }
 
@@ -506,60 +584,6 @@ fn validate_contract_failure_signature(
         bail!("{error}");
     }
     Ok(())
-}
-
-fn seam_reference_from_command(command: &str) -> Option<String> {
-    let tokens = command.split_whitespace().collect::<Vec<_>>();
-    if let Some(pos) = tokens.iter().position(|t| *t == "--test") {
-        if let Some(target) = tokens.get(pos + 1) {
-            if !target.is_empty()
-                && !target.starts_with('-')
-                && !target.contains('/')
-                && !target.contains('\\')
-            {
-                if let Some(filter) = tokens
-                    .iter()
-                    .skip(pos + 2)
-                    .take_while(|t| **t != "--")
-                    .find(|t| !t.starts_with('-'))
-                {
-                    let parts = filter
-                        .split("::")
-                        .filter(|p| !p.is_empty())
-                        .collect::<Vec<_>>();
-                    let mut modules = parts.as_slice();
-                    let target_mod = target.replace('-', "_");
-                    if modules
-                        .first()
-                        .is_some_and(|p| *p == *target || *p == target_mod.as_str())
-                    {
-                        modules = &modules[1..];
-                    }
-                    if let Some(symbol) = modules.last() {
-                        let mod_parts = &modules[..modules.len() - 1];
-                        return Some(if mod_parts.is_empty() {
-                            format!("tests/{target}.rs::{symbol}")
-                        } else {
-                            format!("tests/{target}/{}.rs::{symbol}", mod_parts.join("/"))
-                        });
-                    }
-                }
-            }
-        }
-    }
-    for (i, token) in tokens.iter().enumerate() {
-        if let Some(reference) = token.strip_prefix("--seam-ref=") {
-            if !reference.is_empty() {
-                return Some(reference.to_owned());
-            }
-        }
-        if *token == "--seam-ref" {
-            if let Some(next) = tokens.get(i + 1) {
-                return Some((*next).to_owned());
-            }
-        }
-    }
-    None
 }
 
 /// Resolve the destination gate for scope or public-symbol review findings.
@@ -794,6 +818,21 @@ fn verify_registered_command(
     Ok(())
 }
 
+fn command_matches_with_optional_test_filter(actual: &str, expected: &str) -> bool {
+    if actual == expected {
+        return true;
+    }
+    actual
+        .strip_prefix(expected)
+        .and_then(|rest| rest.strip_prefix(' '))
+        .is_some_and(|filter| {
+            !filter.is_empty()
+                && filter
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | ':' | '-' | '.'))
+        })
+}
+
 fn verify_command_identity(
     registered_name: &str,
     registered: &crate::tasks::profile::CommandDef,
@@ -803,7 +842,8 @@ fn verify_command_identity(
     let matches = match registered {
         crate::tasks::profile::CommandDef::Script(command)
         | crate::tasks::profile::CommandDef::Detailed { command, .. } => {
-            (trace.command_id == registered_name && trace.command_str == *command)
+            (trace.command_id == registered_name
+                && command_matches_with_optional_test_filter(&trace.command_str, command))
                 || trace
                     .command_id
                     .strip_prefix(&format!("{registered_name}::"))
@@ -812,11 +852,13 @@ fn verify_command_identity(
                             && profile
                                 .scope_args_for_command_path(registered, path)
                                 .is_some_and(|args| {
-                                    trace.command_str
-                                        == crate::milestones::expand_command_args(
+                                    command_matches_with_optional_test_filter(
+                                        &trace.command_str,
+                                        &crate::milestones::expand_command_args(
                                             command,
                                             Some(&args),
-                                        )
+                                        ),
+                                    )
                                 })
                     })
         }
@@ -827,13 +869,15 @@ fn verify_command_identity(
                 !path.is_empty()
                     && validate_trace_path(path)
                     && registered.command_for_path(path).is_some_and(|command| {
-                        trace.command_str
-                            == crate::milestones::expand_command_args(
+                        command_matches_with_optional_test_filter(
+                            &trace.command_str,
+                            &crate::milestones::expand_command_args(
                                 command,
                                 profile
                                     .scope_args_for_command_path(registered, path)
                                     .as_deref(),
-                            )
+                            ),
+                        )
                     })
             }),
     };
@@ -1002,6 +1046,7 @@ mod trace_log_tests {
             passed: None,
             failed: None,
             seam_ref: None,
+            seam_verified: false,
             passed_tests: BTreeSet::new(),
             output_spec: None,
             expected_signature: expected_signature.map(str::to_owned),

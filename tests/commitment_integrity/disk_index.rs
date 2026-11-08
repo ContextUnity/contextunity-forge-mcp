@@ -1,5 +1,5 @@
-use crate::common::Workspace;
 use super::harness::*;
+use crate::common::Workspace;
 use contextunity_forge_mcp::{
     core::schema::SCHEMA_DDL,
     db::{reader, writer},
@@ -69,21 +69,25 @@ fn built_nodes_keep_owner_paths_and_repeatable_merkle_leaves() {
         SchemaMutation::UnsupportedSchemaVersion,
         SchemaMutation::LegacyIndexSemantics,
     ];
-    let edge_sql = |mutation| match mutation {
+    let edge_sql = |mutation| {
+        match mutation {
         EdgeMutation::DeleteFirstEdge => {
             "DELETE FROM edges WHERE (src_hash,kind,dst_hash)=(SELECT src_hash,kind,dst_hash FROM edges LIMIT 1)"
         }
         EdgeMutation::ChangeFirstEdgeLine => {
             "UPDATE edges SET line=line+1 WHERE (src_hash,kind,dst_hash)=(SELECT src_hash,kind,dst_hash FROM edges LIMIT 1)"
         }
+    }
     };
-    let schema_sql = |mutation| match mutation {
+    let schema_sql = |mutation| {
+        match mutation {
         SchemaMutation::UnsupportedSchemaVersion => {
             "UPDATE metadata SET value='16' WHERE key='schema_version'"
         }
         SchemaMutation::LegacyIndexSemantics => {
             "UPDATE metadata SET value='15' WHERE key='schema_version'; UPDATE metadata SET value='old-v15-semantics' WHERE key='index_semantics_version'"
         }
+    }
     };
     let edge_label = |mutation| match mutation {
         EdgeMutation::DeleteFirstEdge => "delete first edge",
@@ -150,7 +154,11 @@ fn built_nodes_keep_owner_paths_and_repeatable_merkle_leaves() {
         let conn = Connection::open(&database).unwrap();
         let rows_changed = conn.execute(edge_sql(mutation), []).unwrap();
         assert_eq!(rows_changed, 1, "{}", edge_label(mutation));
-        assert!(commitments::verify(&conn).is_err(), "{}", edge_label(mutation));
+        assert!(
+            commitments::verify(&conn).is_err(),
+            "{}",
+            edge_label(mutation)
+        );
         drop(conn);
         assert!(
             reader::open(&database, &source).is_err(),

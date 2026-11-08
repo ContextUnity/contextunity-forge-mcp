@@ -15,11 +15,23 @@ fn command_submit_validates_evidence_and_uses_cli_mcp_cache() {
     );
     let mut client = McpTestHarness::new(&root).expect("MCP new should succeed");
     for (extras, expected_diagnostic) in [
-        (json!({"evidence":null}), "evidence is not a valid JSON object"),
-        (json!({"evidence":42}), "evidence is not a valid JSON object"),
-        (json!({"evidence_ref":"proof.yaml"}), "Unrecognized argument(s): evidence_ref"),
+        (
+            json!({"evidence":null}),
+            "evidence is not a valid JSON object",
+        ),
+        (
+            json!({"evidence":42}),
+            "evidence is not a valid JSON object",
+        ),
+        (
+            json!({"evidence_ref":"proof.yaml"}),
+            "Unrecognized argument(s): evidence_ref",
+        ),
         (json!({"unknown":true}), "Unrecognized argument(s): unknown"),
-        (json!({"evidence":{}, "timeout_seconds":5}), "timeout_seconds requires omitted evidence"),
+        (
+            json!({"evidence":{}, "timeout_seconds":5}),
+            "timeout_seconds requires omitted evidence",
+        ),
     ] {
         let mut args = json!({"task_id":id, "stage":"contract", "action":"pass"});
         args.as_object_mut()

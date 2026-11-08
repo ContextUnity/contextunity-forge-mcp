@@ -107,14 +107,8 @@ impl Drop for ColdFilesystemReferenceCache {
             let _ = std::fs::remove_file(&reference.database);
             let _ = std::fs::remove_file(format!("{}-wal", reference.database.display()));
             let _ = std::fs::remove_file(format!("{}-shm", reference.database.display()));
-            let _ = std::fs::remove_file(format!(
-                "{}.lock",
-                reference.database.display()
-            ));
-            let _ = std::fs::remove_file(format!(
-                "{}.verified.json",
-                reference.database.display()
-            ));
+            let _ = std::fs::remove_file(format!("{}.lock", reference.database.display()));
+            let _ = std::fs::remove_file(format!("{}.verified.json", reference.database.display()));
         }
     }
 }

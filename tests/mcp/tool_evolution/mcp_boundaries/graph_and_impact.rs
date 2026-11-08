@@ -108,7 +108,8 @@ fn mcp_graph_depth_cycles_and_direction_boundaries() {
     }
     w.write("cycle.py", "def a(): b(); return 1\ndef b(): a()\n");
     w.write(odd_path, "def odd(): return 1\n");
-    w.stage_git_files(&["cycle.py", odd_path]).expect("stage changed files");
+    w.stage_git_files(&["cycle.py", odd_path])
+        .expect("stage changed files");
     w.write("other.py", "def idle(): return 2\n");
     w.write("untracked.py", "def untracked(): return 5\n");
     w.delta(&["cycle.py", odd_path, "other.py", "untracked.py"]);
@@ -304,7 +305,8 @@ fn mcp_graph_depth_cycles_and_direction_boundaries() {
         .any(|item| item["path"] == "cycle.py"));
 
     w.stage_git_files(&["cycle.py"]).expect("stage cycle.py");
-    w.commit_git("Accept mapped changes", None).expect("commit mapped changes");
+    w.commit_git("Accept mapped changes", None)
+        .expect("commit mapped changes");
     fs::rename(w.path("renamed.py"), w.path("moved.py")).unwrap();
     w.write("deleted.py", "def neighbor(): return 1\n");
     w.write_bytes("binary.dat", &[0, 3, 4]);
@@ -364,7 +366,8 @@ fn mcp_graph_depth_cycles_and_direction_boundaries() {
         source
     };
     w.delta(&["decor.py", "prefix.ts", "removed.ts"]);
-    w.run_git(&["add", "-A"]).expect("stage review boundary fixture");
+    w.run_git(&["add", "-A"])
+        .expect("stage review boundary fixture");
     w.commit_git("Review boundary fixture baseline", None)
         .expect("commit review boundary fixture");
 
@@ -479,7 +482,9 @@ fn mcp_graph_depth_cycles_and_direction_boundaries() {
     control_w.seed_git().expect("seed control Git fixture");
     let control = graph_source(630).replace("def seed(): return 1", "def seed(): return 2");
     control_w.write("graph.py", &control);
-    control_w.stage_git_files(&["graph.py"]).expect("stage graph mutation");
+    control_w
+        .stage_git_files(&["graph.py"])
+        .expect("stage graph mutation");
     control_w.build();
     let mut control_m = McpTestHarness::new(&control_w).expect("MCP initialize");
     let (_, changed_control_response) = control_m
@@ -527,7 +532,8 @@ fn mcp_graph_depth_cycles_and_direction_boundaries() {
         .expect("commit deep graph baseline");
     let changed_graph = graph_source(670).replace("def seed(): return 1", "def seed(): return 2");
     w.write("graph.py", &changed_graph);
-    w.stage_git_files(&["graph.py"]).expect("stage graph change");
+    w.stage_git_files(&["graph.py"])
+        .expect("stage graph change");
     w.build();
     let impact_args =
         json!({"changes":"staged","path":"graph.py","depth":16,"limit":100,"format":"json"});

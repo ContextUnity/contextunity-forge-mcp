@@ -26,8 +26,15 @@ fn python_routes_preserve_http_decorators_and_django_patterns_as_mapping_calls_r
             "POST ^item$"
         ]
     );
-    let items = facts.nodes.iter().find(|node| node.name == "GET /items").unwrap();
-    assert_eq!(items.details["handlers"], serde_json::json!(["auth", "handler"]));
+    let items = facts
+        .nodes
+        .iter()
+        .find(|node| node.name == "GET /items")
+        .unwrap();
+    assert_eq!(
+        items.details["handlers"],
+        serde_json::json!(["auth", "handler"])
+    );
     let ordinary_calls: Vec<_> = facts
         .references
         .iter()
@@ -37,12 +44,14 @@ fn python_routes_preserve_http_decorators_and_django_patterns_as_mapping_calls_r
     assert_eq!(ordinary_calls, [12, 14]);
     for name in ["GET /multi", "PATCH /multi"] {
         let route = facts.nodes.iter().find(|node| node.name == name).unwrap();
-        let handler = facts.nodes.iter().find(|node| node.name == "decorated").unwrap();
-        assert!(
-            facts
-                .edges
-                .iter()
-                .any(|edge| edge.src == route.id && edge.dst == handler.id && edge.kind == "handles")
-        );
+        let handler = facts
+            .nodes
+            .iter()
+            .find(|node| node.name == "decorated")
+            .unwrap();
+        assert!(facts
+            .edges
+            .iter()
+            .any(|edge| edge.src == route.id && edge.dst == handler.id && edge.kind == "handles"));
     }
 }

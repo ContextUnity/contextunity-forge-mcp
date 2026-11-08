@@ -8,10 +8,10 @@ use std::{
 };
 
 #[derive(Debug)]
-struct SeamReference {
-    path: String,
-    symbol: Option<String>,
-    line: Option<usize>,
+pub(crate) struct SeamReference {
+    pub(crate) path: String,
+    pub(crate) symbol: Option<String>,
+    pub(crate) line: Option<usize>,
 }
 
 fn parse_seam_reference(reference: &str) -> Option<SeamReference> {
@@ -829,7 +829,7 @@ fn missing_scope_files_contract() {
     assert_eq!(missing, ["new.rs", "nested/module.rs"]);
 }
 
-fn validate_seam_file_and_symbol(
+pub(crate) fn validate_seam_file_and_symbol(
     task_id: &str,
     worktree: &Path,
     reference_str: &str,
@@ -869,7 +869,7 @@ fn validate_seam_file_and_symbol(
     Ok((reference, test_nodes))
 }
 
-pub(super) fn validate_seam_reachability(
+pub(crate) fn validate_seam_reachability(
     connection: &rusqlite::Connection,
     task_id: &str,
     worktree: &Path,

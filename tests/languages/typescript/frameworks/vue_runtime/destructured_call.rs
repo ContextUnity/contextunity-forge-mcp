@@ -470,8 +470,7 @@ operation={kind="factory_members",callee={kind="global",name="defineStore"},argu
         batch_delta["changed_files"],
         2 * (initializations.len() + unsupported_bodies.len())
     );
-    let parity =
-        cold_references.observe(&w, w.open(), crate::languages::support::relation_rows);
+    let parity = cold_references.observe(&w, w.open(), crate::languages::support::relation_rows);
     assert_eq!(parity.incremental_verification, Ok(()));
     assert_eq!(parity.cold_verification, Ok(()));
     assert_eq!(parity.incremental, parity.cold);
@@ -499,8 +498,7 @@ operation={kind="factory_members",callee={kind="global",name="defineStore"},argu
     let mutate_refs: Vec<&str> = mutate_paths.iter().map(String::as_str).collect();
     let mutate_delta = w.delta(&mutate_refs);
     assert_eq!(mutate_delta["changed_files"], unsupported_bodies.len());
-    let parity =
-        cold_references.observe(&w, w.open(), crate::languages::support::relation_rows);
+    let parity = cold_references.observe(&w, w.open(), crate::languages::support::relation_rows);
     assert_eq!(parity.incremental_verification, Ok(()));
     assert_eq!(parity.cold_verification, Ok(()));
     assert_eq!(parity.incremental, parity.cold);
@@ -513,7 +511,10 @@ operation={kind="factory_members",callee={kind="global",name="defineStore"},argu
             "SELECT count(*) FROM edge_occurrences WHERE (SELECT path FROM path_dictionary WHERE path_id=edge_occurrences.owner_id)=?1 AND kind='calls'",
             [&consumer],
         );
-        assert_eq!(calls, 0, "{consumer} should have 0 calls after provider invalidation");
+        assert_eq!(
+            calls, 0,
+            "{consumer} should have 0 calls after provider invalidation"
+        );
     }
     w.write("stores/duplicate.ts", provider);
     w.delta(&["stores/duplicate.ts"]);

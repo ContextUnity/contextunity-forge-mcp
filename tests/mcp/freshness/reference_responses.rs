@@ -11,11 +11,9 @@ fn document_references_keep_distinct_sections_and_ambiguous_candidate_sources() 
         .as_array()
         .expect("verified code reference rows");
     assert_eq!(reference_rows.len(), 4);
-    assert!(
-        reference_rows
-            .iter()
-            .all(|reference| reference["name"] == "code_map_overview")
-    );
+    assert!(reference_rows
+        .iter()
+        .all(|reference| reference["name"] == "code_map_overview"));
     for relation in ["cites_doc", "cited_by_doc"] {
         assert_eq!(overview[relation]["total"], 0);
         assert!(overview[relation].get("omitted").is_none());
@@ -42,11 +40,9 @@ fn document_references_keep_distinct_sections_and_ambiguous_candidate_sources() 
         .map(|reference| reference["citation_line"].as_u64().expect("citation line"))
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(citation_lines, [7, 10, 13, 16].into_iter().collect());
-    assert!(
-        reference_rows
-            .iter()
-            .all(|reference| reference["line"] == 1)
-    );
+    assert!(reference_rows
+        .iter()
+        .all(|reference| reference["line"] == 1));
     let target_declaration_uri =
         format!("file://{}#L1)", ws.root().join("src/overview.py").display());
     for detail in [None, Some("compact")] {

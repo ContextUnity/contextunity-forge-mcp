@@ -1,5 +1,5 @@
-use crate::common::Workspace;
 use super::harness::*;
+use crate::common::Workspace;
 use contextunity_forge_mcp::engine::pipeline;
 use rusqlite::{ffi, Connection};
 use std::{
@@ -196,8 +196,8 @@ fn cold_disk_build_sealing_matches_serial_and_preserves_previous_generation() {
         let conn = Connection::open(&db).unwrap();
         let domain_rows_before = domain_rows(&conn);
         commitments::verify(&conn).expect("each cold database verifies before resealing");
-        let serial_seal = commitments::seal(&conn)
-            .expect("serial sealing succeeds for each cold database");
+        let serial_seal =
+            commitments::seal(&conn).expect("serial sealing succeeds for each cold database");
         let domain_rows_after = domain_rows(&conn);
         drop(conn);
 
@@ -277,7 +277,11 @@ fn cold_disk_build_sealing_matches_serial_and_preserves_previous_generation() {
     }
 
     let control_fts_domains: BTreeSet<_> = control_domain_workers.keys().copied().collect();
-    assert_eq!(control_fts_domains.len(), 4, "observer sees each real FTS domain");
+    assert_eq!(
+        control_fts_domains.len(),
+        4,
+        "observer sees each real FTS domain"
+    );
     assert_eq!(control_fts_domains, FTS_DOMAINS.into_iter().collect());
     assert!(
         control_read_published_database,
@@ -290,7 +294,10 @@ fn cold_disk_build_sealing_matches_serial_and_preserves_previous_generation() {
     let observation = start_observer(workspace.path(""), db.clone())
         .expect("SQLite FTS observer registration succeeds");
     FTS_READS.lock().unwrap().as_mut().unwrap().deny_domain = Some("node_search_config");
-    let pool = rayon::ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(4)
+        .build()
+        .unwrap();
     let failed_build_result =
         pool.install(|| pipeline::build_with_cache_dir(&source, &db, None, &extraction_cache));
     let reads = FTS_READS.lock().unwrap().take().unwrap();

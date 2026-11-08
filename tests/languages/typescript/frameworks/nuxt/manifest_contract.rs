@@ -448,7 +448,11 @@ fn assert_nuxt_vue_pinia_manifest_family_variants(family: &str) {
             let message = error
                 .downcast_ref::<String>()
                 .cloned()
-                .or_else(|| error.downcast_ref::<&str>().map(|message| (*message).into()))
+                .or_else(|| {
+                    error
+                        .downcast_ref::<&str>()
+                        .map(|message| (*message).into())
+                })
                 .unwrap_or_else(|| "panic".into());
             failures.push(format!("{family}, renamed={renamed}: {message}"));
         }

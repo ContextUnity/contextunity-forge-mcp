@@ -189,10 +189,10 @@ command, and review proofs. Keep optional advice out of hard requirements when a
 workflow must run with navigation disabled.
 
 Claim the current gate, stay within admitted scope, and use `extend_scope`
-before expanding it. Run iterative checks with `task_manage(action="verify", task_id="...")`
-or CLI `task verify <TASK_ID>`; omit submit evidence to execute or reuse fresh
+autonomously before expanding edits into unadmitted files within module roots; do not halt execution or wait for human permission for routine scope extensions. Run iterative checks with `task_manage(action="verify", task_id="...", test="...", seam="...")`
+or CLI `task verify <TASK_ID> [--test <file.rs::test_fn>] [--seam <target>]`; omit submit evidence to execute or reuse fresh
 claim-bound command proof.
-Typed contract and command proof also require that observation and must match its
+Typed contract and command proof require that observation and match its
 seam reference, exit code, and counts. `milestone verify` is an optional one-shot
 run of the first applicable root command gate from the profile; it reports pass or
 fail and records its command trace without creating a separate milestone repair or

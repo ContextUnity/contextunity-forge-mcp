@@ -25,7 +25,8 @@ fn configured_syntax_rules_follow_effective_rules_and_delta() {
         ]
     });
     let manifest = ".forge/frameworks/atelier.toml";
-    let write = |value: &serde_json::Value| workspace.write(manifest, &toml::to_string(value).unwrap());
+    let write =
+        |value: &serde_json::Value| workspace.write(manifest, &toml::to_string(value).unwrap());
     write(&pack);
     workspace.build();
     let assert_active = |active: bool| {
@@ -35,11 +36,13 @@ fn configured_syntax_rules_follow_effective_rules_and_delta() {
         for (label, actual, expected) in [
             (
                 "decorated constructor/member/name",
-                observations.nodes()
+                observations
+                    .nodes()
                     .iter()
                     .filter(|node| node.kind == "tool_registration")
                     .filter(|node| {
-                        let details: serde_json::Value = serde_json::from_str(&node.details).unwrap();
+                        let details: serde_json::Value =
+                            serde_json::from_str(&node.details).unwrap();
                         details["advertised_name"] == "advertised"
                             && details["pack"] == "atelier"
                             && details["rule"] == "tools"
@@ -49,7 +52,8 @@ fn configured_syntax_rules_follow_effective_rules_and_delta() {
             ),
             (
                 "request attribute prefix/method",
-                observations.nodes()
+                observations
+                    .nodes()
                     .iter()
                     .filter(|node| node.kind == "configured_request")
                     .count(),
@@ -57,33 +61,47 @@ fn configured_syntax_rules_follow_effective_rules_and_delta() {
             ),
             (
                 "script attribute prefixes",
-                observations.nodes()
+                observations
+                    .nodes()
                     .iter()
                     .filter(|node| {
                         node.kind == "template_scope"
-                            && (node.name.starts_with("event_attribute@") || node.name.starts_with("object_attribute@"))
+                            && (node.name.starts_with("event_attribute@")
+                                || node.name.starts_with("object_attribute@"))
                     })
                     .count(),
                 2,
             ),
             (
                 "object collection/key",
-                observations.nodes().iter().filter(|node| node.kind == "route").count(),
+                observations
+                    .nodes()
+                    .iter()
+                    .filter(|node| node.kind == "route")
+                    .count(),
                 1,
             ),
             (
                 "configured client and request",
-                observations.edges()
+                observations
+                    .edges()
                     .iter()
                     .filter(|edge| edge.kind == "calls_endpoint")
                     .count(),
                 2,
             ),
         ] {
-            assert_eq!(actual, if active { expected } else { 0 }, "{label}, active={active}");
+            assert_eq!(
+                actual,
+                if active { expected } else { 0 },
+                "{label}, active={active}"
+            );
         }
         let cached = &observations.persisted_facts();
-        let public_cached: Vec<_> = cached.iter().map(crate::common::assertions::projected_facts).collect();
+        let public_cached: Vec<_> = cached
+            .iter()
+            .map(crate::common::assertions::projected_facts)
+            .collect();
         for (rule, expected) in [("tools", 1), ("requests", 1), ("scripts", 2), ("routes", 1)] {
             let origins = public_cached
                 .iter()
@@ -105,12 +123,24 @@ fn configured_syntax_rules_follow_effective_rules_and_delta() {
             );
         }
         let clients=cached.iter().flat_map(|facts| &facts.references).filter(|reference| reference.kind=="calls_endpoint").filter(|reference| matches!(&reference.receiver_hint,Some(contextunity_forge_mcp::core::models::ReceiverHint::ConfiguredReference { origin }) if origin.pack=="atelier" && origin.rule=="client")).count();
-        assert_eq!(clients, usize::from(active), "client reference preserves actual origin");
-        let ordinary = observations.edges()
+        assert_eq!(
+            clients,
+            usize::from(active),
+            "client reference preserves actual origin"
+        );
+        let ordinary = observations
+            .edges()
             .iter()
-            .filter(|edge| edge.kind == "calls" && edge.source_name == "ordinary" && edge.target_name == "helper")
+            .filter(|edge| {
+                edge.kind == "calls"
+                    && edge.source_name == "ordinary"
+                    && edge.target_name == "helper"
+            })
             .count();
-        assert_eq!(ordinary, 1, "ordinary call survives syntax rule transitions");
+        assert_eq!(
+            ordinary, 1,
+            "ordinary call survives syntax rule transitions"
+        );
     };
     assert_active(true);
     workspace.assert_cold_parity();

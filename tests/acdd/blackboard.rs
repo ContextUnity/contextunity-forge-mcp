@@ -65,11 +65,8 @@ fn blackboard_scope_resolution_isolates_milestone_task_and_subtask_messages() {
     );
     root.write("docs/milestones/010-blackboard.md", &manifest);
     let milestone = Milestone::parse(&manifest, "forge-mcp").unwrap();
-    let (mut store, first, second) = sync_blackboard_tasks(
-        &root,
-        "docs/milestones/010-blackboard.md",
-        &milestone,
-    );
+    let (mut store, first, second) =
+        sync_blackboard_tasks(&root, "docs/milestones/010-blackboard.md", &milestone);
     store
         .claim(
             &first,
@@ -363,7 +360,13 @@ fn blackboard_milestone_profile_pin_routes_gates_and_fails_closed_on_tampering()
         &default_read_error,
         &inherited_default_error,
     ] {
-        for expected in ["Active profile gates:", "plan", "build", "review", "deliver"] {
+        for expected in [
+            "Active profile gates:",
+            "plan",
+            "build",
+            "review",
+            "deliver",
+        ] {
             assert!(error.contains(expected), "missing {expected}: {error}");
         }
     }

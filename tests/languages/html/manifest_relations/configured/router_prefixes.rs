@@ -23,7 +23,8 @@ fn configured_router_prefixes_are_static_unique_and_recursive() {
         let observations = workspace.observe();
         let validity = &observations.validity();
         validity.assert_valid();
-        let routes: Vec<_> = observations.nodes()
+        let routes: Vec<_> = observations
+            .nodes()
             .iter()
             .filter(|node| node.kind == "route")
             .map(|node| {
@@ -42,15 +43,21 @@ fn configured_router_prefixes_are_static_unique_and_recursive() {
             }
         );
         assert_eq!(
-            observations.edges()
+            observations
+                .edges()
                 .iter()
                 .filter(|edge| edge.owner_path == "app.py" && edge.kind == "calls_endpoint")
                 .count(),
             usize::from(active)
         );
-        let ordinary = observations.edges()
+        let ordinary = observations
+            .edges()
             .iter()
-            .filter(|edge| edge.kind == "calls" && edge.source_name == "ordinary" && edge.target_name == "helper")
+            .filter(|edge| {
+                edge.kind == "calls"
+                    && edge.source_name == "ordinary"
+                    && edge.target_name == "helper"
+            })
             .count();
         assert_eq!(ordinary, 1);
     };
@@ -72,7 +79,8 @@ fn configured_router_prefixes_are_static_unique_and_recursive() {
         let observations = workspace.observe();
         let validity = &observations.validity();
         validity.assert_valid();
-        let mut routes: Vec<_> = observations.nodes()
+        let mut routes: Vec<_> = observations
+            .nodes()
             .iter()
             .filter(|node| node.kind == "route")
             .map(|node| {

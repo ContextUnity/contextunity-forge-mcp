@@ -231,7 +231,6 @@ impl LinkedCatalog {
         names
     }
 
-
     pub(super) fn coverage_status(&self, path: &str, expression: &str) -> &str {
         self.graph
             .coverage

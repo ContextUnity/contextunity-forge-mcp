@@ -36,7 +36,8 @@ fn configured_template_rules_follow_effective_rules_and_delta() {
         ]
     });
     let manifest = ".forge/frameworks/atelier-templates.toml";
-    let write = |value: &serde_json::Value| workspace.write(manifest, &toml::to_string(value).unwrap());
+    let write =
+        |value: &serde_json::Value| workspace.write(manifest, &toml::to_string(value).unwrap());
     write(&pack);
     workspace.build();
     let assert_active = |active: bool| {
@@ -46,18 +47,22 @@ fn configured_template_rules_follow_effective_rules_and_delta() {
         for (label, actual, expected) in [
             (
                 "import-proven receiver registration",
-                observations.nodes()
+                observations
+                    .nodes()
                     .iter()
                     .filter(|node| node.kind == "route")
                     .filter(|node| {
-                        serde_json::from_str::<serde_json::Value>(&node.details).unwrap()["route_name"] == "configured"
+                        serde_json::from_str::<serde_json::Value>(&node.details).unwrap()
+                            ["route_name"]
+                            == "configured"
                     })
                     .count(),
                 1,
             ),
             (
                 "call and tag consume typed route keys",
-                observations.edges()
+                observations
+                    .edges()
                     .iter()
                     .filter(|edge| edge.kind == "references_route")
                     .count(),
@@ -65,15 +70,19 @@ fn configured_template_rules_follow_effective_rules_and_delta() {
             ),
             (
                 "configured include",
-                observations.edges()
+                observations
+                    .edges()
                     .iter()
-                    .filter(|edge| edge.kind == "includes" && edge.owner_path == "app/screens/card.html")
+                    .filter(|edge| {
+                        edge.kind == "includes" && edge.owner_path == "app/screens/card.html"
+                    })
                     .count(),
                 1,
             ),
             (
                 "configured template library",
-                observations.edges()
+                observations
+                    .edges()
                     .iter()
                     .filter(|edge| edge.kind == "references" && edge.target_name == "speak")
                     .count(),
@@ -81,14 +90,19 @@ fn configured_template_rules_follow_effective_rules_and_delta() {
             ),
             (
                 "configured template filter",
-                observations.edges()
+                observations
+                    .edges()
                     .iter()
                     .filter(|edge| edge.kind == "references" && edge.target_name == "capitalize")
                     .count(),
                 1,
             ),
         ] {
-            assert_eq!(actual, if active { expected } else { 0 }, "{label}, active={active}");
+            assert_eq!(
+                actual,
+                if active { expected } else { 0 },
+                "{label}, active={active}"
+            );
         }
         if active {
             for (path, expression) in [
@@ -96,7 +110,8 @@ fn configured_template_rules_follow_effective_rules_and_delta() {
                 ("app/screens/part.html", "template.variable.headline"),
                 ("app/screens/card.html", "template.variable.local"),
             ] {
-                let statuses: Vec<_> = observations.coverage()
+                let statuses: Vec<_> = observations
+                    .coverage()
                     .iter()
                     .filter(|coverage| coverage.path == path && coverage.expression == expression)
                     .map(|coverage| coverage.status.as_str())
@@ -108,13 +123,19 @@ fn configured_template_rules_follow_effective_rules_and_delta() {
                 );
             }
         }
-        let ordinary = observations.edges()
+        let ordinary = observations
+            .edges()
             .iter()
-            .filter(|edge| edge.kind == "calls" && edge.source_name == "ordinary" && edge.target_name == "helper")
+            .filter(|edge| {
+                edge.kind == "calls"
+                    && edge.source_name == "ordinary"
+                    && edge.target_name == "helper"
+            })
             .count();
         assert_eq!(ordinary, 1);
         assert_eq!(
-            observations.edges()
+            observations
+                .edges()
                 .iter()
                 .filter(|edge| {
                     edge.kind == "includes"
@@ -154,7 +175,8 @@ fn configured_template_rules_follow_effective_rules_and_delta() {
     let observations = workspace.observe();
     let validity = &observations.validity();
     validity.assert_valid();
-    let conflicting_locals = observations.nodes()
+    let conflicting_locals = observations
+        .nodes()
         .iter()
         .filter(|node| node.path == "app/screens/card.html" && node.name == "local")
         .count();
@@ -174,13 +196,17 @@ fn configured_template_rules_follow_effective_rules_and_delta() {
     let validity = &observations.validity();
     validity.assert_valid();
     assert!(
-        observations.edges()
+        observations
+            .edges()
             .iter()
             .find(|edge| edge.owner_path == "app/screens/card.html" && edge.kind == "includes")
             .is_none(),
         "removed configured directive cannot retain an exact include"
     );
-    workspace.write("app/screens/card.html", &card_source.replace("{% pull ", "{% draw "));
+    workspace.write(
+        "app/screens/card.html",
+        &card_source.replace("{% pull ", "{% draw "),
+    );
     workspace.delta(&["app/screens/card.html"]);
     assert_active(true);
     write(&pack);

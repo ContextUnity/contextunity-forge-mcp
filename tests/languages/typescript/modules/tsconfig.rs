@@ -7,7 +7,10 @@ fn tsconfig_extends_inherits_alias_origin_and_rebuilds_on_base_change() {
             "configs/tsconfig.base.json",
             r#"{"compilerOptions":{"baseUrl":".","paths":{"@shared/*":["../shared/*"]}}}"#,
         ),
-        ("configs/tsconfig.app.json", r#"{"extends":"./tsconfig.base.json"}"#),
+        (
+            "configs/tsconfig.app.json",
+            r#"{"extends":"./tsconfig.base.json"}"#,
+        ),
         (
             "apps/one/tsconfig.json",
             r#"{"extends":"../../configs/tsconfig.app.json"}"#,
@@ -45,7 +48,10 @@ fn tsconfig_extends_inherits_alias_origin_and_rebuilds_on_base_change() {
     let invalid = workspace.open();
     let statuses: Vec<String> = invalid.prepare("SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='apps/three/src/main.ts' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='helper'")
         .unwrap().query_map([], |row| row.get::<_, String>(0)).unwrap().map(Result::unwrap).collect();
-    assert!(!statuses.is_empty(), "invalid config must retain visible coverage");
+    assert!(
+        !statuses.is_empty(),
+        "invalid config must retain visible coverage"
+    );
     assert!(
         statuses
             .iter()
@@ -58,7 +64,10 @@ fn tsconfig_extends_inherits_alias_origin_and_rebuilds_on_base_change() {
         r#"{"compilerOptions":{"baseUrl":".","paths":{"@shared/*":["../shared/alternate/*"]}}}"#,
     );
     workspace.delta(&["configs/tsconfig.base.json"]);
-    assert_eq!(targets("apps/one/src/main.ts"), ["shared/alternate/helper.ts"]);
+    assert_eq!(
+        targets("apps/one/src/main.ts"),
+        ["shared/alternate/helper.ts"]
+    );
     assert_eq!(targets("apps/two/src/main.ts"), ["apps/two/src/helper.ts"]);
     let conn = workspace.open();
     contextunity_forge_mcp::core::commitments::verify(&conn).unwrap();
@@ -75,7 +84,10 @@ fn tsconfig_paths_choose_first_indexed_alternative_and_relink_on_new_file() {
         ),
         ("apps/one/src/thing.ts", "export function thing() {}"),
         ("apps/two/missing/thing.ts", "export function thing() {}"),
-        ("apps/one/src/main.ts", "import { thing } from '@lib/thing'; thing();"),
+        (
+            "apps/one/src/main.ts",
+            "import { thing } from '@lib/thing'; thing();",
+        ),
     ] {
         workspace.write(path, source);
     }
@@ -107,7 +119,10 @@ fn type_only_imports_resolve_indexed_local_interface_provider() {
     let conn = workspace.open();
     let statuses: Vec<String> = conn.prepare("SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='app/consumer.ts' AND line <= 2 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='ColumnStateItem' ORDER BY line")
         .unwrap().query_map([], |row| row.get::<_, String>(0)).unwrap().map(Result::unwrap).collect();
-    assert!(!statuses.is_empty(), "type-only import must have persisted coverage");
+    assert!(
+        !statuses.is_empty(),
+        "type-only import must have persisted coverage"
+    );
     assert!(
         statuses.iter().all(|status| status == "resolved"),
         "type-only import statuses: {statuses:?}"
@@ -171,10 +186,9 @@ fn exported_enum_members_require_exact_indexed_provider() {
         ("app/type_use.ts", "Color.Red", "unresolved"),
     ] {
         assert!(
-            graph
-                .coverage
-                .iter()
-                .any(|row| row.path == path && row.expression == expression && row.status == status),
+            graph.coverage.iter().any(|row| row.path == path
+                && row.expression == expression
+                && row.status == status),
             "{path}: {expression}: expected {status}, got {:#?}",
             graph.coverage
         );
@@ -183,28 +197,33 @@ fn exported_enum_members_require_exact_indexed_provider() {
         let runtime: Vec<_> = graph
             .coverage
             .iter()
-            .filter(|row| row.path == "app/type_use.ts" && row.line == line && row.expression == "Color")
+            .filter(|row| {
+                row.path == "app/type_use.ts" && row.line == line && row.expression == "Color"
+            })
             .collect();
         assert!(
             !runtime.is_empty() && runtime.iter().all(|row| row.status == "unresolved"),
             "{runtime:#?}"
         );
         assert!(!graph.edges.iter().any(|edge| {
-            edge.path == "app/type_use.ts" && edge.line == line && edge.kind == "references" && edge.evidence == "Color"
+            edge.path == "app/type_use.ts"
+                && edge.line == line
+                && edge.kind == "references"
+                && edge.evidence == "Color"
         }));
     }
     let selected: Vec<_> = graph
         .edges
         .iter()
-        .filter(|edge| edge.path == "app/use.ts" && edge.kind == "references" && edge.evidence == "Color.Red")
+        .filter(|edge| {
+            edge.path == "app/use.ts" && edge.kind == "references" && edge.evidence == "Color.Red"
+        })
         .collect();
     assert_eq!(selected.len(), 1, "{selected:#?}");
-    assert!(
-        provider
-            .nodes
-            .iter()
-            .any(|node| node.id == selected[0].dst && node.name == "Red")
-    );
+    assert!(provider
+        .nodes
+        .iter()
+        .any(|node| node.id == selected[0].dst && node.name == "Red"));
     let callable: Vec<_> = graph
         .coverage
         .iter()
@@ -214,12 +233,10 @@ fn exported_enum_members_require_exact_indexed_provider() {
         !callable.is_empty() && callable.iter().all(|row| row.status == "unresolved"),
         "{callable:#?}"
     );
-    assert!(
-        !graph
-            .edges
-            .iter()
-            .any(|edge| { edge.path == "app/call.ts" && edge.line == 2 && edge.kind == "calls" })
-    );
+    assert!(!graph
+        .edges
+        .iter()
+        .any(|edge| { edge.path == "app/call.ts" && edge.line == 2 && edge.kind == "calls" }));
 
     let workspace = crate::languages::PersistedWorkspaceHarness::new();
     for (path, source) in files {
@@ -272,7 +289,10 @@ fn exported_enum_members_require_exact_indexed_provider() {
 fn typescript_export_type_reexport_import_targets() {
     let workspace = crate::languages::PersistedWorkspaceHarness::new();
     workspace.write("types.ts", "export type Foo = { id: string };\n");
-    workspace.write("generated.ts", "export interface JsonValue { value: string; }\n");
+    workspace.write(
+        "generated.ts",
+        "export interface JsonValue { value: string; }\n",
+    );
     workspace.write(
         "barrel.ts",
         r#"
@@ -325,7 +345,10 @@ fn export_type_keeps_classes_and_value_export_drops_type_aliases() {
         "export class Box { id = 1; }\nexport enum Color { Red = 1 }\n",
     );
     workspace.write("barrel.ts", "export type { Box, Color } from \"./box\";\n");
-    workspace.write("only.ts", "export type Foo = { id: string };\nexport { Foo };\n");
+    workspace.write(
+        "only.ts",
+        "export type Foo = { id: string };\nexport { Foo };\n",
+    );
     workspace.write(
         "consumer.ts",
         "import type { Box, Color } from \"./barrel\";\nfunction use(box: Box, color: Color) {}\n",
@@ -401,10 +424,18 @@ export function run() {
     let conn = w.open();
 
     // Verify .mjs and .cjs were scanned and extracted
-    let mjs_count: i64 = query_scalar(&conn, "SELECT count(*) FROM files WHERE path LIKE '%.mjs'", []);
+    let mjs_count: i64 = query_scalar(
+        &conn,
+        "SELECT count(*) FROM files WHERE path LIKE '%.mjs'",
+        [],
+    );
     assert_eq!(mjs_count, 1);
 
-    let cjs_count: i64 = query_scalar(&conn, "SELECT count(*) FROM files WHERE path LIKE '%.cjs'", []);
+    let cjs_count: i64 = query_scalar(
+        &conn,
+        "SELECT count(*) FROM files WHERE path LIKE '%.cjs'",
+        [],
+    );
     assert_eq!(cjs_count, 1);
 
     // Verify import edges resolved via package.json exports
@@ -416,7 +447,9 @@ export function run() {
         rows.map(Result::unwrap).collect()
     };
     assert!(
-        import_edges.iter().any(|(_, dst)| dst.contains("index.mjs")),
+        import_edges
+            .iter()
+            .any(|(_, dst)| dst.contains("index.mjs")),
         "expected import edge to index.mjs: {:?}",
         import_edges
     );

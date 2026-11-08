@@ -204,20 +204,20 @@ stage, revisions, worker, and worktree.
 Detailed and `by_pattern` command definitions accept an optional `output`
 mapping. Its optional `counts` mapping contains `passed` and `failed` regular
 expressions. `require_counts` defaults to `true`. `noise` and
-`errors` are lists of regular expressions, and `seam_ref_pattern` is an optional
-regular expression. The optional `tests` mapping defines declarative rules for
+`errors` are lists of regular expressions. (Seam test identities are supplied directly
+via `verify --test <test_ref>` rather than parsed via regex heuristics). The optional `tests` mapping defines declarative rules for
 extracting individual test outcomes and source identities:
 `passed` (required pattern matching an individual passed test and capturing its name/ref in group 1),
 `failed` (optional pattern matching an individual failed test in group 1),
 `ignored` (optional pattern matching an individual skipped/ignored test in group 1), and
 `target` (optional pattern extracting the test target/entrypoint source file in group 1).
-Count, seam, and individual test patterns extract capture group 1; the profile
+Count and individual test patterns extract capture group 1; the profile
 validator rejects invalid expressions and extraction patterns without that group.
 Counts are summed across matching summaries. When a configured passed count is
 present and the failed pattern has no match, the failed count is zero. Missing
 required counts, malformed integers, overflow, and reported failures reject proof.
 Set `require_counts: false` for linters and documentation checks whose zero exit
-code proves success without a test count. Configure output rules to describe command counts and seam references.
+code proves success without a test count. Configure output rules to describe command counts and test identities.
 
 The command runner parses complete output before filtering `noise` lines, prioritizing
 `errors` lines, and truncating diagnostics. Durable claim-bound facts retain the

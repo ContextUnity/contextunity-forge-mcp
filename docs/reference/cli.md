@@ -156,12 +156,17 @@ contextunity-forge-mcp task context TASK_ID
 Verify a claimed command gate iteratively, then submit its cached proof:
 
 ```sh
-contextunity-forge-mcp task verify TASK_ID [--timeout SECONDS]
+contextunity-forge-mcp task verify TASK_ID [--test <file.rs::test_fn>] [--seam <target>] [--timeout SECONDS]
 contextunity-forge-mcp task submit TASK_ID --stage build --action pass [--timeout SECONDS]
 ```
 
 `verify` executes the registered command in the claimed worktree and preserves
-the task stage. Submission without `--evidence` reuses fresh claim-bound proof
+the task stage. When `--test` is provided, it narrows execution strictly to the
+specified test target using the profile's registered command and `scope_args_by_pattern`.
+When optional `--seam` is provided alongside `--test`, it verifies CodeMap reachability
+to the seam target; when omitted, the test function existence is verified without requiring
+a static reachability edge into production scope.
+Submission without `--evidence` reuses fresh claim-bound proof
 or executes the command when needed. Delivery infers proof from the accepted
 candidate snapshot without running a command. Review, seam-test, and schema-defined
 proofs require explicit evidence.

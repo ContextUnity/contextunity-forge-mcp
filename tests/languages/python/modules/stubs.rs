@@ -42,7 +42,10 @@ fn paired_stub_supplies_declaration_missing_from_generated_runtime() {
     let w = fixture_workspace(&[
         ("pkg/__init__.py", "# package\n"),
         ("pkg/child.py", "def __getattr__(name): return None\n"),
-        ("pkg/child.pyi", "class ContextUnit:\n    def value(self) -> int: ...\n"),
+        (
+            "pkg/child.pyi",
+            "class ContextUnit:\n    def value(self) -> int: ...\n",
+        ),
         (
             "consumer.py",
             "from pkg.child import ContextUnit\ndef consume(): return ContextUnit()\n",
@@ -51,7 +54,10 @@ fn paired_stub_supplies_declaration_missing_from_generated_runtime() {
     w.build();
     let conn = w.open();
     assert_eq!(status(&conn, "ContextUnit"), "resolved");
-    assert_eq!(import_target_paths(&conn), ["pkg/child.py", "pkg/child.pyi"]);
+    assert_eq!(
+        import_target_paths(&conn),
+        ["pkg/child.py", "pkg/child.pyi"]
+    );
     assert_eq!(call_target_paths(&conn), ["pkg/child.pyi"]);
     let evidence: String = query_scalar(
         &conn,
@@ -88,7 +94,10 @@ fn child_module_call_uses_stub_only_member() {
     w.build();
     let conn = w.open();
     assert_eq!(status(&conn, "child"), "resolved");
-    assert_eq!(import_target_paths(&conn), ["pkg/__init__.py", "pkg/child.py"]);
+    assert_eq!(
+        import_target_paths(&conn),
+        ["pkg/__init__.py", "pkg/child.py"]
+    );
     assert_eq!(call_target_paths(&conn), ["pkg/child.pyi"]);
 }
 
@@ -105,7 +114,10 @@ fn stub_only_module_remains_navigable() {
     w.build();
     let conn = w.open();
     assert_eq!(status(&conn, "child"), "resolved");
-    assert_eq!(import_target_paths(&conn), ["pkg/__init__.py", "pkg/child.pyi"]);
+    assert_eq!(
+        import_target_paths(&conn),
+        ["pkg/__init__.py", "pkg/child.pyi"]
+    );
     assert_eq!(call_targets(&conn), ["pkg.child.value"]);
 }
 
@@ -152,13 +164,19 @@ fn package_symbol_takes_precedence_over_same_named_child_module() {
     let w = fixture_workspace(&[
         ("pkg/__init__.py", "def child(): return 1\n"),
         ("pkg/child.py", "def value(): return 2\n"),
-        ("consumer.py", "from pkg import child\ndef consume(): return child()\n"),
+        (
+            "consumer.py",
+            "from pkg import child\ndef consume(): return child()\n",
+        ),
     ]);
     w.build();
     let conn = w.open();
     assert_eq!(status(&conn, "child"), "resolved");
     assert_eq!(import_targets(&conn), ["pkg", "pkg.child"]);
-    assert_eq!(import_target_paths(&conn), ["pkg/__init__.py", "pkg/__init__.py"]);
+    assert_eq!(
+        import_target_paths(&conn),
+        ["pkg/__init__.py", "pkg/__init__.py"]
+    );
     assert_eq!(call_targets(&conn), ["pkg.child"]);
 }
 

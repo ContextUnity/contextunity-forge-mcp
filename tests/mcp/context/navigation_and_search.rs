@@ -303,8 +303,9 @@ fn compact_page_metadata_preserves_pagination_evidence() {
 
 #[test]
 fn mcp_zero_match_search_has_compact_page() {
-    let mut client = McpTestHarness::indexed(&[("service.py", "def useful_symbol():\n    return 1\n")])
-        .expect("MCP initialize");
+    let mut client =
+        McpTestHarness::indexed(&[("service.py", "def useful_symbol():\n    return 1\n")])
+            .expect("MCP initialize");
     let query = json!({"pattern":"*noise*","path":"service.py"});
     let payload = client
         .payload("code_map_search", query)

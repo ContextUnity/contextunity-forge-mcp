@@ -339,7 +339,8 @@ fn mcp_task_claim_guidance_includes_rules_without_schema_bloat() {
             .task_target("Check nonbundled module guidance")
             .build(),
     );
-    let mut no_blackboard_client = McpTestHarness::new(&no_blackboard).expect("MCP new should succeed");
+    let mut no_blackboard_client =
+        McpTestHarness::new(&no_blackboard).expect("MCP new should succeed");
     let no_blackboard_sync = no_blackboard_client
         .payload(
             "task_manage",
@@ -381,7 +382,8 @@ fn mcp_task_claim_guidance_includes_rules_without_schema_bloat() {
     fs::create_dir_all(&full_target).unwrap();
     fs::write(minimal_target.join("forge-mcp.yaml"), "profile: minimal\n").unwrap();
     fs::write(full_target.join("forge-mcp.yaml"), "profile: full\n").unwrap();
-    let mut full_primary_client = McpTestHarness::new(&full_primary).expect("MCP new should succeed");
+    let mut full_primary_client =
+        McpTestHarness::new(&full_primary).expect("MCP new should succeed");
     let (_, selected_minimal) = full_primary_client
         .call(
             "task_list",

@@ -1,6 +1,6 @@
 use std::fs;
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::acdd::support::MilestoneFixtureBuilder;
 use crate::acdd::tasks::harness::TaskHarness;
@@ -180,10 +180,8 @@ fn task_blackboard_mcp_and_cli_share_sqlite_messages() {
     let mcp_list_markdown = mcp_list_markdown["result"]["content"][0]["text"]
         .as_str()
         .unwrap();
-    assert!(
-        mcp_list_markdown
-            .contains("[auto-resolved task 'first' to parent milestone 'm-blackboard']")
-    );
+    assert!(mcp_list_markdown
+        .contains("[auto-resolved task 'first' to parent milestone 'm-blackboard']"));
     assert_eq!(
         mcp_list_markdown
             .matches("[auto-resolved task 'first' to parent milestone 'm-blackboard']")
@@ -383,10 +381,8 @@ fn task_blackboard_mcp_and_cli_share_sqlite_messages() {
     let mcp_fallback_markdown = mcp_fallback_markdown["result"]["content"][0]["text"]
         .as_str()
         .unwrap();
-    assert!(
-        mcp_fallback_markdown
-            .contains("[auto-resolved task 'first' to parent milestone 'm-blackboard']")
-    );
+    assert!(mcp_fallback_markdown
+        .contains("[auto-resolved task 'first' to parent milestone 'm-blackboard']"));
     assert_eq!(
         mcp_fallback_markdown
             .matches("[auto-resolved task 'first' to parent milestone 'm-blackboard']")
@@ -482,24 +478,20 @@ fn milestone_blackboard_lists_are_bounded_payload_free_and_inspectable() {
     assert_eq!(messages["messages"][1]["id"], blocker_id);
     assert_eq!(messages["messages"][1]["topic"], "blockers");
     assert_eq!(messages["messages"][1]["author"], "fixture-builder");
-    assert!(
-        messages["messages"][1]["milestone_ref"]
-            .as_str()
-            .unwrap()
-            .ends_with("docs/milestones/010-blackboard.md")
-    );
+    assert!(messages["messages"][1]["milestone_ref"]
+        .as_str()
+        .unwrap()
+        .ends_with("docs/milestones/010-blackboard.md"));
     assert!(messages["messages"][1]["task_id"].is_null());
     assert!(messages["messages"][1]["subtask_ref"].is_null());
     assert_eq!(messages["messages"][1]["gate"], "build");
     assert!(messages["messages"][1]["created_at"].is_i64());
     assert!(messages["messages"][1].get("payload").is_none());
-    assert!(
-        messages["messages"]
-            .as_array()
-            .unwrap()
-            .windows(2)
-            .all(|pair| { pair[0]["id"].as_u64().unwrap() > pair[1]["id"].as_u64().unwrap() })
-    );
+    assert!(messages["messages"]
+        .as_array()
+        .unwrap()
+        .windows(2)
+        .all(|pair| { pair[0]["id"].as_u64().unwrap() > pair[1]["id"].as_u64().unwrap() }));
 
     let (_, listed_markdown) = client
         .call(

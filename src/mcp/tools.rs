@@ -222,6 +222,7 @@ fn allowed_fields_for_tool(tool_name: &str) -> &'static [&'static str] {
             "workspace",
             "action",
             "task_id",
+            "name",
             "milestone_ref",
             "task_ref",
             "paths",
@@ -231,6 +232,8 @@ fn allowed_fields_for_tool(tool_name: &str) -> &'static [&'static str] {
             "subtask_status",
             "evidence",
             "timeout_seconds",
+            "test",
+            "seam",
         ],
         "task_blackboard" => &[
             "action",

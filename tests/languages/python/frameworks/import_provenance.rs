@@ -8,7 +8,10 @@ fn known_external_alias_is_external_without_claiming_a_callable_target() {
     );
     w.build();
     let conn = w.open();
-    assert_eq!(persisted_coverage(&conn, "consumer.py", 1, "requests").0, "external");
+    assert_eq!(
+        persisted_coverage(&conn, "consumer.py", 1, "requests").0,
+        "external"
+    );
     let (status, evidence) = persisted_coverage(&conn, "consumer.py", 2, "http.get");
     assert_eq!(status, "external");
     assert_eq!(
@@ -63,7 +66,9 @@ fn module_type_aliases_resolve_imports_and_annotation_references() {
     ];
     let mut consumer = format!("from aliases import {}\n", names.join(", "));
     for name in names {
-        consumer.push_str(&format!("def use_{name}(value: {name}) -> {name}: return value\n"));
+        consumer.push_str(&format!(
+            "def use_{name}(value: {name}) -> {name}: return value\n"
+        ));
     }
     consumer.push_str("from aliases import Missing\ndef missing(value: Missing): return value\n");
     w.write("consumer.py", &consumer);
@@ -151,22 +156,24 @@ fn absolute_external_import_and_shadowed_alias_have_distinct_evidence() {
     w.write("consumer.py", "import unknown_package as missing\nimport requests as http\ndef unknown(): return missing.get()\ndef shadowed(http): return http.get()\n");
     w.build();
     let conn = w.open();
-    assert_eq!(persisted_coverage(&conn, "consumer.py", 3, "missing.get").0, "external");
-    assert!(
-        persisted_coverage(&conn, "consumer.py", 3, "missing.get")
-            .1
-            .starts_with("call through external import unknown_package;")
+    assert_eq!(
+        persisted_coverage(&conn, "consumer.py", 3, "missing.get").0,
+        "external"
     );
+    assert!(persisted_coverage(&conn, "consumer.py", 3, "missing.get")
+        .1
+        .starts_with("call through external import unknown_package;"));
     assert!(query_strings(
         &conn,
         "SELECT (SELECT evidence FROM coverage_evidence WHERE evidence_id=edges.evidence_id) FROM edges WHERE kind='calls' AND (SELECT evidence FROM coverage_evidence WHERE evidence_id=edges.evidence_id)='missing.get'", [])
     .is_empty());
-    assert_eq!(persisted_coverage(&conn, "consumer.py", 4, "http.get").0, "unresolved");
-    assert!(
-        !persisted_coverage(&conn, "consumer.py", 4, "http.get")
-            .1
-            .starts_with("call through external import ")
+    assert_eq!(
+        persisted_coverage(&conn, "consumer.py", 4, "http.get").0,
+        "unresolved"
     );
+    assert!(!persisted_coverage(&conn, "consumer.py", 4, "http.get")
+        .1
+        .starts_with("call through external import "));
 }
 
 #[test]
@@ -184,17 +191,16 @@ fn duplicate_aliases_and_local_provider_do_not_gain_external_provenance() {
         persisted_coverage(&conn, "consumer.py", 4, "client.get").0,
         "unresolved"
     );
-    assert!(
-        !persisted_coverage(&conn, "consumer.py", 4, "client.get")
-            .1
-            .starts_with("call through external import ")
+    assert!(!persisted_coverage(&conn, "consumer.py", 4, "client.get")
+        .1
+        .starts_with("call through external import "));
+    assert_eq!(
+        persisted_coverage(&conn, "consumer.py", 4, "local.get").0,
+        "resolved"
     );
-    assert_eq!(persisted_coverage(&conn, "consumer.py", 4, "local.get").0, "resolved");
-    assert!(
-        !persisted_coverage(&conn, "consumer.py", 4, "local.get")
-            .1
-            .starts_with("call through external import ")
-    );
+    assert!(!persisted_coverage(&conn, "consumer.py", 4, "local.get")
+        .1
+        .starts_with("call through external import "));
 }
 
 #[test]
@@ -207,11 +213,9 @@ fn local_import_is_scoped_to_its_function() {
         persisted_coverage(&conn, "consumer.py", 3, "http.get").1,
         "call through external import requests; callable target unverified"
     );
-    assert!(
-        !persisted_coverage(&conn, "consumer.py", 4, "http.get")
-            .1
-            .starts_with("call through external import ")
-    );
+    assert!(!persisted_coverage(&conn, "consumer.py", 4, "http.get")
+        .1
+        .starts_with("call through external import "));
 }
 
 #[test]
@@ -223,12 +227,13 @@ fn call_before_external_import_has_no_provenance() {
     );
     w.build();
     let conn = w.open();
-    assert_eq!(persisted_coverage(&conn, "consumer.py", 1, "http.get").0, "unresolved");
-    assert!(
-        !persisted_coverage(&conn, "consumer.py", 1, "http.get")
-            .1
-            .starts_with("call through external import ")
+    assert_eq!(
+        persisted_coverage(&conn, "consumer.py", 1, "http.get").0,
+        "unresolved"
     );
+    assert!(!persisted_coverage(&conn, "consumer.py", 1, "http.get")
+        .1
+        .starts_with("call through external import "));
 }
 
 #[test]
@@ -244,18 +249,18 @@ fn assignment_rebind_has_no_external_provenance() {
         persisted_coverage(&conn, "consumer.py", 3, "json.loads").0,
         "unresolved"
     );
-    assert!(
-        !persisted_coverage(&conn, "consumer.py", 3, "json.loads")
-            .1
-            .starts_with("call through external import ")
-    );
+    assert!(!persisted_coverage(&conn, "consumer.py", 3, "json.loads")
+        .1
+        .starts_with("call through external import "));
 }
 
 #[test]
 fn changing_import_provenance_preserves_cold_delta_equivalence() {
     let w = fixture_workspace(&[]);
-    let external = "import requests as client\ndef run(): return client.get('https://example.test')\n";
-    let unknown = "import unknown_package as client\ndef run(): return client.get('https://example.test')\n";
+    let external =
+        "import requests as client\ndef run(): return client.get('https://example.test')\n";
+    let unknown =
+        "import unknown_package as client\ndef run(): return client.get('https://example.test')\n";
     w.write("consumer.py", external);
     w.build();
     w.write("consumer.py", unknown);
@@ -362,7 +367,10 @@ fn module_qualified_framework_call_requires_an_earlier_import_position() {
             "before.py",
             "models.Record.model_validate({}); from pkg import models\n",
         ),
-        ("after.py", "from pkg import models; models.Record.model_validate({})\n"),
+        (
+            "after.py",
+            "from pkg import models; models.Record.model_validate({})\n",
+        ),
     ]);
     w.build();
     let conn = w.open();
@@ -370,7 +378,8 @@ fn module_qualified_framework_call_requires_an_earlier_import_position() {
         persisted_coverage(&conn, "before.py", 1, "models.Record.model_validate").0,
         "unresolved"
     );
-    let (status, evidence) = persisted_coverage(&conn, "after.py", 1, "models.Record.model_validate");
+    let (status, evidence) =
+        persisted_coverage(&conn, "after.py", 1, "models.Record.model_validate");
     assert_eq!(status, "external", "{evidence}");
     assert!(evidence.contains("pydantic"), "{evidence}");
 }

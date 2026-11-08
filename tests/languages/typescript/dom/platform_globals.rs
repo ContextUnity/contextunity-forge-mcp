@@ -22,7 +22,10 @@ fn node_and_web_callable_globals_have_external_origin() {
             .find(|row| row.expression == expression)
             .unwrap_or_else(|| panic!("missing {expression}: {graph:#?}"));
         assert_eq!(coverage.status, "external", "{expression}: {coverage:#?}");
-        assert!(coverage.evidence.contains(origin), "{expression}: {coverage:#?}");
+        assert!(
+            coverage.evidence.contains(origin),
+            "{expression}: {coverage:#?}"
+        );
     }
 }
 
@@ -80,7 +83,11 @@ fn web_constructors_have_external_origin() {
             "resolved",
             true,
         ),
-        ("function run(URL) { new URL('/api'); }", "unresolved", false),
+        (
+            "function run(URL) { new URL('/api'); }",
+            "unresolved",
+            false,
+        ),
     ] {
         let graph = linked("shadow.js", "javascript", source);
         let facts = &graph.facts;
@@ -94,10 +101,9 @@ fn web_constructors_have_external_origin() {
             assert!(graph.edges.iter().any(|edge| {
                 edge.kind == "calls"
                     && edge.evidence == "URL"
-                    && facts
-                        .nodes
-                        .iter()
-                        .any(|node| node.id == edge.dst && node.kind == "class" && node.name == "URL")
+                    && facts.nodes.iter().any(|node| {
+                        node.id == edge.dst && node.kind == "class" && node.name == "URL"
+                    })
             }));
         }
     }
@@ -148,7 +154,10 @@ fn javascript_named_node_builtin_call_keeps_import_origin_and_shadow_boundary() 
         "named Node import: {imported:?}"
     );
     let shadowed = coverage(3);
-    assert_eq!(shadowed.0, "unresolved", "shadowed local parameter: {shadowed:?}");
+    assert_eq!(
+        shadowed.0, "unresolved",
+        "shadowed local parameter: {shadowed:?}"
+    );
     drop(conn);
 }
 
@@ -204,13 +213,18 @@ fn conversion_globals_are_external_with_local_precedence() {
                 local_path.as_str(),
                 "function local() { function String(value) { return value; } String(value); }",
             ),
-            (shadowed_path.as_str(), "function shadowed(Boolean) { Boolean(value); }"),
+            (
+                shadowed_path.as_str(),
+                "function shadowed(Boolean) { Boolean(value); }",
+            ),
         ]
         .into_iter()
         .map(|(path, source)| {
             (
                 path.to_owned(),
-                ExtractorHarness::for_lang(language).at_path(path).extract(source),
+                ExtractorHarness::for_lang(language)
+                    .at_path(path)
+                    .extract(source),
             )
         })
         .collect();
@@ -236,13 +250,18 @@ fn conversion_globals_are_external_with_local_precedence() {
         }
         assert!(
             graph.edges.iter().any(|edge| {
-                edge.path == local_path && edge.kind == "calls" && edge.evidence == "String" && edge.dst == local_string
+                edge.path == local_path
+                    && edge.kind == "calls"
+                    && edge.evidence == "String"
+                    && edge.dst == local_string
             }),
             "{language} local String declaration"
         );
         assert!(
             graph.coverage.iter().any(|coverage| {
-                coverage.path == shadowed_path && coverage.expression == "Boolean" && coverage.status == "unresolved"
+                coverage.path == shadowed_path
+                    && coverage.expression == "Boolean"
+                    && coverage.status == "unresolved"
             }),
             "{language} shadowed unknown Boolean parameter"
         );
@@ -279,12 +298,10 @@ fn typed_platform_members_are_finite_and_respect_local_shadowing() {
             assert!(coverage.evidence.contains("JavaScript/Web platform"));
         }
         if source.starts_with("function") {
-            assert!(
-                !graph
-                    .edges
-                    .iter()
-                    .any(|edge| edge.kind == "calls" && edge.evidence == expression)
-            );
+            assert!(!graph
+                .edges
+                .iter()
+                .any(|edge| edge.kind == "calls" && edge.evidence == expression));
         }
     }
 }
@@ -451,7 +468,8 @@ fn html_table_element_type_and_members_use_verified_dom_origin() {
         let rows = coverage("table.ts", expression);
         assert!(
             rows.iter()
-                .any(|(status, evidence)| status == "external" && evidence.contains("builtin:web_api")),
+                .any(|(status, evidence)| status == "external"
+                    && evidence.contains("builtin:web_api")),
             "{expression}: {rows:?}"
         );
     }
@@ -460,11 +478,9 @@ fn html_table_element_type_and_members_use_verified_dom_origin() {
         !unknown.is_empty() && unknown.iter().all(|(status, _)| status == "unresolved"),
         "{unknown:?}"
     );
-    assert!(
-        coverage("local.ts", "table.querySelectorAll")
-            .iter()
-            .any(|(status, _)| status == "resolved")
-    );
+    assert!(coverage("local.ts", "table.querySelectorAll")
+        .iter()
+        .any(|(status, _)| status == "resolved"));
     let untyped = coverage("untyped.ts", "table.querySelectorAll");
     assert!(
         !untyped.is_empty() && untyped.iter().all(|(status, _)| status == "unresolved"),
@@ -478,7 +494,10 @@ fn html_table_element_type_and_members_use_verified_dom_origin() {
 fn browser_names_preserve_local_providers_and_unknown_parameter_boundaries() {
     assert_eq!(
         calls(
-            &[("local.ts", "function fetch() {} function run() { fetch(); }")],
+            &[(
+                "local.ts",
+                "function fetch() {} function run() { fetch(); }"
+            )],
             "fetch"
         ),
         ["local.ts"]
@@ -524,8 +543,16 @@ fn typed_array_callback_inherits_unique_element_provider() {
         ("Worker[]", "", "resolved"),
         ("Array<Worker>", "", "resolved"),
         ("Array<Worker>", "class Array<T> {}", "unresolved"),
-        ("Array<Worker>", "type Array<T> = { value: T };", "unresolved"),
-        ("Array<Worker>", "import { Array } from './custom';", "unresolved"),
+        (
+            "Array<Worker>",
+            "type Array<T> = { value: T };",
+            "unresolved",
+        ),
+        (
+            "Array<Worker>",
+            "import { Array } from './custom';",
+            "unresolved",
+        ),
         ("Box<Worker>", "class Box<T> {}", "unresolved"),
     ] {
         let source = format!(

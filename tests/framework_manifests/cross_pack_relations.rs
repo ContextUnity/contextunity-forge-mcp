@@ -5,12 +5,10 @@ use super::*;
 fn declarative_framework_rules_reach_persisted_receivers_routes_and_dependencies() {
     let sources = cross_pack_sources();
     let indexed = sources.index().unwrap();
-    assert!(
-        indexed
-            .registry
-            .framework_manifest_for_path(LanguageFamily("python"), "app.py", "django", "django")
-            .is_some()
-    );
+    assert!(indexed
+        .registry
+        .framework_manifest_for_path(LanguageFamily("python"), "app.py", "django", "django")
+        .is_some());
     let conn = indexed.conn;
     let component_contains_count = query_rows(
         &conn,

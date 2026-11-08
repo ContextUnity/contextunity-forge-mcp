@@ -69,6 +69,18 @@ pub fn verify_task(
     forge_tasks::engine::verify_task(root, task_id, timeout_seconds)
 }
 
+/// Verifies a claimed gate with an explicit test and optional seam reference after wiring extractors.
+pub fn verify_task_with_options(
+    root: &std::path::Path,
+    task_id: &str,
+    test: Option<&str>,
+    seam: Option<&str>,
+    timeout_seconds: Option<u64>,
+) -> anyhow::Result<serde_json::Value> {
+    ensure_extractors();
+    forge_tasks::engine::verify_task_with_options(root, task_id, test, seam, timeout_seconds)
+}
+
 /// Submits an automated gate with a bounded runtime timeout override.
 pub fn submit_zero_arg_with_timeout(
     root: &std::path::Path,

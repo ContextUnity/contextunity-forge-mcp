@@ -97,7 +97,10 @@ fn imported_framework_lineage_keeps_external_providers_and_exact_protocol_calls(
     "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='consumer.py' AND e.kind='calls' AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)='app/contracts.py' AND dst.kind='method' AND dst.name='notify'",
     [], |row| row.get(0),
 ).unwrap();
-    assert_eq!(local_edge, 1, "protocol call retains its exact local method");
+    assert_eq!(
+        local_edge, 1,
+        "protocol call retains its exact local method"
+    );
 }
 
 #[test]

@@ -36,8 +36,36 @@ pub(crate) fn execute_command_gate_with_timeout(
     paths: &[String],
     timeout_seconds: Option<u64>,
 ) -> Result<Vec<GateExecutionTrace>> {
+    execute_command_gate_with_options(
+        root,
+        task_id,
+        gate_path,
+        commands,
+        paths,
+        timeout_seconds,
+        None,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn execute_command_gate_with_options(
+    root: &Path,
+    task_id: &str,
+    gate_path: &str,
+    commands: &CommandDef,
+    paths: &[String],
+    timeout_seconds: Option<u64>,
+    explicit_test: Option<&str>,
+    explicit_seam: Option<&str>,
+) -> Result<Vec<GateExecutionTrace>> {
     if task_id.trim().is_empty() || gate_path.trim().is_empty() {
         bail!("TASK_COMMAND_INVALID: task_id and gate_path must not be empty");
+    }
+    let explicit_test = explicit_test.map(str::trim).filter(|s| !s.is_empty());
+    let explicit_seam = explicit_seam.map(str::trim).filter(|s| !s.is_empty());
+    if explicit_seam.is_some() && explicit_test.is_none() {
+        bail!("TASK_COMMAND_INVALID: --seam requires --test");
     }
     let mut store = store_for_task(root, task_id)?;
     let task = store.inspect(task_id)?;
@@ -77,7 +105,60 @@ pub(crate) fn execute_command_gate_with_timeout(
             "TASK_COMMAND_INVALID: supplied command definition does not match registered command '{registered_name}'"
         );
     }
-    let commands_to_run = resolve_command_plan(root, registered_name, commands, paths, &profile)?;
+    let commands_to_run = if let Some(test_ref) = explicit_test {
+        let (test_path, test_symbol) = match test_ref.split_once("::") {
+            Some((path, symbol)) if !symbol.trim().is_empty() => (path.trim(), Some(symbol.trim())),
+            Some(_) => {
+                bail!("TASK_COMMAND_PATH_INVALID: '{test_ref}' has an empty test symbol after '::'")
+            }
+            None => (test_ref, None),
+        };
+        validate_project_path(test_path)?;
+        if !root.join(test_path).is_file() {
+            bail!(
+                "TASK_SEAM_DISCONNECTED: {task_id}. seam_test_ref '{test_path}' is not present in the claimed worktree."
+            );
+        }
+        if test_symbol.is_some() {
+            match crate::engine::gates::validate_seam_file_and_symbol(task_id, root, test_ref) {
+                Ok(_) => {}
+                Err(error) if error.to_string().contains("TASK_EXTRACTOR_NOT_INITIALIZED") => {}
+                Err(error) => return Err(error),
+            }
+        }
+        if let Some(seam_ref) = explicit_seam {
+            let seam_path = seam_ref
+                .split_once("::")
+                .map_or(seam_ref, |(path, _)| path)
+                .trim();
+            validate_project_path(seam_path)?;
+            let index_conn = crate::engine::gates::code_map_connection(None, root)?.context(
+                "TASK_SEAM_DISCONNECTED: code map index is required when --seam is provided",
+            )?;
+            crate::engine::gates::validate_seam_reachability(
+                &index_conn,
+                task_id,
+                root,
+                &[seam_path.to_owned()],
+                test_ref,
+            )?;
+        }
+        let mut plan = resolve_command_plan(
+            root,
+            registered_name,
+            commands,
+            &[test_path.to_owned()],
+            &profile,
+        )?;
+        if let Some(symbol) = test_symbol {
+            for (_, cmd_str, _) in &mut plan {
+                *cmd_str = format!("{cmd_str} {symbol}");
+            }
+        }
+        plan
+    } else {
+        resolve_command_plan(root, registered_name, commands, paths, &profile)?
+    };
     if commands_to_run.is_empty() {
         bail!("TASK_COMMAND_NO_MATCH: no registered command matched the supplied project paths");
     }
@@ -220,8 +301,8 @@ pub(crate) fn execute_command_gate_with_timeout(
             stdout_sha256: Some(format!("{:x}", Sha256::digest(&stdout))),
             duration_ms,
         };
-        let seam_ref = parsed.seam_ref;
-        let passed_tests = passed_test_references(
+        let seam_ref = explicit_test.map(str::to_owned).or(parsed.seam_ref);
+        let mut passed_tests = passed_test_references(
             root,
             &output,
             &trace.command_id,
@@ -229,10 +310,20 @@ pub(crate) fn execute_command_gate_with_timeout(
             commands.output(),
         )
         .unwrap_or_default();
+        if let Some(test_ref) = explicit_test {
+            if status == "completed"
+                && exit_code == Some(0)
+                && parsed.passed.unwrap_or(0) > 0
+                && parsed.failed.unwrap_or(0) == 0
+            {
+                passed_tests.insert(test_ref.to_owned());
+            }
+        }
         let facts = crate::store::CommandExecutionProof {
             passed: parsed.passed,
             failed: parsed.failed,
             seam_ref,
+            seam_verified: explicit_test.is_some(),
             passed_tests,
             output_spec: commands.output().cloned(),
             scope_violations: violations.into_iter().collect(),
@@ -326,9 +417,14 @@ pub fn resolve_command_plan(
 }
 
 pub(crate) fn expand_command_args(command: &str, args: Option<&str>) -> String {
+    let args = args.map(str::trim).filter(|s| !s.is_empty());
     match args {
         Some(args) if command.contains("{scope_target}") => command.replace("{scope_target}", args),
         Some(args) => format!("{command} {args}"),
+        None if command.contains("{scope_target}") => command
+            .replace("{scope_target} ", "")
+            .replace(" {scope_target}", "")
+            .replace("{scope_target}", ""),
         None => command.to_owned(),
     }
 }
@@ -465,13 +561,7 @@ pub(crate) fn parse_command_output(
                 .map(|value| value.as_str().to_owned()))
         })
         .transpose()?
-        .flatten()
-        .or_else(|| {
-            let re = regex::Regex::new(r#"(?:--seam-ref\s+|--seam-ref=)(\S+)"#).ok()?;
-            re.captures(command)
-                .and_then(|c| c.get(1))
-                .map(|m| m.as_str().to_owned())
-        });
+        .flatten();
     Ok(ParsedCommandOutput {
         passed,
         failed,

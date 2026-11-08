@@ -1,6 +1,7 @@
 use super::*;
 
-pub(crate) fn file_backed_blackboard_fixture() -> (crate::common::Workspace, TasksStore, Milestone) {
+pub(crate) fn file_backed_blackboard_fixture() -> (crate::common::Workspace, TasksStore, Milestone)
+{
     let root = crate::common::Workspace::new();
     let milestone = Milestone::parse(SPEC, "forge-mcp").unwrap();
     let mut store = TasksStore::open(&root.path(".forge/tasks.sqlite")).unwrap();

@@ -4,8 +4,8 @@ use crate::common::Workspace;
 use crate::harness::McpTestHarness;
 use contextunity_forge_mcp::engine::reader::ReadRequest;
 use forge_core::model::ReadMode;
-use forge_core::subsystems::{SubsystemPreset, SubsystemRegistry, filter_subsystem_tools};
-use serde_json::{Value, json};
+use forge_core::subsystems::{filter_subsystem_tools, SubsystemPreset, SubsystemRegistry};
+use serde_json::{json, Value};
 
 fn read_response(client: &mut McpTestHarness, arguments: Value) -> Value {
     client
@@ -892,13 +892,12 @@ fn minimal_subsystems_filter_tools_and_check_batch_outline_admission() {
         ..Default::default()
     };
     // Should fail because neither subsystem is enabled
-    assert!(
-        req.requires_index(&forge_core::config::Adapter {
+    assert!(req
+        .requires_index(&forge_core::config::Adapter {
             modules: registry.clone(),
             ..Default::default()
         })
-        .is_err()
-    );
+        .is_err());
 
     // Enable docs only
     registry.enabled.insert("docs".into());

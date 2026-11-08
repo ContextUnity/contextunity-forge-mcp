@@ -65,6 +65,17 @@ pub fn verify_task(root: &Path, task_id: &str, timeout_seconds: Option<u64>) -> 
     evidence_compiler::verify_task(root, task_id, timeout_seconds)
 }
 
+/// Verify the active command gate with an explicit test and optional seam reference.
+pub fn verify_task_with_options(
+    root: &Path,
+    task_id: &str,
+    test: Option<&str>,
+    seam: Option<&str>,
+    timeout_seconds: Option<u64>,
+) -> Result<Value> {
+    evidence_compiler::verify_task_with_options(root, task_id, test, seam, timeout_seconds)
+}
+
 /// Submit inferred command evidence with an optional process timeout.
 pub fn submit_zero_arg_with_timeout(
     root: &Path,
@@ -347,6 +358,12 @@ pub struct Manage {
     pub session_fingerprint: Option<String>,
     /// Process timeout override for verify, in seconds (1..=3600).
     pub timeout_seconds: Option<u64>,
+    #[serde(default)]
+    /// Explicit test file or qualified test function for verify (e.g. 'tests/acdd/my_test.rs::test_fn').
+    pub test: Option<String>,
+    #[serde(default)]
+    /// Optional production seam target path or symbol for verify when checking CodeMap reachability.
+    pub seam: Option<String>,
     /// Worker receiving an atomic next claim.
     pub worker_id: Option<String>,
     /// In MCP, selects the request root for every action using explicit paths, exact names,

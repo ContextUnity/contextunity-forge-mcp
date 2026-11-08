@@ -21,13 +21,14 @@
 
 Use Forge MCP tools or the `contextunity-forge-mcp` CLI on the surface that provides the needed operation. Follow the active task profile and the `workflow_guidance` returned by task claim for gate sequence, proof policy, roles, models, review contours, and profile-specific behavior. Task builds and reviews run the scoped task seam test and strict Clippy (without forcing full unfiltered test suite execution during task iteration). Follow [TESTS.md](TESTS.md) for the exact task and milestone verification commands and count rules.
 
-The embedded ACDD profile registers `rust-check-and-test` as strict Clippy followed by tests. Use its `workflow_guidance.scoped_commands` entry for the task-scoped test target and submit the task-bound `expected_evidence_template` with completed proof fields.
+The embedded ACDD profile registers `rust-check-and-test` as strict Clippy followed by tests. For automated gates (`contract`, `build`), run `contextunity-forge-mcp task verify <task_id> --test <test_path::test_fn> [--seam <target>]` (or MCP `task_manage(action: "verify", ...)`), then submit the stage via `task submit <task_id> --stage <stage> --action pass` without manual evidence assembly. Delivery infers proof from the accepted candidate snapshot. Review and schema-defined gates provide their declared typed evidence payload.
 
 <!-- acdd-forge:agents-verification:start -->
 When authoring contracts or testing capabilities:
 - **Additive parameterized cases**: Extend existing table-driven test cases (`for case in cases`) ONLY when testing the same unit or input variation.
 - **Dedicated domain tests**: NEVER append distinct sub-scenarios, multi-step workflows, or new feature requirements into an existing test function. Create a separate, descriptively-named `#[test]` function in the appropriate domain module to preserve parallel test execution and isolated failure diagnostics.
 - **Runtime-red contract proof**: Contract tests must compile cleanly and produce runtime assertion failures (exit code 101) for `contract` gate proof.
+- **Autonomous scope extension**: Agents should extend scope autonomously via `extend_scope` to include necessary files, fixtures, tests, and documentation within admitted roots to unblock implementation or verification without halting execution or requesting human permission.
 <!-- acdd-forge:agents-verification:end -->
 
 <!-- acdd-forge:contract-synthesis:start -->

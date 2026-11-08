@@ -129,7 +129,8 @@ class Worker : public Base {
 type CoverageRow = (i64, &'static str, &'static str, &'static str);
 fn expected_coverage(language: &str) -> Vec<CoverageRow> {
     let resolved = "1 lexically justified candidates; implementor resolved=true, heuristic=false";
-    let shadowed = "callee is shadowed by a parameter or local binding of unknown callable identity";
+    let shadowed =
+        "callee is shadowed by a parameter or local binding of unknown callable identity";
     let dynamic = "computed receiver or dynamic callee; callable identity is unknown";
     match language {
         "java" => vec![
@@ -317,6 +318,9 @@ fn popular_languages_preserve_calls_coverage_deltas_and_diagnostics() {
         w.build();
         let conn = w.open();
         let error_count: i64 = count(&conn, "SELECT count(*) FROM errors");
-        assert!(error_count > 0, "{language} malformed syntax has diagnostics");
+        assert!(
+            error_count > 0,
+            "{language} malformed syntax has diagnostics"
+        );
     }
 }

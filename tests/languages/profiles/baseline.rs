@@ -1,7 +1,7 @@
 use super::*;
 use contextunity_forge_mcp::core::{commitments, semantic::ValueFlowFacts};
 use contextunity_forge_mcp::engine::languages::{self, LanguageProfile, SyntaxGrammarSpec};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeSet,
@@ -25,8 +25,10 @@ fn compacted_details(details: &Value, kind: &str, remove_column: bool) -> Value 
                 && value == &json!(false))
             || ((key == "bases" || key == "receiver" || key == "receiver_name") && value.is_null())
             || (key == "value_flow" && value.is_null())
-            || ((key == "bindings" || key == "rebindings") && value.as_array().is_some_and(Vec::is_empty))
-            || ((key == "decorators" || key == "bases") && value.as_array().is_some_and(Vec::is_empty))
+            || ((key == "bindings" || key == "rebindings")
+                && value.as_array().is_some_and(Vec::is_empty))
+            || ((key == "decorators" || key == "bases")
+                && value.as_array().is_some_and(Vec::is_empty))
             || ((key == "doc" || key == "receiver" || key == "receiver_name")
                 && value.as_str().is_some_and(str::is_empty))
             || (key == "param_types" && value.as_object().is_some_and(serde_json::Map::is_empty))
@@ -61,8 +63,8 @@ fn compacted_public_facts(facts: &Value) -> Value {
             for node in nodes {
                 let kind = node["kind"].as_str().unwrap_or_default().to_owned();
                 let line = node["line"].as_u64().unwrap_or_default();
-                let remove_column =
-                    matches!(kind.as_str(), "function" | "method") && declarations_per_line.get(&line) == Some(&1);
+                let remove_column = matches!(kind.as_str(), "function" | "method")
+                    && declarations_per_line.get(&line) == Some(&1);
                 node["details"] = compacted_details(&node["details"], &kind, remove_column);
             }
         }
@@ -79,12 +81,30 @@ const SOURCES: &[(&str, &[u8])] = &[
         "forge-mcp.yaml",
         include_bytes!("../fixtures/three_tier/forge-mcp.yaml"),
     ),
-    ("src/helper.py", include_bytes!("../fixtures/three_tier/src/helper.py")),
-    ("src/helper.rs", include_bytes!("../fixtures/three_tier/src/helper.rs")),
-    ("src/helper.ts", include_bytes!("../fixtures/three_tier/src/helper.ts")),
-    ("src/lib.rs", include_bytes!("../fixtures/three_tier/src/lib.rs")),
-    ("src/main.py", include_bytes!("../fixtures/three_tier/src/main.py")),
-    ("src/main.ts", include_bytes!("../fixtures/three_tier/src/main.ts")),
+    (
+        "src/helper.py",
+        include_bytes!("../fixtures/three_tier/src/helper.py"),
+    ),
+    (
+        "src/helper.rs",
+        include_bytes!("../fixtures/three_tier/src/helper.rs"),
+    ),
+    (
+        "src/helper.ts",
+        include_bytes!("../fixtures/three_tier/src/helper.ts"),
+    ),
+    (
+        "src/lib.rs",
+        include_bytes!("../fixtures/three_tier/src/lib.rs"),
+    ),
+    (
+        "src/main.py",
+        include_bytes!("../fixtures/three_tier/src/main.py"),
+    ),
+    (
+        "src/main.ts",
+        include_bytes!("../fixtures/three_tier/src/main.ts"),
+    ),
 ];
 
 fn public_facts() -> Value {
@@ -156,7 +176,11 @@ fn delivered_baseline_metadata_and_source_bytes_are_bound() {
     for source in baseline["sources"].as_array().unwrap() {
         let path = source["path"].as_str().unwrap();
         let bytes = SOURCES.iter().find(|(name, _)| *name == path).unwrap().1;
-        assert_eq!(bytes.len() as u64, source["size"].as_u64().unwrap(), "{path}");
+        assert_eq!(
+            bytes.len() as u64,
+            source["size"].as_u64().unwrap(),
+            "{path}"
+        );
         assert_eq!(
             hex::encode(Sha256::digest(bytes)),
             source["sha256"].as_str().unwrap(),
@@ -239,12 +263,18 @@ fn public_extraction_preserves_baseline_facts_and_meaningful_details() {
         .cloned()
         .collect();
 
-    assert_eq!(module_imports, std::slice::from_ref(&expected_module_import));
+    assert_eq!(
+        module_imports,
+        std::slice::from_ref(&expected_module_import)
+    );
     public["src/lib.rs"]["references"]
         .as_array_mut()
         .unwrap()
         .retain(|reference| reference != &expected_module_import);
-    assert_eq!(compacted_public_facts(&expected), compacted_public_facts(&public));
+    assert_eq!(
+        compacted_public_facts(&expected),
+        compacted_public_facts(&public)
+    );
 }
 
 #[cfg(feature = "lang-vue")]
@@ -273,10 +303,9 @@ fn commitment_fixture() -> PersistedWorkspaceHarness {
             .write(true)
             .open(workspace.path(path))
             .unwrap()
-            .set_times(
-                fs::FileTimes::new()
-                    .set_modified(UNIX_EPOCH + Duration::from_nanos(source["mtime_ns"].as_u64().unwrap())),
-            )
+            .set_times(fs::FileTimes::new().set_modified(
+                UNIX_EPOCH + Duration::from_nanos(source["mtime_ns"].as_u64().unwrap()),
+            ))
             .unwrap();
     }
     workspace
@@ -313,32 +342,33 @@ fn rust_simple_and_associated_declarations_keep_compact_classification() {
     let simple = ExtractorHarness::for_lang("rust")
         .at_path("simple.rs")
         .extract("fn simple() {}");
-    assert!(
-        simple
-            .nodes
-            .iter()
-            .find(|node| node.name == "simple")
-            .unwrap()
-            .details
-            .is_null()
-    );
+    assert!(simple
+        .nodes
+        .iter()
+        .find(|node| node.name == "simple")
+        .unwrap()
+        .details
+        .is_null());
     let methods = ExtractorHarness::for_lang("rust")
         .at_path("simple_method.rs")
         .extract("struct Simple;\nimpl Simple {\n    fn method() {}\n}\n");
     assert_eq!(
-        methods.nodes.iter().find(|node| node.name == "method").unwrap().details["is_static"],
+        methods
+            .nodes
+            .iter()
+            .find(|node| node.name == "method")
+            .unwrap()
+            .details["is_static"],
         true
     );
     let same_line = ExtractorHarness::for_lang("rust")
         .at_path("same_line.rs")
         .extract("fn first() {} fn second() {}");
-    assert!(
-        same_line
-            .nodes
-            .iter()
-            .filter(|node| matches!(node.name.as_str(), "first" | "second"))
-            .all(|node| node.details["column"].as_u64().is_some())
-    );
+    assert!(same_line
+        .nodes
+        .iter()
+        .filter(|node| matches!(node.name.as_str(), "first" | "second"))
+        .all(|node| node.details["column"].as_u64().is_some()));
 }
 
 struct ScopeOrderProfile(std::sync::Mutex<Vec<String>>);
@@ -394,10 +424,10 @@ impl contextunity_forge_mcp::engine::languages::LanguageProfile for ScopeOrderPr
         _facts: &mut contextunity_forge_mcp::core::models::Facts,
     ) {
         if ctx.node.kind() == "call" {
-            self.0
-                .lock()
-                .unwrap()
-                .push(format!("call:{}", ctx.node.utf8_text(ctx.source.as_bytes()).unwrap()));
+            self.0.lock().unwrap().push(format!(
+                "call:{}",
+                ctx.node.utf8_text(ctx.source.as_bytes()).unwrap()
+            ));
         }
     }
     fn extract_file(
@@ -520,7 +550,8 @@ static INVALID: [SyntaxGrammarSpec; 6] = [
     },
 ];
 
-const SYNTAX_SOURCE: &str = "import package\n# profile-doc\ndef sample(arg):\n    local = arg\n    service.execute()\n";
+const SYNTAX_SOURCE: &str =
+    "import package\n# profile-doc\ndef sample(arg):\n    local = arg\n    service.execute()\n";
 
 #[test]
 fn declarative_syntax_categories_validate_and_emit_facts() {
@@ -535,7 +566,10 @@ fn declarative_syntax_categories_validate_and_emit_facts() {
     .unwrap();
     let declaration = syntax_facts.nodes.iter().find(|node| node.name == "sample");
     for (category, observed) in [
-        ("declaration", declaration.is_some_and(|node| node.kind == "function")),
+        (
+            "declaration",
+            declaration.is_some_and(|node| node.kind == "function"),
+        ),
         (
             "scope",
             declaration.is_some_and(|node| {
@@ -549,24 +583,21 @@ fn declarative_syntax_categories_validate_and_emit_facts() {
         ),
         (
             "reference",
-            syntax_facts
-                .references
-                .iter()
-                .any(|reference| reference.kind == "calls" && reference.expression == "service.execute"),
+            syntax_facts.references.iter().any(|reference| {
+                reference.kind == "calls" && reference.expression == "service.execute"
+            }),
         ),
         (
             "import",
-            syntax_facts
-                .references
-                .iter()
-                .any(|reference| reference.kind == "imports" && reference.expression == "import package"),
+            syntax_facts.references.iter().any(|reference| {
+                reference.kind == "imports" && reference.expression == "import package"
+            }),
         ),
         (
             "member",
-            syntax_facts
-                .references
-                .iter()
-                .any(|reference| reference.kind == "reads" && reference.expression == "service.execute"),
+            syntax_facts.references.iter().any(|reference| {
+                reference.kind == "reads" && reference.expression == "service.execute"
+            }),
         ),
     ] {
         assert!(observed, "SyntaxGrammarSpec {category}: {syntax_facts:?}");

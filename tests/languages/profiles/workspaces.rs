@@ -106,13 +106,15 @@ fn root_cargo_crate_imports_reject_mismatched_crate_names_and_preserve_delta_par
 
 #[cfg(feature = "lang-rust")]
 #[test]
-fn root_cargo_crate_imports_reject_invalid_manifests_and_binary_only_roots_and_preserve_delta_parity() {
+fn root_cargo_crate_imports_reject_invalid_manifests_and_binary_only_roots_and_preserve_delta_parity(
+) {
     check_root_cargo_crate_import_cases(&ROOT_IMPORT_CASES[8..12]);
 }
 
 #[cfg(feature = "lang-rust")]
 #[test]
-fn root_cargo_crate_imports_respect_custom_lib_path_and_autolib_settings_and_preserve_delta_parity() {
+fn root_cargo_crate_imports_respect_custom_lib_path_and_autolib_settings_and_preserve_delta_parity()
+{
     check_root_cargo_crate_import_cases(&ROOT_IMPORT_CASES[12..]);
 }
 

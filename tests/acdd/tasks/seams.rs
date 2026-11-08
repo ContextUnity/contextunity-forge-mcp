@@ -4,5 +4,5 @@ use crate::acdd::tasks::harness::TaskHarness;
 use std::collections::HashMap;
 
 mod indexed_paths;
-mod tiered_context;
 mod scope;
+mod tiered_context;

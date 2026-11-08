@@ -136,7 +136,11 @@ fn two_phase_semantic_facts_reach_persisted_consumers_and_follow_provider_deltas
             ("capture-as", "_ as show_page", false),
             ("capture-union", "[show_page] | (show_page,)", false),
             ("capture-class-positional", "list([show_page])", false),
-            ("capture-class-keyword-value", "object(__class__=show_page)", false),
+            (
+                "capture-class-keyword-value",
+                "object(__class__=show_page)",
+                false,
+            ),
             ("control-class-head", "show_page()", true),
             ("control-dotted-value", "holder.show_page", true),
             ("control-keyword-label", "object(show_page=_)", true),
@@ -163,10 +167,20 @@ fn two_phase_semantic_facts_reach_persisted_consumers_and_follow_provider_deltas
         }
         workspace.write("unknown_provider.py", "def show_page(*args): return None\n");
         for (label, source, _) in &syntax_cases {
-            let facts = ExtractorHarness::for_lang("python").at_path(label).extract(source);
-            assert!(facts.errors.is_empty(), "{label} must parse: {:?}", facts.errors);
+            let facts = ExtractorHarness::for_lang("python")
+                .at_path(label)
+                .extract(source);
+            assert!(
+                facts.errors.is_empty(),
+                "{label} must parse: {:?}",
+                facts.errors
+            );
             assert_eq!(
-                facts.nodes.iter().filter(|node| node.name == "page").count(),
+                facts
+                    .nodes
+                    .iter()
+                    .filter(|node| node.name == "page")
+                    .count(),
                 1,
                 "{label} expected the page definition: {:?}",
                 facts.nodes
@@ -176,7 +190,11 @@ fn two_phase_semantic_facts_reach_persisted_consumers_and_follow_provider_deltas
         let facts = ExtractorHarness::for_lang("python")
             .at_path("app/views.py")
             .extract(SOURCE);
-        assert!(facts.errors.is_empty(), "app/views.py must parse: {:?}", facts.errors);
+        assert!(
+            facts.errors.is_empty(),
+            "app/views.py must parse: {:?}",
+            facts.errors
+        );
         for name in [
             "page",
             "shadowed",
@@ -220,11 +238,17 @@ fn two_phase_semantic_facts_reach_persisted_consumers_and_follow_provider_deltas
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(navigation_dtos, 0, "semantic DTOs belong to canonical local facts");
+        assert_eq!(
+            navigation_dtos, 0,
+            "semantic DTOs belong to canonical local facts"
+        );
         for (label, _, expected_line) in binding_cases {
             let path = format!("cases/{label}.py");
             let occurrences = edge_occurrence_rows(&conn, &path, "renders_template");
-            let facts = call_fact_counts.get(path.as_str()).copied().unwrap_or_default();
+            let facts = call_fact_counts
+                .get(path.as_str())
+                .copied()
+                .unwrap_or_default();
             if let Some(line) = expected_line {
                 assert_eq!(
                     occurrences,
@@ -247,7 +271,10 @@ fn two_phase_semantic_facts_reach_persisted_consumers_and_follow_provider_deltas
         for (label, _, expected_line) in syntax_cases {
             let path = format!("syntax/{label}");
             let occurrences = edge_occurrence_rows(&conn, &path, "renders_template");
-            let facts = call_fact_counts.get(path.as_str()).copied().unwrap_or_default();
+            let facts = call_fact_counts
+                .get(path.as_str())
+                .copied()
+                .unwrap_or_default();
             let coverage: i64 = conn.query_row("SELECT count(*) FROM resolution_coverage c JOIN path_dictionary p ON p.path_id=c.path_id WHERE p.path=?1 AND c.status='resolved' AND c.evidence_id=(SELECT evidence_id FROM coverage_evidence WHERE evidence='declarative file identity; unique proven target required')", [&path], |row| row.get(0)).unwrap();
             if let Some(line) = expected_line {
                 assert_eq!(
@@ -270,15 +297,21 @@ fn two_phase_semantic_facts_reach_persisted_consumers_and_follow_provider_deltas
                 assert_eq!(coverage, 0, "{label}");
             }
         }
-        let source = node_id_observation(&conn, "app/views.py", "page").expect("unique page definition");
+        let source =
+            node_id_observation(&conn, "app/views.py", "page").expect("unique page definition");
         let target: (String, String) = conn
             .query_row("SELECT n.id,n.qualname FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path=?1 AND n.kind='module'", params![TARGET], |row| Ok((row.get(0)?, row.get(1)?)))
             .expect("actual persisted HTML module target");
         assert_eq!(target.0, format!("module:{TARGET}"));
-        assert_eq!(target.1, "app.templates.catalog.card.html", "actual target qualname");
+        assert_eq!(
+            target.1, "app.templates.catalog.card.html",
+            "actual target qualname"
+        );
         let rows = edge_occurrence_rows(&conn, "app/views.py", "renders_template");
         let forbidden: Vec<_> = ["shadowed", "unrelated", "starred", "comprehension"]
-            .map(|name| node_id_observation(&conn, "app/views.py", name).expect("unique definition"))
+            .map(|name| {
+                node_id_observation(&conn, "app/views.py", name).expect("unique definition")
+            })
             .into_iter()
             .collect();
         assert!(
@@ -291,7 +324,10 @@ fn two_phase_semantic_facts_reach_persisted_consumers_and_follow_provider_deltas
             "imported alias must link the exact source occurrence to the actual module, with no guessed edges"
         );
         let coverage: i64 = conn.query_row("SELECT count(*) FROM resolution_coverage c JOIN path_dictionary p ON p.path_id=c.path_id WHERE p.path=?1 AND c.status='resolved' AND c.evidence_id=(SELECT evidence_id FROM coverage_evidence WHERE evidence='declarative file identity; unique proven target required')", ["app/views.py"], |row| row.get(0)).unwrap();
-        assert_eq!(coverage, 1, "imported alias resolves the actual template target");
+        assert_eq!(
+            coverage, 1,
+            "imported alias resolves the actual template target"
+        );
         drop(conn);
         workspace.write(TARGET, "<p>Changed provider</p>\n");
         workspace.delta(&[TARGET]);
@@ -306,7 +342,11 @@ fn two_phase_semantic_facts_reach_persisted_consumers_and_follow_provider_deltas
         );
         assert_eq!(
             edge_observations.edges,
-            [(edge_observations.page_ids[0].clone(), format!("module:{TARGET}"), 4)],
+            [(
+                edge_observations.page_ids[0].clone(),
+                format!("module:{TARGET}"),
+                4
+            )],
             "persisted file edge at app/views.py"
         );
         workspace.remove(TARGET);
@@ -332,7 +372,11 @@ fn two_phase_semantic_facts_reach_persisted_consumers_and_follow_provider_deltas
         );
         assert_eq!(
             edge_observations.edges,
-            [(edge_observations.page_ids[0].clone(), format!("module:{TARGET}"), 4)],
+            [(
+                edge_observations.page_ids[0].clone(),
+                format!("module:{TARGET}"),
+                4
+            )],
             "persisted file edge at app/views.py"
         );
         const MOVED: &str = "app/templates/catalog/renamed.html";
@@ -360,10 +404,18 @@ fn two_phase_semantic_facts_reach_persisted_consumers_and_follow_provider_deltas
         );
         assert_eq!(
             edge_observations.edges,
-            [(edge_observations.page_ids[0].clone(), format!("module:{MOVED}"), 4)],
+            [(
+                edge_observations.page_ids[0].clone(),
+                format!("module:{MOVED}"),
+                4
+            )],
             "persisted file edge at app/views.py"
         );
-        std::fs::rename(workspace.path("app/views.py"), workspace.path("app/pages.py")).unwrap();
+        std::fs::rename(
+            workspace.path("app/views.py"),
+            workspace.path("app/pages.py"),
+        )
+        .unwrap();
         workspace.delta(&["app/views.py", "app/pages.py"]);
         assert_complete_cold(&workspace);
         let edge_observations = file_edge_observations(&workspace, "app/pages.py");
@@ -376,13 +428,19 @@ fn two_phase_semantic_facts_reach_persisted_consumers_and_follow_provider_deltas
         );
         assert_eq!(
             edge_observations.edges,
-            [(edge_observations.page_ids[0].clone(), format!("module:{MOVED}"), 4)],
+            [(
+                edge_observations.page_ids[0].clone(),
+                format!("module:{MOVED}"),
+                4
+            )],
             "persisted file edge at app/pages.py"
         );
         workspace.remove("app/pages.py");
         workspace.delta(&["app/pages.py"]);
         assert_complete_cold(&workspace);
-        assert!(edge_occurrence_rows(&workspace.open(), "app/pages.py", "renders_template").is_empty());
+        assert!(
+            edge_occurrence_rows(&workspace.open(), "app/pages.py", "renders_template").is_empty()
+        );
         workspace.write("app/pages.py", &updated);
         workspace.delta(&["app/pages.py"]);
         assert_complete_cold(&workspace);
@@ -396,7 +454,11 @@ fn two_phase_semantic_facts_reach_persisted_consumers_and_follow_provider_deltas
         );
         assert_eq!(
             edge_observations.edges,
-            [(edge_observations.page_ids[0].clone(), format!("module:{MOVED}"), 4)],
+            [(
+                edge_observations.page_ids[0].clone(),
+                format!("module:{MOVED}"),
+                4
+            )],
             "persisted file edge at app/pages.py"
         );
         const REPLACE: &str = ".forge/frameworks/django.toml";
@@ -423,7 +485,11 @@ fn two_phase_semantic_facts_reach_persisted_consumers_and_follow_provider_deltas
         );
         assert_eq!(
             edge_observations.edges,
-            [(edge_observations.page_ids[0].clone(), format!("module:{MOVED}"), 4)],
+            [(
+                edge_observations.page_ids[0].clone(),
+                format!("module:{MOVED}"),
+                4
+            )],
             "persisted file edge at app/pages.py"
         );
     }

@@ -81,7 +81,10 @@ fn db_recovery_rejects_invalid_checkpoints_and_preserves_independent_owners() {
         "new task gates must not create global evidence pins"
     );
     assert_eq!(checkpoint.workspace, root.root().canonicalize().unwrap());
-    assert_eq!(checkpoint.task.as_ref().unwrap().claim_revision, stored.claim_revision);
+    assert_eq!(
+        checkpoint.task.as_ref().unwrap().claim_revision,
+        stored.claim_revision
+    );
     let recover = || db_recover(root.root());
     // Recovery must not promote old claims from unresolved intents, incomplete cohorts, or foreign owners.
     let keeper_commit =

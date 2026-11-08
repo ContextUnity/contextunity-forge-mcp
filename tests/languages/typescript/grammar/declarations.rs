@@ -28,12 +28,10 @@ fn inherited_methods_select_actual_overrides_and_reject_parent_cycles() {
     let source = "class Base { work() {} } class Worker extends Base { work() {} } function run() { const client = new Worker(); client.work(); }";
     let graph = linked("service.ts", "typescript", source);
     let facts = &graph.facts;
-    assert!(
-        graph
-            .edges
-            .iter()
-            .any(|edge| edge.kind == "calls" && edge.evidence == "client.work")
-    );
+    assert!(graph
+        .edges
+        .iter()
+        .any(|edge| edge.kind == "calls" && edge.evidence == "client.work"));
     let expected = facts
         .nodes
         .iter()
@@ -41,12 +39,9 @@ fn inherited_methods_select_actual_overrides_and_reject_parent_cycles() {
         .unwrap()
         .id
         .clone();
-    assert!(
-        graph
-            .edges
-            .iter()
-            .any(|edge| edge.kind == "calls" && edge.evidence == "client.work" && edge.dst == expected)
-    );
+    assert!(graph.edges.iter().any(|edge| edge.kind == "calls"
+        && edge.evidence == "client.work"
+        && edge.dst == expected));
     assert!(!resolves(
         "class A extends B {} class B extends A { work() {} } function run() { const client = new A(); client.work(); }",
         "client.work"
@@ -185,7 +180,8 @@ fn generic_containers_prove_only_documented_container_members() {
             assert!(
                 graph
                     .coverage(&format!("items.{member}"))
-                    .any(|row| row.status == "external" && row.evidence.contains("JavaScript/Web platform")),
+                    .any(|row| row.status == "external"
+                        && row.evidence.contains("JavaScript/Web platform")),
                 "{annotation}: {member}"
             );
         }
@@ -234,7 +230,14 @@ fn static_this_and_nominal_calls_preserve_static_instance_boundaries() {
             owner.qualname, target.qualname
         );
     }
-    assert_eq!(graph.edges.iter().filter(|edge| edge.kind == "calls").count(), 2);
+    assert_eq!(
+        graph
+            .edges
+            .iter()
+            .filter(|edge| edge.kind == "calls")
+            .count(),
+        2
+    );
     assert!(!resolves(
         "class Worker { work() {} make(): Worker { return new Worker(); } } function run() { const client = Worker.make(); client.work(); }",
         "client.work"
@@ -259,11 +262,15 @@ fn typescript_optional_call_keeps_its_persisted_expression() {
     ).unwrap().query_map([], |row| row.get(0)).unwrap()
         .map(Result::unwrap).collect();
     assert!(
-        expressions.iter().any(|expression| expression == "client?.run"),
+        expressions
+            .iter()
+            .any(|expression| expression == "client?.run"),
         "TypeScript keeps the original optional call expression: {expressions:?}"
     );
     assert!(
-        !expressions.iter().any(|expression| expression == "client.run"),
+        !expressions
+            .iter()
+            .any(|expression| expression == "client.run"),
         "JavaScript-only normalization must not rewrite TypeScript coverage: {expressions:?}"
     );
     drop(conn);
@@ -302,16 +309,19 @@ fn finite_standard_static_members_require_unshadowed_globals() {
         .at_path("comment-require.ts")
         .linked("function run(document) { document.createElement('div'); } // require");
     assert!(
-        graph
-            .coverage
-            .iter()
-            .any(|row| { row.expression == "document.createElement" && row.status == "unresolved" }),
+        graph.coverage.iter().any(|row| {
+            row.expression == "document.createElement" && row.status == "unresolved"
+        }),
         "shadowed document must stay unresolved even when a comment mentions require: {graph:#?}"
     );
     let graph = ExtractorHarness::for_lang("typescript")
         .at_path("unknown.ts")
         .linked("Number.noSuchMember(); Reflect.noSuchMember(); crypto.noSuchMember();");
-    for expression in ["Number.noSuchMember", "Reflect.noSuchMember", "crypto.noSuchMember"] {
+    for expression in [
+        "Number.noSuchMember",
+        "Reflect.noSuchMember",
+        "crypto.noSuchMember",
+    ] {
         assert!(
             graph
                 .coverage
@@ -368,11 +378,16 @@ class TableView {
         "fields in nodes table: {fields:?}"
     );
 
-    let (tbody_status, tbody_evidence) = persisted_coverage(&conn, "table.ts", None, "this.tbody.appendChild");
+    let (tbody_status, tbody_evidence) =
+        persisted_coverage(&conn, "table.ts", None, "this.tbody.appendChild");
     assert_eq!(tbody_status, "external", "{tbody_evidence}");
-    assert!(tbody_evidence.contains("builtin:web_api"), "{tbody_evidence}");
+    assert!(
+        tbody_evidence.contains("builtin:web_api"),
+        "{tbody_evidence}"
+    );
 
-    let (active_status, active_evidence) = persisted_coverage(&conn, "table.ts", None, "this.activeRow.select");
+    let (active_status, active_evidence) =
+        persisted_coverage(&conn, "table.ts", None, "this.activeRow.select");
     assert_eq!(active_status, "unresolved", "{active_evidence}");
 
     drop(stmt);

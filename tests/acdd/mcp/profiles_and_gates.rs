@@ -28,13 +28,22 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
     }
     workspace.write("docs/contracts/routing.md", &rules);
     for (path, source) in [
-        ("src/routing.rs", "pub struct Router;\npub fn route_task() {}\n"),
+        (
+            "src/routing.rs",
+            "pub struct Router;\npub fn route_task() {}\n",
+        ),
         ("src/unique.rs", "pub fn unique() {}\n"),
         ("src/minimal_routing.rs", "pub fn minimal_route_task() {}\n"),
-        ("src/minimal_markdown.rs", "pub fn minimal_markdown_task() {}\n"),
+        (
+            "src/minimal_markdown.rs",
+            "pub fn minimal_markdown_task() {}\n",
+        ),
         ("tests/test_routing.rs", "#[test]\nfn test_routing() {}\n"),
         ("src/cli_routing.rs", "pub fn route_cli_task() {}\n"),
-        ("tests/test_cli_routing.rs", "#[test]\nfn test_cli_routing() {}\n"),
+        (
+            "tests/test_cli_routing.rs",
+            "#[test]\nfn test_cli_routing() {}\n",
+        ),
     ] {
         workspace.write(path, source);
     }
@@ -47,19 +56,54 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
     workspace.write("docs/adr/003-decision-after-rules.md", &decision_rules);
     workspace.write("docs/adr/004-headed-decision.md", "---\ntitle: Headed Decision\ndoc_type: adr\nstatus: accepted\n---\n# Governance\n- INV-HEADED: Preserve the decision through [`unique`](../../src/unique.rs#L1).\n## Decision\nRetain the complete decision from its own section.\n");
     let task_specs: [(&str, &str, &[&str], &[&str]); 6] = [
-        ("routing-task-with-a-long-identity-for-blocker-regression", "Deliver unified routing", &["src/routing.rs", "tests/test_routing.rs"], &[]),
-        ("cli-routing-task", "Deliver CLI unified routing", &["src/cli_routing.rs", "tests/test_cli_routing.rs"], &[]),
-        ("minimal-routing-task", "Deliver minimal routing", &["src/minimal_routing.rs"], &[]),
-        ("decision-context-task", "Preserve governing ADR decisions", &["src/unique.rs"], &[]),
-        ("dependency-context-task", "Preserve declared task dependencies", &["src/routing.rs"], &["routing-task-with-a-long-identity-for-blocker-regression"]),
-        ("minimal-markdown-context-task", "Render a minimal claim context", &["src/minimal_markdown.rs"], &[]),
+        (
+            "routing-task-with-a-long-identity-for-blocker-regression",
+            "Deliver unified routing",
+            &["src/routing.rs", "tests/test_routing.rs"],
+            &[],
+        ),
+        (
+            "cli-routing-task",
+            "Deliver CLI unified routing",
+            &["src/cli_routing.rs", "tests/test_cli_routing.rs"],
+            &[],
+        ),
+        (
+            "minimal-routing-task",
+            "Deliver minimal routing",
+            &["src/minimal_routing.rs"],
+            &[],
+        ),
+        (
+            "decision-context-task",
+            "Preserve governing ADR decisions",
+            &["src/unique.rs"],
+            &[],
+        ),
+        (
+            "dependency-context-task",
+            "Preserve declared task dependencies",
+            &["src/routing.rs"],
+            &["routing-task-with-a-long-identity-for-blocker-regression"],
+        ),
+        (
+            "minimal-markdown-context-task",
+            "Render a minimal claim context",
+            &["src/minimal_markdown.rs"],
+            &[],
+        ),
     ];
     let mut fixture = MilestoneFixtureBuilder::new("m-context")
         .title("Context Milestone")
         .without_status()
         .invariants(&[
-            "routing-invariant", "authority-2", "authority-3", "authority-4", "authority-5",
-            "authority-6", "authority-7",
+            "routing-invariant",
+            "authority-2",
+            "authority-3",
+            "authority-4",
+            "authority-5",
+            "authority-6",
+            "authority-7",
         ]);
     for (task_ref, target, scope, dependencies) in task_specs {
         fixture = fixture
@@ -320,10 +364,7 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
     );
 
     // 4. CLI task context command
-    let cli_context = crate::common::cli::run_cli_json(
-        &workspace,
-        &["task", "context", task_id],
-    );
+    let cli_context = crate::common::cli::run_cli_json(&workspace, &["task", "context", task_id]);
     assert!(
         cli_context.status.success(),
         "{}",
@@ -358,7 +399,14 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
             }),
         )
         .expect("MCP payload should succeed");
-    for field in ["context_bundle", "gates", "attempts", "findings", "receipt", "spec"] {
+    for field in [
+        "context_bundle",
+        "gates",
+        "attempts",
+        "findings",
+        "receipt",
+        "spec",
+    ] {
         assert!(minimal_claim.get(field).is_none(), "{field}");
     }
     assert_eq!(minimal_claim["depends_on"], json!([]));
@@ -455,10 +503,8 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
             )),
         }
     }
-    let cli_decision = crate::common::cli::run_cli_json(
-        &workspace,
-        &["task", "context", decision_task_id],
-    );
+    let cli_decision =
+        crate::common::cli::run_cli_json(&workspace, &["task", "context", decision_task_id]);
     if cli_decision.status.success() {
         let cli_decision_json: Value = serde_json::from_slice(&cli_decision.stdout).unwrap();
         for path in [

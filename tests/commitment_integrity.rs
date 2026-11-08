@@ -31,8 +31,11 @@ fn logical_fts_commitments_ignore_physical_insertion_order() {
             [path_id],
         )
         .unwrap();
-        conn.execute("INSERT INTO node_search(rowid,search_text) VALUES(-1,'α unicode unicode')", [])
-            .unwrap();
+        conn.execute(
+            "INSERT INTO node_search(rowid,search_text) VALUES(-1,'α unicode unicode')",
+            [],
+        )
+        .unwrap();
         for rowid in 1..=16 {
             conn.execute(
                 "INSERT INTO doc_sections(doc_id,path,section_title,doc_type,content,invariants,referenced_symbols,mtime,size) \
@@ -86,7 +89,10 @@ fn logical_fts_commitments_ignore_physical_insertion_order() {
         let ordered = fts_postings(&conn, "node_search_commit_vocab");
         let streaming_postings_sorted =
             ordered.len() > 1 && ordered.windows(2).all(|pair| pair[0] <= pair[1]);
-        assert!(streaming_postings_sorted, "{label}: streaming branch is exercised");
+        assert!(
+            streaming_postings_sorted,
+            "{label}: streaming branch is exercised"
+        );
 
         let root = commitments::seal(&conn).expect("initial sealing succeeds");
         commitments::verify(&conn).expect("the streaming result verifies");
@@ -114,11 +120,17 @@ fn logical_fts_commitments_ignore_physical_insertion_order() {
             .collect::<rusqlite::Result<Vec<_>>>()
             .unwrap();
         let fallback_postings_reversed = reversed.windows(2).any(|pair| pair[0] > pair[1]);
-        assert!(fallback_postings_reversed, "{label}: sorted fallback is exercised");
+        assert!(
+            fallback_postings_reversed,
+            "{label}: sorted fallback is exercised"
+        );
 
         commitments::verify(&conn).expect("the fallback result verifies");
         let fallback_root = commitments::seal(&conn).expect("fallback sealing succeeds");
-        assert_eq!(fallback_root, root, "{label}: fallback root must match initial root");
+        assert_eq!(
+            fallback_root, root,
+            "{label}: fallback root must match initial root"
+        );
 
         conn.execute(
             "UPDATE node_search_commit_vocab SET doc=9000001 WHERE rowid=(SELECT min(rowid) FROM node_search_commit_vocab)",
@@ -155,15 +167,42 @@ fn sealing_rejects_missing_commitment_references() {
     }
 
     let cases = [
-        (MissingReference::EdgeOwner, "edge commitment references missing owner path"),
-        (MissingReference::EdgeSource, "edge commitment references missing source node"),
-        (MissingReference::EdgeDestination, "edge commitment references missing destination node"),
-        (MissingReference::OccurrenceOwner, "edge occurrence commitment references missing owner path"),
-        (MissingReference::OccurrenceSource, "edge occurrence commitment references missing source node"),
-        (MissingReference::OccurrenceDestination, "edge occurrence commitment references missing destination node"),
-        (MissingReference::DependencyOwner, "dependency commitment references missing owner path"),
-        (MissingReference::SharedOwner, "shared-owner commitment references missing owner path"),
-        (MissingReference::SharedKey, "shared-owner commitment references missing key"),
+        (
+            MissingReference::EdgeOwner,
+            "edge commitment references missing owner path",
+        ),
+        (
+            MissingReference::EdgeSource,
+            "edge commitment references missing source node",
+        ),
+        (
+            MissingReference::EdgeDestination,
+            "edge commitment references missing destination node",
+        ),
+        (
+            MissingReference::OccurrenceOwner,
+            "edge occurrence commitment references missing owner path",
+        ),
+        (
+            MissingReference::OccurrenceSource,
+            "edge occurrence commitment references missing source node",
+        ),
+        (
+            MissingReference::OccurrenceDestination,
+            "edge occurrence commitment references missing destination node",
+        ),
+        (
+            MissingReference::DependencyOwner,
+            "dependency commitment references missing owner path",
+        ),
+        (
+            MissingReference::SharedOwner,
+            "shared-owner commitment references missing owner path",
+        ),
+        (
+            MissingReference::SharedKey,
+            "shared-owner commitment references missing key",
+        ),
     ];
     let conn = connection();
     conn.pragma_update(None, "foreign_keys", false).unwrap();
@@ -186,44 +225,63 @@ fn sealing_rejects_missing_commitment_references() {
     .unwrap();
 
     for (mutation, reason) in cases {
-        conn.execute_batch("SAVEPOINT missing_commitment_reference;").unwrap();
+        conn.execute_batch("SAVEPOINT missing_commitment_reference;")
+            .unwrap();
         let _ = match mutation {
-            MissingReference::EdgeOwner => conn.execute(
-                "INSERT INTO edges VALUES(?1,'calls',?2,99,1,1,2,1)",
-                params![source_hash, destination_hash],
-            ).unwrap(),
-            MissingReference::EdgeSource => conn.execute(
-                "INSERT INTO edges VALUES(?1,'calls',?2,?3,1,1,2,1)",
-                params![stable_hash64("fn:missing-source"), destination_hash, owner],
-            ).unwrap(),
-            MissingReference::EdgeDestination => conn.execute(
-                "INSERT INTO edges VALUES(?1,'calls',?2,?3,1,1,2,1)",
-                params![source_hash, stable_hash64("fn:missing-destination"), owner],
-            ).unwrap(),
-            MissingReference::OccurrenceOwner => conn.execute(
-                "INSERT INTO edge_occurrences VALUES(99,0,?1,?2,'calls',1,1,2)",
-                params![source_hash, destination_hash],
-            ).unwrap(),
-            MissingReference::OccurrenceSource => conn.execute(
-                "INSERT INTO edge_occurrences VALUES(?1,0,?2,?3,'calls',1,1,2)",
-                params![owner, stable_hash64("fn:missing-source"), destination_hash],
-            ).unwrap(),
-            MissingReference::OccurrenceDestination => conn.execute(
-                "INSERT INTO edge_occurrences VALUES(?1,0,?2,?3,'calls',1,1,2)",
-                params![owner, source_hash, stable_hash64("fn:missing-destination")],
-            ).unwrap(),
-            MissingReference::DependencyOwner => conn.execute(
-                "INSERT INTO dependencies VALUES(99,0,?1,'imports','target','resolved')",
-                [stable_hash64("src/target.rs")],
-            ).unwrap(),
-            MissingReference::SharedOwner => conn.execute(
-                "INSERT INTO shared_owners VALUES(0,?1,99,0)",
-                [target_key_hash],
-            ).unwrap(),
-            MissingReference::SharedKey => conn.execute(
-                "INSERT INTO shared_owners VALUES(0,?1,?2,0)",
-                params![stable_hash64("fn:missing-target"), owner],
-            ).unwrap(),
+            MissingReference::EdgeOwner => conn
+                .execute(
+                    "INSERT INTO edges VALUES(?1,'calls',?2,99,1,1,2,1)",
+                    params![source_hash, destination_hash],
+                )
+                .unwrap(),
+            MissingReference::EdgeSource => conn
+                .execute(
+                    "INSERT INTO edges VALUES(?1,'calls',?2,?3,1,1,2,1)",
+                    params![stable_hash64("fn:missing-source"), destination_hash, owner],
+                )
+                .unwrap(),
+            MissingReference::EdgeDestination => conn
+                .execute(
+                    "INSERT INTO edges VALUES(?1,'calls',?2,?3,1,1,2,1)",
+                    params![source_hash, stable_hash64("fn:missing-destination"), owner],
+                )
+                .unwrap(),
+            MissingReference::OccurrenceOwner => conn
+                .execute(
+                    "INSERT INTO edge_occurrences VALUES(99,0,?1,?2,'calls',1,1,2)",
+                    params![source_hash, destination_hash],
+                )
+                .unwrap(),
+            MissingReference::OccurrenceSource => conn
+                .execute(
+                    "INSERT INTO edge_occurrences VALUES(?1,0,?2,?3,'calls',1,1,2)",
+                    params![owner, stable_hash64("fn:missing-source"), destination_hash],
+                )
+                .unwrap(),
+            MissingReference::OccurrenceDestination => conn
+                .execute(
+                    "INSERT INTO edge_occurrences VALUES(?1,0,?2,?3,'calls',1,1,2)",
+                    params![owner, source_hash, stable_hash64("fn:missing-destination")],
+                )
+                .unwrap(),
+            MissingReference::DependencyOwner => conn
+                .execute(
+                    "INSERT INTO dependencies VALUES(99,0,?1,'imports','target','resolved')",
+                    [stable_hash64("src/target.rs")],
+                )
+                .unwrap(),
+            MissingReference::SharedOwner => conn
+                .execute(
+                    "INSERT INTO shared_owners VALUES(0,?1,99,0)",
+                    [target_key_hash],
+                )
+                .unwrap(),
+            MissingReference::SharedKey => conn
+                .execute(
+                    "INSERT INTO shared_owners VALUES(0,?1,?2,0)",
+                    params![stable_hash64("fn:missing-target"), owner],
+                )
+                .unwrap(),
         };
         let sealing = commitments::seal(&conn);
         conn.execute_batch(
@@ -271,7 +329,8 @@ fn logical_fts_commitments_are_stable_and_reject_semantic_tampering() {
     .unwrap();
 
     let defensive = conn.db_config(DbConfig::SQLITE_DBCONFIG_DEFENSIVE).unwrap();
-    conn.set_db_config(DbConfig::SQLITE_DBCONFIG_DEFENSIVE, false).unwrap();
+    conn.set_db_config(DbConfig::SQLITE_DBCONFIG_DEFENSIVE, false)
+        .unwrap();
     conn.execute_batch(
         "CREATE INDEX partial_order_probe ON node_search_idx(segid,pgno DESC,term);
          ANALYZE;",
@@ -294,18 +353,23 @@ fn logical_fts_commitments_are_stable_and_reject_semantic_tampering() {
         let error = commitments::verify(&conn)
             .expect_err("tampering must invalidate the stored logical seal");
         assert!(error.to_string().contains(commitment), "{error:#}");
-        conn.execute_batch("ROLLBACK TO fts_shadow_tamper; RELEASE fts_shadow_tamper;").unwrap();
+        conn.execute_batch("ROLLBACK TO fts_shadow_tamper; RELEASE fts_shadow_tamper;")
+            .unwrap();
         commitments::verify(&conn).expect("rolling back tampering restores verification");
     }
 
-    conn.execute_batch("DROP INDEX partial_order_probe; ANALYZE;").unwrap();
-    conn.set_db_config(DbConfig::SQLITE_DBCONFIG_DEFENSIVE, defensive).unwrap();
+    conn.execute_batch("DROP INDEX partial_order_probe; ANALYZE;")
+        .unwrap();
+    conn.set_db_config(DbConfig::SQLITE_DBCONFIG_DEFENSIVE, defensive)
+        .unwrap();
     commitments::verify(&conn).expect("cleanup restores verification");
     let cleanup_root = commitments::seal(&conn).expect("cleanup reseals");
     assert_eq!(cleanup_root, expected_root);
 
-    conn.pragma_update(None, "reverse_unordered_selects", true).unwrap();
-    let reverse_unordered_root = commitments::seal(&conn).expect("reverse unordered selects reseal");
+    conn.pragma_update(None, "reverse_unordered_selects", true)
+        .unwrap();
+    let reverse_unordered_root =
+        commitments::seal(&conn).expect("reverse unordered selects reseal");
     assert_eq!(reverse_unordered_root, expected_root);
 
     conn.execute_batch("ANALYZE; VACUUM;").unwrap();
@@ -382,7 +446,8 @@ fn fts_sealing_survives_valid_rebuild_reindex_and_vacuum() {
         "REINDEX, ANALYZE, and VACUUM must preserve the logical FTS commitment root"
     );
     commitments::verify(&conn).expect("the maintained FTS state verifies");
-    let resealed_maintenance_root = commitments::seal(&conn).expect("the maintained FTS state reseals");
+    let resealed_maintenance_root =
+        commitments::seal(&conn).expect("the maintained FTS state reseals");
     assert_eq!(resealed_maintenance_root, maintained_root);
 }
 

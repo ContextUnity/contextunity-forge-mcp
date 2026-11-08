@@ -309,11 +309,9 @@ concurrency:
         contextunity_forge_mcp::engine::scanner::load_adapter(profile_workspace.root(), None)
             .unwrap()
             .modules;
-    assert!(
-        ["codemap", "acdd", "blackboard", "docs", "checkpoints"]
-            .iter()
-            .all(|module| full.is_enabled(module))
-    );
+    assert!(["codemap", "acdd", "blackboard", "docs", "checkpoints"]
+        .iter()
+        .all(|module| full.is_enabled(module)));
 
     profile_workspace.write(
         "forge-mcp.yaml",

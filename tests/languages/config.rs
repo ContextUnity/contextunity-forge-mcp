@@ -16,7 +16,12 @@ fn rows(conn: &Connection, sql: &str) -> Vec<String> {
         .collect()
 }
 
-fn assert_snippet(workspace: &PersistedWorkspaceHarness, conn: &Connection, selector: &str, expected: &str) {
+fn assert_snippet(
+    workspace: &PersistedWorkspaceHarness,
+    conn: &Connection,
+    selector: &str,
+    expected: &str,
+) {
     let policy = ResponsePolicy::default();
     let options = QueryOptions::resolve(&policy, None, 0, None, None).unwrap();
     let source = SourceOptions::resolve(&policy, Some(true), Some(0), None, 0).unwrap();

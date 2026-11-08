@@ -5,8 +5,13 @@ fn named_and_star_barrels_resolve_confirmed_exports() {
         "export { work as alias } from './provider';",
         "export * from './provider';",
     ] {
-        let name = if barrel.contains("alias") { "alias" } else { "work" };
-        let consumer = format!("import {{ {name} }} from './barrel'; function run() {{ {name}(); }}");
+        let name = if barrel.contains("alias") {
+            "alias"
+        } else {
+            "work"
+        };
+        let consumer =
+            format!("import {{ {name} }} from './barrel'; function run() {{ {name}(); }}");
         assert_eq!(
             calls(
                 &[
@@ -95,7 +100,10 @@ fn javascript_local_imports_require_indexed_project_targets() {
 fn commonjs_object_exports_resolve_local_functions() {
     let facts: BTreeMap<String, Facts> = extracted_files(
         &[
-            ("provider.js", "function work() {} module.exports = { renamed: work };"),
+            (
+                "provider.js",
+                "function work() {} module.exports = { renamed: work };",
+            ),
             (
                 "consumer.js",
                 "const { renamed } = require('./provider'); function run() { renamed(); }",
@@ -107,7 +115,11 @@ fn commonjs_object_exports_resolve_local_functions() {
     let import_target = graph
         .edges
         .iter()
-        .find(|edge| edge.kind == "imports" && edge.evidence == "renamed" && edge.dst.starts_with("ts:provider.js"))
+        .find(|edge| {
+            edge.kind == "imports"
+                && edge.evidence == "renamed"
+                && edge.dst.starts_with("ts:provider.js")
+        })
         .map(|edge| {
             facts
                 .values()
@@ -135,18 +147,18 @@ fn commonjs_object_exports_resolve_local_functions() {
         1,
         "{graph:#?}"
     );
-    assert!(
-        graph
-            .coverage
-            .iter()
-            .any(|row| { row.path == "consumer.js" && row.expression == "renamed" && row.status == "resolved" })
-    );
+    assert!(graph.coverage.iter().any(|row| {
+        row.path == "consumer.js" && row.expression == "renamed" && row.status == "resolved"
+    }));
 }
 
 #[test]
 fn commonjs_function_expression_export_binds_named_import() {
     let files = [
-        ("provider.cjs", "exports.multiply = function(a, b) { return a * b; };"),
+        (
+            "provider.cjs",
+            "exports.multiply = function(a, b) { return a * b; };",
+        ),
         (
             "consumer.mjs",
             "import { multiply } from './provider.cjs'; function run() { multiply(2, 3); }",
@@ -158,26 +170,25 @@ fn commonjs_function_expression_export_binds_named_import() {
     let call_targets: Vec<_> = graph
         .edges
         .iter()
-        .filter(|edge| edge.kind == "calls" && edge.path == "consumer.mjs" && edge.evidence == "multiply")
+        .filter(|edge| {
+            edge.kind == "calls" && edge.path == "consumer.mjs" && edge.evidence == "multiply"
+        })
         .filter_map(|edge| provider.nodes.iter().find(|node| node.id == edge.dst))
         .collect();
     assert_eq!(call_targets.len(), 1, "{graph:#?}");
     assert_eq!(call_targets[0].kind, "function");
     assert_eq!(call_targets[0].line, 1);
-    assert!(
-        call_targets[0].details["signature"]
-            .as_str()
-            .is_some_and(|signature| signature.starts_with("function(a, b)"))
-    );
+    assert!(call_targets[0].details["signature"]
+        .as_str()
+        .is_some_and(|signature| signature.starts_with("function(a, b)")));
     assert!(graph.edges.iter().any(|edge| {
-        edge.kind == "imports" && edge.path == "consumer.mjs" && provider.nodes.iter().any(|node| node.id == edge.dst)
+        edge.kind == "imports"
+            && edge.path == "consumer.mjs"
+            && provider.nodes.iter().any(|node| node.id == edge.dst)
     }));
-    assert!(
-        graph
-            .coverage
-            .iter()
-            .any(|row| { row.path == "consumer.mjs" && row.expression == "multiply" && row.status == "resolved" })
-    );
+    assert!(graph.coverage.iter().any(|row| {
+        row.path == "consumer.mjs" && row.expression == "multiply" && row.status == "resolved"
+    }));
 
     let workspace = crate::languages::PersistedWorkspaceHarness::new();
     for (path, source) in files {
@@ -190,7 +201,10 @@ fn commonjs_function_expression_export_binds_named_import() {
         "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='consumer.mjs' AND e.kind='calls' AND (SELECT evidence FROM coverage_evidence WHERE evidence_id=e.evidence_id)='multiply' AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)='provider.cjs' AND dst.kind='function' AND dst.line=1",
         [],
     );
-    assert_eq!(persisted_calls, 1, "persisted call must target the exported function");
+    assert_eq!(
+        persisted_calls, 1,
+        "persisted call must target the exported function"
+    );
     let persisted_status: String = query_scalar(
         &conn,
         "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='consumer.mjs' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='multiply'",
@@ -207,7 +221,10 @@ fn commonjs_default_function_expression_export_binds_esm_and_require_calls() {
             "provider.cjs",
             "module.exports = function(value) { return value + 1; };",
         ),
-        ("consumer.mjs", "import increment from './provider.cjs'; increment(2);"),
+        (
+            "consumer.mjs",
+            "import increment from './provider.cjs'; increment(2);",
+        ),
         (
             "consumer.cjs",
             "const increment = require('./provider.cjs'); increment(2);",
@@ -230,10 +247,9 @@ fn commonjs_default_function_expression_export_binds_esm_and_require_calls() {
             "{path} lost the exact CommonJS function provider: {graph:#?}"
         );
         assert!(
-            graph
-                .coverage
-                .iter()
-                .any(|row| { row.path == path && row.expression == "increment" && row.status == "resolved" }),
+            graph.coverage.iter().any(|row| {
+                row.path == path && row.expression == "increment" && row.status == "resolved"
+            }),
             "{path}: {graph:#?}"
         );
     }
@@ -284,7 +300,10 @@ fn commonjs_default_function_expression_export_binds_esm_and_require_calls() {
 #[test]
 fn commonjs_namespace_require_links_exported_member() {
     let files = [
-        ("provider.js", "function work() {} module.exports = { work };"),
+        (
+            "provider.js",
+            "function work() {} module.exports = { work };",
+        ),
         (
             "consumer.js",
             "const provider = require('./provider'); function run() { provider.work(); }",
@@ -362,13 +381,18 @@ fn callable_globals_respect_lexical_scope_and_imported_targets() {
         );
         assert!(
             graph.edges.iter().any(|edge| {
-                edge.path == scope_path && edge.kind == "calls" && edge.evidence == "String" && edge.dst == local_string
+                edge.path == scope_path
+                    && edge.kind == "calls"
+                    && edge.evidence == "String"
+                    && edge.dst == local_string
             }),
             "{language} captured local String"
         );
         assert!(
             graph.coverage.iter().any(|coverage| {
-                coverage.path == no_keys_path && coverage.expression == "Object.keys" && coverage.status == "unresolved"
+                coverage.path == no_keys_path
+                    && coverage.expression == "Object.keys"
+                    && coverage.status == "unresolved"
             }),
             "{language} local Object without keys"
         );
@@ -417,7 +441,10 @@ fn conflicting_exports_cycles_private_and_type_exports_fail_closed() {
         vec![
             ("first.ts", "export function work() {}"),
             ("second.ts", "export function work() {}"),
-            ("barrel.ts", "export * from './first'; export * from './second';"),
+            (
+                "barrel.ts",
+                "export * from './first'; export * from './second';",
+            ),
             (
                 "consumer.ts",
                 "import {work} from './barrel'; function run() { work(); }",
@@ -427,7 +454,10 @@ fn conflicting_exports_cycles_private_and_type_exports_fail_closed() {
             ("first.ts", "export function work() {}"),
             ("second.ts", "export function work() {}"),
             ("indirect.ts", "export * from './second';"),
-            ("barrel.ts", "export * from './first'; export * from './indirect';"),
+            (
+                "barrel.ts",
+                "export * from './first'; export * from './indirect';",
+            ),
             ("outer.ts", "export {work} from './barrel';"),
             (
                 "consumer.ts",
@@ -437,11 +467,17 @@ fn conflicting_exports_cycles_private_and_type_exports_fail_closed() {
         vec![
             ("a.ts", "export {work} from './b';"),
             ("b.ts", "export {work} from './a';"),
-            ("consumer.ts", "import {work} from './a'; function run() { work(); }"),
+            (
+                "consumer.ts",
+                "import {work} from './a'; function run() { work(); }",
+            ),
         ],
         vec![
             ("provider.ts", "function privateWork() {}"),
-            ("barrel.ts", "export {privateWork as work} from './provider';"),
+            (
+                "barrel.ts",
+                "export {privateWork as work} from './provider';",
+            ),
             (
                 "consumer.ts",
                 "import {work} from './barrel'; function run() { work(); }",
@@ -449,7 +485,10 @@ fn conflicting_exports_cycles_private_and_type_exports_fail_closed() {
         ],
         vec![
             ("provider.ts", "export class Worker {}"),
-            ("barrel.ts", "export type {Worker as work} from './provider';"),
+            (
+                "barrel.ts",
+                "export type {Worker as work} from './provider';",
+            ),
             (
                 "consumer.ts",
                 "import {work} from './barrel'; function run() { work(); }",
@@ -540,7 +579,10 @@ fn commonjs_capture_keeps_linked_projects_isolated() {
     let first = crate::languages::PersistedWorkspaceHarness::new();
     let second = crate::languages::PersistedWorkspaceHarness::new();
     for project in [&first, &second] {
-        project.write("provider.js", "function work() {} module.exports = { work };");
+        project.write(
+            "provider.js",
+            "function work() {} module.exports = { work };",
+        );
         project.write(
             "consumer.cjs",
             "const local = require('./provider'); const config = { enabled: true }; function run() { local.work(); }",
@@ -569,7 +611,10 @@ fn commonjs_capture_keeps_linked_projects_isolated() {
             "SELECT count(*) FROM edge_occurrences e WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)=?1 AND e.kind='calls' AND (SELECT evidence FROM coverage_evidence WHERE evidence_id=e.evidence_id)='local.work'",
             rusqlite::params![owner],
         );
-        assert_eq!(all_edges, 1, "CommonJS capture selected another project provider");
+        assert_eq!(
+            all_edges, 1,
+            "CommonJS capture selected another project provider"
+        );
     }
     drop(conn);
 }

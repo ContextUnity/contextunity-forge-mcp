@@ -18,8 +18,7 @@ fn manifest_input_digest_is_committed_and_tampering_is_detected() {
     )
     .unwrap();
     assert!(commitments::verify(&conn).is_err());
-    let tampered_root =
-        commitments::seal(&conn).expect("tampered manifest digest can be resealed");
+    let tampered_root = commitments::seal(&conn).expect("tampered manifest digest can be resealed");
     assert_ne!(tampered_root, original_root);
 }
 
@@ -50,16 +49,16 @@ fn coverage_partial_owner_update_matches_full_seal() {
     )
     .unwrap();
     let selected = std::collections::BTreeSet::from(["src/owner_a.rs".to_owned()]);
-    let partial_root = commitments::seal_owners(&conn, Some(&selected))
-        .expect("partial owner sealing succeeds");
+    let partial_root =
+        commitments::seal_owners(&conn, Some(&selected)).expect("partial owner sealing succeeds");
     let selected_leaf_after = coverage_leaf(&conn, "src/owner_a.rs");
     let other_leaf_after = coverage_leaf(&conn, "src/owner_b.rs");
     assert_ne!(partial_root, initial_root);
     assert_ne!(selected_leaf_after, selected_leaf_before);
     assert_eq!(other_leaf_after, other_leaf_before);
 
-    let full_root_after = commitments::seal(&conn)
-        .expect("full sealing succeeds after the owner update");
+    let full_root_after =
+        commitments::seal(&conn).expect("full sealing succeeds after the owner update");
     assert_eq!(full_root_after, partial_root);
 
     commitments::verify_owners(&conn, Some(&selected))
@@ -100,8 +99,7 @@ fn coverage_uses_dictionary_values_for_unicode_and_custom_status() {
         [],
     )
     .unwrap();
-    let root_after = commitments::seal(&conn)
-        .expect("coverage evidence mutation seals");
+    let root_after = commitments::seal(&conn).expect("coverage evidence mutation seals");
     assert_ne!(root_after, original_root);
 }
 

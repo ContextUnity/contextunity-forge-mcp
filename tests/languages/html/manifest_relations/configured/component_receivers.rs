@@ -64,7 +64,8 @@ fn configured_component_and_receiver_rules_follow_effective_rules_and_delta() {
         {"id":"implicit","language":"typescript","activation":[{"kind":"package","name":"@atelier/ui-kit"}],"operation":{"kind":"implicit_receivers","names":["$signal"]}}
     ]});
     let manifest = ".forge/frameworks/atelier-components.toml";
-    let write = |value: &serde_json::Value| workspace.write(manifest, &toml::to_string(value).unwrap());
+    let write =
+        |value: &serde_json::Value| workspace.write(manifest, &toml::to_string(value).unwrap());
     write(&pack);
     workspace.build();
     let assert_active = |active: bool| {
@@ -79,7 +80,8 @@ fn configured_component_and_receiver_rules_follow_effective_rules_and_delta() {
             ("app.ts", "event.payload.get"),
             ("app.ts", "$signal"),
         ] {
-            let statuses: Vec<_> = observations.coverage()
+            let statuses: Vec<_> = observations
+                .coverage()
                 .iter()
                 .filter(|coverage| coverage.path == path && coverage.expression == expression)
                 .map(|coverage| coverage.status.as_str())
@@ -101,7 +103,8 @@ fn configured_component_and_receiver_rules_follow_effective_rules_and_delta() {
                 "configured components/receiver {path}:{expression}: {statuses:?}"
             );
         }
-        let shadow = observations.edges()
+        let shadow = observations
+            .edges()
             .iter()
             .filter(|edge| {
                 edge.source_path == "shadow.ts"
@@ -115,31 +118,50 @@ fn configured_component_and_receiver_rules_follow_effective_rules_and_delta() {
             "configured builtin spelling preserves local declaration calls"
         );
         for (path, caller, target_path, target) in [
-            ("receiver-local.ts", "localReceiver", "receiver-local.ts", "$signal"),
+            (
+                "receiver-local.ts",
+                "localReceiver",
+                "receiver-local.ts",
+                "$signal",
+            ),
             (
                 "receiver-import.ts",
                 "importedReceiver",
                 "receiver-provider.ts",
                 "providedSignal",
             ),
-            ("receiver-member.ts", "runReceiver", "receiver-member.ts", "$signal"),
+            (
+                "receiver-member.ts",
+                "runReceiver",
+                "receiver-member.ts",
+                "$signal",
+            ),
         ] {
-            let canonical_ids: Vec<_> = observations.nodes()
+            let canonical_ids: Vec<_> = observations
+                .nodes()
                 .iter()
                 .filter(|node| node.path == target_path && node.name == target)
                 .map(|node| node.id.as_str())
                 .collect();
-            assert_eq!(canonical_ids.len(), 1, "unique lexical target: {target_path}:{target}");
-            let targets: Vec<_> = observations.edges()
+            assert_eq!(
+                canonical_ids.len(),
+                1,
+                "unique lexical target: {target_path}:{target}"
+            );
+            let targets: Vec<_> = observations
+                .edges()
                 .iter()
-                .filter(|edge| edge.source_path == path && edge.source_name == caller && edge.kind == "calls")
+                .filter(|edge| {
+                    edge.source_path == path && edge.source_name == caller && edge.kind == "calls"
+                })
                 .map(|edge| edge.target_id.as_str())
                 .collect();
             assert_eq!(
                 targets, canonical_ids,
                 "ordinary lexical/import/member authority precedes implicit receiver, active={active}: {path}"
             );
-            let external = observations.coverage()
+            let external = observations
+                .coverage()
                 .iter()
                 .filter(|coverage| {
                     coverage.path == path
@@ -147,10 +169,14 @@ fn configured_component_and_receiver_rules_follow_effective_rules_and_delta() {
                         && coverage.status == "external"
                 })
                 .count();
-            assert_eq!(external, 0, "local receiver cannot become configured external: {path}");
+            assert_eq!(
+                external, 0,
+                "local receiver cannot become configured external: {path}"
+            );
         }
         for path in ["receiver-parameter.ts", "receiver-write.ts"] {
-            let statuses: Vec<_> = observations.coverage()
+            let statuses: Vec<_> = observations
+                .coverage()
                 .iter()
                 .filter(|coverage| coverage.path == path && coverage.expression == "$signal")
                 .map(|coverage| coverage.status.as_str())
@@ -159,15 +185,22 @@ fn configured_component_and_receiver_rules_follow_effective_rules_and_delta() {
                 !statuses.is_empty() && statuses.iter().all(|status| *status == "unresolved"),
                 "unknown lexical receiver stays nonexternal, active={active}: {path}: {statuses:?}"
             );
-            let guessed = observations.edges()
+            let guessed = observations
+                .edges()
                 .iter()
                 .filter(|edge| edge.source_path == path && edge.kind == "calls")
                 .count();
-            assert_eq!(guessed, 0, "unknown lexical receiver has no guessed exact call: {path}");
+            assert_eq!(
+                guessed, 0,
+                "unknown lexical receiver has no guessed exact call: {path}"
+            );
         }
-        let same_object = observations.edges()
+        let same_object = observations
+            .edges()
             .iter()
-            .filter(|edge| edge.kind == "calls" && edge.source_name == "start" && edge.target_name == "finish")
+            .filter(|edge| {
+                edge.kind == "calls" && edge.source_name == "start" && edge.target_name == "finish"
+            })
             .count();
         assert_eq!(
             same_object,
@@ -175,7 +208,10 @@ fn configured_component_and_receiver_rules_follow_effective_rules_and_delta() {
             "configured object factory owns this member proof"
         );
         let cached = &observations.persisted_facts();
-        let public_cached: Vec<_> = cached.iter().map(crate::common::assertions::projected_facts).collect();
+        let public_cached: Vec<_> = cached
+            .iter()
+            .map(crate::common::assertions::projected_facts)
+            .collect();
         let origins = public_cached
             .iter()
             .flat_map(|facts| facts["nodes"].as_array().into_iter().flatten())
@@ -220,7 +256,8 @@ fn configured_component_and_receiver_rules_follow_effective_rules_and_delta() {
             "options references retain actual rule origin and canonical imported alias"
         );
         for path in ["registered.vue", "bare.vue"] {
-            let references: Vec<_> = observations.edges()
+            let references: Vec<_> = observations
+                .edges()
                 .iter()
                 .filter(|edge| edge.owner_path == path && edge.kind == "references")
                 .map(|edge| (edge.source_id.as_str(), edge.target_id.as_str(), edge.line))
@@ -231,7 +268,8 @@ fn configured_component_and_receiver_rules_follow_effective_rules_and_delta() {
                 "configured options own exact component reference: {path}"
             );
             if active {
-                let target_ids: Vec<_> = observations.nodes()
+                let target_ids: Vec<_> = observations
+                    .nodes()
                     .iter()
                     .filter(|node| node.path == "widgets/CardView.vue" && node.kind == "module")
                     .map(|node| node.id.as_str())

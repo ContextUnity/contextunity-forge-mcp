@@ -44,10 +44,12 @@ fn verified_receipt_recovery_survives_rollback_and_rejects_tampering() {
         .unwrap()
         .execute_batch("CREATE TRIGGER reject_file_delete BEFORE DELETE ON files BEGIN SELECT RAISE(ABORT, 'forced delta rollback'); END;")
         .unwrap();
-    assert!(
-        db::cache::publish_verified(&database, ws.root(), first["output_root"].as_str().unwrap())
-            .unwrap()
-    );
+    assert!(db::cache::publish_verified(
+        &database,
+        ws.root(),
+        first["output_root"].as_str().unwrap()
+    )
+    .unwrap());
     let receipt = PathBuf::from(format!("{}.verified.json", database.display()));
 
     ws.write("main.rs", "pub fn after_() {}\n");
@@ -78,15 +80,13 @@ fn verified_receipt_recovery_survives_rollback_and_rejects_tampering() {
     let index = IndexFixture::open(&database);
     index.tamper_function_names("tampered").unwrap();
     drop(index);
-    assert!(
-        !db::cache::publish_verified_identity(
-            &database,
-            ws.root(),
-            first["output_root"].as_str().unwrap(),
-            &verified
-        )
-        .unwrap()
-    );
+    assert!(!db::cache::publish_verified_identity(
+        &database,
+        ws.root(),
+        first["output_root"].as_str().unwrap(),
+        &verified
+    )
+    .unwrap());
     assert!(!receipt.exists());
     assert!(db::reader::open(&database, ws.root()).is_err());
 }
@@ -158,12 +158,10 @@ fn linked_source_edits_and_renames_refresh_in_same_server() {
     );
     fs::remove_file(linked.path("next.rs")).unwrap();
     invalidate_mcp_connection_cache(&server.db).unwrap();
-    assert!(
-        snapshot(&server).unwrap()["nodes"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
+    assert!(snapshot(&server).unwrap()["nodes"]
+        .as_array()
+        .unwrap()
+        .is_empty());
 }
 
 #[test]

@@ -2,8 +2,8 @@ use serde_json::{json, Value};
 
 use crate::acdd::tasks::harness::TaskHarness;
 
-use crate::common::Workspace;
 use crate::common::mcp_harness::McpTestHarness;
+use crate::common::Workspace;
 
 pub(super) use crate::common::cli as in_process_cli;
 pub(super) use crate::common::mcp_harness as in_process;
@@ -60,7 +60,14 @@ fn task_list_generation_and_continuation_matrix() {
         ..
     } = large_task_fixture(workspace, &mut client, task_harness);
     let task_list_cli_json = |root: &Workspace, args: &[&str]| -> anyhow::Result<Value> {
-        let mut cli_args = vec!["task", "list", "--milestone", "013-large", "--status", "all"];
+        let mut cli_args = vec![
+            "task",
+            "list",
+            "--milestone",
+            "013-large",
+            "--status",
+            "all",
+        ];
         cli_args.extend_from_slice(args);
         cli_payload(root, &cli_args)
     };
@@ -474,7 +481,6 @@ fn task_list_generation_and_continuation_matrix() {
     client.finish().expect("MCP server should finish");
 }
 
-
 #[test]
 fn task_list_byte_budget_matrix() {
     let mut fixture = task_list_fixture();
@@ -489,10 +495,27 @@ fn task_list_byte_budget_matrix() {
         generation: large_generation,
         ..
     } = large_task_fixture(workspace, &mut client, task_harness);
-    assert!(large_frame_bytes <= 98_304, "frame was {large_frame_bytes} bytes");
-    assert_ne!(large_response["result"]["isError"], true, "{large_response}");
-    for (field, expected) in [("total", json!(4)), ("limit", json!(3)), ("offset", json!(0)), ("returned", json!(1)), ("byte_omitted", json!(2)), ("next_offset", json!(1)), ("has_more", json!(true))] {
-        assert_eq!(large_page["pagination"][field], expected, "pagination {field}");
+    assert!(
+        large_frame_bytes <= 98_304,
+        "frame was {large_frame_bytes} bytes"
+    );
+    assert_ne!(
+        large_response["result"]["isError"], true,
+        "{large_response}"
+    );
+    for (field, expected) in [
+        ("total", json!(4)),
+        ("limit", json!(3)),
+        ("offset", json!(0)),
+        ("returned", json!(1)),
+        ("byte_omitted", json!(2)),
+        ("next_offset", json!(1)),
+        ("has_more", json!(true)),
+    ] {
+        assert_eq!(
+            large_page["pagination"][field], expected,
+            "pagination {field}"
+        );
     }
     assert!(!large_generation.is_empty());
     assert_eq!(large_page["tasks"].as_array().unwrap().len(), 1);

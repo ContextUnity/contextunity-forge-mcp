@@ -232,11 +232,7 @@ impl Workspace {
     }
 
     /// Creates a Git commit in the workspace.
-    pub fn commit_git(
-        &self,
-        message: &str,
-        only_paths: Option<&[&str]>,
-    ) -> anyhow::Result<()> {
+    pub fn commit_git(&self, message: &str, only_paths: Option<&[&str]>) -> anyhow::Result<()> {
         let mut args = vec![
             "-c",
             "user.name=Fixture",
@@ -426,9 +422,11 @@ impl Workspace {
                             let mut linked_entries = Vec::new();
                             visit(&linked_root, &linked_root, &mut linked_entries);
                             let prefix = PathBuf::from(format!("[{name}]"));
-                            entries.extend(linked_entries.into_iter().map(|(relative, input)| {
-                                (prefix.join(relative), input)
-                            }));
+                            entries.extend(
+                                linked_entries
+                                    .into_iter()
+                                    .map(|(relative, input)| (prefix.join(relative), input)),
+                            );
                         }
                     }
                 }

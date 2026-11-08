@@ -181,12 +181,10 @@ fn removal_safety_uses_complete_evidence_when_the_visible_page_is_empty() {
     query.offset = 20;
     query.generation = Some(initial["generation"].as_str().unwrap().to_owned());
     let empty = traversal::removal_paged(&conn, "target", &query).unwrap();
-    assert!(
-        empty["incoming_dependencies"]["items"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
+    assert!(empty["incoming_dependencies"]["items"]
+        .as_array()
+        .unwrap()
+        .is_empty());
     assert_eq!(empty["incoming_dependencies"]["total"], 1);
     assert_eq!(empty["safe_to_remove"], false);
 }
@@ -214,22 +212,20 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
     let conn = workspace.open();
     let policy = ResponsePolicy::default();
     let disabled = SourceOptions::resolve(&policy, None, None, None, 0).unwrap();
-    assert!(
-        symbols::inspect_with_options(
-            &conn,
-            workspace.root(),
-            "selected",
-            &symbols::InspectOptions {
-                show_doc: false,
-                source: &disabled,
-                coverage: CoverageOptions::default(),
-                page: &options(30)
-            }
-        )
-        .unwrap()
-        .get("source")
-        .is_none()
-    );
+    assert!(symbols::inspect_with_options(
+        &conn,
+        workspace.root(),
+        "selected",
+        &symbols::InspectOptions {
+            show_doc: false,
+            source: &disabled,
+            coverage: CoverageOptions::default(),
+            page: &options(30)
+        }
+    )
+    .unwrap()
+    .get("source")
+    .is_none());
     let preview = SourceOptions::resolve(&policy, Some(true), None, Some(35), 0).unwrap();
     let first = symbols::inspect_with_options(
         &conn,
@@ -265,12 +261,10 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
     )
     .unwrap();
     assert_eq!(last["source_preview"]["has_more"], false);
-    assert!(
-        last["source"]
-            .as_str()
-            .unwrap()
-            .ends_with("return 'Привіт'\r\n")
-    );
+    assert!(last["source"]
+        .as_str()
+        .unwrap()
+        .ends_with("return 'Привіт'\r\n"));
     let first_body = source.split_once("def selected").unwrap().1;
     assert_eq!(
         format!(
@@ -334,20 +328,18 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
     common::assertions::assert_command_succeeded(&cli_valid);
     let cli_valid: Value = serde_json::from_slice(&cli_valid.stdout).unwrap();
     assert_eq!(cli_valid["source_preview"]["body_offset"], cli_offset);
-    assert!(
-        symbols::inspect_with_options(
-            &conn,
-            workspace.root(),
-            "selected",
-            &symbols::InspectOptions {
-                show_doc: false,
-                source: &next,
-                coverage: CoverageOptions::default(),
-                page: &options(30)
-            }
-        )
-        .is_err()
-    );
+    assert!(symbols::inspect_with_options(
+        &conn,
+        workspace.root(),
+        "selected",
+        &symbols::InspectOptions {
+            show_doc: false,
+            source: &next,
+            coverage: CoverageOptions::default(),
+            page: &options(30)
+        }
+    )
+    .is_err());
     let mut client = in_process::McpTestHarness::new(&workspace).expect("MCP initialize");
     let mcp_first = client
         .payload(
@@ -542,12 +534,10 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
             .expect("MCP transport");
         assert!(bytes <= 4096, "{format}: {bytes}");
         assert_eq!(response["result"]["isError"], true, "{format}: {response}");
-        assert!(
-            response["result"]["content"][0]["text"]
-                .as_str()
-                .unwrap()
-                .contains("line exceeds")
-        );
+        assert!(response["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("line exceeds"));
     }
 
     for (lines, name, body) in cases {
@@ -644,20 +634,18 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
     );
     assert!(!cli_stale.status.success());
     workspace.write("code.py", "def selected(): return 99\n");
-    assert!(
-        symbols::inspect_with_options(
-            &conn,
-            workspace.root(),
-            "selected",
-            &symbols::InspectOptions {
-                show_doc: false,
-                source: &preview,
-                coverage: CoverageOptions::default(),
-                page: &query
-            }
-        )
-        .is_err()
-    );
+    assert!(symbols::inspect_with_options(
+        &conn,
+        workspace.root(),
+        "selected",
+        &symbols::InspectOptions {
+            show_doc: false,
+            source: &preview,
+            coverage: CoverageOptions::default(),
+            page: &query
+        }
+    )
+    .is_err());
     assert!(failures.is_empty(), "{}", failures.join("\n"));
     bounded_client
         .finish()
@@ -730,37 +718,33 @@ fn continuation_rejects_a_new_index_generation() {
     let mut query = options(1);
     query.offset = 1;
     query.generation = Some(generation);
-    assert!(
-        symbols::search_with_options(
-            &conn,
-            "*i*",
-            &symbols::SearchOptions {
-                kind: Some("function"),
-                path: None,
-                include_docs: false,
-                exact: false,
-                page: &query
-            }
-        )
-        .unwrap_err()
-        .to_string()
-        .contains("generation changed")
-    );
+    assert!(symbols::search_with_options(
+        &conn,
+        "*i*",
+        &symbols::SearchOptions {
+            kind: Some("function"),
+            path: None,
+            include_docs: false,
+            exact: false,
+            page: &query
+        }
+    )
+    .unwrap_err()
+    .to_string()
+    .contains("generation changed"));
     query.generation = None;
-    assert!(
-        symbols::search_with_options(
-            &conn,
-            "*i*",
-            &symbols::SearchOptions {
-                kind: Some("function"),
-                path: None,
-                include_docs: false,
-                exact: false,
-                page: &query
-            }
-        )
-        .is_err()
-    );
+    assert!(symbols::search_with_options(
+        &conn,
+        "*i*",
+        &symbols::SearchOptions {
+            kind: Some("function"),
+            path: None,
+            include_docs: false,
+            exact: false,
+            page: &query
+        }
+    )
+    .is_err());
 }
 
 #[cfg(feature = "lang-typescript")]
@@ -869,20 +853,16 @@ fn overview_reports_language_breakdown_and_compiled_profiles() {
     assert_eq!(empty_aspect_overview, overview);
     assert!(empty_aspect_overview.get("cycles").is_none());
     assert!(overview["generation"].is_string());
-    assert!(
-        overview["metadata"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|row| row["key"] == "workspace_root")
-    );
-    assert!(
-        !overview["metadata"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|row| row["key"] == "output_root" || row["key"] == "corpus_hash")
-    );
+    assert!(overview["metadata"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|row| row["key"] == "workspace_root"));
+    assert!(!overview["metadata"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|row| row["key"] == "output_root" || row["key"] == "corpus_hash"));
     let langs = overview["languages"]["items"].as_array().unwrap();
     let py = langs.iter().find(|l| l["language"] == "python").unwrap();
     assert!(py["files"].as_u64().unwrap() >= 1);

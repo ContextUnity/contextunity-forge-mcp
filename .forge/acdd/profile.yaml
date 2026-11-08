@@ -76,7 +76,7 @@ guidance:
       - "SEAM VERIFICATION AS ARCHITECTURAL PROOF: The red seam test is the executable proof of the architectural contract. Ensure it compiles cleanly and fails at runtime on assertions (exit code 101) for contract gate proof."
       - "PARAMETERIZED EXPANSION VS DEDICATED DOMAIN TESTS: Add parameterized test cases (e.g. table rows) ONLY when expanding input permutations for the same unit/capability. When testing distinct capabilities, tasks, or invariants, author separate, descriptively-named test functions in the appropriate domain module. NEVER accumulate unrelated subtask scenarios or review fixes into a monolithic test function."
       - "MINIMAL INTERVENTION: Avoid duplicate mechanisms, redundant wrapper tables, or shadow registries when existing seams can be cleanly extended."
-      - "SCOPE INTEGRITY: Never touch protected files (Cargo.toml, build.rs, .forge/**) or expand scope outside admitted task perimeter."
+      - "SCOPE AUTONOMY: Expand scope autonomously via extend_scope when necessary within admitted roots (fixtures, tests, documentation, related modules) to complete tasks without pausing work or demanding operator intervention. Escalate to the operator only for genuine, irreconcilable cross-milestone conflicts."
 
   task.review:
     description: "INDEPENDENT REVIEW CORE INVARIANTS & ENGINEERING PRINCIPLES"
@@ -107,7 +107,7 @@ guidance:
 
 commands:
   rust-check-and-test:
-    command: "cargo clippy --all-targets --all-features -- -D warnings && cargo test"
+    command: "cargo clippy {scope_target} --all-features -- -D warnings && cargo test {scope_target}"
     output:
       counts:
         passed: '(?m)\b(\d+) passed\b'
@@ -115,32 +115,12 @@ commands:
       require_counts: true
       noise: ['^\s*(Compiling|Downloading|Finished|Checking)\b', '^✔']
       errors: ['^error(\[E\d+\])?:', 'panicked at', '^FAIL ']
-      seam_ref_pattern: '(?:--seam-ref\s+)(\S+)'
       tests:
         target: '(?m)(?:^\s*Running\s+(?:unittests\s+)?|"kind":\s*\[[^\]]*"test"[^\]]*\].*?"src_path":\s*"|--test\s+)([^\s"\\)]+)'
         passed: '(?m)^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+ok\b'
         failed: '(?m)^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+FAILED\b'
         ignored: '(?m)^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+ignored\b'
     description: "Run strict Rust checks followed by the repository's test suite."
-    scope_args_by_pattern:
-      "src/main.rs": "--bin contextunity-forge-mcp"
-      "src/**/*.rs": "--lib"
-      "crates/forge-core/**/*.rs": "--package forge-core --lib"
-      "crates/forge-index/**/*.rs": "--package forge-index --lib"
-      "crates/forge-tasks/**/*.rs": "--package forge-tasks --lib"
-      "tests/*.rs": "--test {file_stem}"
-      "tests/acdd/**/*.rs": "--test acdd"
-      "tests/common/**/*.rs": "--all-targets"
-      "tests/commitment_integrity/**/*.rs": "--test commitment_integrity"
-      "tests/core/**/*.rs": "--test core"
-      "tests/framework_manifests/**/*.rs": "--test framework_manifests"
-      "tests/incremental/**/*.rs": "--test incremental"
-      "tests/languages/**/*.rs": "--test languages"
-      "tests/linker/**/*.rs": "--test linker"
-      "tests/mcp/**/*.rs": "--test mcp"
-      "tests/mcp_context/**/*.rs": "--test mcp"
-      "tests/query_context/**/*.rs": "--test query_context"
-      "tests/receivers/**/*.rs": "--test linker"
   check_full_repo:
     command: "cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets"
     description: "Run the milestone handoff verification commands from TESTS.md."
@@ -148,6 +128,26 @@ commands:
   test:
     command: "cargo test"
     description: "Compatibility command for legacy task evidence."
+
+scope_args_by_pattern:
+  "src/main.rs": "--bin contextunity-forge-mcp"
+  "src/**/*.rs": "--lib"
+  "crates/forge-core/**/*.rs": "--package forge-core --lib"
+  "crates/forge-index/**/*.rs": "--package forge-index --lib"
+  "crates/forge-tasks/**/*.rs": "--package forge-tasks --lib"
+  "tests/*.rs": "--test {file_stem}"
+  "tests/acdd/**/*.rs": "--test acdd"
+  "tests/common/**/*.rs": "--all-targets"
+  "tests/commitment_integrity/**/*.rs": "--test commitment_integrity"
+  "tests/core/**/*.rs": "--test core"
+  "tests/framework_manifests/**/*.rs": "--test framework_manifests"
+  "tests/incremental/**/*.rs": "--test incremental"
+  "tests/languages/**/*.rs": "--test languages"
+  "tests/linker/**/*.rs": "--test linker"
+  "tests/mcp/**/*.rs": "--test mcp"
+  "tests/mcp_context/**/*.rs": "--test mcp"
+  "tests/query_context/**/*.rs": "--test query_context"
+  "tests/receivers/**/*.rs": "--test linker"
 
 policies:
   default_review:

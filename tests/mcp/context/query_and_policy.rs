@@ -36,7 +36,8 @@ fn mcp_budget_and_query_errors_explain_how_to_retry() {
 
 #[test]
 fn mcp_analyze_preserves_sql_columns_named_like_metadata() {
-    let mut client = McpTestHarness::indexed(&[("main.py", "def main(): pass\n")]).expect("MCP initialize");
+    let mut client =
+        McpTestHarness::indexed(&[("main.py", "def main(): pass\n")]).expect("MCP initialize");
     let details = json!({
         "nodes": {"items": [{"output_root": "node-root-12345", "corpus_hash": "node-hash-123456"}]},
         "symbols": [{"output_root": "symbol-root-123", "corpus_hash": "symbol-hash-1234"}],
@@ -172,7 +173,8 @@ fn mcp_analyze_preserves_sql_columns_named_like_metadata() {
 
 #[test]
 fn mcp_analyze_rejects_oversized_intermediate_sql_values() {
-    let mut client = McpTestHarness::indexed(&[("main.py", "def main(): pass\n")]).expect("MCP initialize");
+    let mut client =
+        McpTestHarness::indexed(&[("main.py", "def main(): pass\n")]).expect("MCP initialize");
     let exact = client
         .payload(
             "code_map_analyze",
@@ -439,7 +441,8 @@ fn mcp_default_pages_and_stale_continuation_are_explicit() {
     let source = (0..125)
         .map(|i| format!("def symbol_{i:03}():\n    return {i}\n"))
         .collect::<String>();
-    let (workspace, harness) = McpTestHarness::indexed_workspace(&[("service.py", source.as_str())]);
+    let (workspace, harness) =
+        McpTestHarness::indexed_workspace(&[("service.py", source.as_str())]);
     let mut client = harness.expect("MCP initialize");
     let initial = client
         .search("symbol_*", json!({"kind":"function"}))

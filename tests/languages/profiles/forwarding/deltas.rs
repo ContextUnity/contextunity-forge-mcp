@@ -1,5 +1,9 @@
 use super::*;
-use std::{cell::RefCell, path::PathBuf, sync::atomic::{AtomicU64, Ordering}};
+use std::{
+    cell::RefCell,
+    path::PathBuf,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 #[derive(Default)]
 struct ForwardingColdCache {

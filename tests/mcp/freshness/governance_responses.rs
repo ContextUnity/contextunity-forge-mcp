@@ -67,17 +67,13 @@ fn mcp_document_governance_inspection_and_reference_identity() {
     let reciprocal = client
         .document("docs/rules.md", json!({"limit":100}))
         .expect("MCP tool should succeed");
-    assert!(
-        crate::json_array(&reciprocal["cited_by_doc"]["items"])
-            .iter()
-            .any(|section| section["path"] == "docs/guide.md")
-    );
+    assert!(crate::json_array(&reciprocal["cited_by_doc"]["items"])
+        .iter()
+        .any(|section| section["path"] == "docs/guide.md"));
     let edges = client.payload("code_map_analyze", json!({"target":"SELECT e.kind,p.path,e.line FROM edges e JOIN path_dictionary p ON p.path_id=e.path_id WHERE e.kind IN('cites_doc','cited_by_doc') AND p.path='docs/guide.md' ORDER BY e.kind,e.line","limit":100})).expect("MCP tool should succeed");
-    assert!(
-        crate::json_array(&edges["rows"]["items"])
-            .iter()
-            .any(|edge| edge["kind"] == "cites_doc" && edge["line"] == 6)
-    );
+    assert!(crate::json_array(&edges["rows"]["items"])
+        .iter()
+        .any(|edge| edge["kind"] == "cites_doc" && edge["line"] == 6));
 
     for (path, doc_type, status) in [
         ("AGENTS.md", "guide", Value::Null),
@@ -98,20 +94,16 @@ fn mcp_document_governance_inspection_and_reference_identity() {
             section["status"], status,
             "unspecified is not accepted: {section}"
         );
-        assert!(
-            crate::json_array(&document["referenced_symbols"]["items"])
-                .iter()
-                .any(|symbol| symbol["name"] == "target" && symbol["path"] == "src/main.rs")
-        );
+        assert!(crate::json_array(&document["referenced_symbols"]["items"])
+            .iter()
+            .any(|symbol| symbol["name"] == "target" && symbol["path"] == "src/main.rs"));
     }
     let invariant_nodes = client.payload("code_map_analyze", json!({"target":"SELECT n.name,p.path,n.line FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.kind='invariant' ORDER BY n.name,p.path,n.line","limit":100})).expect("MCP tool should succeed");
-    assert!(
-        crate::json_array(&invariant_nodes["rows"]["items"])
-            .iter()
-            .any(|node| node["name"] == "INV-PLAN"
-                && node["path"] == "docs/plans/proposed.md"
-                && node["line"] == 7)
-    );
+    assert!(crate::json_array(&invariant_nodes["rows"]["items"])
+        .iter()
+        .any(|node| node["name"] == "INV-PLAN"
+            && node["path"] == "docs/plans/proposed.md"
+            && node["line"] == 7));
     let governance = client.payload("code_map_analyze", json!({"target":"SELECT e.kind,s.name source_name,t.name target_name,p.path,e.line FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes t ON t.node_hash=e.dst_hash JOIN path_dictionary p ON p.path_id=e.path_id WHERE e.kind IN('governs','governed_by') ORDER BY e.kind,s.name,t.name","limit":100})).expect("MCP tool should succeed");
     let governance = crate::json_array(&governance["rows"]["items"]);
     for (kind, source, target) in [
@@ -184,11 +176,9 @@ fn mcp_document_governance_inspection_and_reference_identity() {
         } else {
             "affected_docs"
         }];
-        assert!(
-            crate::json_array(&docs["items"])
-                .iter()
-                .any(|doc| doc["path"] == "docs/rules.md")
-        );
+        assert!(crate::json_array(&docs["items"])
+            .iter()
+            .any(|doc| doc["path"] == "docs/rules.md"));
         if tool == "code_map_inspect" {
             let markdown = response_text(
                 &mut client,
@@ -319,25 +309,21 @@ fn mcp_document_governance_inspection_and_reference_identity() {
         .iter()
         .find(|item| item["path"] == "docs/allowed/inspect.md")
         .expect("linked inspect document");
-    assert!(
-        document["content"]
-            .as_str()
-            .expect("full document content")
-            .contains("Unique full inspect document content")
-    );
+    assert!(document["content"]
+        .as_str()
+        .expect("full document content")
+        .contains("Unique full inspect document content"));
 
     let coverage = &inspected["coverage"];
     assert_eq!(
         coverage["has_more"], false,
         "coverage page should be complete: {coverage}"
     );
-    assert!(
-        coverage["items"]
-            .as_array()
-            .expect("full coverage page")
-            .iter()
-            .any(|item| item["expression"] == "helper" && item["status"] == "resolved")
-    );
+    assert!(coverage["items"]
+        .as_array()
+        .expect("full coverage page")
+        .iter()
+        .any(|item| item["expression"] == "helper" && item["status"] == "resolved"));
     let resolved_total = coverage["statuses"]
         .as_array()
         .expect("scope-wide coverage statuses")
@@ -355,12 +341,10 @@ fn mcp_document_governance_inspection_and_reference_identity() {
     let coverage_tail_json = client
         .payload("code_map_inspect", coverage_tail_json_arguments)
         .expect("MCP tool should succeed");
-    assert!(
-        coverage_tail_json["coverage"]["items"]
-            .as_array()
-            .expect("empty coverage tail")
-            .is_empty()
-    );
+    assert!(coverage_tail_json["coverage"]["items"]
+        .as_array()
+        .expect("empty coverage tail")
+        .is_empty());
     assert_eq!(
         coverage_tail_json["coverage"]["statuses"],
         coverage["statuses"]
@@ -453,11 +437,9 @@ fn mcp_document_governance_inspection_and_reference_identity() {
         .query(&["docs", "get", "docs/rules.md"])
         .expect("CLI should succeed");
     for response in [&cli, &expected] {
-        assert!(
-            crate::json_array(&response["referenced_symbols"]["items"])
-                .iter()
-                .any(|symbol| symbol["name"] == "target" && symbol["path"] == "src/main.rs")
-        );
+        assert!(crate::json_array(&response["referenced_symbols"]["items"])
+            .iter()
+            .any(|symbol| symbol["name"] == "target" && symbol["path"] == "src/main.rs"));
     }
     assert_eq!(
         cli["referenced_symbols"]["total"],
@@ -471,16 +453,12 @@ fn mcp_document_governance_inspection_and_reference_identity() {
         )
         .expect("MCP tool should succeed");
     let diagnostics = crate::json_array(&broken["doc_diagnostics"]["items"]);
-    assert!(
-        diagnostics
-            .iter()
-            .any(|item| item["kind"] == "broken_doc_link" && item["line"] == 8)
-    );
-    assert!(
-        diagnostics
-            .iter()
-            .any(|item| item["kind"] == "broken_doc_link" && item["line"] == 9)
-    );
+    assert!(diagnostics
+        .iter()
+        .any(|item| item["kind"] == "broken_doc_link" && item["line"] == 8));
+    assert!(diagnostics
+        .iter()
+        .any(|item| item["kind"] == "broken_doc_link" && item["line"] == 9));
     ws.write("src/main.rs", "// shifted\n// still a valid source range\npub fn target() {}\npub fn caller() { target(); }\npub fn grandcaller() { caller(); }\n");
     ws.delta(&["src/main.rs"]);
     invalidate_mcp_connection_cache(&ws.db()).unwrap();
@@ -519,11 +497,9 @@ fn mcp_document_governance_inspection_and_reference_identity() {
             json!({"target":"docs/range.md","limit":100}),
         )
         .expect("MCP tool should succeed");
-    assert!(
-        !crate::json_array(&clear["doc_diagnostics"]["items"])
-            .iter()
-            .any(|item| item["kind"] == "stale_doc_sections")
-    );
+    assert!(!crate::json_array(&clear["doc_diagnostics"]["items"])
+        .iter()
+        .any(|item| item["kind"] == "stale_doc_sections"));
     ws.write("src/main.rs", "pub fn target_renamed() {}\npub fn caller() { target_renamed(); }\npub fn grandcaller() { caller(); }\n");
     ws.delta(&["src/main.rs"]);
     invalidate_mcp_connection_cache(&ws.db()).unwrap();

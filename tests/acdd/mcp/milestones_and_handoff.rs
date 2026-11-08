@@ -11,7 +11,9 @@ use super::in_process_cli;
 
 macro_rules! mcp_payload {
     ($client:expr, $tool:expr, $args:expr $(,)?) => {
-        $client.payload($tool, $args).expect("MCP payload should succeed")
+        $client
+            .payload($tool, $args)
+            .expect("MCP payload should succeed")
     };
 }
 
@@ -30,7 +32,10 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
         .title("Linked")
         .without_started_at()
         .invariants(&["local-rules"])
-        .task("first", &["src/", "src/lib.rs", "src/space # λ.rs", "src/missing.rs"])
+        .task(
+            "first",
+            &["src/", "src/lib.rs", "src/space # λ.rs", "src/missing.rs"],
+        )
         .task_target(&target)
         .build();
     main.write("docs/milestones/010-main.md", &manifest);
@@ -51,18 +56,46 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
         ),
     );
     let mut client = McpTestHarness::new(&main).expect("MCP new should succeed");
-    let main_synced = mcp_payload!(client, "task_manage", json!({"action":"sync","milestone_ref":"docs/milestones/010-main.md"}));
-    let main_id = main_synced["tasks"][0]["task_id"].as_str().unwrap().to_owned();
+    let main_synced = mcp_payload!(
+        client,
+        "task_manage",
+        json!({"action":"sync","milestone_ref":"docs/milestones/010-main.md"})
+    );
+    let main_id = main_synced["tasks"][0]["task_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     let output = in_process_cli::run_cli_json(&main, &["task", "sync", "--workspace", "traverse"]);
-    assert!( output.status.success(), "{}", String::from_utf8_lossy(&output.stderr) );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let synced: Value = serde_json::from_slice(&output.stdout).unwrap();
     let id = synced["tasks"][0]["task_id"].as_str().unwrap();
-    assert_eq!( mcp_payload!(client, "task_list", json!({}))["tasks"] .as_array() .unwrap() .len(), 1 );
-    let all = mcp_payload!(client, "task_list", json!({"repository":"all","milestone_status":"all"}));
+    assert_eq!(
+        mcp_payload!(client, "task_list", json!({}))["tasks"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let all = mcp_payload!(
+        client,
+        "task_list",
+        json!({"repository":"all","milestone_status":"all"})
+    );
     assert_eq!(all["tasks"].as_array().unwrap().len(), 2);
     let cli_all = in_process_cli::run_cli_json(
         &main,
-        &["task", "list", "--repository", "all", "--milestone-status", "all"],
+        &[
+            "task",
+            "list",
+            "--repository",
+            "all",
+            "--milestone-status",
+            "all",
+        ],
     );
     assert!(
         cli_all.status.success(),
@@ -71,12 +104,19 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
     );
     let cli_all: Value = serde_json::from_slice(&cli_all.stdout).unwrap();
     assert_eq!(cli_all, all);
-    let first_workspace_page = mcp_payload!(client, "task_list", json!({"repository":"all","milestone_status":"all","limit":1,"offset":0}));
+    let first_workspace_page = mcp_payload!(
+        client,
+        "task_list",
+        json!({"repository":"all","milestone_status":"all","limit":1,"offset":0})
+    );
     assert_eq!(first_workspace_page["pagination"]["total"], 2);
     assert_eq!(first_workspace_page["pagination"]["returned"], 1);
     assert_eq!(first_workspace_page["pagination"]["next_offset"], 1);
     assert_eq!(first_workspace_page["pagination"]["has_more"], true);
-    assert_eq!( first_workspace_page["workspaces"]["traverse/traverse"]["workspace_root"], linked.root().to_str().unwrap() );
+    assert_eq!(
+        first_workspace_page["workspaces"]["traverse/traverse"]["workspace_root"],
+        linked.root().to_str().unwrap()
+    );
     let cli_first_workspace_page = in_process_cli::run_cli_json(
         &main,
         &[
@@ -107,43 +147,95 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
         cli_first_workspace_page["tasks"],
         first_workspace_page["tasks"]
     );
-    let all_generation = first_workspace_page["pagination"]["generation"].as_str().unwrap().to_owned();
-    let second_workspace_page = mcp_payload!(client, "task_list", json!({ "repository":"all", "milestone_status":"all", "limit":1, "offset":1, "generation":all_generation }));
-    let mut paged_ids = vec![first_workspace_page["tasks"][0]["task_id"].as_str().unwrap().to_owned(), second_workspace_page["tasks"][0]["task_id"].as_str().unwrap().to_owned()];
+    let all_generation = first_workspace_page["pagination"]["generation"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let second_workspace_page = mcp_payload!(
+        client,
+        "task_list",
+        json!({ "repository":"all", "milestone_status":"all", "limit":1, "offset":1, "generation":all_generation })
+    );
+    let mut paged_ids = vec![
+        first_workspace_page["tasks"][0]["task_id"]
+            .as_str()
+            .unwrap()
+            .to_owned(),
+        second_workspace_page["tasks"][0]["task_id"]
+            .as_str()
+            .unwrap()
+            .to_owned(),
+    ];
     let mut expected_ids = vec![main_id, id.to_owned()];
     paged_ids.sort();
     expected_ids.sort();
     assert_eq!(paged_ids, expected_ids);
-    let root_mixed_token = mcp_call!(client, "task_list", json!({ "repository":"traverse", "limit":1, "offset":1, "generation":all_generation }));
-    assert!( root_mixed_token.1["error"].is_object() || root_mixed_token.1["result"]["isError"] == true );
-    let worktree_mixed_token = mcp_call!(client, "task_list", json!({ "worktree":linked.root(), "repository":"all", "milestone_status":"all", "limit":1, "offset":1, "generation":all_generation }));
-    assert!( worktree_mixed_token.1["error"].is_object() || worktree_mixed_token.1["result"]["isError"] == true );
+    let root_mixed_token = mcp_call!(
+        client,
+        "task_list",
+        json!({ "repository":"traverse", "limit":1, "offset":1, "generation":all_generation })
+    );
+    assert!(
+        root_mixed_token.1["error"].is_object() || root_mixed_token.1["result"]["isError"] == true
+    );
+    let worktree_mixed_token = mcp_call!(
+        client,
+        "task_list",
+        json!({ "worktree":linked.root(), "repository":"all", "milestone_status":"all", "limit":1, "offset":1, "generation":all_generation })
+    );
+    assert!(
+        worktree_mixed_token.1["error"].is_object()
+            || worktree_mixed_token.1["result"]["isError"] == true
+    );
     let selected = mcp_payload!(client, "task_list", json!({"repository":"traverse"}));
     assert_eq!(selected["workspace_root"], linked.root().to_str().unwrap());
     assert_eq!(selected["workspace"], "traverse");
-    assert_eq!( selected["agents_guidance"], linked.root().join("AGENTS.md").to_str().unwrap() );
+    assert_eq!(
+        selected["agents_guidance"],
+        linked.root().join("AGENTS.md").to_str().unwrap()
+    );
     assert_eq!(selected["tasks"][0]["task_id"], id);
-    assert!(selected["tasks"][0]["target"] .as_str() .unwrap() .starts_with("Deliver "));
+    assert!(selected["tasks"][0]["target"]
+        .as_str()
+        .unwrap()
+        .starts_with("Deliver "));
     assert_eq!(selected["tasks"][0]["status"], "ready");
     assert_eq!(selected["tasks"][0]["stage"], "contract");
     assert_eq!(selected["tasks"][0]["owner"], Value::Null);
     assert_eq!(selected["tasks"][0]["agent_type"], "worker");
     assert_eq!(selected["tasks"][0]["rev"], 1);
     assert_eq!(selected["tasks"][0]["depends_on"], json!([]));
-    let inspected = mcp_payload!(client, "task_manage", json!({"action":"inspect","task_id":id}));
+    let inspected = mcp_payload!(
+        client,
+        "task_manage",
+        json!({"action":"inspect","task_id":id})
+    );
     assert!(inspected.get("digest").is_none());
     assert_eq!(inspected["workspace_root"], linked.root().to_str().unwrap());
-    let (_, markdown_response) = mcp_call!(client, "task_manage", json!({"action":"inspect","task_id":id,"format":"markdown"}));
+    let (_, markdown_response) = mcp_call!(
+        client,
+        "task_manage",
+        json!({"action":"inspect","task_id":id,"format":"markdown"})
+    );
     crate::common::assertions::assert_rpc_succeeded(&markdown_response);
-    assert_ne!( markdown_response["result"]["isError"], true, "{markdown_response}" );
-    let inspect_markdown = markdown_response["result"]["content"][0]["text"].as_str().expect("task inspect should return Markdown text");
+    assert_ne!(
+        markdown_response["result"]["isError"], true,
+        "{markdown_response}"
+    );
+    let inspect_markdown = markdown_response["result"]["content"][0]["text"]
+        .as_str()
+        .expect("task inspect should return Markdown text");
     assert!(inspect_markdown.contains("## Task record"));
     assert!(!inspect_markdown.contains("## Contract"));
     assert!(!inspect_markdown.contains("digest"));
     let raw_scope = json!(["src/", "src/lib.rs", "src/space # λ.rs", "src/missing.rs"]);
     assert_eq!(inspected["spec"]["scope"], raw_scope);
     assert_eq!(inspected["authority_snapshot"]["task_scope"], raw_scope);
-    assert!(inspected["spec"]["scope"] .as_array() .unwrap() .iter() .all(Value::is_string));
+    assert!(inspected["spec"]["scope"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(Value::is_string));
     let expected_scope_uris = ["src", "src/lib.rs", "src/space%20%23%20%CE%BB.rs"]
         .map(|path| format!("file://{}/{path}", linked.root().display()));
     for uri in &expected_scope_uris {
@@ -156,10 +248,8 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
     assert!(!inspect_markdown.contains(&unresolved_uri));
     assert!(!inspect_markdown.contains("(link unavailable)"));
 
-    let cli_inspection = in_process_cli::run_cli(
-        &main,
-        &["--format", "markdown", "task", "inspect", id],
-    );
+    let cli_inspection =
+        in_process_cli::run_cli(&main, &["--format", "markdown", "task", "inspect", id]);
     assert!(
         cli_inspection.status.success(),
         "{}",
@@ -186,10 +276,7 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
         "CLI task inspect rendered a link-unavailable marker"
     );
 
-    let cli_json_inspection = in_process_cli::run_cli_json(
-        &main,
-        &["task", "inspect", id],
-    );
+    let cli_json_inspection = in_process_cli::run_cli_json(&main, &["task", "inspect", id]);
     assert!(
         cli_json_inspection.status.success(),
         "{}",
@@ -266,7 +353,13 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
     repeated["digest"] = json!("digest-must-not-be-rendered");
     let repeated_markdown = format::render(&repeated, OutputFormat::Markdown, "task_manage");
     for path in repeated_paths {
-        assert_eq!( repeated_markdown .matches(&format!("[{path}](file:///{path})")) .count(), 1, "each equal scope path should render once as one link: {path}\n{repeated_markdown}" );
+        assert_eq!(
+            repeated_markdown
+                .matches(&format!("[{path}](file:///{path})"))
+                .count(),
+            1,
+            "each equal scope path should render once as one link: {path}\n{repeated_markdown}"
+        );
         assert_eq!( repeated_markdown.matches(path).count(), 2, "one semantic link contributes only its label and URI path: {path}\n{repeated_markdown}" );
     }
     assert_eq!(repeated_markdown.matches(&repeated_target).count(), 1);
@@ -282,9 +375,15 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
         "retained-attempt-marker",
         "retained-finding-marker",
     ] {
-        assert!( repeated_markdown.contains(marker), "missing lifecycle evidence {marker}" );
+        assert!(
+            repeated_markdown.contains(marker),
+            "missing lifecycle evidence {marker}"
+        );
     }
-    assert!( repeated_markdown.len() < serde_json::to_vec(&repeated).unwrap().len(), "repeated-field Markdown must be smaller than JSON" );
+    assert!(
+        repeated_markdown.len() < serde_json::to_vec(&repeated).unwrap().len(),
+        "repeated-field Markdown must be smaller than JSON"
+    );
 
     let extended_path =
         "src/tasks/lifecycle/presentation/added_scope_is_distinct_from_the_initial_scope.rs";
@@ -307,10 +406,26 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
     assert!(extended_markdown.contains("Initial scope"));
     assert!(extended_markdown.contains("Extended scope"));
     for path in repeated_paths {
-        assert_eq!( extended_markdown .matches(&format!("[{path}](file:///{path})")) .count(), 1, "initial scope path should remain visible once: {path}\n{extended_markdown}" );
-        assert_eq!( extended_markdown.matches(path).count(), 2, "initial path should occur only in its link label and URI: {path}\n{extended_markdown}" );
+        assert_eq!(
+            extended_markdown
+                .matches(&format!("[{path}](file:///{path})"))
+                .count(),
+            1,
+            "initial scope path should remain visible once: {path}\n{extended_markdown}"
+        );
+        assert_eq!(
+            extended_markdown.matches(path).count(),
+            2,
+            "initial path should occur only in its link label and URI: {path}\n{extended_markdown}"
+        );
     }
-    assert_eq!( extended_markdown .matches(&format!("[{extended_path}](file:///{extended_path})")) .count(), 1, "added scope path remains distinct in the extended scope" );
+    assert_eq!(
+        extended_markdown
+            .matches(&format!("[{extended_path}](file:///{extended_path})"))
+            .count(),
+        1,
+        "added scope path remains distinct in the extended scope"
+    );
 
     let mut distinct = repeated.clone();
     distinct["spec"]["target"] = json!("spec target marker");
@@ -334,13 +449,23 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
         "authority task invariant marker",
         "response invariant marker",
     ] {
-        assert!( distinct_markdown.contains(marker), "distinct authoritative values must remain visible: {marker}" );
+        assert!(
+            distinct_markdown.contains(marker),
+            "distinct authoritative values must remain visible: {marker}"
+        );
     }
 
-    assert_eq!( inspected["agents_guidance"], linked.root().join("AGENTS.md").to_str().unwrap() );
+    assert_eq!(
+        inspected["agents_guidance"],
+        linked.root().join("AGENTS.md").to_str().unwrap()
+    );
     client = restart_mcp_session(client, &main, &TaskHarness::session_for("builder"))
         .expect("MCP session restart should succeed");
-    let claimed = mcp_payload!(client, "task_claim", json!({"task_id":id,"stage":"contract","worker_id":"builder","worktree":linked.root()}));
+    let claimed = mcp_payload!(
+        client,
+        "task_claim",
+        json!({"task_id":id,"stage":"contract","worker_id":"builder","worktree":linked.root()})
+    );
     let claim_markdown = format::render(&claimed, OutputFormat::Markdown, "task_claim");
     assert!(claim_markdown.contains("## Contract"));
     assert_eq!(claimed["agents_guidance"], inspected["agents_guidance"]);
@@ -364,9 +489,17 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
         );
     }
 
-    let posted = mcp_payload!(client, "task_blackboard", json!({"action":"post","scope":"task","task_id":id,"topic":"notes","payload":"canonical candidate coordination"}));
+    let posted = mcp_payload!(
+        client,
+        "task_blackboard",
+        json!({"action":"post","scope":"task","task_id":id,"topic":"notes","payload":"canonical candidate coordination"})
+    );
     let message_id = &posted["id"];
-    let message = mcp_payload!(client, "task_blackboard", json!({"action":"inspect","message_id":message_id}));
+    let message = mcp_payload!(
+        client,
+        "task_blackboard",
+        json!({"action":"inspect","message_id":message_id})
+    );
     for extra in [
         json!({"scope":"task"}),
         json!({"task_id":id}),
@@ -409,9 +542,17 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
         }
     }
 
-    let (_, traversal) = mcp_call!(client, "task_manage", json!({"action":"extend_scope","task_id":id,"paths":["../foreign.rs"]}));
+    let (_, traversal) = mcp_call!(
+        client,
+        "task_manage",
+        json!({"action":"extend_scope","task_id":id,"paths":["../foreign.rs"]})
+    );
     assert_eq!(traversal["result"]["isError"], true);
-    let synced = mcp_payload!(client, "task_manage", json!({"action":"sync","workspace":"traverse","milestone_ref":"docs/milestones/010-linked.md"}));
+    let synced = mcp_payload!(
+        client,
+        "task_manage",
+        json!({"action":"sync","workspace":"traverse","milestone_ref":"docs/milestones/010-linked.md"})
+    );
     assert_eq!(synced["tasks"][0]["status"], "in_progress");
 
     let mut candidate_commit = None;
@@ -444,7 +585,11 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
         let mut claim = if is_contract {
             claimed.clone()
         } else {
-            mcp_payload!(client, "task_claim", json!({"task_id":id,"stage":stage,"worker_id":worker,"worktree":linked.root()}))
+            mcp_payload!(
+                client,
+                "task_claim",
+                json!({"task_id":id,"stage":stage,"worker_id":worker,"worktree":linked.root()})
+            )
         };
         let proof = if is_delivery {
             &delivery_proof
@@ -456,7 +601,11 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
             &build_proof
         };
         if is_contract || is_command {
-            mcp_payload!(client, "task_manage", json!({"action":"verify","task_id":id}));
+            mcp_payload!(
+                client,
+                "task_manage",
+                json!({"action":"verify","task_id":id})
+            );
         }
         let mut evidence =
             serde_json::to_value(TaskHarness::evidence_for_claim(&claim, proof.clone())).unwrap();
@@ -473,23 +622,54 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
                 ));
             }
             for length in [7, 12, 39, 40] {
-                assert_eq!( contextunity_forge_mcp::core::tasks::canonical_commit_from_prefix( &candidate[..length], &candidate ) .as_deref(), Some(candidate.as_str()), "{length}-character SHA prefixes resolve to the canonical candidate" );
+                assert_eq!(
+                    contextunity_forge_mcp::core::tasks::canonical_commit_from_prefix(
+                        &candidate[..length],
+                        &candidate
+                    )
+                    .as_deref(),
+                    Some(candidate.as_str()),
+                    "{length}-character SHA prefixes resolve to the canonical candidate"
+                );
             }
             evidence["commit"] = json!(&candidate[..7]);
 
             let mut rejection_evidence = evidence.clone();
             rejection_evidence["proof"]["review_proof"]["decision"] = json!("reject");
-            let rejection = mcp_payload!(client, "task_submit", json!({ "task_id":id, "stage":stage, "evidence":rejection_evidence, "action":"reject", "findings":untrusted_findings.clone() }));
+            let rejection = mcp_payload!(
+                client,
+                "task_submit",
+                json!({ "task_id":id, "stage":stage, "evidence":rejection_evidence, "action":"reject", "findings":untrusted_findings.clone() })
+            );
             assert_eq!(rejection["status"], "ready");
             client = restart_mcp_session(client, &main, &TaskHarness::session_for("builder"))
                 .expect("MCP session restart should succeed");
-            let persisted_inspection = mcp_payload!(client, "task_manage", json!({"action":"inspect","task_id":id}));
+            let persisted_inspection = mcp_payload!(
+                client,
+                "task_manage",
+                json!({"action":"inspect","task_id":id})
+            );
             let serialized_findings = serde_json::to_string(&untrusted_findings).unwrap();
-            assert!(persisted_inspection["findings"] .as_array() .unwrap() .iter() .any(|record| record["findings"] == serialized_findings));
-            let persisted_context = mcp_payload!(client, "task_manage", json!({"action":"context","task_id":id}));
-            assert_eq!( persisted_context["workflow_guidance"]["rejection"]["findings"], untrusted_findings, "{persisted_context}" );
+            assert!(persisted_inspection["findings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|record| record["findings"] == serialized_findings));
+            let persisted_context = mcp_payload!(
+                client,
+                "task_manage",
+                json!({"action":"context","task_id":id})
+            );
+            assert_eq!(
+                persisted_context["workflow_guidance"]["rejection"]["findings"], untrusted_findings,
+                "{persisted_context}"
+            );
             assert!(persisted_context.get("_presentation_scope_uris").is_none());
-            let (_, findings_markdown_response) = mcp_call!(client, "task_manage", json!({"action":"context","task_id":id,"format":"markdown"}));
+            let (_, findings_markdown_response) = mcp_call!(
+                client,
+                "task_manage",
+                json!({"action":"context","task_id":id,"format":"markdown"})
+            );
             crate::common::assertions::assert_rpc_succeeded(&findings_markdown_response);
             let findings_markdown = findings_markdown_response["result"]["content"][0]["text"]
                 .as_str()
@@ -503,15 +683,33 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
                 ("src/lib.rs", "http://attacker.invalid/source"),
                 ("src/lib.rs", "javascript:alert(1)"),
             ] {
-                assert!( findings_markdown.contains(label), "missing literal finding {label}" );
-                assert!( findings_markdown.contains(uri), "missing literal finding URI {uri}" );
+                assert!(
+                    findings_markdown.contains(label),
+                    "missing literal finding {label}"
+                );
+                assert!(
+                    findings_markdown.contains(uri),
+                    "missing literal finding URI {uri}"
+                );
                 assert!( !findings_markdown.contains(&format!("[{label}]({uri})")), "untrusted finding became a clickable link: {label} -> {uri}\n{findings_markdown}" );
             }
             assert!(findings_markdown.contains("finding body retains ../../body-only"));
 
-            let repair_claim = mcp_payload!(client, "task_claim", json!({"task_id":id,"stage":"build","worker_id":"builder","worktree":linked.root()}));
-            mcp_payload!(client, "task_manage", json!({"action":"verify","task_id":id}));
-            let repair_result = mcp_payload!(client, "task_submit", json!({ "task_id":id, "stage":"build", "evidence":{ "task_id":id, "stage":"build", "claim_revision":repair_claim["claim_revision"], "contract_revision":1, "worker_id":"builder", "worktree":linked.root(), "proof":build_proof }, "action":"pass" }));
+            let repair_claim = mcp_payload!(
+                client,
+                "task_claim",
+                json!({"task_id":id,"stage":"build","worker_id":"builder","worktree":linked.root()})
+            );
+            mcp_payload!(
+                client,
+                "task_manage",
+                json!({"action":"verify","task_id":id})
+            );
+            let repair_result = mcp_payload!(
+                client,
+                "task_submit",
+                json!({ "task_id":id, "stage":"build", "evidence":{ "task_id":id, "stage":"build", "claim_revision":repair_claim["claim_revision"], "contract_revision":1, "worker_id":"builder", "worktree":linked.root(), "proof":build_proof }, "action":"pass" })
+            );
             let retry_snapshot = repair_result["snapshot"]["commit"]
                 .as_str()
                 .unwrap()
@@ -520,14 +718,25 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
             candidate_commits.push(retry_snapshot);
             client = restart_mcp_session(client, &main, &TaskHarness::session_for(&worker))
                 .expect("MCP session restart should succeed");
-            claim = mcp_payload!(client, "task_claim", json!({"task_id":id,"stage":"review","worker_id":worker,"worktree":linked.root()}));
+            claim = mcp_payload!(
+                client,
+                "task_claim",
+                json!({"task_id":id,"stage":"review","worker_id":worker,"worktree":linked.root()})
+            );
             let candidate = candidate_commit.as_deref().unwrap();
-            assert_eq!( claim["context_bundle"]["candidate_snapshot"]["commit"], candidate );
+            assert_eq!(
+                claim["context_bundle"]["candidate_snapshot"]["commit"],
+                candidate
+            );
             evidence["claim_revision"] = claim["claim_revision"].clone();
             evidence["worker_id"] = claim["worker_id"].clone();
             evidence["commit"] = json!(&candidate[..7]);
         }
-        let result = mcp_payload!(client, "task_submit", json!({"task_id":id,"stage":stage,"evidence":evidence,"action":"pass"}));
+        let result = mcp_payload!(
+            client,
+            "task_submit",
+            json!({"task_id":id,"stage":stage,"evidence":evidence,"action":"pass"})
+        );
         let snapshot = result["snapshot"]["commit"].as_str().unwrap();
         if is_command {
             candidate_commit = Some(snapshot.to_owned());
@@ -536,7 +745,7 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
         if is_delivery {
             delivery_commit = Some(snapshot.to_owned());
             assert_eq!(result["receipt"]["commit"], snapshot);
-    let landed = TaskHarness::verified_revision_text(linked.root(), "HEAD").unwrap();
+            let landed = TaskHarness::verified_revision_text(linked.root(), "HEAD").unwrap();
             if result["receipt"]["commit"] != landed {
                 boundary_failures.push(format!(
                     "receipt.commit must preserve the full SHA: {}",
@@ -544,9 +753,15 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
                 ));
             }
         } else {
-            assert_eq!( result["snapshot"]["inspect_cmd"], contextunity_forge_mcp::core::tasks::snapshot_inspect_cmd(snapshot) );
+            assert_eq!(
+                result["snapshot"]["inspect_cmd"],
+                contextunity_forge_mcp::core::tasks::snapshot_inspect_cmd(snapshot)
+            );
         }
-        assert_eq!( result["status"], if is_delivery { "completed" } else { "ready" } );
+        assert_eq!(
+            result["status"],
+            if is_delivery { "completed" } else { "ready" }
+        );
     }
 
     let candidate_commit = candidate_commit.unwrap();
@@ -556,25 +771,39 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
         .finish()
         .expect("MCP server should finish before restart");
     let mut client = McpTestHarness::new(&main).expect("MCP new should succeed");
-    let restored = mcp_payload!(client, "task_manage", json!({"action":"inspect","task_id":id}));
+    let restored = mcp_payload!(
+        client,
+        "task_manage",
+        json!({"action":"inspect","task_id":id})
+    );
     assert_eq!(restored["status"], "completed");
     assert_eq!(restored["receipt"]["commit"], delivery_commit);
     assert_eq!(restored["latest_snapshot"]["commit"], candidate_commit);
-    assert_eq!( restored["latest_snapshot"]["inspect_cmd"], contextunity_forge_mcp::core::tasks::snapshot_inspect_cmd(&candidate_commit) );
+    assert_eq!(
+        restored["latest_snapshot"]["inspect_cmd"],
+        contextunity_forge_mcp::core::tasks::snapshot_inspect_cmd(&candidate_commit)
+    );
     for gate in restored["gates"].as_array().unwrap() {
         let gate_commit = gate["commit"].as_str().unwrap();
-        assert!( candidate_commits .iter() .any(|candidate| candidate == gate_commit) || gate_commit == delivery_commit );
+        assert!(
+            candidate_commits
+                .iter()
+                .any(|candidate| candidate == gate_commit)
+                || gate_commit == delivery_commit
+        );
         let evidence: Value = serde_json::from_str(gate["evidence"].as_str().unwrap()).unwrap();
         assert_eq!(evidence["commit"], gate["commit"]);
     }
     assert_eq!(restored["agents_guidance"], inspected["agents_guidance"]);
-    let landed =
-        TaskHarness::verified_revision_text(linked.root(), "HEAD").unwrap();
+    let landed = TaskHarness::verified_revision_text(linked.root(), "HEAD").unwrap();
     if restored["receipt"]["commit"] != landed {
         boundary_failures
             .push("persisted receipt API must preserve the full delivery SHA".to_owned());
     }
-    assert_eq!( mcp_payload!(client, "task_list", json!({"repository":"traverse"}))["tasks"], json!([]) );
+    assert_eq!(
+        mcp_payload!(client, "task_list", json!({"repository":"traverse"}))["tasks"],
+        json!([])
+    );
     main.write(
         "forge-mcp.yaml",
         &format!(
@@ -583,12 +812,35 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
         ),
     );
     let mut bounded_client = McpTestHarness::new(&main).expect("MCP new should succeed");
-    assert!( format::render(&restored, OutputFormat::Markdown, "task_manage").len() > 4096, "fixture task record must exceed the configured budget" );
-    let (bounded_bytes, bounded_response) = mcp_call!(bounded_client, "task_manage", json!({"action":"inspect","task_id":id,"format":"markdown"}));
-    assert!( bounded_bytes <= 4096, "configured 4-KiB task response was {bounded_bytes} bytes: {bounded_response}" );
-    assert_eq!( bounded_response["result"]["isError"], true, "{bounded_response}" );
-    assert!( bounded_response["result"]["content"][0]["text"] .as_str() .unwrap() .contains("Output exceeds the response byte limit"), "{bounded_response}" );
-    assert!( boundary_failures.is_empty(), "{}", boundary_failures.join("\n") );
+    assert!(
+        format::render(&restored, OutputFormat::Markdown, "task_manage").len() > 4096,
+        "fixture task record must exceed the configured budget"
+    );
+    let (bounded_bytes, bounded_response) = mcp_call!(
+        bounded_client,
+        "task_manage",
+        json!({"action":"inspect","task_id":id,"format":"markdown"})
+    );
+    assert!(
+        bounded_bytes <= 4096,
+        "configured 4-KiB task response was {bounded_bytes} bytes: {bounded_response}"
+    );
+    assert_eq!(
+        bounded_response["result"]["isError"], true,
+        "{bounded_response}"
+    );
+    assert!(
+        bounded_response["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Output exceeds the response byte limit"),
+        "{bounded_response}"
+    );
+    assert!(
+        boundary_failures.is_empty(),
+        "{}",
+        boundary_failures.join("\n")
+    );
     client.finish().expect("MCP server should finish");
     bounded_client.finish().expect("MCP server should finish");
 }
@@ -607,106 +859,297 @@ fn task_context_candidate_snapshot_delivery_reject_and_completed_receipt() {
         .build();
     workspace.write("docs/milestones/010-snap.md", &manifest);
     reviewer.write("docs/milestones/010-snap.md", &manifest);
-    workspace.write("forge-mcp.yaml", "roots: []\ndocs: []\ntasks_db: .forge/tasks.sqlite\n");
-    reviewer.write("forge-mcp.yaml", &format!("roots: []\ndocs: []\ntasks_db: {}\n", workspace.root().join(".forge/tasks.sqlite").display()));
+    workspace.write(
+        "forge-mcp.yaml",
+        "roots: []\ndocs: []\ntasks_db: .forge/tasks.sqlite\n",
+    );
+    reviewer.write(
+        "forge-mcp.yaml",
+        &format!(
+            "roots: []\ndocs: []\ntasks_db: {}\n",
+            workspace.root().join(".forge/tasks.sqlite").display()
+        ),
+    );
 
     let mut client = McpTestHarness::new(&workspace).expect("MCP new should succeed");
-    let sync_res = mcp_payload!(client, "task_manage", json!({"action": "sync", "milestone_ref": "docs/milestones/010-snap.md"}));
+    let sync_res = mcp_payload!(
+        client,
+        "task_manage",
+        json!({"action": "sync", "milestone_ref": "docs/milestones/010-snap.md"})
+    );
     let task_id = sync_res["tasks"][0]["task_id"].as_str().unwrap();
 
     // 1. Pass contract proof without supplying a caller-selected commit.
-    client = restart_mcp_session(client, &workspace, &TaskHarness::session_for("author")).expect("MCP session restart should succeed");
-    let contract_claim = mcp_payload!(client, "task_claim", json!({"task_id": task_id, "stage": "contract", "worker_id": "author", "worktree": workspace.root()}));
-    mcp_payload!(client, "task_manage", json!({"action":"verify","task_id":task_id}));
-    mcp_payload!(client, "task_submit", json!({ "task_id": task_id, "stage": "contract", "action": "pass", "evidence": TaskHarness::evidence_for_claim(&contract_claim, json!({"contract_proof": {"seam_test_ref": "tests/acdd/tasks.rs", "red_exit_code": 101}})) }));
+    client = restart_mcp_session(client, &workspace, &TaskHarness::session_for("author"))
+        .expect("MCP session restart should succeed");
+    let contract_claim = mcp_payload!(
+        client,
+        "task_claim",
+        json!({"task_id": task_id, "stage": "contract", "worker_id": "author", "worktree": workspace.root()})
+    );
+    mcp_payload!(
+        client,
+        "task_manage",
+        json!({"action":"verify","task_id":task_id})
+    );
+    mcp_payload!(
+        client,
+        "task_submit",
+        json!({ "task_id": task_id, "stage": "contract", "action": "pass", "evidence": TaskHarness::evidence_for_claim(&contract_claim, json!({"contract_proof": {"seam_test_ref": "tests/acdd/tasks.rs", "red_exit_code": 101}})) })
+    );
 
     // 2. Pass build WITHOUT a commit in evidence
-    client = restart_mcp_session(client, &workspace, &TaskHarness::session_for("builder")).expect("MCP session restart should succeed");
-    let build_claim = mcp_payload!(client, "task_claim", json!({"task_id": task_id, "stage": "build", "worker_id": "builder", "worktree": workspace.root()}));
-    mcp_payload!(client, "task_manage", json!({"action":"verify","task_id":task_id}));
-    let first_build = mcp_payload!(client, "task_submit", json!({ "task_id": task_id, "stage": "build", "action": "pass", "evidence": TaskHarness::evidence_for_claim(&build_claim, json!({"command_proof": {"command": "rust-check-and-test", "exit_code": 0, "tests_passed": 1, "tests_failed": 0}})) }));
+    client = restart_mcp_session(client, &workspace, &TaskHarness::session_for("builder"))
+        .expect("MCP session restart should succeed");
+    let build_claim = mcp_payload!(
+        client,
+        "task_claim",
+        json!({"task_id": task_id, "stage": "build", "worker_id": "builder", "worktree": workspace.root()})
+    );
+    mcp_payload!(
+        client,
+        "task_manage",
+        json!({"action":"verify","task_id":task_id})
+    );
+    let first_build = mcp_payload!(
+        client,
+        "task_submit",
+        json!({ "task_id": task_id, "stage": "build", "action": "pass", "evidence": TaskHarness::evidence_for_claim(&build_claim, json!({"command_proof": {"command": "rust-check-and-test", "exit_code": 0, "tests_passed": 1, "tests_failed": 0}})) })
+    );
 
     let first_candidate = first_build["snapshot"]["commit"].as_str().unwrap();
 
     // The engine pins the scoped candidate even when build evidence omits a commit.
-    client = restart_mcp_session(client, &workspace, &TaskHarness::session_for("reviewer")).expect("MCP session restart should succeed");
-    let review_claim = mcp_payload!(client, "task_claim", json!({"task_id": task_id, "stage": "review", "worker_id": "reviewer", "worktree": reviewer.root()}));
-    assert_eq!( review_claim["context_bundle"]["candidate_snapshot"]["commit"], first_candidate );
+    client = restart_mcp_session(client, &workspace, &TaskHarness::session_for("reviewer"))
+        .expect("MCP session restart should succeed");
+    let review_claim = mcp_payload!(
+        client,
+        "task_claim",
+        json!({"task_id": task_id, "stage": "review", "worker_id": "reviewer", "worktree": reviewer.root()})
+    );
+    assert_eq!(
+        review_claim["context_bundle"]["candidate_snapshot"]["commit"],
+        first_candidate
+    );
 
     // Reject review with findings -> task bounces back to build
     let review_reject_proof = review_proof("reject");
     let review_findings = json!({ "decision": "reject", "notes": "Need build commit", "blackboard": ["durable-review-evidence"], "blackboard_messages": ["durable-message-field-evidence"] });
-    mcp_payload!(client, "task_submit", json!({ "task_id": task_id, "stage": "review", "action": "reject", "evidence": TaskHarness::evidence_for_claim(&review_claim, json!(review_reject_proof)), "findings": review_findings }));
+    mcp_payload!(
+        client,
+        "task_submit",
+        json!({ "task_id": task_id, "stage": "review", "action": "reject", "evidence": TaskHarness::evidence_for_claim(&review_claim, json!(review_reject_proof)), "findings": review_findings })
+    );
 
     // Build claim after review reject: verify unresolved_review_findings contains review_findings
-    client = restart_mcp_session(client, &workspace, &TaskHarness::session_for("builder")).expect("MCP session restart should succeed");
-    let build_claim2 = mcp_payload!(client, "task_claim", json!({"task_id": task_id, "stage": "build", "worker_id": "builder", "worktree": workspace.root()}));
-    assert_eq!( build_claim2["context_bundle"]["unresolved_review_findings"], review_findings );
+    client = restart_mcp_session(client, &workspace, &TaskHarness::session_for("builder"))
+        .expect("MCP session restart should succeed");
+    let build_claim2 = mcp_payload!(
+        client,
+        "task_claim",
+        json!({"task_id": task_id, "stage": "build", "worker_id": "builder", "worktree": workspace.root()})
+    );
+    assert_eq!(
+        build_claim2["context_bundle"]["unresolved_review_findings"],
+        review_findings
+    );
 
-    let build_context = mcp_payload!(client, "task_manage", json!({"action": "context", "task_id": task_id}));
-    assert_eq!( build_context["context_bundle"]["unresolved_review_findings"], review_findings );
-    let (_, response) = mcp_call!(client, "task_manage", json!({"action": "context", "task_id": task_id, "format": "markdown"}));
-    let build_context_markdown = response["result"]["content"][0]["text"].as_str().expect("Build context should return Markdown text");
-    assert!( build_context_markdown.contains("**blackboard**") && build_context_markdown.contains("durable-review-evidence") && build_context_markdown.contains("**blackboard_messages**") && build_context_markdown.contains("durable-message-field-evidence"), "Build context should render all review-finding fields: {build_context_markdown}" );
+    let build_context = mcp_payload!(
+        client,
+        "task_manage",
+        json!({"action": "context", "task_id": task_id})
+    );
+    assert_eq!(
+        build_context["context_bundle"]["unresolved_review_findings"],
+        review_findings
+    );
+    let (_, response) = mcp_call!(
+        client,
+        "task_manage",
+        json!({"action": "context", "task_id": task_id, "format": "markdown"})
+    );
+    let build_context_markdown = response["result"]["content"][0]["text"]
+        .as_str()
+        .expect("Build context should return Markdown text");
+    assert!(
+        build_context_markdown.contains("**blackboard**")
+            && build_context_markdown.contains("durable-review-evidence")
+            && build_context_markdown.contains("**blackboard_messages**")
+            && build_context_markdown.contains("durable-message-field-evidence"),
+        "Build context should render all review-finding fields: {build_context_markdown}"
+    );
 
-    mcp_payload!(client, "task_manage", json!({"action":"verify","task_id":task_id}));
-    let second_build = mcp_payload!(client, "task_submit", json!({ "task_id": task_id, "stage": "build", "action": "pass", "evidence": TaskHarness::evidence_for_claim(&build_claim2, json!({"command_proof": {"command": "rust-check-and-test", "exit_code": 0, "tests_passed": 1, "tests_failed": 0}})) }));
+    mcp_payload!(
+        client,
+        "task_manage",
+        json!({"action":"verify","task_id":task_id})
+    );
+    let second_build = mcp_payload!(
+        client,
+        "task_submit",
+        json!({ "task_id": task_id, "stage": "build", "action": "pass", "evidence": TaskHarness::evidence_for_claim(&build_claim2, json!({"command_proof": {"command": "rust-check-and-test", "exit_code": 0, "tests_passed": 1, "tests_failed": 0}})) })
+    );
 
     let build_commit = second_build["snapshot"]["commit"].as_str().unwrap();
 
     // Rebuilding the unchanged scoped tree keeps the pinned candidate.
-    client = restart_mcp_session(client, &workspace, &TaskHarness::session_for("reviewer")).expect("MCP session restart should succeed");
-    let review_claim2 = mcp_payload!(client, "task_claim", json!({"task_id": task_id, "stage": "review", "worker_id": "reviewer", "worktree": reviewer.root()}));
-    assert_eq!( review_claim2["context_bundle"]["candidate_snapshot"]["commit"], build_commit );
+    client = restart_mcp_session(client, &workspace, &TaskHarness::session_for("reviewer"))
+        .expect("MCP session restart should succeed");
+    let review_claim2 = mcp_payload!(
+        client,
+        "task_claim",
+        json!({"task_id": task_id, "stage": "review", "worker_id": "reviewer", "worktree": reviewer.root()})
+    );
+    assert_eq!(
+        review_claim2["context_bundle"]["candidate_snapshot"]["commit"],
+        build_commit
+    );
 
     // Pass review
-    mcp_payload!(client, "task_submit", json!({ "task_id": task_id, "stage": "review", "action": "pass", "evidence": TaskHarness::evidence_for_claim(&review_claim2, review_proof("pass")) }));
+    mcp_payload!(
+        client,
+        "task_submit",
+        json!({ "task_id": task_id, "stage": "review", "action": "pass", "evidence": TaskHarness::evidence_for_claim(&review_claim2, review_proof("pass")) })
+    );
 
     // 4. Claim deliver and REJECT delivery with findings
-    client = restart_mcp_session(client, &workspace, &TaskHarness::session_for("delivery-lead")).expect("MCP session restart should succeed");
-    let deliver_claim = mcp_payload!(client, "task_claim", json!({"task_id": task_id, "stage": "deliver", "worker_id": "delivery-lead", "worktree": workspace.root()}));
+    client = restart_mcp_session(
+        client,
+        &workspace,
+        &TaskHarness::session_for("delivery-lead"),
+    )
+    .expect("MCP session restart should succeed");
+    let deliver_claim = mcp_payload!(
+        client,
+        "task_claim",
+        json!({"task_id": task_id, "stage": "deliver", "worker_id": "delivery-lead", "worktree": workspace.root()})
+    );
     // At deliver before completion, receipt must be None
     assert!(deliver_claim["context_bundle"].get("receipt").is_none());
 
     let delivery_findings = json!({"decision": "reject", "notes": "Missing changelog entry"});
-    mcp_payload!(client, "task_submit", json!({ "task_id": task_id, "stage": "deliver", "action": "reject", "evidence": TaskHarness::evidence_for_claim(&deliver_claim, json!({"delivery_proof": {"status": "rejected"}})), "findings": delivery_findings }));
+    mcp_payload!(
+        client,
+        "task_submit",
+        json!({ "task_id": task_id, "stage": "deliver", "action": "reject", "evidence": TaskHarness::evidence_for_claim(&deliver_claim, json!({"delivery_proof": {"status": "rejected"}})), "findings": delivery_findings })
+    );
 
     // Task bounced back to build: claim build and verify unresolved_review_findings contains delivery findings
-    client = restart_mcp_session(client, &workspace, &TaskHarness::session_for("builder")).expect("MCP session restart should succeed");
-    let rebounce_build_claim = mcp_payload!(client, "task_claim", json!({"task_id": task_id, "stage": "build", "worker_id": "builder", "worktree": workspace.root()}));
-    assert_eq!( rebounce_build_claim["context_bundle"]["unresolved_review_findings"], delivery_findings );
+    client = restart_mcp_session(client, &workspace, &TaskHarness::session_for("builder"))
+        .expect("MCP session restart should succeed");
+    let rebounce_build_claim = mcp_payload!(
+        client,
+        "task_claim",
+        json!({"task_id": task_id, "stage": "build", "worker_id": "builder", "worktree": workspace.root()})
+    );
+    assert_eq!(
+        rebounce_build_claim["context_bundle"]["unresolved_review_findings"],
+        delivery_findings
+    );
 
     // 5. Complete build, review, deliver and verify receipt in context_bundle
-    mcp_payload!(client, "task_manage", json!({"action":"verify","task_id":task_id}));
-    mcp_payload!(client, "task_submit", json!({ "task_id": task_id, "stage": "build", "action": "pass", "evidence": TaskHarness::evidence_for_claim(&rebounce_build_claim, json!({"command_proof": {"command": "rust-check-and-test", "exit_code": 0, "tests_passed": 1, "tests_failed": 0}})) }));
+    mcp_payload!(
+        client,
+        "task_manage",
+        json!({"action":"verify","task_id":task_id})
+    );
+    mcp_payload!(
+        client,
+        "task_submit",
+        json!({ "task_id": task_id, "stage": "build", "action": "pass", "evidence": TaskHarness::evidence_for_claim(&rebounce_build_claim, json!({"command_proof": {"command": "rust-check-and-test", "exit_code": 0, "tests_passed": 1, "tests_failed": 0}})) })
+    );
 
-    client = restart_mcp_session(client, &workspace, &TaskHarness::session_for("reviewer")).expect("MCP session restart should succeed");
-    let review_claim3 = mcp_payload!(client, "task_claim", json!({"task_id": task_id, "stage": "review", "worker_id": "reviewer", "worktree": reviewer.root()}));
-    mcp_payload!(client, "task_submit", json!({ "task_id": task_id, "stage": "review", "action": "pass", "evidence": TaskHarness::evidence_for_claim(&review_claim3, review_proof("pass")) }));
+    client = restart_mcp_session(client, &workspace, &TaskHarness::session_for("reviewer"))
+        .expect("MCP session restart should succeed");
+    let review_claim3 = mcp_payload!(
+        client,
+        "task_claim",
+        json!({"task_id": task_id, "stage": "review", "worker_id": "reviewer", "worktree": reviewer.root()})
+    );
+    mcp_payload!(
+        client,
+        "task_submit",
+        json!({ "task_id": task_id, "stage": "review", "action": "pass", "evidence": TaskHarness::evidence_for_claim(&review_claim3, review_proof("pass")) })
+    );
 
-    client = restart_mcp_session(client, &workspace, &TaskHarness::session_for("delivery-lead")).expect("MCP session restart should succeed");
-    let deliver_claim2 = mcp_payload!(client, "task_claim", json!({"task_id": task_id, "stage": "deliver", "worker_id": "delivery-lead", "worktree": workspace.root()}));
+    client = restart_mcp_session(
+        client,
+        &workspace,
+        &TaskHarness::session_for("delivery-lead"),
+    )
+    .expect("MCP session restart should succeed");
+    let deliver_claim2 = mcp_payload!(
+        client,
+        "task_claim",
+        json!({"task_id": task_id, "stage": "deliver", "worker_id": "delivery-lead", "worktree": workspace.root()})
+    );
     assert!(deliver_claim2["context_bundle"].get("receipt").is_none());
 
-    let delivered = mcp_payload!(client, "task_submit", json!({ "task_id": task_id, "stage": "deliver", "action": "pass", "evidence": TaskHarness::evidence_for_claim(&deliver_claim2, json!({"delivery_proof": {"status": "passed"}})) }));
-    assert_eq!( delivered["snapshot"]["commit"], delivered["receipt"]["commit"] );
+    let delivered = mcp_payload!(
+        client,
+        "task_submit",
+        json!({ "task_id": task_id, "stage": "deliver", "action": "pass", "evidence": TaskHarness::evidence_for_claim(&deliver_claim2, json!({"delivery_proof": {"status": "passed"}})) })
+    );
+    assert_eq!(
+        delivered["snapshot"]["commit"],
+        delivered["receipt"]["commit"]
+    );
 
     // Completed task: context_bundle contains receipt, root envelope does not
-    let completed_context = mcp_payload!(client, "task_manage", json!({"action": "context", "task_id": task_id}));
-    assert!( completed_context.get("receipt").is_none(), "root envelope must prune receipt" );
-    assert!( completed_context["context_bundle"]["receipt"].is_object(), "context_bundle must contain receipt for completed task" );
-    assert_eq!( completed_context["context_bundle"]["receipt"]["commit"], delivered["receipt"]["commit"] );
-    assert_eq!( completed_context["context_bundle"]["latest_snapshot"]["commit"], build_commit );
-    let inspected = mcp_payload!(client, "task_manage", json!({"action":"inspect","task_id":task_id}));
+    let completed_context = mcp_payload!(
+        client,
+        "task_manage",
+        json!({"action": "context", "task_id": task_id})
+    );
+    assert!(
+        completed_context.get("receipt").is_none(),
+        "root envelope must prune receipt"
+    );
+    assert!(
+        completed_context["context_bundle"]["receipt"].is_object(),
+        "context_bundle must contain receipt for completed task"
+    );
+    assert_eq!(
+        completed_context["context_bundle"]["receipt"]["commit"],
+        delivered["receipt"]["commit"]
+    );
+    assert_eq!(
+        completed_context["context_bundle"]["latest_snapshot"]["commit"],
+        build_commit
+    );
+    let inspected = mcp_payload!(
+        client,
+        "task_manage",
+        json!({"action":"inspect","task_id":task_id})
+    );
     let findings = inspected["findings"].as_array().unwrap();
     assert!(findings.len() >= 2);
-    let review_finding = findings.iter().find(|record| record["findings"].as_str().is_some_and(|text| text.contains("durable-review-evidence"))).unwrap();
+    let review_finding = findings
+        .iter()
+        .find(|record| {
+            record["findings"]
+                .as_str()
+                .is_some_and(|text| text.contains("durable-review-evidence"))
+        })
+        .unwrap();
     let finding_text = review_finding["findings"].as_str().unwrap();
-    assert_eq!( serde_json::from_str::<Value>(finding_text).unwrap(), review_findings );
+    assert_eq!(
+        serde_json::from_str::<Value>(finding_text).unwrap(),
+        review_findings
+    );
     assert_eq!(inspected["latest_snapshot"]["commit"], build_commit);
-    assert_eq!( inspected["receipt"]["commit"], delivered["receipt"]["commit"] );
-    let (_, inspect_response) = mcp_call!(client, "task_manage", json!({"action":"inspect","task_id":task_id}));
-    let inspect_markdown = inspect_response["result"]["content"][0]["text"].as_str().unwrap();
+    assert_eq!(
+        inspected["receipt"]["commit"],
+        delivered["receipt"]["commit"]
+    );
+    let (_, inspect_response) = mcp_call!(
+        client,
+        "task_manage",
+        json!({"action":"inspect","task_id":task_id})
+    );
+    let inspect_markdown = inspect_response["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap();
     for expected in [
         task_id,
         "Need build commit",
@@ -717,7 +1160,10 @@ fn task_context_candidate_snapshot_delivery_reject_and_completed_receipt() {
         delivered["receipt"]["commit"].as_str().unwrap(),
         finding_text,
     ] {
-        assert!( inspect_markdown.contains(expected), "missing {expected:?} in task inspect Markdown:\n{inspect_markdown}" );
+        assert!(
+            inspect_markdown.contains(expected),
+            "missing {expected:?} in task inspect Markdown:\n{inspect_markdown}"
+        );
     }
     client.finish().expect("MCP server should finish");
 }

@@ -10,11 +10,9 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
     for output in TaskHarness::collect_unreachable_snapshot(root.root(), &snapshot_ref) {
         assert!(output.status.success(), "{output:?}");
     }
-    assert!(
-        TaskHarness::object_exists(root.root(), &contract_snap)
-            .status
-            .success()
-    );
+    assert!(TaskHarness::object_exists(root.root(), &contract_snap)
+        .status
+        .success());
     let recover = || {
         TaskHarness::run_cli_for_root(
             root.root(),
@@ -66,11 +64,9 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
     );
     let same_worker_error =
         TaskHarness::claim_at(root.root(), task_id, "review", "builder").unwrap_err();
-    assert!(
-        same_worker_error
-            .to_string()
-            .contains("TASK_REVIEW_NOT_INDEPENDENT")
-    );
+    assert!(same_worker_error
+        .to_string()
+        .contains("TASK_REVIEW_NOT_INDEPENDENT"));
     TaskHarness::claim_at(root.root(), task_id, "review", "reviewer").unwrap();
     let mut review_store = tasks::store(root.root()).unwrap();
     let review_task = review_store.inspect(task_id).unwrap();
@@ -148,13 +144,11 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
         contextunity_forge_mcp::db::tasks_store::recovery::is_pending(&error),
         "{error:#}"
     );
-    assert!(
-        pending_store
-            .inspect(task_id)
-            .unwrap_err()
-            .to_string()
-            .contains("TASK_CHECKPOINT_PENDING")
-    );
+    assert!(pending_store
+        .inspect(task_id)
+        .unwrap_err()
+        .to_string()
+        .contains("TASK_CHECKPOINT_PENDING"));
     let committed_counts =
         TaskHarness::persisted_submission_counts(&pending_store, task_id).unwrap();
     let failed_retry = recover();
@@ -277,11 +271,9 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
 
     // Keep the unrelated staged edit while delivery uses its isolated tree; preserve it and the committed README.
     root.write("README.md", "# unrelated staged edit\n");
-    assert!(
-        TaskHarness::stage_changes(root.root(), &["README.md"])
-            .status
-            .success()
-    );
+    assert!(TaskHarness::stage_changes(root.root(), &["README.md"])
+        .status
+        .success());
     let unrelated_staged_before = TaskHarness::staged_entries(root.root(), &["README.md"]);
     assert!(unrelated_staged_before.status.success());
     let unrelated_staged_before = unrelated_staged_before.stdout;
@@ -292,11 +284,9 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
     // A rejected hook must leave both the branch and task receipt untouched.
     let hook = TaskHarness::rejecting_pre_commit_hook(root.root()).unwrap();
     let hook_path = hook.parent().unwrap().to_string_lossy().to_string();
-    assert!(
-        TaskHarness::configure_hooks(root.root(), Some(&hook_path))
-            .status
-            .success()
-    );
+    assert!(TaskHarness::configure_hooks(root.root(), Some(&hook_path))
+        .status
+        .success());
 
     // Kill the real delivery process at its provisional receipt via FIFO rendezvous, before SQL commit.
     use std::{
@@ -479,11 +469,9 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
     let after_hook_failure = tasks::store(root.root()).unwrap().inspect(task_id).unwrap();
     assert_eq!(after_hook_failure.status, "in_progress");
     assert_eq!(after_hook_failure.stage, "deliver");
-    assert!(
-        TaskHarness::configure_hooks(root.root(), None)
-            .status
-            .success()
-    );
+    assert!(TaskHarness::configure_hooks(root.root(), None)
+        .status
+        .success());
 
     // A SQLite statement failure must roll back both the candidate branch and milestone file.
     TaskHarness::install_delivery_sql_abort(root.root()).unwrap();
@@ -581,11 +569,9 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
         TaskHarness::snapshot_content(root.root(), &delivery_commit, "README.md");
     assert!(committed_readme.status.success());
     assert_eq!(committed_readme.stdout, b"# sibling change\n");
-    assert!(
-        TaskHarness::restore_head_paths(root.root(), &["README.md"])
-            .status
-            .success()
-    );
+    assert!(TaskHarness::restore_head_paths(root.root(), &["README.md"])
+        .status
+        .success());
     let written = std::fs::read_to_string(root.root().join("docs/milestones/010-test.md")).unwrap();
     let milestone = Milestone::parse(&written, "forge-mcp").unwrap();
     assert_eq!(
@@ -664,11 +650,9 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
         .receipt
         .and_then(|receipt| receipt.commit)
         .unwrap();
-    assert!(
-        TaskHarness::checkout_branch(root.root(), &milestone_branch)
-            .status
-            .success()
-    );
+    assert!(TaskHarness::checkout_branch(root.root(), &milestone_branch)
+        .status
+        .success());
     assert!(
         TaskHarness::merge_branch(root.root(), "task-second-delivery", "merge second task")
             .status
@@ -712,13 +696,11 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
         "second task keeps its reachable accepted delivery pointer across merge"
     );
     assert_ne!(delivery_commit, merge_commit);
-    assert!(
-        tasks::store(root.root())
-            .unwrap()
-            .list(None, "all", None)
-            .unwrap()
-            .is_empty()
-    );
+    assert!(tasks::store(root.root())
+        .unwrap()
+        .list(None, "all", None)
+        .unwrap()
+        .is_empty());
     let refs_after = TaskHarness::references(root.root(), "refs/forge/snapshots/");
     let refs_after_text = String::from_utf8_lossy(&refs_after.stdout)
         .trim()

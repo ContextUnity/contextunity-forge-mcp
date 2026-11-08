@@ -88,8 +88,7 @@ use serde_json::{json, Value};
 
 #[test]
 fn shared_mcp_harness_supports_server_rpc_and_cli_seams() {
-    let workspace =
-        Workspace::with_files(&[("service.py", "def entry(): return 1\n")]);
+    let workspace = Workspace::with_files(&[("service.py", "def entry(): return 1\n")]);
     let database = workspace.path(".forge/index.sqlite");
     workspace.build_to(&database);
 

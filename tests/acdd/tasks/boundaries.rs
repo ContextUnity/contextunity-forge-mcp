@@ -5,5 +5,5 @@ use std::collections::HashMap;
 
 mod harness;
 
-mod signature;
 mod commit_scope;
+mod signature;

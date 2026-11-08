@@ -5,11 +5,9 @@ fn failed_query_keeps_next_read_usable_and_database_changes_are_fenced() {
     let ws = Workspace::with_files(&[("main.rs", "pub fn before() {}\n")]);
     let server = in_process_server(&ws);
     snapshot(&server).unwrap();
-    assert!(
-        server
-            .read(|_| anyhow::bail!("intentional query failure"))
-            .is_err()
-    );
+    assert!(server
+        .read(|_| anyhow::bail!("intentional query failure"))
+        .is_err());
     snapshot(&server).unwrap();
     let err = server
         .read(|_| {
@@ -30,21 +28,17 @@ fn foreign_and_corrupt_indexes_remain_rejected_without_replacement() {
     let identity = db::cache::identity(&server.db).unwrap();
     let foreign = Server::new(other.root().to_path_buf(), server.db.clone())
         .with_cache_dir(other.path(".forge/extraction-cache"));
-    assert!(
-        snapshot(&foreign)
-            .unwrap_err()
-            .to_string()
-            .contains("different workspace")
-    );
+    assert!(snapshot(&foreign)
+        .unwrap_err()
+        .to_string()
+        .contains("different workspace"));
     assert_eq!(identity, db::cache::identity(&server.db).unwrap());
     let mut cached_foreign = server.clone();
     cached_foreign.root = other.root().to_path_buf();
-    assert!(
-        snapshot(&cached_foreign)
-            .unwrap_err()
-            .to_string()
-            .contains("different workspace")
-    );
+    assert!(snapshot(&cached_foreign)
+        .unwrap_err()
+        .to_string()
+        .contains("different workspace"));
     assert_eq!(identity, db::cache::identity(&server.db).unwrap());
 
     let index = IndexFixture::open(&server.db);
@@ -183,12 +177,10 @@ fn symlink_database_is_rejected_without_touching_target() {
 fn newly_created_configured_root_is_admitted() {
     let ws = Workspace::with_files(&[("forge-mcp.yaml", "roots:\n  - src\n")]);
     let server = in_process_server(&ws);
-    assert!(
-        snapshot(&server).unwrap()["nodes"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
+    assert!(snapshot(&server).unwrap()["nodes"]
+        .as_array()
+        .unwrap()
+        .is_empty());
     ws.write("src/created.rs", "pub fn created() {}\n");
     invalidate_mcp_connection_cache(&server.db).unwrap();
     let after = snapshot(&server).unwrap();

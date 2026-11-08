@@ -1,11 +1,15 @@
 use super::*;
 
 fn python_linked(path: &str, source: &str) -> crate::languages::harness::LinkedFacts {
-    ExtractorHarness::for_lang("python").at_path(path).linked(source)
+    ExtractorHarness::for_lang("python")
+        .at_path(path)
+        .linked(source)
 }
 
 fn python_extracted(path: &str, source: &str) -> contextunity_forge_mcp::core::models::Facts {
-    ExtractorHarness::for_lang("python").at_path(path).extract(source)
+    ExtractorHarness::for_lang("python")
+        .at_path(path)
+        .extract(source)
 }
 
 #[test]
@@ -29,7 +33,11 @@ fn class_assignments_are_bindings_without_leaking_nested_callable_assignments() 
     let facts = ExtractorHarness::for_lang("python")
         .at_path("class_bindings.py")
         .extract("class Model:\n    objects = factory()\n    execute: object = custom\n    def method(self):\n        local = 1\n    class Nested:\n        nested = 1\n");
-    let model = facts.nodes.iter().find(|node| node.name == "Model").unwrap();
+    let model = facts
+        .nodes
+        .iter()
+        .find(|node| node.name == "Model")
+        .unwrap();
     assert_eq!(
         crate::common::assertions::projected_node_details(&facts, model)["bindings"],
         json!(["execute", "objects"])
@@ -50,8 +58,12 @@ fn computed_receiver_hints_are_structural_and_preserve_original_expression() {
             .unwrap()
             .receiver_hint
     };
-    assert!(matches!(hint("'value'.upper"), Some(ReceiverHint::StringLiteral { member }) if member == "upper"));
-    assert!(matches!(hint("r'value'.strip"), Some(ReceiverHint::StringLiteral { member }) if member == "strip"));
+    assert!(
+        matches!(hint("'value'.upper"), Some(ReceiverHint::StringLiteral { member }) if member == "upper")
+    );
+    assert!(
+        matches!(hint("r'value'.strip"), Some(ReceiverHint::StringLiteral { member }) if member == "strip")
+    );
     assert!(hint("b'value'.upper").is_none());
     assert!(hint("f'{value}'.upper").is_none());
     assert!(
@@ -60,7 +72,9 @@ fn computed_receiver_hints_are_structural_and_preserve_original_expression() {
     assert!(
         matches!(hint("package.Widget().execute"), Some(ReceiverHint::TypedCallResult { value: ValueExpr::Call { callee, site: None }, member }) if callee == "package.Widget" && member == "execute")
     );
-    assert!(matches!(hint("super().execute"), Some(ReceiverHint::Super { member }) if member == "execute"));
+    assert!(
+        matches!(hint("super().execute"), Some(ReceiverHint::Super { member }) if member == "execute")
+    );
     assert!(hint("super(Widget, self).execute").is_none());
     assert!(
         matches!(hint("response.request().consume"), Some(ReceiverHint::TypedCallResult { value: ValueExpr::Call { callee, site: None }, member }) if callee == "response.request" && member == "consume")
@@ -77,9 +91,17 @@ fn computed_receiver_hints_are_structural_and_preserve_original_expression() {
     };
     assert_eq!(callee, "request");
     assert_eq!(member, "consume");
-    assert_eq!(site.position, SourcePosition { line: 11, column: 4 });
+    assert_eq!(
+        site.position,
+        SourcePosition {
+            line: 11,
+            column: 4
+        }
+    );
     assert!(site.arguments.is_empty());
-    assert!(matches!(site.receiver.as_deref(), Some(ValueExpr::Call { callee, site: None }) if callee == "factory"));
+    assert!(
+        matches!(site.receiver.as_deref(), Some(ValueExpr::Call { callee, site: None }) if callee == "factory")
+    );
 }
 
 #[test]
@@ -175,12 +197,9 @@ def conventional(logger, log):
         .find(|coverage| coverage.expression == "mapping.get")
         .unwrap();
     assert_eq!(local.status, "resolved", "{local:#?}");
-    assert!(
-        graph
-            .edges
-            .iter()
-            .any(|edge| edge.kind == "calls" && edge.evidence == "mapping.get" && edge.dst == local_get)
-    );
+    assert!(graph.edges.iter().any(|edge| edge.kind == "calls"
+        && edge.evidence == "mapping.get"
+        && edge.dst == local_get));
     for expression in [
         "raw.get",
         "raw.items",
@@ -208,7 +227,12 @@ def conventional(logger, log):
             coverage.evidence
         );
     }
-    for expression in ["logger.info", "logger.warning", "logger.debug", "logger.error"] {
+    for expression in [
+        "logger.info",
+        "logger.warning",
+        "logger.debug",
+        "logger.error",
+    ] {
         let coverage = graph
             .coverage
             .iter()
@@ -220,7 +244,11 @@ def conventional(logger, log):
             coverage.evidence
         );
         assert!(coverage.evidence.contains("logging.LoggerAdapter"));
-        assert!(coverage.evidence.contains("line 3"), "{}", coverage.evidence);
+        assert!(
+            coverage.evidence.contains("line 3"),
+            "{}",
+            coverage.evidence
+        );
     }
     for expression in ["logger.exception", "log.debug"] {
         let coverage = graph
@@ -254,7 +282,10 @@ fn logging_factory_methods_have_verified_builtin_origin_after_persistence() {
             let expression = format!("logger.{method}");
             let (status, evidence) = persisted_coverage(conn, "src/factory.py", line, &expression);
             assert_eq!(status, "external", "{expression}: {evidence}");
-            assert_eq!(evidence, format!("builtin:logging.Logger built-in: {expression}"));
+            assert_eq!(
+                evidence,
+                format!("builtin:logging.Logger built-in: {expression}")
+            );
         }
         assert_eq!(
             persisted_status(conn, "src/factory.py", 9, "logger.process"),
@@ -264,13 +295,17 @@ fn logging_factory_methods_have_verified_builtin_origin_after_persistence() {
             persisted_status(conn, "src/factory.py", 11, "logger.info"),
             "unresolved"
         );
-        assert_eq!(persisted_status(conn, "src/rebound.py", 4, "logger.info"), "unresolved");
+        assert_eq!(
+            persisted_status(conn, "src/rebound.py", 4, "logger.info"),
+            "unresolved"
+        );
 
         let (status, evidence) = persisted_coverage(conn, "src/service.py", 1, "sqlite3");
         assert_eq!(status, "external");
         assert!(evidence.contains("standard library"), "{evidence}");
 
-        let (status, evidence) = persisted_coverage(conn, "src/service.py", 4, "sqlite3.Connection");
+        let (status, evidence) =
+            persisted_coverage(conn, "src/service.py", 4, "sqlite3.Connection");
         assert_eq!(status, "external");
         assert!(evidence.contains("sqlite3"), "{evidence}");
 
@@ -284,7 +319,10 @@ fn logging_factory_methods_have_verified_builtin_origin_after_persistence() {
             let expression = format!("conn.{method}");
             let (status, evidence) = persisted_coverage(conn, "src/service.py", line, &expression);
             assert_eq!(status, "external", "{expression}: {evidence}");
-            assert!(evidence.contains("builtin:sqlite3"), "{expression}: {evidence}");
+            assert!(
+                evidence.contains("builtin:sqlite3"),
+                "{expression}: {evidence}"
+            );
         }
         assert_eq!(
             persisted_status(conn, "src/service.py", 10, "conn.unknown_method"),
@@ -324,14 +362,20 @@ fn logging_factory_methods_have_verified_builtin_origin_after_persistence() {
             "SELECT count(*) FROM edge_occurrences o JOIN path_dictionary p ON p.path_id=o.owner_id WHERE p.path='src/service.py' AND o.kind='calls'",
             [],
         );
-        assert_eq!(calls_edges, 0, "no fabricated calls edges should be emitted for unknown calls");
+        assert_eq!(
+            calls_edges, 0,
+            "no fabricated calls edges should be emitted for unknown calls"
+        );
     };
     w.build();
     let cold = w.open();
     check(&cold);
     drop(cold);
     w.write("src/factory.py", &format!("{source}# index delta\n"));
-    w.write("src/service.py", &format!("{service_source}# index delta\n"));
+    w.write(
+        "src/service.py",
+        &format!("{service_source}# index delta\n"),
+    );
     w.delta(&["src/factory.py", "src/service.py"]);
     let delta = w.open();
     check(&delta);
@@ -356,7 +400,10 @@ fn with_statement_as_target_uses_the_context_value() {
         .filter(|coverage| coverage.expression == "db.execute")
         .collect();
     assert_eq!(rows.len(), 2, "{rows:#?}");
-    assert!(rows.iter().all(|coverage| coverage.status == "resolved"), "{rows:#?}");
+    assert!(
+        rows.iter().all(|coverage| coverage.status == "resolved"),
+        "{rows:#?}"
+    );
     let calls = graph
         .edges
         .iter()
@@ -422,7 +469,10 @@ fn call_return_type_and_context_manager_propagation_resolves_receiver_types() {
         None,
     );
 
-    assert_eq!(catalog.coverage_line("consumer.py", 8, "raw.execute"), "unresolved");
+    assert_eq!(
+        catalog.coverage_line("consumer.py", 8, "raw.execute"),
+        "unresolved"
+    );
     for (path, line, expression) in [
         ("consumer.py", 6, "db.execute"),
         ("consumer.py", 10, "conn.execute"),
@@ -433,9 +483,7 @@ fn call_return_type_and_context_manager_propagation_resolves_receiver_types() {
             .coverage
             .iter()
             .find(|coverage| {
-                coverage.path == path
-                    && coverage.line == line
-                    && coverage.expression == expression
+                coverage.path == path && coverage.line == line && coverage.expression == expression
             })
             .unwrap();
         assert_eq!(evidence.status, "external", "{expression}: {evidence:#?}");
@@ -466,7 +514,10 @@ fn loop_element_types_require_proven_unshadowed_iterables() {
             .find(|coverage| coverage.line == line)
             .unwrap();
         assert_eq!(coverage.status, "external", "{coverage:#?}");
-        assert!(coverage.evidence.contains("Python standard library"), "{coverage:#?}");
+        assert!(
+            coverage.evidence.contains("Python standard library"),
+            "{coverage:#?}"
+        );
     }
     assert_eq!(
         resolved
@@ -503,8 +554,14 @@ fn nested_self_and_unbound_cls_do_not_take_the_enclosing_class() {
         "src/repo.py",
         "import sqlite3\n\nclass Repo:\n    def connect(cls) -> sqlite3.Connection:\n        return sqlite3.connect(':memory:')\n\n    def save(self) -> sqlite3.Connection:\n        return sqlite3.connect(':memory:')\n\n    def run(self):\n        def helper(self):\n            nested = self.save()\n            nested.execute('SELECT 1')\n        borrowed = cls.connect()\n        borrowed.execute('SELECT 2')\n\n    def make(cls):\n        owned = cls.connect()\n        owned.execute('SELECT 3')\n",
     );
-    assert_eq!(graph.coverage("nested.execute").next().unwrap().status, "unresolved");
-    assert_eq!(graph.coverage("borrowed.execute").next().unwrap().status, "unresolved");
+    assert_eq!(
+        graph.coverage("nested.execute").next().unwrap().status,
+        "unresolved"
+    );
+    assert_eq!(
+        graph.coverage("borrowed.execute").next().unwrap().status,
+        "unresolved"
+    );
     let owned = graph.coverage("owned.execute").next().unwrap();
     assert_eq!(owned.status, "external");
     assert!(owned.evidence.contains("builtin:sqlite3"), "{owned:#?}");
@@ -526,7 +583,10 @@ fn global_name_declaration_does_not_mask_same_named_instance_field() {
         ],
         None,
     );
-    assert_eq!(catalog.coverage_line("fields.py", 11, "box.client.run"), "resolved");
+    assert_eq!(
+        catalog.coverage_line("fields.py", 11, "box.client.run"),
+        "resolved"
+    );
     let targets = catalog.edge_qualnames("fields.invoke", "calls");
     assert!(
         targets.iter().any(|target| target == "fields.Client.run"),
@@ -562,17 +622,26 @@ fn awaited_generic_returns_provide_only_proven_loop_element_types() {
     let typed = graph
         .coverage
         .iter()
-        .find(|coverage| coverage.path == "consumer.py" && coverage.line == 6 && coverage.expression == "item.get")
+        .find(|coverage| {
+            coverage.path == "consumer.py"
+                && coverage.line == 6
+                && coverage.expression == "item.get"
+        })
         .unwrap();
     assert_eq!(typed.status, "external");
-    assert!(typed.evidence.contains("Python standard library"), "{typed:#?}");
+    assert!(
+        typed.evidence.contains("Python standard library"),
+        "{typed:#?}"
+    );
     for (line, expression) in [(9, "unknown.get"), (12, "decorated.get")] {
         assert_eq!(
             graph
                 .coverage
                 .iter()
                 .find(|coverage| {
-                    coverage.path == "consumer.py" && coverage.line == line && coverage.expression == expression
+                    coverage.path == "consumer.py"
+                        && coverage.line == line
+                        && coverage.expression == expression
                 })
                 .unwrap()
                 .status,
@@ -597,7 +666,10 @@ fn awaited_typed_receiver_methods_preserve_async_return_types() {
         ],
         None,
     );
-    assert_eq!(catalog.coverage_line("consumer.py", 5, "result.work"), "resolved");
+    assert_eq!(
+        catalog.coverage_line("consumer.py", 5, "result.work"),
+        "resolved"
+    );
     for (function, expression) in [
         ("consumer.typed", "result.work"),
         ("consumer.spaced", "result.work"),
@@ -611,8 +683,14 @@ fn awaited_typed_receiver_methods_preserve_async_return_types() {
             "{function} should resolve {expression} to Worker.work"
         );
     }
-    assert_eq!(catalog.coverage_line("consumer.py", 18, "result.work"), "resolved");
-    assert_eq!(catalog.coverage_line("consumer.py", 23, "worker.work"), "resolved");
+    assert_eq!(
+        catalog.coverage_line("consumer.py", 18, "result.work"),
+        "resolved"
+    );
+    assert_eq!(
+        catalog.coverage_line("consumer.py", 23, "worker.work"),
+        "resolved"
+    );
     assert_eq!(
         catalog.coverage_line("consumer.py", 9, "result.work"),
         "unresolved",

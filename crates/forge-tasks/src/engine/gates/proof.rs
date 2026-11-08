@@ -1,4 +1,3 @@
-pub(super) use super::seam::validate_seam_reachability;
 use anyhow::{bail, Context, Result};
 use std::{
     collections::BTreeSet,
