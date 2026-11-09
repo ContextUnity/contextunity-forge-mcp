@@ -25,7 +25,8 @@ pub(crate) use integration::configure_checkpoint_owners;
 pub mod recovery;
 use contract::{snapshot, Snapshot};
 pub use handoff::{
-    execute_milestone_verification, handoff, handoff_context, set_symbol_facts_extractor,
+    execute_milestone_verification, execute_wave_verification, handoff, handoff_context,
+    set_symbol_facts_extractor,
 };
 pub use integration::{
     HandoffBinding, IntegrationEvidence, IntegrationReview, IntegrationVerification,
@@ -460,7 +461,7 @@ pub fn init(root: &Path, options: Init) -> Result<Value> {
     dependencies.dedup();
     let status = if options.active { "active" } else { "planned" };
     let target_dir_rel = target_dir.strip_prefix(root).unwrap_or(&target_dir);
-    let has_config = root.join("forge-mcp.yaml").try_exists()?
+    let has_config = crate::tasks::configuration::config_path(root).try_exists()?
         || match tasks::primary_worktree_root(root) {
             Some(base) => base.join("forge-mcp.yaml").try_exists()?,
             None => false,

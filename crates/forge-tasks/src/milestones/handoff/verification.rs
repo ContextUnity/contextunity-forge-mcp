@@ -15,7 +15,7 @@ pub(super) fn require_closed_verification(
         .connection
         .query_row(
             "SELECT action, git_tree_sha, proof_payload, gate_path FROM gate_transitions
-             WHERE milestone_id=?1 AND subject='milestone'
+             WHERE milestone_id=?1 AND subject='milestone' AND proof_kind='command'
              ORDER BY id DESC LIMIT 1",
             [identity],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
@@ -177,13 +177,36 @@ pub fn execute_milestone_verification(
     selector: &str,
     target_base: &str,
 ) -> Result<Value> {
+    execute_verification_at(root, selector, target_base, None)
+}
+
+/// Execute the exact applicable root command selected by the wave runner.
+pub fn execute_wave_verification(
+    root: &Path,
+    selector: &str,
+    target_base: &str,
+    gate_path: &str,
+) -> Result<Value> {
+    if gate_path.trim().is_empty() {
+        bail!("MILESTONE_VERIFICATION_GATE_REQUIRED: supply the current root cursor path");
+    }
+    execute_verification_at(root, selector, target_base, Some(gate_path))
+}
+
+fn execute_verification_at(
+    root: &Path,
+    selector: &str,
+    target_base: &str,
+    gate_path: Option<&str>,
+) -> Result<Value> {
     let prepared = prepare_handoff_context(root, selector, target_base)?;
     let root_gates = crate::engine::gate_graph::collect_root_cursors(&prepared.profile)?;
     let changed_paths = milestone_gate_paths(root, &prepared)?;
     let (gate, command_id) = root_gates
         .iter()
         .find_map(|cursor| {
-            ((cursor.gate.command.is_some()
+            ((gate_path.is_none_or(|path| cursor.canonical_stage_id == path))
+                && (cursor.gate.command.is_some()
                 || cursor.gate.proof.kind()
                     == Some(crate::core::tasks::profile::ProofKind::Command))
                 && cursor_applicable(root, &prepared, &changed_paths, cursor))

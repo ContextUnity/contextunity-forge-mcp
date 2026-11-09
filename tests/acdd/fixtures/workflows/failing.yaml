@@ -1,0 +1,12 @@
+version: 2
+inherit: none
+save: none
+commands:
+  fail: "exit 7"
+  forbidden: "touch must-not-run"
+gates:
+  - id: fail
+    command: fail
+    max_attempts: 1
+  - id: forbidden
+    command: forbidden

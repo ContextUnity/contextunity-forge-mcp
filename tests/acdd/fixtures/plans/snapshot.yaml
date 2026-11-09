@@ -1,0 +1,13 @@
+version: 2
+inherit: none
+save: snapshot
+commands:
+  record: "printf 'step\n' >> plan-execution.log"
+gates:
+  - tasks:
+      gates:
+        - id: record
+          command: record
+        - id: finish
+          receipt: true
+          save: snapshot

@@ -156,6 +156,38 @@ pub fn monitor_runner_process(
     }
 }
 
+/// Execute a command with the same process-group supervision as role runners.
+/// Commands have no agent session and do not claim role-owned gates.
+#[cfg(unix)]
+pub(crate) fn run_command_process(
+    command: &mut std::process::Command,
+    timeout: Duration,
+    on_output: &mut dyn FnMut(RunnerStream, &[u8]) -> io::Result<()>,
+) -> Result<RunnerOutcome, RunnerError> {
+    use std::{os::unix::process::CommandExt, process::Stdio};
+    if let Some(settings) = command
+        .get_current_dir()
+        .and_then(crate::tasks::configuration::current)
+    {
+        settings.configure_child(command);
+    }
+    let child = command
+        .process_group(0)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    monitor_runner_process(
+        RunnerProcess {
+            child,
+            session_fingerprint: String::new(),
+            cleaned_up: false,
+        },
+        timeout,
+        on_output,
+    )
+}
+
 #[cfg(not(unix))]
 fn unsupported() -> RunnerError {
     io::Error::new(
@@ -270,7 +302,11 @@ mod unix {
                 "invalid executable or NUL in argument".into(),
             ));
         }
-        let child = Command::new(&argv[0])
+        let mut command = Command::new(&argv[0]);
+        if let Some(settings) = crate::tasks::configuration::current(&context.worktree) {
+            settings.configure_child(&mut command);
+        }
+        let child = command
             .args(&argv[1..])
             .current_dir(&context.worktree)
             .env("FORGE_AGENT_SESSION_ID", &context.session_id)

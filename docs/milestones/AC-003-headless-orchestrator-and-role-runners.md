@@ -490,44 +490,273 @@ receipt:
 
 ```yaml
 task_ref: milestone-wave-runner-and-autonomous-delivery
-target: "Implement CLI milestone run, plan [list|show|run], and workflow [list|show|run] with wave scheduling and global CLI path options"
+target: Implement CLI milestone run, plan [list|show|run], and workflow [list|show|run] with wave scheduling and global CLI path options
 proof_policy: seam-test-first
-contract_revision: 2
+contract_revision: 4
 depends_on:
-  - headless-task-lifecycle-and-rejection-router
+- headless-task-lifecycle-and-rejection-router
 scope:
-  - crates/forge-tasks/src/engine/orchestrator/mod.rs
-  - crates/forge-tasks/src/engine/orchestrator/waves.rs
-  - crates/forge-tasks/src/milestones/mod.rs
-  - src/cli/milestone.rs
-  - src/cli/plan.rs
-  - src/cli/workflow.rs
-  - docs/reference/cli.md
-  - docs/reference/acdd.md
-  - tests/acdd/orchestrator.rs
-  - tests/acdd/fixtures/plans/
-  - tests/acdd/fixtures/workflows/
-  - tests/acdd/harness/plans.rs
-  - tests/acdd/harness/workflows.rs
+- crates/forge-tasks/src/engine/orchestrator/mod.rs
+- crates/forge-tasks/src/engine/orchestrator/waves.rs
+- crates/forge-tasks/src/milestones/mod.rs
+- src/cli/milestone.rs
+- src/cli/plan.rs
+- src/cli/workflow.rs
+- docs/reference/cli.md
+- docs/reference/acdd.md
+- tests/acdd/orchestrator.rs
+- tests/acdd/fixtures/plans/
+- tests/acdd/fixtures/workflows/
+- tests/acdd/harness/plans.rs
+- tests/acdd/harness/workflows.rs
+- src/cli/mod.rs
+- tests/acdd/orchestrator/waves.rs
+- crates/forge-tasks/src/milestones/command_gate.rs
+- crates/forge-tasks/src/engine/orchestrator/workflow.rs
+- crates/forge-tasks/src/engine/orchestrator/spawner.rs
+- crates/forge-tasks/src/engine/orchestrator/plan.rs
+- src/cli/paths.rs
+- crates/forge-tasks/src/milestones/handoff/verification.rs
+- crates/forge-tasks/src/milestones/handoff/mod.rs
+- crates/forge-tasks/src/milestones/integration.rs
+- crates/forge-tasks/src/engine/orchestrator/types.rs
+- crates/forge-tasks/src/engine/orchestrator/role.rs
+- crates/forge-tasks/src/tasks/gates.rs
+- crates/forge-tasks/src/engine/gates/submit.rs
+- crates/forge-tasks/src/engine/mod.rs
+- crates/forge-tasks/src/engine/workspaces.rs
+- crates/forge-tasks/src/engine/lifecycle.rs
+- crates/forge-tasks/src/engine/blackboard.rs
+- crates/forge-tasks/src/engine/evidence_compiler.rs
+- crates/forge-tasks/src/tasks/configuration.rs
+- crates/forge-tasks/src/tasks/mod.rs
+- crates/forge-tasks/src/tasks/profile/mod.rs
+- crates/forge-tasks/src/engine/gates/scope.rs
+- tests/acdd/orchestrator/waves/harness.rs
+- src/mcp/server.rs
+- src/engine/pipeline.rs
+- src/mcp/tools.rs
+- src/cli/ast.rs
+- crates/forge-tasks/src/milestones/synthesis.rs
+- src/cli/validate.rs
+- src/cli/guide.rs
+- tests/acdd/runner/transition_runner.rs
+- src/cli/task.rs
 symbols:
-  - fn:run_milestone_waves
-  - fn:execute_wave_verification
-  - fn:run_plan_workflow
-  - fn:run_standalone_workflow
-status: planned
+- fn:run_milestone_waves
+- fn:execute_wave_verification
+- fn:run_plan_workflow
+- fn:run_standalone_workflow
+status: completed
 subtasks:
-  - subtask_ref: topological-wave-scheduler
-    title: "Schedule and dispatch milestone tasks in wave order respecting depends_on dependencies"
-  - subtask_ref: in-place-plan-and-workflow-runners
-    title: "Implement plan [list|show|run] (save: snapshot) and workflow [list|show|run] (save: none) in-place execution"
-  - subtask_ref: plan-and-workflow-harnesses-and-fixtures
-    title: "Build PlanHarness and WorkflowHarness with canonical static fixtures in tests/acdd/fixtures/plans/ and workflows/ according to INV-PLAN-WORKFLOW-HARNESS"
-  - subtask_ref: plan-and-workflow-documentation-reconciliation
-    title: "Reconcile documentation in docs/reference/cli.md and docs/reference/acdd.md covering plan run and workflow run execution"
-  - subtask_ref: wave-barrier-and-autonomous-handoff
-    title: "Execute milestone verification commands and invoke milestone handoff when all tasks pass"
-  - subtask_ref: global-cli-path-resolution
-    title: "Support deterministic --root, --db, --config, and --profile CLI arguments across commands"
+- subtask_ref: topological-wave-scheduler
+  title: Schedule and dispatch milestone tasks in wave order respecting depends_on dependencies
+  status: completed
+  evidence: 'Claim98: R1 remains independently confirmed fixed in review95 and unchanged in this repair. Final ACDD302/0 includes real FF-refusal/zero-successor-claims restart regression in isolated and in-place modes, preserved receipts/worktrees, wave dependency ordering and normal integrated handoff. Strict all-target/all-feature Clippy exit0.'
+- subtask_ref: in-place-plan-and-workflow-runners
+  title: 'Implement plan [list|show|run] (save: snapshot) and workflow [list|show|run] (save: none) in-place execution'
+  status: completed
+  evidence: Claim98 final full ACDD302 passed/0failed includes canonical plan/workflow list/show/run, snapshots/save:none, structured role decisions/rejection and immutable/subtask guards. Plan/workflow implementation unchanged from build86. Current repair only wave journal composition; strict all-target/all-feature Clippy exit0.
+- subtask_ref: plan-and-workflow-harnesses-and-fixtures
+  title: Build PlanHarness and WorkflowHarness with canonical static fixtures in tests/acdd/fixtures/plans/ and workflows/ according to INV-PLAN-WORKFLOW-HARNESS
+  status: completed
+  evidence: Claim98 adds dedicated real WaveHarness partial-prefix/third-restart, failed retry-budget and corrupt durable-route tests. Existing canonical PlanHarness/WorkflowHarness fixtures and production execution preserved. No ad-hoc plan/workflow markdown or substitute engine. Final ACDD302/0 and strict all-target Clippy0.
+- subtask_ref: plan-and-workflow-documentation-reconciliation
+  title: Reconcile documentation in docs/reference/cli.md and docs/reference/acdd.md covering plan run and workflow run execution
+  status: completed
+  evidence: Claim98 restores existing documented bound-root-decision resume behavior for retained prefix plus fresh suffix. CLI/acdd reference bytes preserved; their existing contract remains accurate, so no documentation edit required. Documentation check173files statusok; git diff --check0, final ACDD302/0 and strict all-target Clippy0.
+- subtask_ref: wave-barrier-and-autonomous-handoff
+  title: Execute milestone verification commands and invoke milestone handoff when all tasks pass
+  status: completed
+  evidence: 'Claim98 R2 incomplete remediation repaired in canonical transition journal: fresh suffix links to the exact reused/observed predecessor row, reconstructing complete route without deleting audit history or rebinding proof. Exact third-unchanged-restart regression and failed/pass retry-budget route both fail before fix (compile0/runtime101, archive8ca125c36d00038e) and pass after. Corrupt-link fail-closed test and whole-prefix committed/uncommitted/unchanged/delivery-resume neighbors pass. Focused milestone17/0; final ACDD302/0, strict all-target Clippy0.'
+- subtask_ref: global-cli-path-resolution
+  title: Support deterministic --root, --db, --config, and --profile CLI arguments across commands
+  status: completed
+  evidence: Claim98 immutable selected config/profile, server lifetime, delta selection and in-process CLI owners unchanged byte-for-byte from build86. Current full ACDD302/0 includes selected-policy, configuration propagation and concurrency regressions. Strict all-target/all-feature Clippy exit0. No later identity/independence-task change.
+extended_scope:
+- src/cli/mod.rs
+- tests/acdd/orchestrator/waves.rs
+- crates/forge-tasks/src/milestones/command_gate.rs
+- crates/forge-tasks/src/engine/orchestrator/workflow.rs
+- crates/forge-tasks/src/engine/orchestrator/spawner.rs
+- crates/forge-tasks/src/engine/orchestrator/plan.rs
+- src/cli/paths.rs
+- crates/forge-tasks/src/milestones/handoff/verification.rs
+- crates/forge-tasks/src/milestones/handoff/mod.rs
+- crates/forge-tasks/src/milestones/integration.rs
+- crates/forge-tasks/src/engine/orchestrator/types.rs
+- crates/forge-tasks/src/engine/orchestrator/role.rs
+- crates/forge-tasks/src/tasks/configuration.rs
+- crates/forge-tasks/src/tasks/mod.rs
+- crates/forge-tasks/src/tasks/profile/mod.rs
+- crates/forge-tasks/src/engine/gates/scope.rs
+- tests/acdd/orchestrator/waves/harness.rs
+- src/mcp/tools.rs
+- src/cli/ast.rs
+- crates/forge-tasks/src/milestones/synthesis.rs
+- src/cli/validate.rs
+- src/cli/guide.rs
+- tests/acdd/runner/transition_runner.rs
+- src/cli/task.rs
+receipt:
+  delivery_gate: deliver
+  candidate_gate: build
+  contract_revision: 4
+  passed_at: 2026-11-09T20:01:18.726207742+00:00
+  evidence:
+    command_proof:
+      command: rust-check-and-test
+      exit_code: 0
+      log: |
+        [rust-check-and-test::tests/acdd/orchestrator/waves.rs]
+        SCOPE_VIOLATION_WARNING: docs/milestones/AC-003-headless-orchestrator-and-role-runners.md
+        PASS rust-check-and-test::tests/acdd/orchestrator/waves.rs: exit=0 passed=1 failed=0 (372 ms)
+      tests_passed: 1
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: All 68 current candidate blobs/modes exactly match live files and snapshot path sets are unchanged. Only wave owner and its focused tests/harness differ from rejected eea896f8; 65/68 blobs retained exactly. Inventoried full admitted scope and 24 extensions against revision4 authority/transfers; changes restore admitted restart behavior. Protected files and unrelated/later task unchanged; HEAD/base, branch, main, index, complete status and manifest bytes unchanged before review; git diff --check0.
+        claims:
+          applicable: true
+          evidence: Complete task acceptance and production seams reviewed against baseline2fbda3cf and prior candidate lineage. R1 and R2 independently confirmed-fixed; no open authority-backed findings. Exact prior-red partial-prefix scratch now passes third unchanged restart. Current ACDD302/0 (waves49,lifecycle11,spawner18,types8), MCP138/0, adapters4/0, CLI-roots7/0; strict Clippy0/warnings0. Seven current-library scratch probes pass. Detailed cumulative closure/mutation evidence in closure-ledger.json under /tmp/ac003-waves-review3-_6wmor4b.
+        concurrency:
+          applicable: true
+          evidence: Actual isolated delivery followed by competing integrated-root commit and FF refusal remains fenced on isolated/in-place restart; no successor claims, receipt/owned HEAD preserved, normal merge recovery/handoff succeeds. Journal links actual persisted row IDs to last consumed valid observation; failed observations remain in replay route and consume canonical retry budgets. Independent unchanged third/fourth restart preserves byte-exact old/new journal evidence and produces no additional effects or rows. No alternate graph, schema or global cache.
+        project_isolation:
+          applicable: true
+          evidence: Current scoped journal query confines predecessor resolution to milestone/subject/orchestrator rows. Real foreign-milestone predecessor existing in SQLite is refused before effects; cyclic/non-earlier/missing links fail closed. Owned worktrees, config/profile/db rebasing, subprocess isolation and server/delta paths retain prior reviewed semantics and current domain regressions. All reviewer mutations are in disposable fixture repositories or scratch files under /tmp.
+        administration:
+          applicable: true
+          evidence: Active profile graph, proof/pin/baseline/receipt guards and shared subtask completion guard retain authority. Replay checks original gate/profile/authority/content bindings; legacy unlinked accepted payloads read without rewrite or new binding. Actual role session/findings restore and bound independent review/verification/handoff consumers retained; missing/stale proof tests pass. Docs already describe restored restart behavior. Genuine reviewer session distinct from builder is used for CLI claim107; task-level pass only, later identity task unchanged.
+      extended_scope_review:
+        approved_paths:
+        - src/cli/mod.rs
+        - tests/acdd/orchestrator/waves.rs
+        - crates/forge-tasks/src/milestones/command_gate.rs
+        - crates/forge-tasks/src/engine/orchestrator/workflow.rs
+        - crates/forge-tasks/src/engine/orchestrator/spawner.rs
+        - crates/forge-tasks/src/engine/orchestrator/plan.rs
+        - src/cli/paths.rs
+        - crates/forge-tasks/src/milestones/handoff/verification.rs
+        - crates/forge-tasks/src/milestones/handoff/mod.rs
+        - crates/forge-tasks/src/milestones/integration.rs
+        - crates/forge-tasks/src/engine/orchestrator/types.rs
+        - crates/forge-tasks/src/engine/orchestrator/role.rs
+        - crates/forge-tasks/src/tasks/configuration.rs
+        - crates/forge-tasks/src/tasks/mod.rs
+        - crates/forge-tasks/src/tasks/profile/mod.rs
+        - crates/forge-tasks/src/engine/gates/scope.rs
+        - tests/acdd/orchestrator/waves/harness.rs
+        - src/mcp/tools.rs
+        - src/cli/ast.rs
+        - crates/forge-tasks/src/milestones/synthesis.rs
+        - src/cli/validate.rs
+        - src/cli/guide.rs
+        - tests/acdd/runner/transition_runner.rs
+        - src/cli/task.rs
+        reason_verified: true
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-HEADLESS-ROLE-RUNNER-ORCHESTRATION: When roles declare runner and prompt_template, Forge CLI (task run / milestone run) autonomously claims gates, renders role prompts with gate context bundles, spawns subagent runner processes in isolated POSIX process groups with distinct session fingerprints, executes command and delivery gates with zero tokens, and routes review rejections via reject_routing until completion.'
+    - 'INV-INDEPENDENT-REVIEWER-SESSION: Reviewer runners execute with an isolated session identity and fingerprint distinct from the builder runner session, satisfying reviewer separation and proof independence invariants.'
+    - 'INV-REJECT-ROUTING-FEEDBACK-LOOP: When review gates reject with structured findings, the orchestrator routes execution back to the configured upstream stage (scope -> build, symbols -> contract) and passes the review findings into the resumed builder session without cold restarts.'
+    - 'INV-TOPOLOGICAL-WAVE-EXECUTION: Milestone run executes tasks in topological wave order, collecting and verifying evidence envelopes automatically and gating subsequent waves until dependencies complete.'
+    - 'INV-IN-PLACE-EXECUTION: Task, milestone, and plan orchestration supports execution directly in the current workspace (--in-place) without mandatory worktree cloning or branching when isolated worktrees are not requested.'
+    - 'INV-PLAN-WORKFLOW-ORCHESTRATION: The orchestrator supports standalone workflows (docs/workflows/*.yaml) via contextunity-forge-mcp workflow [list|show|run] and structured plans (doc_type: plan in docs/plans/*.md) via contextunity-forge-mcp plan [list|show|run], executing in-place under universal gate governance.'
+    - 'INV-DELIVERY-SUBTASK-COMPLETION-GUARD: Mechanical delivery verification fails closed with TASK_SUBTASKS_INCOMPLETE if any declared subtask under the active task or plan step is not completed or cancelled, and with TASK_SUBTASK_EVIDENCE_MISSING if any completed subtask lacks non-empty verification evidence.'
+    - 'INV-CLI-UNIFIED-ARGUMENTS: Global CLI and orchestrator execution accept explicit path parameters (--root, --db, --config for custom forge-mcp.yaml, and --profile for custom profile.yaml) with deterministic resolution order.'
+    - 'INV-PLAN-WORKFLOW-HARNESS: All tests for structured plans (docs/plans/*.md) and standalone workflows (docs/workflows/*.yaml) must use PlanHarness and WorkflowHarness with canonical templates in tests/acdd/fixtures/plans/ and workflows/. Ad-hoc markdown heredocs and subprocess CLI spawning are strictly banned.'
+    architectural_notes:
+    - |
+      decisions: # AC-003 wave orchestration contract — evidence map
+
+      Authority: forge-mcp/AC-003-headless-orchestrator-and-role-runners:milestone-wave-runner-and-autonomous-delivery, contract revision 2, claim 8, seam-test-first. Worker ac003-waves-contract-01a1c08b; genuine session 01a1c08b-4515-7e72-9466-b989c7b20048. Clean starting HEAD 2fbda3cf518932342c123ef6900b76a9ecaeb368. Lifecycle prerequisite delivered. This role stops after contract; runtime red is not implementation acceptance.
+
+      Read authority: complete milestone, root/src/tests/tests-acdd/docs instructions, active claim guidance and profile synthesis, blackboard #1618/#1648, architecture/test-harness, ADRs 0015/0020/0021, roadmap/milestone direction and TESTS.md. Applied contextunity-forge, test-contract-seam, contract-planning, agent-instructions and code-quality. No preflight agents.
+
+      ## Architectural decision
+
+      The existing GateProfile/GateDef, gate_graph cursor/transition functions, Registry/TasksStore claims and task_runner::run_task_lifecycle remain authoritative. OrchestratorState/events are observations only. No new task registry, DAG algorithm, SQLite schema, hardcoded role/gate-name progression or synthetic task/milestone identities for taskless subjects.
+
+      1. Wave scheduling consumes milestones::validate_wave_dag (synthesis.rs), including deterministic manifest-order ties and same-wave scope collision checks. Reload authoritative status and receipt before dispatch and after every completion; external dependencies still go through engine claim checks. No successor wave starts until all prerequisite tasks have accepted completion/receipt or explicit cancellation semantics admitted by the dependency engine. Cancellation must not silently satisfy a dependent task. In-place mode serializes writers within each wave. Isolated mode creates only uniquely owned task worktrees from the integrated milestone head, runs existing task lifecycle, then integrates accepted delivery commits serially before starting dependents. Never reset/rebase/force user branches, delete foreign/dirty worktrees or infer acceptance from exit zero. On error stop dispatch, drain/terminate owned children, preserve recoverable worktrees and accepted proofs. A serial isolated dispatcher is the smallest correct initial implementation; parallel speed is not an acceptance requirement.
+
+      2. Root execution is a GateProfile graph cursor over existing pass/fail/when/max-attempt/rejection semantics. Root gates run once around the tasks container; collect_root_cursors deliberately excludes tasks, so dispatch waves at the container's root position. Resume from existing content/profile-bound root transitions/checkpoints; reject stale content rather than replaying side effects blindly. Root commands reuse milestone integration execution and observed trace parsing. execute_milestone_verification currently chooses the first applicable command and cannot be repeatedly called as if it advances the root graph; expose a cursor-bound variant using its existing validation/recording primitives. Agent gates use the delivered safe spawner and complete subject/gate context with explicit session identity. Independent review sessions must differ from all relevant builders; structured findings choose declared fail/reject routes; process exit alone is not a review decision.
+
+      3. execute_wave_verification is a barrier/observed-root-command adapter, not another proof authority. It verifies accepted task receipts and root graph evidence for the integrated content. Autonomous handoff uses existing handoff_context -> typed IntegrationEvidence -> handoff with existing atomic recovery/pruning/receipt path. Bind authority, implementation, explicit target base and builders exactly. Collect observed registered-command counts, actual independent reviewer evidence and required documentation scan; edits invalidate verification/review and require refreshed binding. Never manufacture a reviewer or call handoff after only a successful command. The active repository root graph can route verify directly to documentation/handoff without visiting milestone_review: this does not waive the existing independent IntegrationEvidence requirement. Fail closed with an actionable missing current-content review diagnostic when that path lacks evidence; configured graph/proof requirements must be reconciled by their profile authority, never rewritten by this task. No live profile changes in this contract.
+
+      4. Workflows are pure root graphs from docs/workflows/*.yaml, validated by the existing profile parser; forbid tasks containers. save:none uses memory-only observations and requires neither Git nor a task database. Do not call task-bound execute_command_gate with a fake ID. Factor the existing command resolution/process/output parsing into a taskless invocation path under the current milestones owner, with optional observation sink; durable task/milestone wrappers retain claim guards and trace binding. No third shell executor. Configured commands are trusted shell programs; interpolated paths/targets remain quoted data and runner templates retain parse-before-interpolate argv semantics. Timeouts, both stream drainage, bounded capture and cleanup remain real process boundaries. Malformed graph, missing/ambiguous selector, escaping/symlink path, absent runner, unaccepted role decision, timeout and exhausted attempts fail explicitly. list/show never execute gates or create stores.
+
+      5. Plans are doc_type:plan Markdown steps in docs/plans, parsed by the production document extractor plus a small step projection. Resolve canonical step headings/dependencies with stable order, reject duplicate/unknown/cyclic dependencies and invalid scope before side effects. Consume the validated tasks-container graph only, execute in the current worktree without branches/worktrees, default snapshot persistence and no auto-commit. A terminal delivery proof may use save:snapshot: the existing hierarchical validator supports that shape, so no validator weakening is needed. Project the selected tasks block into plan execution; explicit plan profiles containing root synthesis/handoff or commit persistence are rejected rather than silently executing them. Reuse lower gate routing, snapshot primitives and subtask validation, factoring subject-independent validation in admitted engine owners if needed. Preserve cancelled-subtask allowance, incomplete/missing-evidence failures. Plan step status/evidence in its source document is authority; snapshots/checkpoints are observations bound to source/profile/content, not a second step registry. No fake milestone initialization solely to run a plan. Existing pure extraction constructors stay allocation-only; filesystem execution is explicit harness materialization.
+
+      6. CLI ingress resolves typed immutable paths once: root explicit/env/current directory with existing positional-root conflict checks; config explicit path relative to resolved root (or absolute confined by existing adapter rules) before root default; profile explicit before selected config acdd_profile before repository/embedded default. Explicit missing paths fail, without fallback. --db remains the code-index database and must not be confused with config tasks_db (whose existing primary-worktree resolution/isolation must remain). Pass selected configuration/profile context to Registry/TaskSettings, root operations and child runner CLI invocations; retain backward-compatible default APIs and task profile pins. No process-global environment mutation or temporary config rewrites. Audit all five scanner::load_adapter(root,None) paths in src/cli/mod.rs and all task/milestone ingress, not just new commands. --adapter/global --config contradictions must be rejected deterministically. Concurrent calls with different paths must remain isolated.
+
+      ## Owners, scope and implementation order
+
+      Declared owners: engine/orchestrator/{mod,waves}.rs; milestones/mod.rs; CLI {mod,milestone,plan,workflow}.rs; docs/reference/{cli,acdd}.md; existing PlanHarness/WorkflowHarness and canonical fixture roots. Forge approved reacquisition of src/cli/mod.rs per #1648, and tests/acdd/orchestrator/waves.rs (the declared legacy tests/acdd/orchestrator.rs does not exist; never recreate a second test binary).
+
+      Builder must request exact additional paths through Forge before editing them: engine/workspaces.rs and engine/mod.rs for explicit settings/context; engine/orchestrator/task_runner.rs and spawner.rs only if explicit child configuration transport needs an overload; engine/gate_graph.rs for shared cursor policy if needed; engine/git_snapshot.rs for subject-neutral snapshot access; milestones/{command_gate,integration}.rs and handoff/{mod,verification}.rs for shared taskless execution and cursor-bound root verification; small plan/workflow modules under engine/orchestrator/ and CLI path helper under src/cli/. All are admitted owner roots, but are not preemptively registered as unused contract changes. No Cargo.toml/build.rs/.forge edits. Any genuine required owner outside these roots needs authority, never an in-scope shadow implementation.
+
+      Implementation sequence: (a) explicit resolved context with preserved defaults; (b) extract/reuse subject-neutral graph and command invocation policy without changing durable task wrappers; (c) workflow discovery/show/run memory sink; (d) plan step parser/tasks-only projection/snapshot persistence and subtask guard; (e) validated wave dispatcher/worktree ownership/barrier; (f) root graph evidence and autonomous bound handoff; (g) docs and focused negative/recovery tests. Preserve lifecycle delivery at 2fbda3cf and all existing harness tests. Coordinate any actual shared-file conflict through blackboard before writing; extend_scope cannot transfer an active owner's file. No requirement to alter core store/schema/profile catalogs.
+
+      ## Claim coverage and sensitivity
+
+      | Accepted claim | Contract scenario / production seam | Material readback and sensitivity | Evidence now |
+      |---|---|---|---|
+      | Workflow execution, save:none | workflow_run_executes_root_gates_without_task_state; in-process Cli::try_parse_from -> Cli::run_with_writer, WorkflowHarness canonical ordered.yaml | Exact ordered command effects; status completed; no Git/task DB/runtime ledger. Removing workflow dispatch must fail. | Planned authentic missing-ingress red; post-dispatch assertions remain builder obligations until green. |
+      | Workflow list/show | workflow_discovery_does_not_execute_gates; same in-process caller/canonical harness | list/show identify source, preserve bytes and no command marker/store. Detect eager run on inspection. | Planned red. |
+      | Plan run, in-place snapshots | plan_run_executes_steps_in_place_without_committing; same caller/PlanHarness linear.md + snapshot.yaml | Two step effects in order; status completed; HEAD unchanged, snapshot refs present, no worktree creation. Detect missing dispatcher/no snapshots/commit policy. | Planned red. |
+      | Plan list/show | plan_discovery_preserves_canonical_step_dependencies; PlanHarness dag.md | Canonical step dependency content visible; HEAD and marker unchanged. Detect lost dependency parsing/eager execution. | Planned red. |
+      | Global paths | workflow_run_honors_explicit_config_and_profile_paths; same production CLI/canonical workflow+config | Root-relative config points to selected profile but explicit profile wins; selected ordered effect and rejected default effects; explicit index path not task state. Detect ignored config/profile. | Planned red. |
+      | Milestone waves + verification/handoff | Builder adds real MilestoneHarness execution against production run_milestone_waves and CLI milestone run, exact root graph/proofs | DAG diamond/manifest ties, out-of-order dependent barrier, scope collision/cycle/external blocked dependency, in-place/isolation, failure no successor, resume without duplicate delivery, integrated receipts, verifier failure/review rejection/documentation changes, stale binding and atomic handoff archive/prune. | Architectural contract and existing DAG/lifecycle/handoff collaborators traced; not claimed executed or proved by a workflow parser failure. |
+      | Documentation | Builder reconciles CLI/acdd commands/flags/path precedence/persistence/errors/examples with real execution | Correct help/output and working canonical examples; no claims of functionality before green. Shared skill/example owner work needs admitted scope or explicit defer. | Blueprint; no documentation functionality claims changed in this contract. |
+
+      Security/rejection/cleanup/restart/concurrency: production task/worktree/store ownership retained; plan/workflow no synthetic task authority. Builder must add dedicated canonical fixtures and tests for malformed/escaping subjects, nonzero/timeout, failed/retried graph edges, plan subtask guards, snapshot restart/source mismatch, foreign claims/worktrees and content-bound handoff. Alternate backend not applicable (one local CLI/engine); remote transport and performance benchmarking not admitted. No fake failures, unconditional panics, production fault toggles, mocks inside the seam or external CLI subprocesses for plans/workflows. Shell commands in a workflow are the accepted production subject, not a subprocess CLI test harness.
+
+      ## Test changes and validation
+
+      Before authoring: architectural decision/draft and this map prepared. Planned tests only, canonical fixture/harness additions, no production stubs or behavior changes. Reuse existing Workspace/init_git/git readback; no new single-caller factories or hidden assertion helpers. No tests removed/replaced.
+
+      Selected proof: tests/acdd/orchestrator/waves.rs::workflow_run_executes_root_gates_without_task_state. Raw Cargo corroboration and claim-bound task verify --test will record actual compilation/assertion/exit/counts. The currently absent workflow subcommand is the natural pre-fix failure, not an injected fault. The test contains the complete intended command-effect assertions, but red ingress does not establish that downstream assertions or other acceptances already pass.
+
+      Validation, accepted candidate and final task state: pending. Existing tracked-file hashes retained in initial-tracked-sha256.json; final check must show only admitted test/fixture/harness paths plus the engine-managed manifest extension. HEAD and staged changes must remain unchanged. Full build/independent review/delivery are subsequent roles.
+    - 'decisions: Confirmed #1666 requires minimal shared guard extraction and immutable configuration context, both within milestone-owned engine but outside this task''s frozen scope roots. We will re-admit the necessary engine owner boundary via next contract revision under the existing milestone authority, preserving all uncommitted implementation and authentic contract proof; no bypass or duplicate guard. Please finish any in-flight atomic edits/tests, record exact remaining required owner paths and worktree state, then stop the build session at a safe point so the coordinator can change scope roots and re-run contract without concurrent writes. Do not submit partial build.'
+    - 'decisions: Revision 3 synchronized after safe stop #1670/#1671: seven exact existing engine/task owner files from #1669 were added to the task scope under the milestone''s existing admitted capability. Acceptance/invariants unchanged, no protected file changes; claim 13 revoked. Preserve 37-file worktree byte-for-byte (backup /tmp/ac003-claim13-safe-stop); original genuine runtime-red contract snapshot 2140260942748c27226b95ed79e22de90489030c remains available for faithful proof replay. Contract author must inspect rules, record exact mechanism, and restore/verify every live file; never manufacture red or overwrite user work.'
+    - |-
+      decisions: Revision 3 re-admission decision, claim37, worker ac003-waves-r3-contract-01a1c08b, genuine session 01a1c08b-4515-7e72-9466-b989c7b20048. Acceptance/invariants/dependencies and blueprint #1655/#1656/#1657 remain unchanged. Seven newly admitted exact files are justified by #1666/#1669: tasks/gates.rs plus engine/gates/submit.rs expose the existing pure subtask delivery checks unchanged for plans; engine/mod.rs and engine/workspaces.rs thread immutable selected TaskSettings/Registry context; engine/lifecycle.rs and engine/blackboard.rs carry that context through existing administrative/blackboard ingress; engine/evidence_compiler.rs carries it through existing store_for_task proof/verify paths. No schema, parallel state authority, policy relaxation or protected-file edit is authorized. Existing named snapshots remain sufficient; no git_snapshot.rs expansion is needed. Preserve the builder safe-stop source and remaining obligations #1670/#1671; a passing seam is not full acceptance.
+
+      Policy assessment: test-contract-seam explicitly allows an observed failure or recorded pre-fix replay (Admission lines38-40). Active task profile is unchanged seam-test-first, contract command=test, expected failure includes101 and stderr assertion failed, save:snapshot. The active profile and claim37 guidance do not forbid faithful historical replay or require the already implemented live seam to be called red. User and coordinator #1672 explicitly authorize a fresh historical replay without weakening these controls. Proceed only if exact historical bytes compile and the unchanged positive test naturally asserts; otherwise restore and stop. Current live exact test has freshly PASSED: 1 passed/0failed, exit0. Do not represent current implementation as red. Its selected test body is byte-identical to the prior red snapshot (SHA256 1fd81a86fd760e4bd3e5dc85cc88e29cc9a4f38509438a5e1cb9b27a6c6622b7).
+
+      Replay perimeter: exact complete src/cli/mod.rs and src/cli/milestone.rs blobs from genuine accepted red snapshot2140260942748c27226b95ed79e22de90489030c. The first restores the actual pre-feature CLI grammar/dispatch; the second preserves its historical exhaustive MilestoneCommand enum compatibility. No source is patched to force failure; no tests, harnesses, fixtures, engine implementation, manifest, Cargo.toml/build.rs/.forge configuration, branch or index changes are planned. This is a two-file pre-fix seam replay against the remaining live tree, not a claim that the whole tree equals the historical commit. All files must stay in claim scope. The complete verified backup covers1029 tracked paths plus22 nonignored untracked work files (1051 inventory entries), file modes and hashes, archive b8a651b7b0fd7d431529c0b187c5f171f928f1605c5145783b549547121dfa1e at /tmp/ac003-r3-contract-01a1c08b/live-worktree.tar, additional to /tmp/ac003-claim13-safe-stop.
+
+      Run under a restoration transaction with try/finally, signal cleanup and an independent parent-death restore watchdog. Exact raw Cargo seam must finish compilation and assert101; claim-bound task verify --test must independently report101, diagnostic_mode pass, error null with actual session. Submit contract while replay is intact, since the engine binds proof to the observed content; the accepted snapshot will intentionally contain those two historical CLI files and the other live scoped files. Then always restore both live file blobs and modes from the complete backup, compare every inventory entry and path set, refresh the live code graph, and reobserve the live exact test. Only explicit engine-managed manifest changes may be excepted; no manual manifest writes or excluded user files. Preserve HEAD and staged diff. Re-admission proves the unchanged historical red seam only; builder must freshly claim and prove restored current content at revision3. No implementation/build/review/delivery/main landing.
+    - 'decisions: Revision3 configuration implementation choice: one immutable InvocationSettings (canonical root, selected config/profile/code-index DB) is scoped around in-process CLI dispatch. Existing TaskSettings/profile/milestone-dir owners consult that selection; normal Registry/store/proof/handoff APIs retain their canonical loaders, pins and primary-worktree task DB rules. No alternate registry/state/schema, parent env mutation or temp config rewriting. Scoped future enters selection only during poll and restores on Pending/error/panic, so concurrent in-process futures/threads cannot leak selections; child processes receive FORGE_CONFIG/FORGE_PROFILE/FORGE_DB only on Command, and owned isolated worktrees explicitly rebase root-relative selections. --db remains code index only. Dedicated concurrent/nested/panic and child propagation tests will verify these boundaries. Newly added context file and affected existing loader paths were acquired via extend-scope.'
+    - 'decisions: Milestone restart implementation replays bound observations through canonical run_gate_graph, reading/writing existing gate_transitions only (proof_kind orchestrator distinguishes observational envelopes from canonical command verification proofs). Prefix binds selected profile, normalized manifest authority, and post-task HandoffBinding. Any mismatch invalidates remaining prefix. Recorded role session/findings restore independence and rejection context; delivered tasks remain canonical receipt-owned. No second task/cursor table or handoff evidence authority. Five domain tests pass; restart after failed review reuses accepted polish and delivered tasks. Added guard refusing provisioning another isolated worktree over an active claim; preserved existing lifecycle no-relaunch rule.'
+    - 'decisions: Acknowledged exact missing serve and delta owners #1681/#1683, both needed for existing global CLI acceptance. Trace all remaining CLI ingress and downstream owners now, including explicit config/profile across command categories; enumerate all unavoidable outside-root paths with minimal edits so one revision handles them, and check conflicts with dependent guide scope. Complete in-flight checks, preserve full worktree/inventory, post exact results and stop safely without submitting partial build. Coordinator will re-admit these existing capability owner files via ACDD revision while preserving your work and red proof, never bypass scope.'
+    - 'decisions: Revision 4 synchronized after builder safe stop #1685/#1686; unchanged acceptance and invariants, exact src/mcp/server.rs and src/engine/pipeline.rs added to scope for global CLI config/profile behavior documented in #1681/#1683. Five subtasks have intermediate evidence but task is not complete. Preserve current uncommitted work and repeat authentic prior red seam under ACDD with byte-for-byte restoration as in #1673-#1677; no protected files or history changes. This is coordinator implementation within user''s AC-003 authorization, not separate user authorization.'
+    - |-
+      decisions: Revision4 re-admission, claim56, actual session01a1c08b-4515-7e72-9466-b989c7b20048, worker ac003-waves-r4-contract-01a1c08b. Continue existing authorized AC-003 implementation scope; this is coordinator scope admission #1687, not separate/new user approval. Acceptance/invariants/dependencies and architecture #1655/#1656/#1657 remain unchanged. Read #1681/#1683/#1685/#1686/#1687 and active claim56 guidance.
+
+      Exact added-owner rationale: src/mcp/server.rs owns Serve construction/session/request/background/reload boundaries. Its serve_with_cache_dir has only root/db/cache; adapter_snapshot falls back to load_adapter(root,None), and selected CLI task context cannot survive independent requests/background work by relying on CLI-only values. Add a backwards-compatible explicit immutable selection carrier/overload using the existing validated configuration/profile model; carry it through Server clones/worktree resolution/request snapshots/read/rebuild/delta/background contexts, retaining confinement, selected-store/profile pins and session independence. No new registry, global environment mutation, temporary config rewrite or second adapter cache authority. src/engine/pipeline.rs owns delta/delta_with_cache_dir/delta_inner; current delta_inner reconstructs persisted adapter and rebuilds from that path. Add an optional explicit validated adapter selection to this owner path, keep default wrappers preserving persisted behavior, and make explicit selection take precedence. On changed policy, release existing reader/generation lock and reuse canonical guarded rebuild/atomic publication rather than duplicate the pipeline or silently reuse the wrong persisted policy. --db remains code-index storage, not tasks_db.
+
+      Builder blueprint: wire the resolved CLI selection into these two owner APIs and actual consumers; preserve existing defaults, request adapter snapshots, worktree isolation and persistence semantics. Replace the temporary CLI_SELECTION_UNSUPPORTED guards only after production-seam tests prove selected config/profile effects through real Server request/background and persisted-index delta behavior, malformed/missing explicit selection nonmutation, and concurrent selection isolation. The current unresolved_global_owner_selections_fail_before_server_or_delta_effects test is a temporary fail-closed boundary, not final acceptance; replace/subsume it with real positive owner-seam evidence without losing error nonmutation coverage. Reconcile CLI/acdd docs with actual final behavior and run required regressions/strict Clippy before a fresh build proof. Existing completed-subtask evidence #1685 is intermediate; do not infer whole acceptance from one green workflow seam. No functionality is implemented in this contract role.
+
+      Replay assessment follows proven #1673-#1677: test-contract-seam permits recorded pre-fix replay; active seam-test-first gate still requires observed assertion red101 with stderr assertion failed and save:snapshot. No gate controls are relaxed. Fresh live exact workflow seam PASSED (1passed/0failed exit0); selected test body remains byte-identical to snapshot2140260942748c27226b95ed79e22de90489030c, SHA2561fd81a86fd760e4bd3e5dc85cc88e29cc9a4f38509438a5e1cb9b27a6c6622b7. Temporarily replay only complete src/cli/mod.rs and src/cli/milestone.rs blobs from that genuine pre-fix snapshot; the second keeps historical enum/API compatibility. Keep all tests, harnesses, canonical fixtures, remaining live implementation and authority unchanged. This is an exact two-file historical seam replay against the other live scoped files, never a claim that current green implementation is red or that the whole tree is historical.
+
+      Complete backup before any replay covers1029 tracked plus30 nonignored untracked work paths (1059 entries), hashes and modes: /tmp/ac003-r4-contract-01a1c08b/live-worktree.tar, verified archive SHA256254aea338048d6b5d614631f9f7b71c0712cbf2354036c55d8a5ffd3b7c6353a. Prior safe-stop backups remain untouched. Use the same finally/signal/parent-death-watchdog transaction as revision3; explicitly include both replay files in graph delta even if a historical blob equals HEAD. Require clean compilation, natural assertion101, fresh claim-bound CLI verify with actual session, and submit while that historical content is bound. Always restore both live blobs/modes, compare every1059 entry/path set; only genuine engine-managed manifest changes could be excepted, and none is assumed. Record Git index stat metadata refresh separately while requiring identical staged modes/objects/paths, HEAD and branch; never rewrite .git. Refresh the live graph and reobserve live green seam afterward. Historical contract snapshot intentionally differs from restored live at just those CLI paths. If proof/restore cannot satisfy these conditions, stop with precise blocker. No protected-file edits, new implementation, build/review/delivery, history changes or main landing.
+    - 'decisions: {"status":"independent-review-pass-ready","review_claim_revision":107,"contract_revision":4,"accepted_build_claim":98,"candidate":"9fd28f191bda89fb648928fa8a6ef5ee01d75450","prior_rejected":"eea896f8bfc422873fd5d5f5ab7ca85a0e9dcc65","baseline":"2fbda3cf518932342c123ef6900b76a9ecaeb368","reviewer_session":"01a1bdd1-3650-7c50-9ba7-5bf4cdd6f747","builder_session":"01a1c09d-0043-7601-b745-a82481fcbfe7","closure":{"task_id":"forge-mcp/AC-003-headless-orchestrator-and-role-runners:milestone-wave-runner-and-autonomous-delivery","candidate":"9fd28f191bda89fb648928fa8a6ef5ee01d75450","prior_candidate":"eea896f8bfc422873fd5d5f5ab7ca85a0e9dcc65","baseline":"2fbda3cf518932342c123ef6900b76a9ecaeb368","contract_revision":4,"review_claim_revision":107,"accepted_build_claim_revision":98,"reviewer":"codex-sol-reviewer","reviewer_session":"01a1bdd1-3650-7c50-9ba7-5bf4cdd6f747","builder_session":"01a1c09d-0043-7601-b745-a82481fcbfe7","findings":[{"id":"AC003-WAVE-R1","origin":"introduced-regression","disposition":"confirmed-fixed","owner":"crates/forge-tasks/src/engine/orchestrator/waves.rs","invariant":"Accepted isolated delivery commits must be integrated before completed-task, dependency, post-run or wave-barrier credit, including mode switching. Recovery preserves accepted proof and owned worktree.","authority":"#1655 section1 retained #1688; task wave/isolation acceptance","traceability":"CLI milestone run -> dispatch_waves -> actual lifecycle/shared SQLite receipt -> four ancestry credit checks -> restart/mode-switch/reconciliation -> bound existing handoff","evidence":"Current permanent real FF-refusal/zero-claim regression passes. Two original reviewer probes and normal merge-reconciliation recovery probe pass against exact current libraries; accepted receipt and recovery HEAD retained through actual handoff.","structural":"Four validated calls at waves.rs:377,396,412,423; helper434; current inbound/outbound graph matched; CLI ingress144 verified.","source_unchanged":"Ancestry helper and dispatcher are unchanged in the three-file repair from eea896f8."},{"id":"AC003-WAVE-R2","origin":"incomplete-remediation","disposition":"confirmed-fixed","owner":"crates/forge-tasks/src/engine/orchestrator/waves.rs","invariant":"The latest persisted root route preserves the exact valid reused prefix and freshly observed suffix, including failures, retry attempts, session/findings context, and original bindings. Unchanged restart reuses it; content/profile/authority changes invalidate relevant observations without rebinding historical proof.","authority":"#1655 section2 retained #1688; documented bound observation restart; original #1712 and residual #1718/#1719","traceability":"Canonical GateDecision/router -> existing transition record IDs -> JSON predecessor links to consumed observations -> scoped durable journal -> restart route reconstruction -> canonical routing/role restore -> unchanged command effects and retry exhaustion","evidence":"Byte-identical original partial-prefix scratch test now passes on third unchanged restart. Additional reviewer retry test preserves old rows byte-for-byte and adds no rows on unchanged third/fourth invocation; failed decisions still exhaust observe_once, not a different gate. Current permanent committed/uncommitted, unchanged, legitimate-delivery and post-task stale-binding neighbors all pass.","negative_evidence":"Current cyclic-link regression passes. Reviewer cross-milestone predecessor test proves an existing physical foreign row is not admitted into this milestone route and fails before effects. Reviewer legacy unlinked observations remain readable without rewriting stored proof.","structural":"One existing record_gate_transition writer returns actual SQLite last_insert_rowid. New links are only to earlier present same-query observations; no new table/schema/registry, old proof rewrite or alternate gate router. roles.restore unchanged and AST-verified.","mutation_sensitivity":"Exact scratch partial-prefix source SHA256 ed27607fd579d5227186d1405be24be33666a9551785bfc88db76236fbe29f89 failed against eea896f8 (3pass/1fail combined) and now passes. Original stale-content reproduction was runtime-red in #1712 and is green. Builder recorded independent clean-runtime red for suffix/retry cases in #1721/#1722; reviewer does not claim to have executed those historical builder runs."}],"mutation_matrix":[{"mutation":"Skip receipt ancestry or bypass it with in-place mode","expected":"zero dependent claims before integration; preserve proof/worktree","result":"pass: current permanent test and original reviewer reproduction"},{"mutation":"Refuse valid recovered delivery or replace its proof","expected":"normal merge reconciliation admits successor and bound handoff with original receipt","result":"pass: reviewer recovery probe"},{"mutation":"Ignore committed or dirty candidate content / rebind stale proof","expected":"fresh observations after actual changes","result":"pass: current source checks, original probe and permanent committed/uncommitted controls"},{"mutation":"Always reexecute unchanged valid observations","expected":"unchanged effects on restart","result":"pass: unchanged control and byte-identical partial-prefix reproduction"},{"mutation":"Hide fresh suffix behind obsolete chronological records","expected":"third unchanged partial-prefix restart reuses fresh suffix","result":"pass: exact prior-red source now green"},{"mutation":"Drop failed decision or reset retry budget","expected":"observe_once exhaustion with no extra effects or journal writes on subsequent restarts","result":"pass: permanent and independent reviewer retry/evidence probe"},{"mutation":"Follow cyclic, forward, missing or foreign journal link","expected":"earlier/present scoped links only; refusal before command effects","result":"source rejects non-earlier/missing; cyclic permanent and foreign-row reviewer tests pass"},{"mutation":"Rewrite accepted unlinked observations to new bindings","expected":"legacy format reads without stored proof mutation","result":"pass: reviewer legacy journal test"},{"mutation":"Replay completed task lifecycles after legitimate task delivery changes content","expected":"refresh pre-task observations without new task claims","result":"pass: permanent delivery-refresh and post-task resume tests"}],"verification":{"standard_commands":[{"command":"cargo clippy --all-targets --all-features -- -D warnings","exit_code":0,"warnings":0},{"command":"cargo test --test acdd","exit_code":0,"passed":302,"failed":0,"ignored":0},{"command":"cargo test --test mcp","exit_code":0,"passed":138,"failed":0,"ignored":0},{"command":"cargo test --test core adapters::","exit_code":0,"passed":4,"failed":0,"ignored":0},{"command":"cargo test --test cli_roots","exit_code":0,"passed":7,"failed":0,"ignored":0},{"command":"git diff --check","exit_code":0}],"standard_passed":451,"standard_failed":0,"domain_counts":{"waves":49,"lifecycle":11,"spawner":18,"types":8},"scratch":{"compile_exit_code":0,"command":"/tmp/ac003-waves-review3-_6wmor4b/acdd-eb447d574a36190a review_probe_ --nocapture --test-threads=1","exit_code":0,"passed":7,"failed":0,"ignored":0,"exact_compiler_argv":"/tmp/ac003-waves-review3-_6wmor4b/probe-build-command.json","result":"/tmp/ac003-waves-review3-_6wmor4b/probe-result.json","log":"/tmp/ac003-waves-review3-_6wmor4b/probe-runtime.log","method":"Scratch copy of current tests under /tmp, exact fresh Cargo-selected production libraries. Real disposable Git/SQLite/role processes/commands/router/lifecycle. No candidate edits."}},"open_findings":[],"excluded":"The later session-identity/gate-verification task remains outside this review and preserved. No main landing or history rewrite.","artifact":"/tmp/ac003-waves-review3-_6wmor4b"},"typed_review_proof":"/tmp/ac003-waves-review3-_6wmor4b/review-proof.json","full_report":"/tmp/ac003-waves-review3-_6wmor4b/review-report.md","next":"Submit typed independent review through genuine-session CLI. Follow actual next applicable gate; if delivery is next, claim and submit delivery in this same reviewer session with Forge-inferred evidence. Preserve all unrelated changes, prior proofs, later identity task and main; no milestone handoff/landing/history rewrite."}'
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Acceptance
@@ -547,12 +776,16 @@ subtasks:
 task_ref: forge-guide-lifecycle-gates-and-subtasks
 target: "Extend forge_guide with compact agent guidance for lifecycle, ACDD, code, documentation and gates"
 proof_policy: seam-test-first
-contract_revision: 1
+contract_revision: 3
 depends_on:
   - milestone-wave-runner-and-autonomous-delivery
+scope_roots:
+  - src/cli/
+  - src/mcp/
+  - docs/reference/
+  - skills/contextunity-forge/references/
+  - tests/
 scope:
-  - src/cli/guide.rs
-  - src/mcp/tools.rs
   - src/mcp/tools/inputs.rs
   - docs/reference/mcp-tools.md
   - docs/reference/cli.md
@@ -600,3 +833,48 @@ subtasks:
 8. Preserve existing topic keys, default `query`, blackboard filtering and the unknown-topic error. Advertise only enabled capabilities: filter the topic index and guidance when ACDD, codemap, docs or blackboard is disabled; disabled topics follow the existing empty-guidance behavior.
 9. Reuse the shared CLI/MCP response formatter. Omitting `format` returns Markdown, as does `format: "markdown"` in MCP or `--format markdown` in the CLI; `format: "json"` and `--format json` return structured JSON. Both formats present the same guide information. Preserve readable Markdown, existing JSON keys and the current response-budget policy.
 10. Through real MCP and CLI calls, test default and explicit Markdown, JSON, content parity, copyable examples, topic discovery, module combinations and existing-topic compatibility. Compare CLI/MCP Markdown and parsed JSON for equivalent inputs, allowing the trailing CLI newline. Use dedicated tests in the scoped suites; run the focused tests and strict Clippy from `TESTS.md`.
+
+
+---
+
+### task: eliminate-session-scraping-and-enforce-worker-separation
+
+```yaml
+task_ref: eliminate-session-scraping-and-enforce-worker-separation
+target: "Completely remove ambient host session scraping and fingerprint validation, enforce pure worker separation at independent gates, and emit explicit coordinator directives for subagent dispatch"
+proof_policy: seam-test-first
+contract_revision: 1
+depends_on:
+  - forge-guide-lifecycle-gates-and-subtasks
+scope:
+  - crates/forge-tasks/src/store/lifecycle.rs
+  - crates/forge-tasks/src/store/lifecycle/session_tests.rs
+  - crates/forge-tasks/src/engine/workspaces.rs
+  - crates/forge-tasks/src/engine/gates/submit.rs
+  - crates/forge-tasks/src/engine/mod.rs
+  - src/mcp/server.rs
+  - src/mcp/tools.rs
+  - docs/reference/tasks.md
+  - docs/reference/acdd.md
+symbols:
+  - fn:submit_with_pre_persist
+status: planned
+subtasks:
+  - subtask_ref: remove-ambient-session-scraping
+    title: "Delete resolve_session_fingerprint, host_session_fingerprint, UNKNOWN_SESSION_FINGERPRINT, and stop reading CODEX_THREAD_ID/AGY_CONVERSATION_ID from process env and MCP server"
+  - subtask_ref: pure-worker-independence-validation
+    title: "Remove validate_session_independence; enforce gate independence purely via worker_id != prior_worker without session coupling"
+  - subtask_ref: universal-independent-gate-dispatch-guidance
+    title: "Emit explicit [INDEPENDENT GATE DISPATCH REQUIRED] directives with {task_slug}-{gate} and {agent} in workflow_guidance and submit dispatch response"
+  - subtask_ref: test-suite-and-seam-decoupling
+    title: "Replace obsolete session-probing unit tests with clean seam tests proving independent gate progression across CLI and MCP without ambient env coupling"
+```
+
+#### Acceptance
+
+1. All ambient process/host environment session scraping (`resolve_session_fingerprint`, `CODEX_THREAD_ID`, `AGY_CONVERSATION_ID`, `FORGE_AGENT_SESSION_ID`, `UNKNOWN_SESSION_FINGERPRINT`) is completely removed from `crates/forge-tasks` and `src/mcp/server.rs`. No process environment sniffing remains in task lifecycle operations.
+2. Gate independence checking is decoupled from host process/session concepts: `validate_session_independence` is eliminated. If a gate declares `independent_from: "<prior>"`, Forge verifies only that `worker_id != prior_evidence.worker_id`.
+3. When any gate completes and the next gate declares `independent_from`, `task submit` returns an explicit structured `dispatch` block and coordinator directive:
+   `[INDEPENDENT GATE DISPATCH REQUIRED] Next gate is '{gate}' (agent: '{agent}'). Rule: Must be independent from '{prior_gate}' worker '{prior_worker}'. Directs coordinator to spawn an independent subagent with worker_id '{task_slug}-{gate}'.`
+4. `workflow_guidance` emits the matching directive with suggested worker pattern `{task_slug}-{gate}` and agent role instead of ambiguous text.
+5. Obsolete `session_tests.rs` fail-closed assertions are replaced with tests verifying that distinct `worker_id` values advance independent gates reliably across both CLI and MCP without any ambient environment dependencies.

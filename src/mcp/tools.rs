@@ -1131,7 +1131,7 @@ impl Server {
         &self,
         request: &rmcp::model::CallToolRequestParams,
     ) -> ResponsePolicy {
-        let primary_adapter = scanner::load_adapter(&self.root, None);
+        let primary_adapter = self.load_adapter(&self.root);
         let fallback_policy = primary_adapter
             .as_ref()
             .map(|adapter| adapter.response.clone())
@@ -1148,7 +1148,7 @@ impl Server {
             return fallback_policy;
         }
 
-        scanner::load_adapter(&target_root, None)
+        self.load_adapter(&target_root)
             .map(|adapter| adapter.response)
             .unwrap_or(fallback_policy)
     }
@@ -1210,7 +1210,7 @@ impl ServerHandler for Server {
         _request: Option<rmcp::model::PaginatedRequestParams>,
         context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<rmcp::model::ListToolsResult, rmcp::ErrorData> {
-        let adapter = scanner::load_adapter(&self.root, None).map_err(|error| {
+        let adapter = self.load_adapter(&self.root).map_err(|error| {
             rmcp::ErrorData::internal_error(
                 format!("workspace module configuration is invalid: {error}"),
                 None,
@@ -1267,7 +1267,7 @@ impl ServerHandler for Server {
             let allowed = allowed_fields_for_tool(&request.name);
             return Ok(rejected_arguments_error(&request.name, &rejected, allowed).into());
         }
-        let primary_adapter = scanner::load_adapter(&self.root, None);
+        let primary_adapter = self.load_adapter(&self.root);
         let requested_worktree = request
             .arguments
             .as_ref()
@@ -1290,7 +1290,7 @@ impl ServerHandler for Server {
         let adapter_result = if target_root == self.root {
             primary_adapter
         } else {
-            scanner::load_adapter(&target_root, None)
+            self.load_adapter(&target_root)
         };
         if let Ok(adapter) = &adapter_result {
             if let Some(message) =
@@ -1325,7 +1325,10 @@ impl ServerHandler for Server {
         let request_server = self.with_root_and_db(target_root, target_db, adapter.clone());
         let call =
             rmcp::handler::server::tool::ToolCallContext::new(&request_server, request, context);
-        let result = Self::tool_router().call(call).await;
+        let result = match &request_server.invocation {
+            Some(settings) => settings.clone().scope(Self::tool_router().call(call)).await,
+            None => Self::tool_router().call(call).await,
+        };
         let policy = match &adapter {
             super::server::RequestAdapter::Loaded(adapter) => adapter.response.clone(),
             super::server::RequestAdapter::Failed { .. } => Default::default(),

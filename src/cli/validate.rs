@@ -606,7 +606,18 @@ fn first_task_line(content: &str) -> usize {
 }
 
 fn active_profile_path(root: &Path) -> String {
-    let config = root.join("forge-mcp.yaml");
+    let settings = forge_tasks::tasks::configuration::current(root);
+    if let Some(path) = settings
+        .as_ref()
+        .and_then(|settings| settings.profile_argument.as_ref())
+    {
+        return path
+            .strip_prefix(root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .into_owned();
+    }
+    let config = forge_tasks::tasks::configuration::config_path(root);
     if let Ok(content) = fs::read_to_string(&config) {
         if let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
             if let Some(path) = value

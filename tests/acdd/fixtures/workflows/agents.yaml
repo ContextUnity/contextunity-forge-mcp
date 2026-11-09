@@ -1,0 +1,29 @@
+version: 2
+inherit: none
+save: none
+roles:
+  builder:
+    runner: "python3 workflow-runner.py '{prompt}'"
+    prompt_template: "Implement {goal} as {role} at {stage}."
+  reviewer:
+    runner: "python3 workflow-runner.py '{prompt}'"
+gates:
+  - id: build
+    role: builder
+    max_attempts: 2
+  - id: review
+    role: reviewer
+    independent_from: build
+    proof:
+      scheme:
+        type: object
+        required: [decision, summary]
+        additionalProperties: false
+        properties:
+          decision:
+            type: string
+            enum: [pass, reject]
+          summary:
+            type: string
+    max_attempts: 2
+    fail: build

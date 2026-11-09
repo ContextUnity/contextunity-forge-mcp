@@ -122,7 +122,13 @@ pub fn search_paged(
         "AST continuation requires generation"
     );
     let root = scanner::canonical_root(root)?;
-    let adapter = scanner::load_adapter(&root, None)?;
+    let settings = forge_tasks::tasks::configuration::current(&root);
+    let adapter = scanner::load_adapter(
+        &root,
+        settings
+            .as_ref()
+            .and_then(|settings| settings.config.as_deref()),
+    )?;
     let generation = crate::db::paging::generation(conn, options)?;
     if let Some(path) = path {
         scanner::resolve_file_path(&root, &adapter, path)?;

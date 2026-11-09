@@ -10,6 +10,17 @@ use std::{
 #[derive(Debug, Subcommand)]
 /// Commands for inspecting and completing repository milestones.
 pub enum MilestoneCommand {
+    /// Execute profile gates, task waves, verification, and content-bound handoff.
+    Run {
+        /// Milestone ID or numeric prefix.
+        id: String,
+        /// Execute task writers serially in the current checkout.
+        #[arg(long)]
+        in_place: bool,
+        /// Explicit integration base used by review and verification.
+        #[arg(long)]
+        target_base: String,
+    },
     /// Restores acknowledged active tasks from durable per-task checkpoints.
     DbRecover,
     /// Lists milestone metadata and SQLite task progress.
@@ -120,6 +131,32 @@ impl DraftArgs {
 pub fn run(root: &Path, command: MilestoneCommand) -> Result<Value> {
     crate::mcp::tasks::ensure_extractors();
     match command {
+        MilestoneCommand::Run {
+            id,
+            in_place,
+            target_base,
+        } => {
+            let session = forge_tasks::store::host_session_fingerprint().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "TASK_RUN_SESSION_REQUIRED: supply the genuine host session identity"
+                )
+            })?;
+            forge_tasks::engine::orchestrator::waves::run_milestone_waves(
+                root,
+                &id,
+                &forge_tasks::engine::orchestrator::waves::MilestoneRunOptions {
+                    task: forge_tasks::engine::orchestrator::task_runner::TaskRunOptions {
+                        worktree: root.canonicalize()?,
+                        worker_id: "milestone-run-coordinator".into(),
+                        session_fingerprint: session,
+                        runner_timeout: std::time::Duration::from_secs(3600),
+                    },
+                    in_place,
+                    target_base,
+                },
+                &mut |_| {},
+            )
+        }
         MilestoneCommand::DbRecover => milestones::db_recover(root),
         MilestoneCommand::List {
             archive,

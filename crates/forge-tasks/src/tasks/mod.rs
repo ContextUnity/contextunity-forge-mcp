@@ -1,3 +1,4 @@
+pub mod configuration;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -1533,7 +1534,7 @@ pub fn infer_project_from_path(path: &Path) -> Option<String> {
 
 /// Returns the list of milestone directories configured for the workspace.
 pub fn configured_milestone_dirs(root: &Path) -> Vec<PathBuf> {
-    if let Ok(config) = std::fs::read_to_string(root.join("forge-mcp.yaml")) {
+    if let Ok(config) = std::fs::read_to_string(configuration::config_path(root)) {
         #[derive(serde::Deserialize)]
         struct Cfg {
             milestones: Option<Vec<String>>,

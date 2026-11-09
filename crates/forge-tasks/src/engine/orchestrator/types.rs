@@ -29,40 +29,72 @@ impl RunnerInvocationContext {
     /// renders text only; the process spawner owns safe argument transport.
     pub fn render_runner(&self, config: &RunnerConfig) -> String {
         let worktree = self.worktree.to_string_lossy();
-        let mut rendered = String::with_capacity(config.runner.len());
-        let mut cursor = 0;
-
-        while let Some(relative_open) = config.runner[cursor..].find('{') {
-            let open = cursor + relative_open;
-            rendered.push_str(&config.runner[cursor..open]);
-
-            let placeholder_start = open + 1;
-            let Some(relative_close) = config.runner[placeholder_start..].find('}') else {
-                rendered.push_str(&config.runner[open..]);
-                return rendered;
-            };
-            let close = placeholder_start + relative_close;
-            let placeholder = &config.runner[placeholder_start..close];
-            let value = match placeholder {
-                "model" => Some(self.model.as_str()),
-                "reasoning" => Some(self.reasoning.as_str()),
-                "session_id" => Some(self.session_id.as_str()),
-                "prompt" => Some(self.prompt.as_str()),
-                "worktree" => Some(worktree.as_ref()),
-                _ => None,
-            };
-
-            if let Some(value) = value {
-                rendered.push_str(value);
-            } else {
-                rendered.push_str(&config.runner[open..=close]);
-            }
-            cursor = close + 1;
-        }
-
-        rendered.push_str(&config.runner[cursor..]);
-        rendered
+        render_slots(
+            &config.runner,
+            &[
+                ("model", &self.model),
+                ("reasoning", &self.reasoning),
+                ("session_id", &self.session_id),
+                ("prompt", &self.prompt),
+                ("worktree", &worktree),
+            ],
+        )
     }
+
+    /// Render taskless role guidance with the same single-pass token boundary.
+    pub fn render_prompt_template(
+        &self,
+        template: &str,
+        goal: &str,
+        role_guidance: &str,
+    ) -> String {
+        let worktree = self.worktree.to_string_lossy();
+        render_slots(
+            template,
+            &[
+                ("task_id", &self.task_id),
+                ("stage", &self.stage),
+                ("role", &self.role),
+                ("model", &self.model),
+                ("reasoning", &self.reasoning),
+                ("session_id", &self.session_id),
+                ("worktree", &worktree),
+                ("goal", goal),
+                ("role_guidance", role_guidance),
+            ],
+        )
+    }
+}
+
+fn render_slots(template: &str, bindings: &[(&str, &str)]) -> String {
+    let mut rendered = String::with_capacity(template.len());
+    let mut cursor = 0;
+
+    while let Some(relative_open) = template[cursor..].find('{') {
+        let open = cursor + relative_open;
+        rendered.push_str(&template[cursor..open]);
+
+        let placeholder_start = open + 1;
+        let Some(relative_close) = template[placeholder_start..].find('}') else {
+            rendered.push_str(&template[open..]);
+            return rendered;
+        };
+        let close = placeholder_start + relative_close;
+        let placeholder = &template[placeholder_start..close];
+        let value = bindings
+            .iter()
+            .find_map(|(key, value)| (*key == placeholder).then_some(*value));
+
+        if let Some(value) = value {
+            rendered.push_str(value);
+        } else {
+            rendered.push_str(&template[open..=close]);
+        }
+        cursor = close + 1;
+    }
+
+    rendered.push_str(&template[cursor..]);
+    rendered
 }
 
 /// In-memory observations for one orchestrator run.

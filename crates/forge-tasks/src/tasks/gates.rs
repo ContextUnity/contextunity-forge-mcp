@@ -636,3 +636,23 @@ pub fn validate_durable_receipt_with_profile(
     }
     Ok(())
 }
+
+/// Enforce the shared terminal subtask completion and evidence guard.
+pub fn validate_subtask_delivery(id: &str, subtasks: &[crate::tasks::SubtaskSpec]) -> Result<()> {
+    if let Some(subtask) = subtasks
+        .iter()
+        .find(|subtask| !matches!(subtask.status.as_str(), "completed" | "cancelled"))
+    {
+        bail!("TASK_SUBTASKS_INCOMPLETE: task '{id}' cannot be delivered while subtask '{}' is '{}'. Do: complete or cancel every subtask before delivery.", subtask.subtask_ref, subtask.status);
+    }
+    if let Some(subtask) = subtasks.iter().find(|subtask| {
+        subtask.status == "completed"
+            && subtask
+                .evidence
+                .as_deref()
+                .is_none_or(|evidence| evidence.trim().is_empty())
+    }) {
+        bail!("TASK_SUBTASK_EVIDENCE_MISSING: task '{id}' cannot be delivered because completed subtask '{}' has no verification evidence. Do: record non-empty verification evidence for every completed subtask.", subtask.subtask_ref);
+    }
+    Ok(())
+}

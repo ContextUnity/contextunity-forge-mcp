@@ -1,0 +1,4 @@
+acdd_profile: profiles/rejected.yaml
+tasks_db: .forge/custom-tasks.sqlite
+plans:
+  - custom-plans

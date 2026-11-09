@@ -78,7 +78,13 @@ pub fn run(root: &Path, topic: &str, force: bool) -> Result<Value> {
             "diagnostics": "Unsupported fragments and invalid syntax return a structured diagnostic with language, error span, actionable hint, and profile examples."
         })),
         "validate" => {
-            let adapter = scanner::load_adapter(&root, None)?;
+            let settings = forge_tasks::tasks::configuration::current(&root);
+            let adapter = scanner::load_adapter(
+                &root,
+                settings
+                    .as_ref()
+                    .and_then(|settings| settings.config.as_deref()),
+            )?;
             let scan = scanner::scan_with_adapter(&root, &adapter)?;
             Ok(
                 json!({"valid":true,"root":root,"roots":adapter.roots,"files":scan.files,"bytes":scan.bytes}),

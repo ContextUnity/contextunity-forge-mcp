@@ -11,9 +11,13 @@ pub(crate) fn code_map_connection(
     fallback_conn: Option<&rusqlite::Connection>,
     worktree: &Path,
 ) -> Result<Option<rusqlite::Connection>> {
-    let index_path = worktree.join(".forge/code-map.sqlite");
+    let index_path = crate::tasks::configuration::current(worktree)
+        .map(|settings| settings.code_db.clone())
+        .unwrap_or_else(|| worktree.join(".forge/code-map.sqlite"));
     let resolved_path = if index_path.is_file() {
         Some(index_path)
+    } else if crate::tasks::configuration::current(worktree).is_some() {
+        None
     } else if let Some(parent) = fallback_conn
         .and_then(|c| c.path())
         .and_then(|p| Path::new(p).parent())

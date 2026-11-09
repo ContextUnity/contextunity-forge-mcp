@@ -8,12 +8,17 @@ use sha2::{Digest, Sha256};
 use std::fs::File;
 #[cfg(not(unix))]
 use std::fs::{self, OpenOptions};
+#[cfg(not(unix))]
 use std::{
-    io::{Read, Write},
-    path::Path,
-    process::{Child, Command, Stdio},
+    io::Read,
+    process::{Child, Stdio},
     sync::mpsc,
     thread,
+};
+use std::{
+    io::Write,
+    path::Path,
+    process::Command,
     time::{Duration, Instant},
 };
 
@@ -538,6 +543,30 @@ pub fn expand_command_args(command: &str, args: Option<&str>) -> String {
     }
 }
 
+/// Observe a configured command without creating a task, store, or log file.
+/// The caller owns graph transitions; process execution and parsing stay shared
+/// with task and milestone command gates.
+pub(crate) fn observe_command(
+    root: &Path,
+    command: &str,
+    timeout: Duration,
+    output: Option<&crate::tasks::profile::CommandOutputSpec>,
+) -> Result<serde_json::Value> {
+    let result = run_shell(root, command, timeout)?;
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    let parsed = parse_command_output(&format!("{stdout}\n{stderr}"), command, output)?;
+    Ok(serde_json::json!({
+        "command": command,
+        "exit_code": result.exit_code,
+        "timed_out": result.timed_out,
+        "duration_ms": result.duration_ms,
+        "tests_passed": parsed.passed,
+        "tests_failed": parsed.failed,
+        "diagnostic": parsed.diagnostic,
+    }))
+}
+
 fn expanded_command_paths(root: &Path, paths: &[String]) -> Result<Vec<String>> {
     let mut selected = std::collections::BTreeSet::new();
     for path in paths {
@@ -881,15 +910,49 @@ fn scope_violations(
     Ok(paths)
 }
 
-struct ShellResult {
-    timed_out: bool,
-    exit_code: Option<i32>,
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
-    duration_ms: i64,
+pub(crate) struct ShellResult {
+    pub(crate) timed_out: bool,
+    pub(crate) exit_code: Option<i32>,
+    pub(crate) stdout: Vec<u8>,
+    pub(crate) stderr: Vec<u8>,
+    pub(crate) duration_ms: i64,
 }
 
-fn run_shell(root: &Path, command_str: &str, timeout: Duration) -> Result<ShellResult> {
+#[cfg(unix)]
+pub(crate) fn run_shell(root: &Path, command_str: &str, timeout: Duration) -> Result<ShellResult> {
+    use crate::engine::orchestrator::spawner::{run_command_process, RunnerStream};
+    let started = Instant::now();
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let mut truncated = false;
+    // Always drain both pipes, retaining a bounded excerpt for parsing and diagnostics.
+    const CAPTURE_BYTES: usize = 8 * 1024 * 1024;
+    let mut command = shell_command(command_str);
+    command.current_dir(root);
+    let outcome = run_command_process(&mut command, timeout, &mut |stream, bytes| {
+        let output = match stream {
+            RunnerStream::Stdout => &mut stdout,
+            RunnerStream::Stderr => &mut stderr,
+        };
+        let available = CAPTURE_BYTES.saturating_sub(output.len());
+        truncated |= bytes.len() > available;
+        output.extend_from_slice(&bytes[..bytes.len().min(available)]);
+        Ok(())
+    })?;
+    if truncated {
+        bail!("TASK_COMMAND_OUTPUT_LIMIT: output exceeded the bounded capture; proof cannot be inferred from an incomplete log");
+    }
+    Ok(ShellResult {
+        timed_out: outcome.timed_out,
+        exit_code: outcome.exit_code,
+        stdout,
+        stderr,
+        duration_ms: i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX),
+    })
+}
+
+#[cfg(not(unix))]
+pub(crate) fn run_shell(root: &Path, command_str: &str, timeout: Duration) -> Result<ShellResult> {
     let mut command = shell_command(command_str);
     command
         .current_dir(root)
@@ -978,20 +1041,10 @@ fn shell_command(command: &str) -> Command {
     process
 }
 
+#[cfg(not(unix))]
 fn terminate_process_tree(child: &mut Child) {
     terminate_process_group(child.id());
     let _ = child.kill();
-}
-
-#[cfg(unix)]
-fn terminate_process_group(process_id: u32) {
-    if let Ok(process_id) = i32::try_from(process_id) {
-        // Every command shell owns a dedicated process group, so descendants are
-        // terminated together when a timeout or inherited pipe is detected.
-        unsafe {
-            libc::kill(-process_id, libc::SIGKILL);
-        }
-    }
 }
 
 #[cfg(windows)]
@@ -1004,6 +1057,7 @@ fn terminate_process_group(process_id: u32) {
         .status();
 }
 
+#[cfg(not(unix))]
 fn read_all(mut reader: impl Read) -> std::io::Result<Vec<u8>> {
     let mut output = Vec::new();
     reader.read_to_end(&mut output)?;

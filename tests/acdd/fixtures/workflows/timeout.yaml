@@ -1,0 +1,11 @@
+version: 2
+inherit: none
+save: none
+commands:
+  timeout:
+    command: "echo $$ > timeout.pid; sleep 30 & wait"
+    timeout_seconds: 1
+gates:
+  - id: timeout
+    command: timeout
+    max_attempts: 1

@@ -12,10 +12,30 @@ title: CLI reference
 | Option | Behavior |
 | --- | --- |
 | `--root <PATH>` | Workspace for all commands. Defaults to the current directory; `FORGE_WORKSPACE_ROOT` can set it. |
-| `--db <PATH>` | Index path for commands that read or write the database. Defaults to `<root>/.forge/code-map.sqlite`; `FORGE_DB` can set it. |
+| `--db <PATH>` | Code-index path, relative to the selected root. Defaults to `<root>/.forge/code-map.sqlite`; `FORGE_DB` can set it. Does not select the task store. |
+| `--config <PATH>` | Root-confined Forge YAML configuration; `FORGE_CONFIG` can set it. Explicit missing files fail. Defaults to `<root>/forge-mcp.yaml` when present. |
+| `--profile <PATH>` | Root-confined gate profile, overriding the selected config's `acdd_profile`; `FORGE_PROFILE` can set it. Explicit missing files fail. |
 | `--format markdown|json` | Output format for command results. Defaults to `markdown`; invalid values fail before a command runs. |
 
 `build`, `scan`, and `delta` also accept a positional workspace path. Either form selects the workspace; when both are supplied, they must resolve to the same directory.
+
+Selections resolve once per invocation. Flags override their environment variables.
+Profile selection is explicit profile, selected configuration's `acdd_profile`,
+repository `.forge/acdd/profile.yaml`, then the embedded profile. Canonical
+profile references retain pin validation; task and milestone pins still apply.
+Configuration and profile paths resolve under the chosen root; absolute paths
+must remain confined there. A selected config without `acdd_profile` falls back
+to the repository/embedded profile, not another configuration file.
+Task-store resolution continues to use `tasks_db` and the primary Git worktree.
+Owned runner children receive selected paths without mutating the parent
+environment. Concurrent in-process invocations retain separate selections.
+
+`serve` retains the selected config and profile for its lifetime, including
+module visibility, task loaders, request policy, refreshes and reloads. Selected
+worktrees rebase root-relative settings. `delta --config` validates the selected
+adapter and uses the guarded rebuild path when policy changes; without an
+explicit config, delta retains the persisted index adapter. Missing or malformed
+explicit selections fail before index publication.
 
 ## Inventory and indexing
 
@@ -26,7 +46,7 @@ contextunity-forge-mcp build /path/to/repository --output /path/to/index.sqlite
 contextunity-forge-mcp delta . src/module.py src/other.py
 ```
 
-`scan` reports admitted files without writing an index. `build` creates a full index. `delta` updates the listed changed or deleted paths in an existing index. `build` and `scan` accept `--adapter <PATH>` for a configuration file inside the workspace; normal reads use the workspace's default adapter file.
+`scan` reports admitted files without writing an index. `build` creates a full index. `delta` updates the listed changed or deleted paths in an existing index. `build` and `scan` accept `--adapter <PATH>` for a configuration file inside the workspace; reads use the selected configuration. Conflicting `--adapter` and `--config` paths fail.
 
 `query`, `docs`, and `ast grep` open the index through `open_or_rebuild`: a missing or schema-incompatible index is built automatically. An existing index is not refreshed just because source files changed; run `build` or `delta` to update those results.
 
@@ -303,6 +323,84 @@ Resetting or reopening a completed task clears terminal receipt state from both
 SQLite and milestone Markdown, resets the task to the first gate in its active profile
 (default ID: `contract`), and retains existing subtask history so new work and audits can proceed.
 
+## Structured plans
+
+```sh
+contextunity-forge-mcp --root PATH plan list
+contextunity-forge-mcp --root PATH plan show NAME
+contextunity-forge-mcp --root PATH --format json plan run NAME --in-place
+contextunity-forge-mcp --root PATH --config config/custom.yaml --profile profiles/plan.yaml plan run NAME
+```
+
+Plans are Markdown documents with `doc_type: plan`, discovered recursively in
+configured `plans` directories (default `docs/plans`), excluding `archive`.
+Select a unique filename stem or discovered root-relative path. `list` and
+`show` perform no gate execution. Discovery rejects symlinks and escaping paths.
+`show` exposes validated steps, scopes, statuses and dependency edges.
+
+Use numbered step headings (`## 1. Step name`) and explicit bullet fields:
+`- **Target**: goal`, `- **Scope**: ["src/module.rs"]`,
+`- **Status**: ready`, and optional `- **Depends On**: ["Prior step name"]`.
+Dependencies name step titles without the numeric heading prefix. Optional
+`Evidence` records verification; `Subtasks` is an inline YAML list using
+`subtask_ref`, `title`, `status`, and `evidence`. Duplicate titles, unknown
+references, dependency cycles, unsafe scopes and blocked steps fail before
+execution. Cancelled steps cannot satisfy dependencies.
+
+`plan run` always executes in-place; `--in-place` explicitly selects the same
+mode. The default projects the selected profile's task gates to `save: snapshot`.
+An explicit profile must already contain only task gates and use snapshot
+persistence; root gates and commits are refused. Steps follow the canonical
+pass/fail graph, conditions and retry limits. Agent roles return typed decisions;
+command gates collect actual process observations. Immutable gates reject
+candidate drift. Delivery reuses the task subtask guard: unfinished subtasks fail
+with `TASK_SUBTASKS_INCOMPLETE`, and completed subtasks with blank evidence fail
+with `TASK_SUBTASK_EVIDENCE_MISSING`; cancelled subtasks are permitted.
+
+Successful steps update source `Status` and `Evidence` and retain named Git
+snapshots, including configured pre/post gate snapshots. Execution preserves
+HEAD and staged content, creates no worktree or task registry, and refuses
+concurrent plan-source changes. A failed snapshot rolls back only this runner's
+unchanged source update. Completed steps with evidence are not replayed. JSON
+results include the path, steps and snapshots. A failure retains work for repair.
+
+## Standalone workflows
+
+```sh
+contextunity-forge-mcp --root PATH workflow list
+contextunity-forge-mcp --root PATH workflow show NAME
+contextunity-forge-mcp --root PATH --format json workflow run NAME
+```
+
+Workflows are validated profile documents in `docs/workflows/*.yaml` or `*.yml`.
+Select a workflow by its unique filename stem or discovered root-relative path.
+Discovery is read-only; missing, ambiguous, or escaping paths fail.
+
+`workflow run` executes command-owned and agent-owned root gates in-place with `save: none`.
+It follows the profile's pass, failure, condition, and retry edges, drains both
+process streams, and terminates the owned POSIX process group on timeout.
+Each gate can set `max_attempts`; a gate without an explicit retry allowance
+executes at most once. Failed or exhausted gates prevent successor execution.
+Output beyond the bounded capture fails proof collection.
+Successful JSON results contain `status: completed`, the selected `path`, and
+in-memory gate `outcomes`. Execution creates no task store, Git repository,
+snapshot, commit, or persistent execution log.
+
+Agent gates require a configured role runner. Prompts carry the profile, gate,
+goal, scope, actual independent session and structured findings. Runners send
+progress to stderr and exactly one JSON decision to stdout: `gate`, `session_id`,
+`decision` (`pass` or `reject`), typed `proof`, and structured `findings` on
+rejection. Exit zero without a decision cannot pass. Declared independence is
+checked against observed predecessor sessions; configured reuse resumes the
+rejected target's session with findings. Typed command proof must agree with
+commands Forge actually observes. The workflow document supplies its own graph
+and roles.
+
+Task containers, task receipts and persistence other than `none` are refused.
+Command-only gates with unsupported expected-failure, policy or independence
+requirements fail closed with `WORKFLOW_PROOF_REQUIRED`. Runner-invoked operations
+retain their own effects.
+
 ## Repository milestones
 
 `milestone init`, `draft`, `list`, `show`, `handoff-context`, `handoff`, and `db-recover` are CLI-only. The MCP interface
@@ -312,6 +410,7 @@ provides task operations and has no milestone lifecycle tools.
 contextunity-forge-mcp milestone list [--archive] [--limit N] [--status planned|active|completed|cancelled|all]
 contextunity-forge-mcp milestone show <id-or-number> [--full]
 contextunity-forge-mcp milestone init <manifest.md> [--in-place]
+contextunity-forge-mcp milestone run <id-or-number> --target-base <git-selector> [--in-place]
 contextunity-forge-mcp milestone draft [--num 011] [--slug short-name] [--title "Title"] [--plan docs/plans/proposal.md] [--dir docs/milestones] [--desc "Purpose"] [--depends-on m-prior] [--active]
 contextunity-forge-mcp milestone handoff-context <id-or-number> --target-base <git-selector>
 contextunity-forge-mcp milestone handoff <id-or-number> [--commit <git-selector>] --evidence-file <external-review.json>
@@ -349,6 +448,41 @@ repository. `--in-place` keeps the current checkout and still runs every
 validation and persistence step. Preflight errors use the stable
 `MILESTONE_PREFLIGHT_FAILED` diagnostic.
 
+`milestone run` validates topological task waves and scope collisions before
+dispatch. It uses the existing task lifecycle and accepted receipts, waits for
+completion of each wave, and refuses cancelled dependencies. `--in-place`
+serializes writers in the current checkout. The default requires a clean
+integrated checkout, creates an owned task worktree from its current HEAD,
+fast-forwards each delivered commit before the next task, and removes only
+successfully integrated owned worktrees. Failure preserves the branch/worktree;
+an active claim blocks provisioning another checkout until recovered.
+On restart, a completed delivery with a commit must be an ancestor of the
+integrated HEAD before it can satisfy a wave or dependency barrier, including
+when resuming with `--in-place`. `MILESTONE_DELIVERY_NOT_INTEGRATED` identifies
+the task, delivery commit and preserved worktree. Reconcile that accepted
+delivery into the integrated checkout before resuming; the runner preserves
+the existing history, worktree and proofs.
+
+Root gates follow the selected canonical graph around the task container.
+Post-task command gates execute their exact registered verification cursors.
+Bound observations in existing transition records support restart without
+replaying accepted tasks or root decisions; changed authority, profile or
+candidate content requires new observations.
+Pre-task observations include committed and non-ignored uncommitted content.
+Task delivery changes that content, so a restart observes pre-task gates again
+while retaining completed task receipts and avoiding new claims for those tasks.
+Root role runners return typed
+proof and actual session identity. An independent integration reviewer also
+returns `integration_review` and the exact supplied `binding`, with its actual
+session as `worker_id`. Forge verifies session separation from accepted builders.
+
+The runner calls `handoff-context`, validates observed verification counts and
+current-content independent review, then invokes the normal handoff pipeline.
+A graph that skips independent review fails with `HANDOFF_REVIEW_REQUIRED`;
+stale bindings or failed verification cannot archive the milestone. Configure
+review and verification on the successful route. This command archives the
+milestone; it does not land its branch on main.
+
 `milestone draft` creates a numbered file in a configured milestone directory.
 `--dir` selects the destination; without it, a plan beside a `milestones` directory
 selects that directory, and other invocations use the first resolved configured directory
@@ -369,8 +503,9 @@ in the manifest and task store without a completion receipt, plus a clean
 committed implementation, and archives the
 milestone with the supplied evidence. The independent reviewer differs from all
 completed-task builders. Cancelled tasks retain their history without completion
-credit or implementation-scope permission. Forge launches no agents and runs no
-verification commands.
+credit or implementation-scope permission. The manual `handoff` command consumes
+external evidence; `milestone run` executes the configured roles and verification
+before invoking that same pipeline.
 
 See [integration evidence](tasks.md#milestone-cli-lifecycle) for the exact fields,
 content projection, proof retention, diagnostics, and optional commit pointers.

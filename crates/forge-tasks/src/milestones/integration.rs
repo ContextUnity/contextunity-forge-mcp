@@ -8,11 +8,9 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    io::{Read, Write},
+    io::Write,
     path::Path,
-    process::{Child, Command, ExitStatus, Stdio},
-    sync::mpsc,
-    thread,
+    process::{Command, Stdio},
     time::{Duration, Instant},
 };
 
@@ -310,7 +308,7 @@ pub(super) fn run_milestone_check(
 
     for cmd in &commands {
         let cmd_started = Instant::now();
-        match run_shell(root, cmd, timeout) {
+        match super::command_gate::run_shell(root, cmd, timeout) {
             Ok(output) => {
                 total_duration_ms += output.duration_ms;
                 if !all_stdout.is_empty() && !output.stdout.is_empty() {
@@ -326,9 +324,9 @@ pub(super) fn run_milestone_check(
                     exit_code = None;
                     break;
                 }
-                if !output.status.success() {
+                if output.exit_code != Some(0) {
                     status = "completed".to_owned();
-                    exit_code = output.status.code().or(Some(1));
+                    exit_code = output.exit_code.or(Some(1));
                     break;
                 }
             }
@@ -410,142 +408,6 @@ pub(super) fn run_milestone_check(
         duration_ms: check.duration_ms,
     })?;
     Ok((check, output_snippet))
-}
-
-struct ShellOutput {
-    timed_out: bool,
-    status: ExitStatus,
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
-    duration_ms: i64,
-}
-
-fn run_shell(root: &Path, command_str: &str, timeout: Duration) -> Result<ShellOutput> {
-    let mut command = shell_command(command_str);
-    command
-        .current_dir(root)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let started = Instant::now();
-    let mut child = command
-        .spawn()
-        .with_context(|| format!("MILESTONE_VERIFICATION_SPAWN_FAILED: {command_str}"))?;
-    let stdout = child
-        .stdout
-        .take()
-        .context("MILESTONE_VERIFICATION_SPAWN_FAILED: stdout pipe is unavailable")?;
-    let stderr = child
-        .stderr
-        .take()
-        .context("MILESTONE_VERIFICATION_SPAWN_FAILED: stderr pipe is unavailable")?;
-    let (stdout_sender, stdout_receiver) = mpsc::channel();
-    let (stderr_sender, stderr_receiver) = mpsc::channel();
-    thread::spawn(move || {
-        let _ = stdout_sender.send(read_output(stdout));
-    });
-    thread::spawn(move || {
-        let _ = stderr_sender.send(read_output(stderr));
-    });
-
-    let deadline = started.checked_add(timeout).context(
-        "MILESTONE_VERIFICATION_TIMEOUT_INVALID: timeout is outside the supported range",
-    )?;
-    let mut timed_out = false;
-    let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break status;
-        }
-        if Instant::now() >= deadline {
-            timed_out = true;
-            terminate_process_tree(&mut child);
-            break child.wait()?;
-        }
-        thread::sleep(Duration::from_millis(10));
-    };
-    let stdout = receive_output(&stdout_receiver, child.id())?;
-    let stderr = receive_output(&stderr_receiver, child.id())?;
-    Ok(ShellOutput {
-        timed_out,
-        status,
-        stdout,
-        stderr,
-        duration_ms: i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX),
-    })
-}
-
-#[cfg(unix)]
-fn shell_command(command: &str) -> Command {
-    use std::os::unix::process::CommandExt;
-    let mut process = Command::new("sh");
-    process.args(["-c", command]).process_group(0);
-    process
-}
-
-#[cfg(windows)]
-fn shell_command(command: &str) -> Command {
-    let mut process = Command::new("cmd");
-    process.args(["/C", command]);
-    process
-}
-
-#[cfg(not(any(unix, windows)))]
-fn shell_command(command: &str) -> Command {
-    let mut process = Command::new("sh");
-    process.args(["-c", command]);
-    process
-}
-
-fn read_output(mut reader: impl Read) -> std::io::Result<Vec<u8>> {
-    let mut output = Vec::new();
-    reader.read_to_end(&mut output)?;
-    Ok(output)
-}
-
-fn receive_output(
-    receiver: &mpsc::Receiver<std::io::Result<Vec<u8>>>,
-    process_id: u32,
-) -> Result<Vec<u8>> {
-    match receiver.recv_timeout(Duration::from_millis(500)) {
-        Ok(output) => output.map_err(Into::into),
-        Err(_) => {
-            terminate_process_group(process_id);
-            bail!("MILESTONE_VERIFICATION_OUTPUT_TIMEOUT: command output pipe did not close")
-        }
-    }
-}
-
-fn terminate_process_tree(child: &mut Child) {
-    terminate_process_group(child.id());
-    let _ = child.kill();
-}
-
-#[cfg(unix)]
-fn terminate_process_group(process_id: u32) {
-    if let Ok(process_id) = i32::try_from(process_id) {
-        unsafe {
-            libc::kill(-process_id, libc::SIGKILL);
-        }
-    }
-}
-
-#[cfg(windows)]
-fn terminate_process_group(process_id: u32) {
-    let _ = Command::new("taskkill")
-        .args(["/PID", &process_id.to_string(), "/T", "/F"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-}
-
-#[cfg(not(any(unix, windows)))]
-fn terminate_process_group(process_id: u32) {
-    let _ = Command::new("kill")
-        .arg(process_id.to_string())
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
 }
 
 fn bounded_output(output: &str, limit: usize) -> String {

@@ -13,6 +13,7 @@ const INVENTORY_FRESHNESS_TTL: std::time::Duration = std::time::Duration::from_s
 
 fn same_request_adapter(left: &scanner::Adapter, right: &scanner::Adapter) -> bool {
     left.digest == right.digest
+        && left.adapter_path == right.adapter_path
         && left.response == right.response
         && left.modules == right.modules
         && left.debug == right.debug
@@ -25,6 +26,7 @@ pub struct CachedConnection {
     identity: Identity,
     connection: rusqlite::Connection,
     adapter_digest: String,
+    adapter_path: Option<PathBuf>,
     workspace_root: PathBuf,
     database_path: PathBuf,
     adapter_roots: Vec<PathBuf>,
@@ -67,17 +69,21 @@ pub struct Server {
     pub connection: Arc<Mutex<ConnectionSlot>>,
     request_adapter: Option<RequestAdapter>,
     extraction_cache_dir: Option<PathBuf>,
+    pub(crate) invocation: Option<crate::forge_tasks::tasks::configuration::InvocationSettings>,
     pub(crate) session_fingerprint: Option<String>,
 }
 impl Server {
     /// Creates a new instance.
     pub fn new(root: PathBuf, db: PathBuf) -> Self {
+        let invocation = crate::forge_tasks::tasks::configuration::current(&root)
+            .map(|settings| (*settings).clone());
         Self {
             root,
             db,
             connection: Arc::new(Mutex::new(None)),
             request_adapter: None,
             extraction_cache_dir: None,
+            invocation,
             session_fingerprint: Some(
                 crate::forge_tasks::store::host_session_fingerprint().unwrap_or_else(|| {
                     crate::forge_tasks::store::UNKNOWN_SESSION_FINGERPRINT.to_owned()
@@ -92,6 +98,28 @@ impl Server {
         self
     }
 
+    /// Retains immutable invocation settings for the lifetime of this server.
+    pub fn with_invocation_settings(
+        mut self,
+        settings: crate::forge_tasks::tasks::configuration::InvocationSettings,
+    ) -> Self {
+        self.invocation = Some(settings.rebase(&self.root));
+        self
+    }
+
+    pub(crate) fn load_adapter(&self, root: &std::path::Path) -> std::io::Result<scanner::Adapter> {
+        let settings = self
+            .invocation
+            .as_ref()
+            .map(|settings| settings.rebase(root));
+        scanner::load_adapter(
+            root,
+            settings
+                .as_ref()
+                .and_then(|settings| settings.config.as_deref()),
+        )
+    }
+
     /// Supplies trusted host session identity without exposing it to tool JSON.
     pub fn with_session_fingerprint(mut self, session_fingerprint: String) -> Self {
         self.session_fingerprint = Some(session_fingerprint);
@@ -103,6 +131,11 @@ impl Server {
         root: &std::path::Path,
         adapter: Option<&std::path::Path>,
     ) -> Result<serde_json::Value> {
+        let selected = self
+            .invocation
+            .as_ref()
+            .and_then(|settings| settings.config.as_deref());
+        let adapter = selected.or(adapter);
         match self.extraction_cache_dir.as_deref() {
             Some(cache_dir) => {
                 crate::engine::pipeline::build_with_cache_dir(root, &self.db, adapter, cache_dir)
@@ -112,12 +145,15 @@ impl Server {
     }
 
     fn delta(&self, root: &std::path::Path, modified: &[PathBuf]) -> Result<serde_json::Value> {
-        match self.extraction_cache_dir.as_deref() {
-            Some(cache_dir) => {
-                crate::engine::pipeline::delta_with_cache_dir(root, &self.db, modified, cache_dir)
-            }
-            None => crate::db::writer::delta(root, &self.db, modified),
-        }
+        crate::engine::pipeline::delta_with_selection(
+            root,
+            &self.db,
+            modified,
+            self.invocation
+                .as_ref()
+                .and_then(|settings| settings.config.as_deref()),
+            self.extraction_cache_dir.as_deref(),
+        )
     }
 
     pub(crate) fn with_root_and_db(
@@ -126,12 +162,17 @@ impl Server {
         db: PathBuf,
         adapter: RequestAdapter,
     ) -> Self {
+        let invocation = self
+            .invocation
+            .as_ref()
+            .map(|settings| settings.rebase(&root));
         Self {
             root,
             db,
             connection: Arc::clone(&self.connection),
             request_adapter: Some(adapter),
             extraction_cache_dir: self.extraction_cache_dir.clone(),
+            invocation,
             session_fingerprint: self.session_fingerprint.clone(),
         }
     }
@@ -142,7 +183,7 @@ impl Server {
             Some(RequestAdapter::Failed { kind, message }) => {
                 Err(std::io::Error::new(*kind, message.clone()))
             }
-            None => scanner::load_adapter(&self.root, None).map(Arc::new),
+            None => self.load_adapter(&self.root).map(Arc::new),
         }
     }
     /// Performs ensure fresh.
@@ -207,6 +248,10 @@ impl Server {
             crate::db::reader::open(&self.db, &self.root)?;
             Ok(true)
         };
+        let persisted = crate::core::config::read_policy(&self.root, &conn)?;
+        if current_adapter.adapter_path != persisted.adapter_path {
+            return admit_rebuild();
+        }
         let persisted_digest: String = conn.query_row(
             "SELECT value FROM metadata WHERE key='adapter_digest'",
             [],
@@ -278,7 +323,7 @@ impl Server {
         let mut reloaded_adapter = None;
         for attempt in 0..5 {
             if attempt > 0 {
-                let latest = scanner::load_adapter(&root, None)?;
+                let latest = self.load_adapter(&root)?;
                 anyhow::ensure!(
                     same_request_adapter(&latest, request_adapter),
                     "adapter changed during source admission; retry against the current snapshot"
@@ -292,6 +337,7 @@ impl Server {
                     cached.workspace_root == root
                         && cached.database_path == self.db
                         && cached.adapter_digest == adapter.digest
+                        && cached.adapter_path == adapter.adapter_path
                         && cached.adapter_roots == adapter.roots
                         && cached.linked_workspaces == adapter.linked_workspaces
                 })
@@ -321,6 +367,7 @@ impl Server {
                     identity: identity.clone(),
                     connection: crate::db::reader::open(&self.db, &root)?,
                     adapter_digest: adapter.digest.clone(),
+                    adapter_path: adapter.adapter_path.clone(),
                     workspace_root: root.clone(),
                     database_path: self.db.clone(),
                     adapter_roots: adapter.roots.clone(),
@@ -403,7 +450,7 @@ impl Server {
             if crate::db::cache::identity(&self.db)? != identity {
                 anyhow::bail!("generation changed during source admission; retry against the current snapshot");
             }
-            let latest_adapter = scanner::load_adapter(&root, None)?;
+            let latest_adapter = self.load_adapter(&root)?;
             if !same_request_adapter(&latest_adapter, adapter) {
                 anyhow::bail!(
                     "adapter changed during source admission; retry against the current snapshot"
@@ -467,7 +514,7 @@ impl Server {
         &self,
         f: impl FnOnce(&rusqlite::Connection) -> Result<serde_json::Value>,
     ) -> Result<serde_json::Value> {
-        let adapter = scanner::load_adapter(&scanner::canonical_root(&self.root)?, None)?;
+        let adapter = self.load_adapter(&scanner::canonical_root(&self.root)?)?;
         self.read_with_adapter(&adapter, f)
     }
 
@@ -535,6 +582,8 @@ impl Server {
         };
         let db = if target == root {
             self.db.clone()
+        } else if let Some(settings) = &self.invocation {
+            settings.rebase(&target).code_db
         } else {
             crate::cli::default_db(&target)
         };
@@ -750,6 +799,16 @@ pub async fn serve_with_cache_dir(
     db: PathBuf,
     cache_dir: Option<PathBuf>,
 ) -> Result<()> {
+    serve_with_settings(root, db, cache_dir, None).await
+}
+
+/// Serves stdio retaining explicit configuration and profile selections across requests.
+pub async fn serve_with_settings(
+    root: PathBuf,
+    db: PathBuf,
+    cache_dir: Option<PathBuf>,
+    settings: Option<crate::forge_tasks::tasks::configuration::InvocationSettings>,
+) -> Result<()> {
     #[cfg(unix)]
     {
         let reload_parent = std::env::var(MCP_RELOAD_PARENT_ENV).ok();
@@ -758,7 +817,7 @@ pub async fn serve_with_cache_dir(
             .and_then(|value| value.parse::<u32>().ok())
             .unwrap_or_else(std::os::unix::process::parent_id);
         tokio::select! {
-            result = serve_session(root, db, cache_dir, initial_parent_pid) => result,
+            result = serve_session(root, db, cache_dir, settings, initial_parent_pid) => result,
             _ = parent_exited(initial_parent_pid) => {
                 eprintln!(
                     "contextunity-forge-mcp: parent process ({initial_parent_pid}) exited; shutting down"
@@ -771,7 +830,7 @@ pub async fn serve_with_cache_dir(
     }
     #[cfg(not(unix))]
     {
-        serve_session(root, db, cache_dir).await
+        serve_session(root, db, cache_dir, settings).await
     }
 }
 
@@ -779,9 +838,13 @@ async fn serve_session(
     root: PathBuf,
     db: PathBuf,
     cache_dir: Option<PathBuf>,
+    settings: Option<crate::forge_tasks::tasks::configuration::InvocationSettings>,
     #[cfg(unix)] initial_parent_pid: u32,
 ) -> Result<()> {
     let mut server = Server::new(root, db);
+    if let Some(settings) = &settings {
+        server = server.with_invocation_settings(settings.clone());
+    }
     if let Some(cache_dir) = cache_dir.as_ref() {
         server = server.with_cache_dir(cache_dir.clone());
     }
@@ -804,10 +867,6 @@ async fn serve_session(
                     break;
                 }
                 Some(()) = hangup.recv() => {
-                    match &preserved {
-                        Some(json) => std::env::set_var(MCP_SESSION_ENV, json),
-                        None => std::env::remove_var(MCP_SESSION_ENV),
-                    }
                     let result = (|| -> std::io::Result<()> {
                         let mut exe = std::env::current_exe()?;
                         #[cfg(target_os = "linux")]
@@ -820,6 +879,13 @@ async fn serve_session(
                         let args: Vec<_> = std::env::args_os().skip(1).collect();
                         let mut command = std::process::Command::new(exe);
                         command.args(args).env(MCP_RELOAD_PARENT_ENV, initial_parent_pid.to_string());
+                        match &preserved {
+                            Some(json) => { command.env(MCP_SESSION_ENV, json); }
+                            None => { command.env_remove(MCP_SESSION_ENV); }
+                        }
+                        if let Some(settings) = &settings {
+                            settings.configure_child(&mut command);
+                        }
                         if let Some(cache_dir) = cache_dir.as_ref() {
                             command.env("FORGE_EXTRACTION_CACHE_DIR", cache_dir);
                         }

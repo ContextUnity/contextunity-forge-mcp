@@ -10,14 +10,29 @@ fn transition_runner_compiles_proofs_and_covers_all_task3_subtasks() {
     root.write(".gitignore", ".forge/\n");
     root.write(
         "tests/acdd/runner.rs",
-        "#[test]\nfn transition_runner_compiles_proofs_and_covers_all_task3_subtasks() {}\n",
+        "#[test]\nfn transition_runner_compiles_proofs_and_covers_all_task3_subtasks() { assert!(false); }\n",
     );
     root.write("src/readme.md", "Scoped documentation command input.\n");
     fs::create_dir_all(root.root().join(".forge/task3-bin")).unwrap();
+    let compiled = std::process::Command::new("rustc")
+        .current_dir(root.root())
+        .args([
+            "--test",
+            "tests/acdd/runner.rs",
+            "-o",
+            ".forge/task3-bin/contract-red",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        compiled.status.success(),
+        "{}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
     let fake_cargo = root.root().join(".forge/task3-bin/cargo");
     fs::write(
         &fake_cargo,
-        "#!/bin/sh\ncase \"$TASK3_MODE\" in\n  contract-red) printf 'assertion failed\\n' >&2; exit 101 ;;\n  large-fail) head -c 10000 /dev/zero | tr '\\0' x; exit 1 ;;\n  build-fail) printf 'test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out\\n'; exit 1 ;;\n  forge-symlink) mv .forge .forge-preserved && ln -s \"$TASK3_OUTSIDE\" .forge && head -c 10000 /dev/zero | tr '\\0' x; exit 1 ;;\n  *) printf 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\\n'; printf 'label=%s\\n' \"$TASK3_LABEL\" ;;\nesac\n",
+        "#!/bin/sh\ncase \"$TASK3_MODE\" in\n  contract-red) exec .forge/task3-bin/contract-red ;;\n  large-fail) head -c 10000 /dev/zero | tr '\\0' x; exit 1 ;;\n  build-fail) printf 'test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out\\n'; exit 1 ;;\n  forge-symlink) mv .forge .forge-preserved && ln -s \"$TASK3_OUTSIDE\" .forge && head -c 10000 /dev/zero | tr '\\0' x; exit 1 ;;\n  *) printf 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\\n'; printf 'label=%s\\n' \"$TASK3_LABEL\" ;;\nesac\n",
     )
     .unwrap();
     #[cfg(unix)]
@@ -549,7 +564,7 @@ fn transition_runner_compiles_proofs_and_covers_all_task3_subtasks() {
 
     assert!(
         contract_execution.is_ok(),
-        "contract fixture produces an expected runtime red"
+        "contract fixture produces an expected runtime red: {contract_execution:?}"
     );
     assert!(
         contract_proof_ok,

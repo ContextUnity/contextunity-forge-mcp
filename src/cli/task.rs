@@ -319,6 +319,54 @@ pub enum TaskCommand {
     Cleanup,
 }
 
+pub(super) fn preflight_error(command: &TaskCommand, error: anyhow::Error) -> anyhow::Error {
+    let subject = match command {
+        TaskCommand::Run { task_id, .. }
+        | TaskCommand::Claim { task_id, .. }
+        | TaskCommand::Verify { task_id, .. }
+        | TaskCommand::ExtendScope { task_id, .. }
+        | TaskCommand::Reset { task_id }
+        | TaskCommand::Reopen { task_id }
+        | TaskCommand::Context { task_id } => Some(task_id.as_str()),
+        TaskCommand::Inspect { task_id, task } | TaskCommand::Submit { task_id, task, .. } => {
+            task_id.as_deref().or(task.as_deref())
+        }
+        TaskCommand::Create { milestone_ref, .. } => Some(milestone_ref.as_str()),
+        TaskCommand::Sync {
+            milestone_ref,
+            file,
+            ..
+        } => milestone_ref.as_deref().or(file.as_deref()),
+        TaskCommand::Delete {
+            task_id, milestone, ..
+        } => task_id.as_deref().or(milestone.as_deref()),
+        TaskCommand::Subtask { command } => Some(match command {
+            SubtaskCommand::Add { task_id, .. }
+            | SubtaskCommand::List { task_id, .. }
+            | SubtaskCommand::Update { task_id, .. } => task_id.as_str(),
+        }),
+        TaskCommand::Blackboard { command } => match command {
+            BlackboardCommand::Post {
+                task_id,
+                milestone_ref,
+                ..
+            }
+            | BlackboardCommand::Read {
+                task_id,
+                milestone_ref,
+                ..
+            } => task_id.as_deref().or(milestone_ref.as_deref()),
+            BlackboardCommand::Inspect { .. } => None,
+        },
+        TaskCommand::Next { .. } | TaskCommand::List { .. } | TaskCommand::Cleanup => None,
+    }
+    .unwrap_or("unselected");
+    anyhow::anyhow!(forge_tasks::tasks::task_lifecycle_diagnostic(
+        subject,
+        &error.to_string()
+    ))
+}
+
 /// Performs run.
 pub fn run(root: &Path, command: TaskCommand) -> Result<Value> {
     crate::mcp::tasks::ensure_extractors();

@@ -1,0 +1,13 @@
+# Observable taskless execution with no Git or task-store prerequisites.
+version: 2
+inherit: none
+save: none
+commands:
+  first: "printf 'first\n' >> workflow-order.log"
+  second: "printf 'second\n' >> workflow-order.log"
+gates:
+  - id: first
+    command: first
+    pass: second
+  - id: second
+    command: second

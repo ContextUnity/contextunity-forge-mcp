@@ -27,6 +27,42 @@ A profile gate can contain child gates. [`claim_nested_gate`](../../crates/forge
 
 The shared [contextunity-forge skill](../../skills/contextunity-forge/SKILL.md#acdd-profiles-and-task-operations) is what an agent loads for tool choice and delivery. The claim's `workflow_guidance` is what that agent follows for the current gate. [CLI commands](cli.md) lists the terminal forms, including milestone commands, which stay CLI-only.
 
+## Headless task, milestone, plan and workflow execution
+
+The [CLI orchestration commands](cli.md#structured-plans) share canonical profiles,
+gate cursors, proof validation and process supervision. Task runners advance the
+existing persisted task lifecycle. Milestone runners validate dependency waves,
+dispatch that lifecycle serially in-place or through owned isolated worktrees,
+and integrate accepted deliveries before the next task. Root gate observations
+stay in existing transition records; profile, authority and content bindings
+control restart reuse. No separate task or gate registry is introduced.
+
+[`run_standalone_workflow`](../../crates/forge-tasks/src/engine/orchestrator/workflow.rs)
+executes a workflow's taskless root graph with ephemeral observations and
+`save: none`. Commands reuse the existing output parser and supervised process
+executor. Agent roles receive actual independent sessions and must return a
+structured decision with typed proof. Rejections carry structured findings to
+the retained target session. Exit status alone cannot supply role acceptance.
+Task containers and persistent receipts are refused for these workflows.
+
+[`run_plan_workflow`](../../crates/forge-tasks/src/engine/orchestrator/plan.rs)
+projects production-indexed `doc_type: plan` sections to source-owned steps.
+Validated dependency order controls execution; the plan's source status and
+evidence remain its authority. Snapshot persistence preserves HEAD and staged
+content. Explicit profiles must already be task-only and snapshot-only.
+Plan delivery calls the same subtask completion/evidence guard as task delivery;
+immutable gates preserve their accepted candidate. Completed source steps with
+evidence are not replayed, and concurrent source edits fail closed.
+
+Milestone verification executes the exact current root command cursor. Autonomous
+handoff consumes a genuine independent role decision and Forge-observed command
+results bound to final authority, implementation and explicit target-base
+content. The existing handoff validator remains authoritative. A route without
+independent review cannot invent evidence to complete handoff. See
+[milestone commands](cli.md#repository-milestones) for recovery and failure effects,
+and [global options](cli.md#global-options) for immutable configuration selection
+across CLI commands and the server lifetime.
+
 ## Documentation and instructions co-evolution
 
 A task that changes observable behavior, public interfaces, workflows, configuration, or operational assumptions updates the matching documentation and agent instructions during its build stage. Follow the [shared skill's task guidance](../../skills/contextunity-forge/SKILL.md#acdd-profiles-and-task-operations).

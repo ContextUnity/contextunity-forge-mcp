@@ -1,0 +1,13 @@
+version: 2
+inherit: none
+save: commit
+commands:
+  record: "touch forbidden-plan-command"
+gates:
+  - tasks:
+      gates:
+        - id: record
+          command: record
+        - id: finish
+          receipt: true
+          save: commit

@@ -21,7 +21,7 @@ mod tests;
 mod verification;
 
 pub use telemetry::set_symbol_facts_extractor;
-pub use verification::execute_milestone_verification;
+pub use verification::{execute_milestone_verification, execute_wave_verification};
 
 use provenance::*;
 use telemetry::*;

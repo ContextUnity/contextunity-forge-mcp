@@ -2044,7 +2044,7 @@ fn reference_keys(facts: &TypedFacts) -> Vec<&str> {
 
 /// Performs incremental delta indexing for modified source files.
 pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
-    delta_inner(root, db, modified, None)
+    delta_inner(root, db, modified, None, None)
 }
 
 /// Applies a delta while preserving an explicit cache directory during rebuilds.
@@ -2054,7 +2054,18 @@ pub fn delta_with_cache_dir(
     modified: &[PathBuf],
     cache_dir: &Path,
 ) -> Result<Value> {
-    delta_inner(root, db, modified, Some(cache_dir))
+    delta_inner(root, db, modified, None, Some(cache_dir))
+}
+
+/// Applies a delta with an explicit adapter selection, retaining legacy persisted-policy defaults.
+pub fn delta_with_selection(
+    root: &Path,
+    db: &Path,
+    modified: &[PathBuf],
+    adapter: Option<&Path>,
+    cache_dir: Option<&Path>,
+) -> Result<Value> {
+    delta_inner(root, db, modified, adapter, cache_dir)
 }
 
 fn rebuild_with_cache_dir(
@@ -2073,6 +2084,7 @@ fn delta_inner(
     root: &Path,
     db: &Path,
     modified: &[PathBuf],
+    selected_adapter: Option<&Path>,
     cache_dir: Option<&Path>,
 ) -> Result<Value> {
     validate_code_map_target(root, db)?;
@@ -2081,6 +2093,10 @@ fn delta_inner(
         bail!("delta requires at least one modified path");
     }
     let root = canonical_root(root)?;
+    // Reject invalid explicit policy before opening or publishing an index generation.
+    let selected_adapter = selected_adapter
+        .map(|path| load_adapter(&root, Some(path)))
+        .transpose()?;
     let generation_lock = crate::db::cache::exclusive_lock(db)?;
     let (schema_compatible, previous_adapter_path) = {
         let probe = Connection::open_with_flags(
@@ -2114,7 +2130,11 @@ fn delta_inner(
     };
     if !schema_compatible {
         drop(generation_lock);
-        return rebuild_with_cache_dir(&root, db, previous_adapter_path.as_deref(), cache_dir);
+        let adapter_path = selected_adapter
+            .as_ref()
+            .and_then(|adapter| adapter.adapter_path.as_deref())
+            .or(previous_adapter_path.as_deref());
+        return rebuild_with_cache_dir(&root, db, adapter_path, cache_dir);
     }
     let admitted = crate::db::reader::open(db, &root)?;
     let admitted_identity = crate::db::cache::identity(db)?;
@@ -2124,7 +2144,10 @@ fn delta_inner(
         |r| r.get(0),
     )?;
     let adapter = config::read_policy(&root, &admitted)?;
-    let current_adapter = load_adapter(&root, adapter.adapter_path.as_deref())?;
+    let current_adapter = match selected_adapter {
+        Some(adapter) => adapter,
+        None => load_adapter(&root, adapter.adapter_path.as_deref())?,
+    };
     config::check_root_scope(&root, current_adapter.limits.allow_broad_root)?;
     for path in modified {
         checked_child(&root, path)?;
@@ -2135,12 +2158,18 @@ fn delta_inner(
         )
     });
     if current_adapter.digest != adapter.digest
+        || current_adapter.adapter_path != adapter.adapter_path
         || current_adapter.linked_workspaces != adapter.linked_workspaces
         || manifests_changed
     {
         drop(admitted);
         drop(generation_lock);
-        return rebuild_with_cache_dir(&root, db, adapter.adapter_path.as_deref(), cache_dir);
+        return rebuild_with_cache_dir(
+            &root,
+            db,
+            current_adapter.adapter_path.as_deref(),
+            cache_dir,
+        );
     }
     let previous = crate::db::reader::inventory_snapshot(&admitted)?;
     let scanning = Instant::now();

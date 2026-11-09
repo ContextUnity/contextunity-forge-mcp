@@ -1,0 +1,13 @@
+version: 2
+inherit: none
+save: snapshot
+commands:
+  record: "printf 'wrong profile\n' >> rejected-profile.log"
+gates:
+  - tasks:
+      gates:
+        - id: record
+          command: record
+        - id: finish
+          receipt: true
+          save: snapshot

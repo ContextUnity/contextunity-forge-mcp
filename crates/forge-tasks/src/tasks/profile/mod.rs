@@ -1118,6 +1118,9 @@ pub fn compiled() -> Arc<GateProfile> {
 /// Split a pinned profile reference into a relative path and optional SHA prefix.
 /// Resolve workspace profile links and repository defaults, then validate the merged profile.
 pub fn load_for_workspace(root: &Path) -> Result<Arc<GateProfile>> {
+    if let Some(settings) = crate::tasks::configuration::current(root) {
+        return Ok(settings.profile.clone());
+    }
     let mut base = (*compiled()).clone();
     let forge_config = root.join("forge-mcp.yaml");
     if forge_config.is_file() {

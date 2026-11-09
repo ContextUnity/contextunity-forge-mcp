@@ -230,9 +230,13 @@ fn preflight_milestone_init_inner(
         .canonicalize()
         .context("workspace root is unavailable")?;
     let settings = crate::engine::tasks::TaskSettings::load(&root)?;
-    let config_root = crate::engine::tasks::primary_worktree_root(&root)
-        .unwrap_or_else(|| root.clone())
-        .canonicalize()?;
+    let config_root = if crate::tasks::configuration::current(&root).is_some() {
+        root.clone()
+    } else {
+        crate::engine::tasks::primary_worktree_root(&root)
+            .unwrap_or_else(|| root.clone())
+            .canonicalize()?
+    };
     let full_manifest = if manifest_path.is_absolute() {
         manifest_path.to_path_buf()
     } else {
@@ -385,7 +389,7 @@ fn manifest_frontmatter(text: &str) -> Result<serde_yaml::Value> {
 }
 
 fn load_adapter_file(root: &Path) -> Result<crate::core::config::AdapterFile> {
-    let primary = root.join("forge-mcp.yaml");
+    let primary = crate::tasks::configuration::config_path(root);
     let text = fs::read_to_string(primary).context("forge-mcp.yaml is required for preflight")?;
     serde_yaml::from_str(&text).context("forge-mcp.yaml is invalid")
 }

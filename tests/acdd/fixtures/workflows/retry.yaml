@@ -1,0 +1,10 @@
+version: 2
+inherit: none
+save: none
+commands:
+  attempt: "if test -f retry-marker; then printf 'retried\n' >> retry-result; else touch retry-marker; exit 7; fi"
+gates:
+  - id: attempt
+    command: attempt
+    max_attempts: 2
+    fail: attempt

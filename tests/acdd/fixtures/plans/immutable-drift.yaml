@@ -1,0 +1,20 @@
+version: 2
+inherit: none
+save: snapshot
+commands:
+  prepare: "printf 'candidate\n' > src/first.rs"
+  mutate: "printf 'changed\n' > src/first.rs"
+gates:
+  - tasks:
+      gates:
+        - id: prepare
+          command: prepare
+          save:
+            post: snapshot
+        - id: review
+          command: mutate
+          save:
+            immutable: true
+        - id: finish
+          receipt: true
+          save: snapshot

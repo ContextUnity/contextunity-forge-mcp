@@ -548,8 +548,18 @@ pub fn primary_worktree_root(root: &Path) -> Option<std::path::PathBuf> {
 }
 impl TaskSettings {
     pub fn load(root: &Path) -> Result<Self> {
-        let config = std::fs::read_to_string(root.join("forge-mcp.yaml"))
+        let selected = crate::tasks::configuration::current(root);
+        let config = std::fs::read_to_string(crate::tasks::configuration::config_path(root))
             .or_else(|_| {
+                if selected
+                    .as_ref()
+                    .is_some_and(|settings| settings.config.is_some())
+                {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        "selected configuration is missing",
+                    ));
+                }
                 if let Some(base) = primary_worktree_root(root) {
                     std::fs::read_to_string(base.join("forge-mcp.yaml"))
                 } else {

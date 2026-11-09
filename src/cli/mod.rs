@@ -220,7 +220,11 @@ pub(crate) mod discovery {
             .and_then(Value::as_str)
             .map(Path::new)
             .unwrap_or(root);
-        let Ok(adapter) = scanner::load_adapter(root, None) else {
+        let settings = forge_tasks::tasks::configuration::current(root);
+        let config = settings
+            .as_ref()
+            .and_then(|settings| settings.config.as_deref());
+        let Ok(adapter) = scanner::load_adapter(root, config) else {
             return;
         };
         let Some(scope) = value
@@ -565,12 +569,17 @@ pub mod guide;
 pub mod migrate;
 /// Implements milestone commands.
 pub mod milestone;
+mod paths;
+/// Structured documentation plan execution.
+pub mod plan;
 /// Sends a reload signal to running MCP servers.
 pub mod reload;
 /// Implements task support.
 pub mod task;
 /// Fail-fast ACDD profile and milestone manifest validation.
 pub mod validate;
+/// Standalone workflow discovery and execution.
+pub mod workflow;
 use crate::{
     core::format::{self, OperationKind, OutputFormat},
     core::response::{
@@ -597,6 +606,12 @@ pub struct Cli {
     #[arg(long, global = true, env = "FORGE_DB")]
     /// Optional db value.
     pub db: Option<PathBuf>,
+    #[arg(long, global = true, env = "FORGE_CONFIG")]
+    /// Explicit root-confined Forge configuration file.
+    pub config: Option<PathBuf>,
+    #[arg(long, global = true, env = "FORGE_PROFILE")]
+    /// Explicit root-confined gate profile file.
+    pub profile: Option<PathBuf>,
     #[arg(long, global = true, value_enum, default_value = "markdown")]
     /// Output format: markdown (default) or json.
     pub format: CliOutputFormat,
@@ -626,6 +641,18 @@ impl From<CliOutputFormat> for OutputFormat {
 #[derive(Subcommand, Debug)]
 /// Enumerates the supported command values.
 pub enum Command {
+    /// Discover or execute a structured documentation plan.
+    Plan {
+        #[command(subcommand)]
+        /// The selected plan operation.
+        command: plan::PlanCommand,
+    },
+    /// Discover or execute a standalone root-gate workflow.
+    Workflow {
+        #[command(subcommand)]
+        /// The selected workflow operation.
+        command: workflow::WorkflowCommand,
+    },
     /// Read text, symbols, outlines, or Git changes through the layered reader.
     Read {
         /// Workspace-relative file, or symbol selector with --mode snippet.
@@ -995,6 +1022,8 @@ fn command_presentation(command: &Command) -> (OperationKind, &'static str, Opti
             command: milestone::MilestoneCommand::List { .. },
         } => (OperationKind::Task, "milestone_list", None),
         Command::Milestone { .. } => (OperationKind::Task, "task result", None),
+        Command::Workflow { .. } => (OperationKind::Task, "workflow result", None),
+        Command::Plan { .. } => (OperationKind::Task, "plan result", None),
         Command::Guide { .. } => (OperationKind::Guide, "forge_guide", None),
         Command::Checkpoint { .. } => (OperationKind::Checkpoint, "session_checkpoint", None),
         Command::Ast { .. } => (OperationKind::Navigation, "ast_grep_search", None),
@@ -1121,9 +1150,32 @@ fn open_or_rebuild(
     root: &Path,
     cache_dir: Option<&Path>,
 ) -> Result<crate::db::reader::LockedConnection> {
+    let selected = forge_tasks::tasks::configuration::current(root);
+    let adapter = selected
+        .as_ref()
+        .and_then(|settings| settings.config.as_deref());
     writer::validate_code_map_target(root, db)?;
     match crate::db::reader::open_locked(db, root) {
-        Ok(conn) => Ok(conn),
+        Ok(conn) => {
+            if let Some(path) = adapter {
+                let selected = crate::engine::scanner::load_adapter(root, Some(path))?;
+                let persisted = crate::core::config::read_policy(root, &conn)?;
+                if selected.digest != persisted.digest
+                    || selected.adapter_path != persisted.adapter_path
+                    || selected.linked_workspaces != persisted.linked_workspaces
+                {
+                    drop(conn);
+                    match cache_dir {
+                        Some(cache_dir) => crate::engine::pipeline::build_with_cache_dir(
+                            root, db, adapter, cache_dir,
+                        )?,
+                        None => writer::build(root, db, adapter)?,
+                    };
+                    return crate::db::reader::open_locked(db, root);
+                }
+            }
+            Ok(conn)
+        }
         Err(err) => {
             let msg = err.to_string();
             let requires_rebuild = err
@@ -1136,9 +1188,9 @@ fn open_or_rebuild(
                 );
                 match cache_dir {
                     Some(cache_dir) => {
-                        crate::engine::pipeline::build_with_cache_dir(root, db, None, cache_dir)?
+                        crate::engine::pipeline::build_with_cache_dir(root, db, adapter, cache_dir)?
                     }
-                    None => crate::db::writer::build(root, db, None)?,
+                    None => crate::db::writer::build(root, db, adapter)?,
                 };
                 crate::db::reader::open_locked(db, root)
             } else {
@@ -1168,6 +1220,76 @@ impl Cli {
     }
 
     async fn run_inner<W: io::Write>(self, output: &mut W, cache_dir: Option<&Path>) -> Result<()> {
+        let positional_root = match self.command.as_ref() {
+            Some(
+                Command::Build { workspace_root, .. }
+                | Command::Scan { workspace_root, .. }
+                | Command::Delta { workspace_root, .. },
+            ) => workspace_root.as_deref(),
+            _ => None,
+        };
+        let root = match command_root(self.root.as_deref(), positional_root) {
+            Ok(root) => root,
+            Err(error) => {
+                if matches!(
+                    self.command.as_ref(),
+                    Some(Command::Docs {
+                        command: DocsCommand::Check
+                    })
+                ) {
+                    return docs_check::check(
+                        self.root.as_deref().unwrap_or_else(|| Path::new(".")),
+                        OutputFormat::from(self.format),
+                        output,
+                    );
+                }
+                return Err(error);
+            }
+        };
+        let settings =
+            paths::ResolvedPaths::resolve(&root, self.config.as_deref(), self.profile.as_deref())
+                .map_err(|error| match self.command.as_ref() {
+                Some(Command::Task { command }) => task::preflight_error(command, error),
+                _ => error,
+            })?;
+        let database = self
+            .db
+            .as_ref()
+            .map(|path| {
+                if path.is_absolute() {
+                    path.clone()
+                } else {
+                    root.join(path)
+                }
+            })
+            .unwrap_or_else(|| default_db(&root));
+        let profile_argument = self.profile.as_ref().map(|path| {
+            if path.is_absolute() {
+                path.clone()
+            } else {
+                root.join(path)
+            }
+        });
+        let selection = forge_tasks::tasks::configuration::InvocationSettings::new(
+            root.clone(),
+            settings.config.clone(),
+            settings.profile.clone(),
+            profile_argument,
+            database.clone(),
+        );
+        selection
+            .scope(self.run_selected(output, cache_dir, root, settings, database))
+            .await
+    }
+
+    async fn run_selected<W: io::Write>(
+        self,
+        output: &mut W,
+        cache_dir: Option<&Path>,
+        root: PathBuf,
+        settings: paths::ResolvedPaths,
+        db: PathBuf,
+    ) -> Result<()> {
         let output_format = OutputFormat::from(self.format);
         let command = self.command.unwrap_or(Command::Serve);
         if matches!(
@@ -1176,25 +1298,8 @@ impl Cli {
                 command: DocsCommand::Check
             }
         ) {
-            let root = match command_root(self.root.as_deref(), None) {
-                Ok(r) => r,
-                Err(err) => {
-                    if output_format == OutputFormat::Json {
-                        writeln!(
-                            output,
-                            "{}",
-                            serde_json::json!({"status": "error", "errors": [format!("{err:#}")]})
-                        )
-                        .unwrap_or_else(|error| panic!("failed printing to stdout: {error}"));
-                        bail!("documentation check failed");
-                    }
-                    return Err(err);
-                }
-            };
             return docs_check::check(&root, output_format, output);
         }
-        let root = command_root(self.root.as_deref(), None)?;
-        let db = self.db.clone().unwrap_or_else(|| default_db(&root));
         let validation_command = matches!(&command, Command::Validate { .. });
         let (operation, title, explain) = command_presentation(&command);
         let discovery = command_discovery(&command);
@@ -1219,7 +1324,8 @@ impl Cli {
                 max_body_lines,
                 leading_lines,
             } => {
-                let adapter = crate::engine::scanner::load_adapter(&root, None)?;
+                let adapter =
+                    crate::engine::scanner::load_adapter(&root, settings.config.as_deref())?;
                 let mode = serde_json::from_value::<forge_core::model::ReadMode>(json!(mode))?;
                 let request = crate::engine::reader::ReadRequest {
                     path: Some(path),
@@ -1286,27 +1392,48 @@ impl Cli {
             Command::Migrate { command } => migrate::run(&root, command)?,
             Command::Task { command } => task::run(&root, command)?,
             Command::Milestone { command } => milestone::run(&root, command)?,
+            Command::Workflow { command } => workflow::run(&root, command)?,
+            Command::Plan { command } => plan::run(&root, command, &settings)?,
             Command::Serve => {
                 writer::validate_code_map_target(&root, &db)?;
-                crate::mcp::server::serve_with_cache_dir(
+                let invocation = forge_tasks::tasks::configuration::current(&root)
+                    .map(|settings| (*settings).clone());
+                crate::mcp::server::serve_with_settings(
                     root,
                     db,
                     cache_dir.map(Path::to_path_buf),
+                    invocation,
                 )
                 .await?;
                 return Ok(());
             }
             Command::Reload => reload::run()?,
             Command::Build {
-                workspace_root,
+                workspace_root: _,
                 output,
                 adapter,
                 verbose: _,
             } => {
-                let workspace_root = command_root(self.root.as_deref(), workspace_root.as_deref())?;
+                let workspace_root = root.clone();
+                let adapter = match adapter {
+                    Some(adapter) => {
+                        let adapter = paths::confined_file(&root, &adapter)?;
+                        if self.config.is_some() {
+                            anyhow::ensure!(settings.config.as_ref() == Some(&adapter), "CLI_CONFIG_CONFLICT: --adapter and --config select different files");
+                        }
+                        Some(adapter)
+                    }
+                    None => settings.config.clone(),
+                };
                 let output = output
-                    .or(self.db)
-                    .unwrap_or_else(|| default_db(&workspace_root));
+                    .map(|path| {
+                        if path.is_absolute() {
+                            path
+                        } else {
+                            root.join(path)
+                        }
+                    })
+                    .unwrap_or_else(|| db.clone());
                 writer::validate_code_map_target(&workspace_root, &output)?;
                 match cache_dir {
                     Some(cache_dir) => crate::engine::pipeline::build_with_cache_dir(
@@ -1319,36 +1446,43 @@ impl Cli {
                 }
             }
             Command::Scan {
-                workspace_root,
+                workspace_root: _,
                 adapter,
                 pretty: _,
             } => {
-                let workspace_root = command_root(self.root.as_deref(), workspace_root.as_deref())?;
+                let workspace_root = root.clone();
+                let adapter = match adapter {
+                    Some(adapter) => {
+                        let adapter = paths::confined_file(&root, &adapter)?;
+                        if self.config.is_some() {
+                            anyhow::ensure!(settings.config.as_ref() == Some(&adapter), "CLI_CONFIG_CONFLICT: --adapter and --config select different files");
+                        }
+                        Some(adapter)
+                    }
+                    None => settings.config.clone(),
+                };
                 json!(crate::engine::scanner::scan(
                     &workspace_root,
                     adapter.as_deref()
                 )?)
             }
             Command::Delta {
-                workspace_root,
+                workspace_root: _,
                 mut modified_files,
                 modified,
             } => {
-                let workspace_root = command_root(self.root.as_deref(), workspace_root.as_deref())?;
+                let workspace_root = root.clone();
                 modified_files.extend(modified);
                 if modified_files.is_empty() {
                     bail!("delta requires at least one modified file");
                 }
-                let db = self.db.unwrap_or_else(|| default_db(&workspace_root));
-                match cache_dir {
-                    Some(cache_dir) => crate::engine::pipeline::delta_with_cache_dir(
-                        &workspace_root,
-                        &db,
-                        &modified_files,
-                        cache_dir,
-                    )?,
-                    None => writer::delta(&workspace_root, &db, &modified_files)?,
-                }
+                crate::engine::pipeline::delta_with_selection(
+                    &workspace_root,
+                    &db,
+                    &modified_files,
+                    self.config.as_ref().and(settings.config.as_deref()),
+                    cache_dir,
+                )?
             }
             Command::Guide { topic, force } => guide::run(&root, &topic, force)?,
             Command::Checkpoint {
@@ -1413,7 +1547,9 @@ impl Cli {
                             None,
                             generation,
                         )?;
-                        let adapter = crate::engine::scanner::load_adapter(&root, None).ok();
+                        let adapter =
+                            crate::engine::scanner::load_adapter(&root, settings.config.as_deref())
+                                .ok();
                         discovery::overview(
                             &conn,
                             &root,
@@ -1654,7 +1790,9 @@ impl Cli {
         let validation_failed =
             validation_command && result.get("valid").and_then(Value::as_bool) == Some(false);
         if output_format == OutputFormat::Markdown {
-            if let Ok(adapter) = crate::engine::scanner::load_adapter(&root, None) {
+            if let Ok(adapter) =
+                crate::engine::scanner::load_adapter(&root, settings.config.as_deref())
+            {
                 if let Some(kind) = discovery {
                     discovery::attach_presentation_uris(&root, &adapter, &mut result, kind);
                 }
@@ -1688,9 +1826,10 @@ impl Cli {
         let formatted = match checkpoint_action.as_deref() {
             Some(action) => format::render_checkpoint(&result, output_format, title, action),
             None if matches!(title, "task_list" | "forge_read") => {
-                let policy = crate::engine::scanner::load_adapter(&root, None)
-                    .map(|adapter| adapter.response)
-                    .unwrap_or_default();
+                let policy =
+                    crate::engine::scanner::load_adapter(&root, settings.config.as_deref())
+                        .map(|adapter| adapter.response)
+                        .unwrap_or_default();
                 let bounded = crate::mcp::response::result_for_presented(
                     Ok(result.clone()),
                     &policy,
@@ -1715,7 +1854,8 @@ impl Cli {
                 format::render_for_operation(&result, output_format, title, discovery, operation)
             }
         };
-        if let Ok(adapter) = crate::engine::scanner::load_adapter(&root, None) {
+        if let Ok(adapter) = crate::engine::scanner::load_adapter(&root, settings.config.as_deref())
+        {
             if adapter.debug {
                 let cli_cmd = {
                     let args: Vec<String> = std::env::args().skip(1).collect();
