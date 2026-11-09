@@ -7,6 +7,16 @@ depends_on:
 - UX-002-lean-verification-and-forge-read
 guidance:
   hitl: pro
+polish_scope:
+- TESTS.md
+- docs/adr/0020-hierarchical-acdd-gates-and-milestone-orchestration.md
+- docs/adr/0021-workflow-plan-and-milestone-lifecycle-hierarchy.md
+- docs/architecture/test-harness.md
+- docs/reference/profiles.md
+- docs/workflows/README.md
+- skills/contextunity-forge/SKILL.md
+- skills/contextunity-forge/references/acdd_profile.yaml.example
+- tests/mcp/test_read.rs
 owners:
 - src/cli/
 - crates/forge-tasks/src/engine/
