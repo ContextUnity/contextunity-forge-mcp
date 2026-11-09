@@ -2,31 +2,32 @@
 id: AC-003-headless-orchestrator-and-role-runners
 title: Headless CLI lifecycle orchestrator, role runner subagent execution, and rejection routing
 doc_type: contract
-status: planned
+status: active
 depends_on:
-  - UX-002-lean-verification-and-forge-read
+- UX-002-lean-verification-and-forge-read
 guidance:
   hitl: pro
 owners:
-  - src/cli/
-  - crates/forge-tasks/src/engine/
-  - crates/forge-tasks/src/milestones/
-  - docs/reference/cli.md
-  - docs/reference/acdd.md
+- src/cli/
+- crates/forge-tasks/src/engine/
+- crates/forge-tasks/src/milestones/
+- docs/reference/cli.md
+- docs/reference/acdd.md
 invariants:
-  - 'INV-HEADLESS-ROLE-RUNNER-ORCHESTRATION: When roles declare runner and prompt_template, Forge CLI (task run / milestone run) autonomously claims gates, renders role prompts with gate context bundles, spawns subagent runner processes in isolated POSIX process groups with distinct session fingerprints, executes command and delivery gates with zero tokens, and routes review rejections via reject_routing until completion.'
-  - 'INV-INDEPENDENT-REVIEWER-SESSION: Reviewer runners execute with an isolated session identity and fingerprint distinct from the builder runner session, satisfying reviewer separation and proof independence invariants.'
-  - 'INV-REJECT-ROUTING-FEEDBACK-LOOP: When review gates reject with structured findings, the orchestrator routes execution back to the configured upstream stage (scope -> build, symbols -> contract) and passes the review findings into the resumed builder session without cold restarts.'
-  - 'INV-TOPOLOGICAL-WAVE-EXECUTION: Milestone run executes tasks in topological wave order, collecting and verifying evidence envelopes automatically and gating subsequent waves until dependencies complete.'
-  - 'INV-IN-PLACE-EXECUTION: Task, milestone, and plan orchestration supports execution directly in the current workspace (--in-place) without mandatory worktree cloning or branching when isolated worktrees are not requested.'
-  - 'INV-PLAN-WORKFLOW-ORCHESTRATION: The orchestrator supports standalone workflows (docs/workflows/*.yaml) via contextunity-forge-mcp workflow [list|show|run] and structured plans (doc_type: plan in docs/plans/*.md) via contextunity-forge-mcp plan [list|show|run], executing in-place under universal gate governance.'
-  - 'INV-DELIVERY-SUBTASK-COMPLETION-GUARD: Mechanical delivery verification fails closed with TASK_SUBTASKS_INCOMPLETE if any declared subtask under the active task or plan step is not completed or cancelled, and with TASK_SUBTASK_EVIDENCE_MISSING if any completed subtask lacks non-empty verification evidence.'
-  - 'INV-CLI-UNIFIED-ARGUMENTS: Global CLI and orchestrator execution accept explicit path parameters (--root, --db, --config for custom forge-mcp.yaml, and --profile for custom profile.yaml) with deterministic resolution order.'
-  - 'INV-PLAN-WORKFLOW-HARNESS: All tests for structured plans (docs/plans/*.md) and standalone workflows (docs/workflows/*.yaml) must use PlanHarness and WorkflowHarness with canonical templates in tests/acdd/fixtures/plans/ and workflows/. Ad-hoc markdown heredocs and subprocess CLI spawning are strictly banned.'
+- 'INV-HEADLESS-ROLE-RUNNER-ORCHESTRATION: When roles declare runner and prompt_template, Forge CLI (task run / milestone run) autonomously claims gates, renders role prompts with gate context bundles, spawns subagent runner processes in isolated POSIX process groups with distinct session fingerprints, executes command and delivery gates with zero tokens, and routes review rejections via reject_routing until completion.'
+- 'INV-INDEPENDENT-REVIEWER-SESSION: Reviewer runners execute with an isolated session identity and fingerprint distinct from the builder runner session, satisfying reviewer separation and proof independence invariants.'
+- 'INV-REJECT-ROUTING-FEEDBACK-LOOP: When review gates reject with structured findings, the orchestrator routes execution back to the configured upstream stage (scope -> build, symbols -> contract) and passes the review findings into the resumed builder session without cold restarts.'
+- 'INV-TOPOLOGICAL-WAVE-EXECUTION: Milestone run executes tasks in topological wave order, collecting and verifying evidence envelopes automatically and gating subsequent waves until dependencies complete.'
+- 'INV-IN-PLACE-EXECUTION: Task, milestone, and plan orchestration supports execution directly in the current workspace (--in-place) without mandatory worktree cloning or branching when isolated worktrees are not requested.'
+- 'INV-PLAN-WORKFLOW-ORCHESTRATION: The orchestrator supports standalone workflows (docs/workflows/*.yaml) via contextunity-forge-mcp workflow [list|show|run] and structured plans (doc_type: plan in docs/plans/*.md) via contextunity-forge-mcp plan [list|show|run], executing in-place under universal gate governance.'
+- 'INV-DELIVERY-SUBTASK-COMPLETION-GUARD: Mechanical delivery verification fails closed with TASK_SUBTASKS_INCOMPLETE if any declared subtask under the active task or plan step is not completed or cancelled, and with TASK_SUBTASK_EVIDENCE_MISSING if any completed subtask lacks non-empty verification evidence.'
+- 'INV-CLI-UNIFIED-ARGUMENTS: Global CLI and orchestrator execution accept explicit path parameters (--root, --db, --config for custom forge-mcp.yaml, and --profile for custom profile.yaml) with deterministic resolution order.'
+- 'INV-PLAN-WORKFLOW-HARNESS: All tests for structured plans (docs/plans/*.md) and standalone workflows (docs/workflows/*.yaml) must use PlanHarness and WorkflowHarness with canonical templates in tests/acdd/fixtures/plans/ and workflows/. Ad-hoc markdown heredocs and subprocess CLI spawning are strictly banned.'
 required_skills:
-  - contextunity-forge
-  - agent-instructions
+- contextunity-forge
+- agent-instructions
 related_plans: []
+started_at: 2026-11-08T21:24:45+00:00
 ---
 
 # Headless CLI lifecycle orchestrator, role runner subagent execution, and rejection routing
@@ -66,33 +67,107 @@ Deliver a thin, modular headless CLI orchestrator (`crates/forge-tasks/src/engin
 
 ```yaml
 task_ref: orchestrator-types-and-runner-contracts-bootstrap
-target: "Define runner execution models, process spawner interfaces, prompt context schemas, and pre-register orchestrator seam tests in a dedicated orchestrator module"
+target: Define runner execution models, process spawner interfaces, prompt context schemas, and pre-register orchestrator seam tests in a dedicated orchestrator module
 proof_policy: seam-test-first
-contract_revision: 1
+contract_revision: 2
 depends_on: []
 scope:
-  - crates/forge-tasks/src/tasks/profile.rs
-  - crates/forge-tasks/src/engine/mod.rs
-  - crates/forge-tasks/src/engine/orchestrator/mod.rs
-  - crates/forge-tasks/src/engine/orchestrator/types.rs
-  - tests/acdd/mod.rs
-  - tests/acdd/orchestrator.rs
+- crates/forge-tasks/src/tasks/profile.rs
+- crates/forge-tasks/src/engine/mod.rs
+- crates/forge-tasks/src/engine/orchestrator/mod.rs
+- crates/forge-tasks/src/engine/orchestrator/types.rs
+- tests/acdd/mod.rs
+- tests/acdd/orchestrator.rs
+- crates/forge-tasks/src/tasks/profile/mod.rs
+- tests/acdd/orchestrator
 symbols:
-  - struct:RunnerConfig
-  - struct:RunnerInvocationContext
-  - struct:AgentDef
-  - enum:OrchestratorEvent
-  - struct:OrchestratorState
-status: ready
+- struct:RunnerConfig
+- struct:RunnerInvocationContext
+- struct:AgentDef
+- enum:OrchestratorEvent
+- struct:OrchestratorState
+status: completed
 subtasks:
-  - subtask_ref: runner-config-and-context-types
-    title: "Define RunnerConfig and RunnerInvocationContext in profile and engine/orchestrator/types.rs"
-  - subtask_ref: profile-agent-schema-reconciliation
-    title: "Rename RoleDef and 'roles' to AgentDef and 'agents' in GateProfile with backward-compatible Serde aliases (alias = 'roles', alias = 'role')"
-  - subtask_ref: orchestrator-event-and-state-models
-    title: "Define state machines and event types for headless lifecycle tracking"
-  - subtask_ref: orchestrator-seam-test-stubs
-    title: "Pre-register compiling test stubs in tests/acdd/orchestrator.rs"
+- subtask_ref: runner-config-and-context-types
+  title: Define RunnerConfig and RunnerInvocationContext in profile and engine/orchestrator/types.rs
+  status: completed
+  evidence: RunnerConfig projection and RunnerInvocationContext::render_runner; cargo test --test acdd orchestrator::types::, 8 passed, 0 failed; strict all-target Clippy passed on HEAD a813f830c.
+- subtask_ref: profile-agent-schema-reconciliation
+  title: Rename RoleDef and 'roles' to AgentDef and 'agents' in GateProfile with backward-compatible Serde aliases (alias = 'roles', alias = 'role')
+  status: completed
+  evidence: AgentDef with RoleDef compatibility alias; agent/role and agents/roles Serde handling, including duplicate rejection, exercised by orchestrator::types tests; 8 passed, 0 failed on HEAD a813f830c.
+- subtask_ref: orchestrator-event-and-state-models
+  title: Define state machines and event types for headless lifecycle tracking
+  status: completed
+  evidence: OrchestratorState tracks waves, claims, workers, and attempts with typed events; orchestrator::types state and event tests pass in scoped suite (8 passed, 0 failed) on HEAD a813f830c.
+- subtask_ref: orchestrator-seam-test-stubs
+  title: Pre-register compiling test stubs in tests/acdd/orchestrator.rs
+  status: completed
+  evidence: 'tests/acdd/orchestrator/mod.rs registers types, lifecycle, spawner and waves domain modules; cargo test --test acdd orchestrator::types:: compiled and passed 8 tests on HEAD a813f830c.'
+extended_scope:
+- crates/forge-tasks/src/tasks/profile/mod.rs
+- tests/acdd/orchestrator
+receipt:
+  delivery_gate: deliver
+  candidate_gate: build
+  contract_revision: 2
+  passed_at: 2026-11-09T14:10:59.942571795+00:00
+  evidence:
+    command_proof:
+      command: rust-check-and-test
+      exit_code: 0
+      log: |
+        [rust-check-and-test::tests/acdd/orchestrator/types.rs]
+        SCOPE_VIOLATION_WARNING: docs/milestones/AC-003-headless-orchestrator-and-role-runners.md
+        PASS rust-check-and-test::tests/acdd/orchestrator/types.rs: exit=0 passed=1 failed=0 (322 ms)
+      tests_passed: 1
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: 'All 10 candidate blobs match the admitted scope. Reviewed engine/module registration, profile model changes and the complete new types/test modules. No protected configuration or neighboring workspace changes. Pre-submit HEAD, milestone branch, index, Git status and milestone source match the starting state. Detailed review: task blackboard #1632.'
+        claims:
+          applicable: true
+          evidence: 'RunnerConfig projects the existing agent definition without changing its wire fields; RunnerInvocationContext expands model, reasoning, session_id, prompt and worktree once and preserves placeholder-looking substituted data. Native agents/agent and legacy roles/role use one Serde model, reject duplicate aliases and keep a Rust RoleDef compatibility alias. In-memory state records waves, tasks, workers and cumulative attempts while the task engine remains authoritative. Exact-call graph confirms the contract seam enters the real profile validator/parser/normalizer/merger. Tests: cargo test --test acdd orchestrator::types:: = 8 passed/0 failed/0 ignored. Detailed review: task blackboard #1632.'
+        concurrency:
+          applicable: true
+          evidence: 'New models own their data and mutations require exclusive &mut access; no new thread, lock, async, database or publication boundary. State/events observe existing authoritative task transitions. Scope snapshots and baseline protections remain enforced by the engine. Relevant command-proof tests pass (5/0). Detailed review: task blackboard #1632.'
+        project_isolation:
+          applicable: true
+          evidence: 'No new filesystem access, process spawning or cross-project data writes in bootstrap code. Worktree is a typed PathBuf input. Existing confined profile loading and normalized relative path checks remain intact; SHA pin checks still hash the original profile bytes. Profile regression tests pass (9/0) and gate integration tests pass (6/0). Detailed review: task blackboard #1632.'
+        administration:
+          applicable: true
+          evidence: 'Contract revision 2 has accepted runtime-red proof and accepted green build claim 65. Current review claim 68 succeeded with actual reviewer session distinct from builder 01a1c09d-0043-7601-b745-a82481fcbfe7. All four subtasks are completed with nonempty evidence. Current HEAD equals accepted candidate baseline a813f830c; no history rewrite. Full strict Clippy cargo clippy --all-targets --all-features -- -D warnings exited 0. Delivery will use CLI-generated evidence and Forge-managed receipt/commit on the existing milestone branch. Detailed review: task blackboard #1632.'
+      extended_scope_review:
+        approved_paths:
+        - crates/forge-tasks/src/tasks/profile/mod.rs
+        - tests/acdd/orchestrator
+        reason_verified: true
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-HEADLESS-ROLE-RUNNER-ORCHESTRATION: When roles declare runner and prompt_template, Forge CLI (task run / milestone run) autonomously claims gates, renders role prompts with gate context bundles, spawns subagent runner processes in isolated POSIX process groups with distinct session fingerprints, executes command and delivery gates with zero tokens, and routes review rejections via reject_routing until completion.'
+    - 'INV-INDEPENDENT-REVIEWER-SESSION: Reviewer runners execute with an isolated session identity and fingerprint distinct from the builder runner session, satisfying reviewer separation and proof independence invariants.'
+    - 'INV-REJECT-ROUTING-FEEDBACK-LOOP: When review gates reject with structured findings, the orchestrator routes execution back to the configured upstream stage (scope -> build, symbols -> contract) and passes the review findings into the resumed builder session without cold restarts.'
+    - 'INV-TOPOLOGICAL-WAVE-EXECUTION: Milestone run executes tasks in topological wave order, collecting and verifying evidence envelopes automatically and gating subsequent waves until dependencies complete.'
+    - 'INV-IN-PLACE-EXECUTION: Task, milestone, and plan orchestration supports execution directly in the current workspace (--in-place) without mandatory worktree cloning or branching when isolated worktrees are not requested.'
+    - 'INV-PLAN-WORKFLOW-ORCHESTRATION: The orchestrator supports standalone workflows (docs/workflows/*.yaml) via contextunity-forge-mcp workflow [list|show|run] and structured plans (doc_type: plan in docs/plans/*.md) via contextunity-forge-mcp plan [list|show|run], executing in-place under universal gate governance.'
+    - 'INV-DELIVERY-SUBTASK-COMPLETION-GUARD: Mechanical delivery verification fails closed with TASK_SUBTASKS_INCOMPLETE if any declared subtask under the active task or plan step is not completed or cancelled, and with TASK_SUBTASK_EVIDENCE_MISSING if any completed subtask lacks non-empty verification evidence.'
+    - 'INV-CLI-UNIFIED-ARGUMENTS: Global CLI and orchestrator execution accept explicit path parameters (--root, --db, --config for custom forge-mcp.yaml, and --profile for custom profile.yaml) with deterministic resolution order.'
+    - 'INV-PLAN-WORKFLOW-HARNESS: All tests for structured plans (docs/plans/*.md) and standalone workflows (docs/workflows/*.yaml) must use PlanHarness and WorkflowHarness with canonical templates in tests/acdd/fixtures/plans/ and workflows/. Ad-hoc markdown heredocs and subprocess CLI spawning are strictly banned.'
+    architectural_notes:
+    - 'decisions: User approved re-admission of bootstrap task with new contract revision, unchanged substantive scope and acceptance, to recover missing session fingerprint of accepted build claim 53. Preserve all current work and HEAD. Re-run required authentic contract, build and independent review; builders/reviewers must use genuine separate session identities, using CLI processes with FORGE_AGENT_SESSION_ID matching their actual Codex session if required. Do not fabricate evidence or change SQLite directly.'
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Acceptance

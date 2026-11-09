@@ -8,6 +8,7 @@ mod gates_ast;
 mod harness;
 mod mcp;
 mod milestones;
+mod orchestrator;
 mod persistence;
 mod runner;
 mod scope_sync;

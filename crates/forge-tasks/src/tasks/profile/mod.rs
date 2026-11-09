@@ -116,7 +116,7 @@ pub enum RoleExecutionMode {
 /// Definition of an agent role in an ACDD workflow.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(deny_unknown_fields)]
-pub struct RoleDef {
+pub struct AgentDef {
     /// Requested execution mode; omitted values effectively use `Subagent`.
     #[serde(default)]
     pub mode: Option<RoleExecutionMode>,
@@ -135,6 +135,31 @@ pub struct RoleDef {
     /// Optional prompt assembled from the active task and role context.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_template: Option<String>,
+}
+
+/// Compatibility name for existing Rust callers of the agent definition.
+pub type RoleDef = AgentDef;
+
+/// Execution configuration projected from an existing role declaration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunnerConfig {
+    /// Command template configured on the role.
+    pub runner: String,
+    /// Optional role prompt template, preserved for the runner adapter.
+    pub prompt_template: Option<String>,
+}
+
+impl RunnerConfig {
+    /// Project an existing role into an execution configuration when it has a runner.
+    ///
+    /// The role declaration remains the wire-format authority; this value is a
+    /// runtime projection and does not change profile serialization.
+    pub fn from_role(role: &RoleDef) -> Option<Self> {
+        role.runner.as_ref().map(|runner| Self {
+            runner: runner.clone(),
+            prompt_template: role.prompt_template.clone(),
+        })
+    }
 }
 
 impl RoleDef {
@@ -855,7 +880,7 @@ pub struct GateDef {
     #[serde(default)]
     pub id: String,
     /// Role assigned to this gate, if any.
-    #[serde(default)]
+    #[serde(default, rename = "agent", alias = "role")]
     pub role: Option<String>,
     /// Named command executed when this is a command gate or an agent side effect.
     #[serde(default)]
@@ -1023,8 +1048,8 @@ pub struct GateProfile {
     #[serde(default)]
     pub modules: SubsystemRegistry,
     /// Available agent roles and their model guidance.
-    #[serde(default)]
-    pub roles: BTreeMap<String, RoleDef>,
+    #[serde(default, rename = "agents", alias = "roles")]
+    pub roles: BTreeMap<String, AgentDef>,
     /// Registered shell commands usable by command proof gates.
     #[serde(default)]
     pub commands: BTreeMap<String, CommandDef>,

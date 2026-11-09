@@ -25,6 +25,7 @@ pub(crate) mod gate_graph;
 pub mod gates;
 mod git_snapshot;
 mod lifecycle;
+pub mod orchestrator;
 mod scheduler;
 
 pub use crate::milestones;
