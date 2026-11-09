@@ -352,8 +352,15 @@ fn validate_execution_plan(
                         profile,
                     )?;
                     if let Some(symbol) = test_symbol {
+                        let runner_sym = crate::milestones::command_gate::runner_test_identifier(
+                            test_path, symbol,
+                        );
                         for (_, cmd_str, _) in &mut expected {
-                            *cmd_str = format!("{cmd_str} {symbol}");
+                            *cmd_str =
+                                crate::milestones::command_gate::append_test_symbol_to_command(
+                                    cmd_str,
+                                    &runner_sym,
+                                );
                         }
                     }
                     if !expected.is_empty()
@@ -822,15 +829,62 @@ fn command_matches_with_optional_test_filter(actual: &str, expected: &str) -> bo
     if actual == expected {
         return true;
     }
-    actual
+    fn extract_filter(rest: &str) -> &str {
+        let rest = rest.trim();
+        if let Some(exact) = rest.strip_prefix("-- --exact ") {
+            exact.trim()
+        } else if let Some(exact) = rest.strip_prefix("--exact ") {
+            exact.trim()
+        } else if let Some(sym) = rest.strip_prefix("-- ") {
+            sym.trim()
+        } else {
+            rest
+        }
+    }
+    let is_valid_filter = |f: &str| {
+        !f.is_empty()
+            && f.chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | ':' | '-' | '.'))
+    };
+
+    if let Some(rest) = actual
         .strip_prefix(expected)
-        .and_then(|rest| rest.strip_prefix(' '))
-        .is_some_and(|filter| {
-            !filter.is_empty()
-                && filter
-                    .chars()
-                    .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | ':' | '-' | '.'))
-        })
+        .and_then(|r| r.strip_prefix(' '))
+    {
+        let filter = extract_filter(rest);
+        if is_valid_filter(filter) {
+            return true;
+        }
+    }
+
+    let parts_actual: Vec<&str> = actual.split(" && ").collect();
+    let parts_expected: Vec<&str> = expected.split(" && ").collect();
+    if parts_actual.len() == parts_expected.len() {
+        let mut filter_found = false;
+        let mut all_match = true;
+        for (act_part, exp_part) in parts_actual.iter().zip(parts_expected.iter()) {
+            if act_part == exp_part {
+                continue;
+            }
+            if let Some(rest) = act_part
+                .strip_prefix(exp_part)
+                .and_then(|r| r.strip_prefix(' '))
+            {
+                let filter = extract_filter(rest);
+                if is_valid_filter(filter) {
+                    filter_found = true;
+                    continue;
+                }
+            }
+            all_match = false;
+            break;
+        }
+        if all_match && filter_found {
+            return true;
+        }
+    }
+
+    false
 }
 
 fn verify_command_identity(
@@ -843,7 +897,10 @@ fn verify_command_identity(
         crate::tasks::profile::CommandDef::Script(command)
         | crate::tasks::profile::CommandDef::Detailed { command, .. } => {
             (trace.command_id == registered_name
-                && command_matches_with_optional_test_filter(&trace.command_str, command))
+                && command_matches_with_optional_test_filter(
+                    &trace.command_str,
+                    &crate::milestones::expand_command_args(command, None),
+                ))
                 || trace
                     .command_id
                     .strip_prefix(&format!("{registered_name}::"))
@@ -909,10 +966,7 @@ fn read_trace_log(worktree: &Path, trace: &GateExecutionTrace) -> Result<String>
     } else {
         requested
     };
-    if relative
-        .components()
-        .any(|component| !matches!(component, Component::Normal(_)))
-    {
+    if !forge_core::fs::is_normalized_relative(relative) {
         bail!("TASK_AUTO_PROOF_INVALID: command log path is not normalized");
     }
     let path = worktree.join(relative);

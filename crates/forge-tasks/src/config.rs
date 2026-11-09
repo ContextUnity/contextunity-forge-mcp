@@ -421,52 +421,7 @@ pub fn load_adapter(root: &Path, adapter_path: Option<&Path>) -> std::io::Result
     })
 }
 
-/// Resolves a workspace-relative file path against workspace root and linked workspaces.
-pub fn resolve_file_path(
-    root: &Path,
-    adapter: &Adapter,
-    file_path: &str,
-) -> std::io::Result<PathBuf> {
-    if file_path.starts_with('[') {
-        if let Some((prefix, rest)) = file_path.split_once("]/") {
-            let ws_name = prefix.trim_start_matches('[');
-            if let Some(lw) = adapter.linked_workspaces.iter().find(|w| w.name == ws_name) {
-                let cleaned = rest.strip_prefix("./").unwrap_or(rest);
-                return checked_child(&lw.path, Path::new(cleaned));
-            }
-        }
-    }
-    let p = Path::new(file_path);
-    if p.is_absolute() {
-        // Reject any absolute path that traverses a symlink before considering fallback.
-        let mut cur = std::path::PathBuf::new();
-        for comp in p.components() {
-            cur.push(comp);
-            if let Ok(meta) = std::fs::symlink_metadata(&cur) {
-                if meta.file_type().is_symlink() {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        "path must not traverse a symlink",
-                    ));
-                }
-            }
-        }
-        if let Ok(rel) = p.strip_prefix(root) {
-            return checked_child(root, rel);
-        }
-        for lw in &adapter.linked_workspaces {
-            if let Ok(rel) = p.strip_prefix(&lw.path) {
-                return checked_child(&lw.path, rel);
-            }
-        }
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "path must be a relative plain path",
-        ));
-    }
-    let cleaned = file_path.strip_prefix("./").unwrap_or(file_path);
-    checked_child(root, Path::new(cleaned))
-}
+pub use forge_core::config::resolve_file_path;
 
 /// Checks root scope against filesystem roots, system directories, user home directories, and multi-repository containers.
 pub fn check_root_scope(root: &Path, allow_broad: bool) -> std::io::Result<()> {

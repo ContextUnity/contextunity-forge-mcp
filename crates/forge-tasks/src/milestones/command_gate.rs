@@ -10,7 +10,7 @@ use std::fs::File;
 use std::fs::{self, OpenOptions};
 use std::{
     io::{Read, Write},
-    path::{Component, Path},
+    path::Path,
     process::{Child, Command, Stdio},
     sync::mpsc,
     thread,
@@ -46,6 +46,75 @@ pub(crate) fn execute_command_gate_with_timeout(
         None,
         None,
     )
+}
+
+pub(crate) fn runner_test_identifier(test_path: &str, symbol: &str) -> String {
+    let normalized = symbol.replace('.', "::");
+    let p = Path::new(test_path);
+    if p.extension().is_some_and(|ext| ext == "rs") {
+        let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        let path_parts: Vec<&str> = p
+            .components()
+            .filter_map(|c| c.as_os_str().to_str())
+            .map(|s| s.strip_suffix(".rs").unwrap_or(s))
+            .collect();
+        let full_path_prefix = format!("{}::", path_parts.join("::"));
+        let stem_prefix = format!("{stem}::");
+
+        let stripped = normalized
+            .strip_prefix(&full_path_prefix)
+            .or_else(|| normalized.strip_prefix(&stem_prefix))
+            .unwrap_or(&normalized);
+        stripped.to_string()
+    } else {
+        normalized
+    }
+}
+
+pub(crate) fn append_test_symbol_to_command(cmd_str: &str, symbol: &str) -> String {
+    let parts: Vec<&str> = cmd_str.split(" && ").collect();
+    let has_test_runner = parts.iter().any(|p| {
+        let t = p.trim();
+        t.starts_with("cargo test")
+            || t.contains(" cargo test")
+            || t.starts_with("pytest")
+            || t.contains(" pytest")
+            || t.starts_with("go test")
+            || t.contains(" go test")
+            || t.starts_with("cargo nextest")
+            || t.contains(" cargo nextest")
+    });
+
+    let mut updated_parts = Vec::with_capacity(parts.len());
+    let mut modified = false;
+
+    for part in &parts {
+        let trimmed = part.trim();
+        if trimmed.starts_with("cargo test") || trimmed.contains(" cargo test") {
+            if let Some((before_separator, after_separator)) = trimmed.split_once(" -- ") {
+                updated_parts.push(format!("{before_separator} -- {after_separator} {symbol}"));
+            } else {
+                updated_parts.push(format!("{trimmed} -- {symbol}"));
+            }
+            modified = true;
+        } else if trimmed.starts_with("pytest")
+            || trimmed.contains(" pytest")
+            || trimmed.starts_with("go test")
+            || trimmed.contains(" go test")
+            || trimmed.starts_with("cargo nextest")
+            || trimmed.contains(" cargo nextest")
+        {
+            updated_parts.push(format!("{trimmed} {symbol}"));
+            modified = true;
+        } else if has_test_runner {
+            updated_parts.push(part.to_string());
+        } else if !modified && *part == *parts.last().unwrap() {
+            updated_parts.push(format!("{trimmed} {symbol}"));
+        } else {
+            updated_parts.push(part.to_string());
+        }
+    }
+    updated_parts.join(" && ")
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -114,6 +183,11 @@ pub fn execute_command_gate_with_options(
             None => (test_ref, None),
         };
         validate_project_path(test_path)?;
+        if let Some(sym) = test_symbol {
+            if !forge_core::fs::is_valid_qualified_symbol_identifier(sym) {
+                bail!("TASK_COMMAND_PATH_INVALID: test symbol in '{test_ref}' contains invalid characters");
+            }
+        }
         if !root.join(test_path).is_file() {
             bail!(
                 "TASK_SEAM_DISCONNECTED: {task_id}. seam_test_ref '{test_path}' is not present in the claimed worktree."
@@ -127,19 +201,30 @@ pub fn execute_command_gate_with_options(
             }
         }
         if let Some(seam_ref) = explicit_seam {
-            let seam_path = seam_ref
-                .split_once("::")
-                .map_or(seam_ref, |(path, _)| path)
-                .trim();
+            let (seam_path, seam_symbol) = match seam_ref.split_once("::") {
+                Some((path, symbol)) if !symbol.trim().is_empty() => {
+                    (path.trim(), Some(symbol.trim()))
+                }
+                Some(_) => {
+                    bail!("TASK_COMMAND_PATH_INVALID: '{seam_ref}' has an empty seam symbol after '::'")
+                }
+                None => (seam_ref, None),
+            };
             validate_project_path(seam_path)?;
+            if let Some(sym) = seam_symbol {
+                if !forge_core::fs::is_valid_qualified_symbol_identifier(sym) {
+                    bail!("TASK_COMMAND_PATH_INVALID: seam symbol '{sym}' contains invalid characters");
+                }
+            }
             let index_conn = crate::engine::gates::code_map_connection(None, root)?.context(
                 "TASK_SEAM_DISCONNECTED: code map index is required when --seam is provided",
             )?;
-            crate::engine::gates::validate_seam_reachability(
+            crate::engine::gates::validate_seam_reachability_with_target(
                 &index_conn,
                 task_id,
                 root,
                 &[seam_path.to_owned()],
+                seam_symbol,
                 test_ref,
             )?;
         }
@@ -151,8 +236,9 @@ pub fn execute_command_gate_with_options(
             &profile,
         )?;
         if let Some(symbol) = test_symbol {
+            let runner_sym = runner_test_identifier(test_path, symbol);
             for (_, cmd_str, _) in &mut plan {
-                *cmd_str = format!("{cmd_str} {symbol}");
+                *cmd_str = append_test_symbol_to_command(cmd_str, &runner_sym);
             }
         }
         plan
@@ -229,7 +315,13 @@ pub fn execute_command_gate_with_options(
                     !signature.trim().is_empty() && output.contains(signature)
                 })
         });
+        let test_executed = if explicit_test.is_some() {
+            (parsed.passed.unwrap_or(0) + parsed.failed.unwrap_or(0)) > 0
+        } else {
+            true
+        };
         let succeeded = status == "completed"
+            && test_executed
             && if gate.proof.kind() == Some(crate::tasks::profile::ProofKind::Contract) {
                 expected
                     || (exit_code == Some(0)
@@ -247,6 +339,12 @@ pub fn execute_command_gate_with_options(
                 exit_code.unwrap_or_default(),
                 parsed.passed.unwrap_or(0),
                 parsed.failed.unwrap_or(0)
+            )
+        } else if explicit_test.is_some() && !test_executed {
+            format!(
+                "TASK_SEAM_DISCONNECTED: seam test '{}' did not match any executed tests (passed=0, failed=0)\n{}",
+                explicit_test.unwrap_or_default(),
+                parsed.diagnostic
             )
         } else {
             parsed.diagnostic.clone()
@@ -311,11 +409,19 @@ pub fn execute_command_gate_with_options(
         )
         .unwrap_or_default();
         if let Some(test_ref) = explicit_test {
-            if status == "completed"
+            let symbol = test_ref
+                .split_once("::")
+                .map(|(_, s)| s.trim())
+                .unwrap_or(test_ref);
+            let actually_passed = status == "completed"
                 && exit_code == Some(0)
-                && parsed.passed.unwrap_or(0) > 0
                 && parsed.failed.unwrap_or(0) == 0
-            {
+                && (passed_tests.contains(test_ref)
+                    || passed_tests.contains(symbol)
+                    || passed_tests
+                        .iter()
+                        .any(|t| t.ends_with(&format!("::{symbol}"))));
+            if actually_passed {
                 passed_tests.insert(test_ref.to_owned());
             }
         }
@@ -367,7 +473,6 @@ pub fn resolve_command_plan(
             let timeout = Duration::from_secs(patterns.timeout_seconds.unwrap_or(300).max(1));
             let mut selected = Vec::new();
             for path in &paths {
-                validate_project_path(path)?;
                 if let Some(command) = commands.command_for_path(path) {
                     let command = expand_command_args(
                         command,
@@ -400,7 +505,11 @@ pub fn resolve_command_plan(
                 })
                 .collect::<std::collections::BTreeMap<_, _>>();
             if args.is_empty() {
-                return Ok(vec![(registered_name.to_owned(), command.clone(), timeout)]);
+                return Ok(vec![(
+                    registered_name.to_owned(),
+                    expand_command_args(command, None),
+                    timeout,
+                )]);
             }
             Ok(args
                 .into_iter()
@@ -416,7 +525,7 @@ pub fn resolve_command_plan(
     }
 }
 
-pub(crate) fn expand_command_args(command: &str, args: Option<&str>) -> String {
+pub fn expand_command_args(command: &str, args: Option<&str>) -> String {
     let args = args.map(str::trim).filter(|s| !s.is_empty());
     match args {
         Some(args) if command.contains("{scope_target}") => command.replace("{scope_target}", args),
@@ -467,14 +576,8 @@ fn expanded_command_paths(root: &Path, paths: &[String]) -> Result<Vec<String>> 
 }
 
 fn validate_project_path(path: &str) -> Result<()> {
-    let path_ref = Path::new(path);
-    if path.trim().is_empty()
-        || path_ref.is_absolute()
-        || path_ref
-            .components()
-            .any(|component| !matches!(component, Component::Normal(_)))
-    {
-        bail!("TASK_COMMAND_PATH_INVALID: '{path}' must be a normalized project-relative path");
+    if !forge_core::fs::is_safe_project_path(path) {
+        bail!("TASK_COMMAND_PATH_INVALID: '{path}' must be a normalized project-relative path without shell metacharacters");
     }
     Ok(())
 }
@@ -561,7 +664,13 @@ pub(crate) fn parse_command_output(
                 .map(|value| value.as_str().to_owned()))
         })
         .transpose()?
-        .flatten();
+        .flatten()
+        .or_else(|| {
+            let re = regex::Regex::new(r#"(?:--seam-ref\s+|--seam-ref=)(\S+)"#).ok()?;
+            re.captures(command)
+                .and_then(|c| c.get(1))
+                .map(|m| m.as_str().to_owned())
+        });
     Ok(ParsedCommandOutput {
         passed,
         failed,
@@ -933,11 +1042,7 @@ fn create_confined_log(root: &Path, relative: &Path, output: &[u8]) -> Result<()
     let canonical_root = root
         .canonicalize()
         .context("TASK_TRACE_LOG_FAILED: worktree root is unavailable")?;
-    if relative.is_absolute()
-        || relative
-            .components()
-            .any(|component| !matches!(component, Component::Normal(_)))
-    {
+    if !forge_core::fs::is_normalized_relative(relative) {
         bail!("TASK_TRACE_LOG_FAILED: log path is not a confined relative path");
     }
     let root_name = CString::new(canonical_root.as_os_str().as_bytes())
@@ -1020,11 +1125,7 @@ fn create_confined_log(root: &Path, relative: &Path, output: &[u8]) -> Result<()
 
 #[cfg(not(unix))]
 fn create_confined_log(root: &Path, relative: &Path, output: &[u8]) -> Result<()> {
-    if relative.is_absolute()
-        || relative
-            .components()
-            .any(|component| !matches!(component, Component::Normal(_)))
-    {
+    if !forge_core::fs::is_normalized_relative(relative) {
         bail!("TASK_TRACE_LOG_FAILED: log path is not a confined relative path");
     }
     let canonical_root = root

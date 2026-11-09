@@ -41,6 +41,7 @@ multi-crate workspace roots.
 | Diagnose | `code_map_analyze(path="src")`; `path` and `selector` alias `target`. Omit the target for workspace totals. `lint=true` reads stored syntax diagnostics; `include_cycles=true` opts into cycles. |
 | Query SQL | `code_map_query(sql="SELECT count(*) FROM nodes")` implies `operation="sql"`. The explicit form is `code_map_query(operation="sql", selector="SELECT ...")`; `query` also accepts SQL. |
 | Query graph | `code_map_query(operation="implementations", selector="LanguageLinker")` or `code_map_query(operation="untested", target="src")`; `query` aliases the selector. |
+| Find duplicates | `code_map_query(operation="duplicates", level="symbol", min_lines=10, target="crates")`; `level` accepts `"symbol"` (functions/methods body clones) or `"file"` (identical files by digest). `min_lines` defaults to 10. `target` or `path` restricts search scope. |
 
 Use one spelling for each aliased parameter in a request. The schemas advertise
 aliases as optional properties; handlers reject a nonempty canonical value combined

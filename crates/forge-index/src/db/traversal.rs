@@ -1596,6 +1596,606 @@ pub fn query_with_options(
     query_with_path_options(conn, operation, selector, None, request)
 }
 
+fn compute_line_similarity(a: &[String], b: &[String]) -> f64 {
+    if a.is_empty() || b.is_empty() {
+        return 0.0;
+    }
+    let mut matching = 0;
+    let min_len = a.len().min(b.len());
+    for i in 0..min_len {
+        if a[i] == b[i] {
+            matching += 1;
+        }
+    }
+    let max_len = a.len().max(b.len());
+    matching as f64 / max_len as f64
+}
+
+fn format_suggestion(name: &str, locations: &[Value]) -> String {
+    let has_build = locations
+        .iter()
+        .any(|l| l["path"].as_str().is_some_and(|p| p.ends_with("build.rs")));
+    if has_build {
+        return format!(
+            "Consider extracting '{name}' into a shared build module (e.g. crates/forge-index/build_manifests.rs) and referencing it from build scripts."
+        );
+    }
+    let has_forge_core = locations.iter().any(|l| {
+        l["path"]
+            .as_str()
+            .is_some_and(|p| p.starts_with("crates/forge-core"))
+    });
+    if has_forge_core {
+        return format!(
+            "Consider centralizing '{name}' in 'crates/forge-core' and re-exporting it in dependent crates."
+        );
+    }
+    let mut unique_crates = std::collections::HashSet::new();
+    for l in locations {
+        if let Some(p) = l["path"].as_str() {
+            let crate_name = if let Some(stripped) = p.strip_prefix("crates/") {
+                stripped.split('/').next().unwrap_or("")
+            } else if p.starts_with("src/") {
+                "contextunity-forge-mcp"
+            } else if p.starts_with("tests/") {
+                "tests"
+            } else {
+                p.split('/').next().unwrap_or("")
+            };
+            unique_crates.insert(crate_name);
+        }
+    }
+    if unique_crates.len() > 1 {
+        format!(
+            "Consolidate duplicate function '{name}' across multiple modules into a shared crate or module (e.g. 'crates/forge-core') and re-export."
+        )
+    } else {
+        format!(
+            "Consider extracting duplicate function '{name}' into a shared helper module in the same crate."
+        )
+    }
+}
+
+fn normalize_symbol_body_lines(lines: &[String]) -> (Option<String>, Option<Vec<String>>) {
+    let start = lines.iter().position(|l| !l.trim().is_empty());
+    let end = lines.iter().rposition(|l| !l.trim().is_empty());
+    let (Some(start), Some(end)) = (start, end) else {
+        return (None, None);
+    };
+    if start > end {
+        return (None, None);
+    }
+    let slice = &lines[start..=end];
+
+    // Exact hash preserves unmodified slice content to guarantee literal preservation
+    let mut exact_hasher = Sha256::new();
+    for line in slice {
+        exact_hasher.update(line.as_bytes());
+        exact_hasher.update(b"\n");
+    }
+    let hash_hex = format!("{:x}", exact_hasher.finalize());
+
+    // Normalized lines are retained for near-clone similarity clustering
+    let min_indent = slice
+        .iter()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.chars().take_while(|c| c.is_whitespace()).count())
+        .min()
+        .unwrap_or(0);
+
+    let common_indent: String = if min_indent > 0 {
+        slice
+            .iter()
+            .find(|l| !l.trim().is_empty())
+            .map(|l| l.chars().take(min_indent).collect())
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    let mut normalized = Vec::with_capacity(slice.len());
+    for line in slice {
+        let stripped = if !common_indent.is_empty()
+            && !line.trim().is_empty()
+            && line.starts_with(&common_indent)
+        {
+            &line[common_indent.len()..]
+        } else {
+            line.as_str()
+        };
+        normalized.push(stripped.to_string());
+    }
+
+    (Some(hash_hex), Some(normalized))
+}
+
+pub fn duplicates_paged(
+    conn: &Connection,
+    target: Option<&str>,
+    path: Option<&str>,
+    level: Option<&str>,
+    min_lines: Option<usize>,
+    options: &QueryOptions,
+) -> Result<Value> {
+    let generation = paging::generation(conn, options)?;
+
+    if let (Some(target), Some(path)) = (target, path) {
+        anyhow::ensure!(target == path, "target conflicts with path");
+    }
+    let raw = target.or(path).unwrap_or("").trim();
+    let raw = raw
+        .strip_prefix("file://")
+        .or_else(|| raw.strip_prefix("file:"))
+        .unwrap_or(raw);
+    let raw = raw.strip_prefix("./").unwrap_or(raw).trim_end_matches('/');
+    let scope = if raw == "." { "" } else { raw };
+    anyhow::ensure!(
+        !scope.starts_with('/')
+            && !scope
+                .split('/')
+                .any(|s| s == ".." || s == "." || (s.is_empty() && !scope.is_empty())),
+        "target must be workspace-relative"
+    );
+
+    let level_str = level.unwrap_or("symbol").trim().to_ascii_lowercase();
+    anyhow::ensure!(
+        level_str == "symbol" || level_str == "file",
+        "invalid level '{level_str}': expected 'symbol' or 'file'"
+    );
+
+    let min_lines = min_lines.unwrap_or(10).max(1);
+
+    if level_str == "file" {
+        let (lower, upper) = reader::path_bounds(scope);
+        let mut stmt = conn.prepare(
+            "SELECT f.digest, f.size, f.path
+             FROM files f
+             WHERE (?1 = '' OR f.path = ?1 OR (f.path >= ?2 AND f.path < ?3))
+               AND f.digest IN (
+                   SELECT digest FROM files
+                   WHERE (?1 = '' OR path = ?1 OR (path >= ?2 AND path < ?3))
+                   GROUP BY digest HAVING count(*) > 1
+               )
+             ORDER BY f.size DESC, f.digest, f.path",
+        )?;
+        let mut groups: BTreeMap<String, (u64, Vec<String>)> = BTreeMap::new();
+        let mut rows = stmt.query(rusqlite::params![scope, lower, upper])?;
+        while let Some(row) = rows.next()? {
+            let digest: String = row.get(0)?;
+            let size: u64 = row.get(1)?;
+            let p: String = row.get(2)?;
+            let entry = groups.entry(digest).or_insert((size, Vec::new()));
+            entry.1.push(p);
+        }
+        drop(rows);
+        drop(stmt);
+
+        let mut items = Vec::new();
+        let mut total_duplicated_bytes: u64 = 0;
+        for (digest, (size, mut locations)) in groups {
+            if locations.len() < 2 {
+                continue;
+            }
+            locations.sort();
+            let duplicate_count = locations.len();
+            total_duplicated_bytes += size * (duplicate_count as u64 - 1);
+            let suggestion = format!(
+                "Consolidate duplicate files across {} locations into a single shared file or replace with re-exports.",
+                locations.len()
+            );
+            items.push(json!({
+                "digest": digest,
+                "size_bytes": size,
+                "duplicate_count": duplicate_count,
+                "locations": locations,
+                "suggestion": suggestion,
+            }));
+        }
+        items.sort_by(|a, b| {
+            let size_a = a["size_bytes"].as_u64().unwrap_or(0);
+            let size_b = b["size_bytes"].as_u64().unwrap_or(0);
+            size_b
+                .cmp(&size_a)
+                .then_with(|| {
+                    let count_a = a["duplicate_count"].as_u64().unwrap_or(0);
+                    let count_b = b["duplicate_count"].as_u64().unwrap_or(0);
+                    count_b.cmp(&count_a)
+                })
+                .then_with(|| {
+                    let dig_a = a["digest"].as_str().unwrap_or("");
+                    let dig_b = b["digest"].as_str().unwrap_or("");
+                    dig_a.cmp(dig_b)
+                })
+        });
+        let total = items.len();
+        let paged: Vec<Value> = items
+            .into_iter()
+            .skip(options.offset)
+            .take(options.limit)
+            .collect();
+        let next = options.offset.saturating_add(paged.len());
+        let has_more = next < total;
+
+        return Ok(json!({
+            "operation": "duplicates",
+            "level": "file",
+            "scope": if scope.is_empty() { None } else { Some(scope) },
+            "total_duplicate_groups": total,
+            "total_duplicated_bytes": total_duplicated_bytes,
+            "items": paged,
+            "total": total,
+            "offset": options.offset,
+            "limit": options.limit,
+            "has_more": has_more,
+            "next_offset": if has_more { Some(next) } else { None },
+            "generation": generation,
+        }));
+    }
+
+    let (lower, upper) = reader::path_bounds(scope);
+    let workspace_root: Option<std::path::PathBuf> = conn
+        .query_row(
+            "SELECT value FROM metadata WHERE key = 'workspace_root'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(std::path::PathBuf::from);
+
+    struct Candidate {
+        name: String,
+        kind: String,
+        line: usize,
+        end_line: usize,
+        path: String,
+        body_hash: Option<String>,
+        normalized_lines: Option<Vec<String>>,
+    }
+
+    let mut stmt = conn.prepare(
+        "SELECT n.name, n.kind, n.line, n.end_line, p.path
+         FROM nodes n
+         JOIN path_dictionary p ON p.path_id = n.path_id
+         WHERE n.kind IN ('function', 'method')
+           AND (n.end_line - n.line + 1) >= ?1
+           AND (?2 = '' OR p.path = ?2 OR (p.path >= ?3 AND p.path < ?4))
+         ORDER BY p.path, n.line",
+    )?;
+
+    let mut file_cache: std::collections::HashMap<String, Option<Vec<String>>> =
+        std::collections::HashMap::new();
+    let mut stale_files: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+
+    let mut rows = stmt.query(rusqlite::params![min_lines, scope, lower, upper])?;
+    let mut candidates = Vec::new();
+    while let Some(row) = rows.next()? {
+        let name: String = row.get(0)?;
+        let kind: String = row.get(1)?;
+        let line: usize = row.get(2)?;
+        let end_line: usize = row.get(3)?;
+        let path: String = row.get(4)?;
+
+        let mut body_hash = None;
+        let mut normalized_lines = None;
+
+        if let Some(root) = &workspace_root {
+            let lines = file_cache.entry(path.clone()).or_insert_with(|| {
+                match super::symbols::verified_source(conn, root, &path) {
+                    Ok(content) => Some(content.lines().map(|s| s.to_string()).collect()),
+                    Err(_) => {
+                        stale_files.insert(path.clone());
+                        None
+                    }
+                }
+            });
+            if lines.is_none() {
+                stale_files.insert(path.clone());
+            }
+
+            if let Some(lines) = lines {
+                if line > 0 && end_line >= line && line <= lines.len() {
+                    let end_idx = end_line.min(lines.len());
+                    let slice = &lines[(line - 1)..end_idx];
+                    let (h, norm) = normalize_symbol_body_lines(slice);
+                    body_hash = h;
+                    normalized_lines = norm;
+                }
+            }
+        }
+
+        candidates.push(Candidate {
+            name,
+            kind,
+            line,
+            end_line,
+            path,
+            body_hash,
+            normalized_lines,
+        });
+    }
+    drop(rows);
+    drop(stmt);
+
+    let mut exact_groups: std::collections::BTreeMap<String, Vec<usize>> =
+        std::collections::BTreeMap::new();
+    for (idx, c) in candidates.iter().enumerate() {
+        if let Some(hash) = &c.body_hash {
+            exact_groups.entry(hash.clone()).or_default().push(idx);
+        }
+    }
+
+    struct DuplicateGroup {
+        name: String,
+        kind: String,
+        line_count: usize,
+        match_type: String,
+        locations: Vec<Value>,
+        duplicate_count: usize,
+        duplicated_lines: usize,
+        suggestion: String,
+    }
+
+    let mut result_groups = Vec::new();
+    let mut counted_duplicate_locations: std::collections::HashSet<(String, usize)> =
+        std::collections::HashSet::new();
+
+    for (_, indices) in exact_groups {
+        if indices.len() < 2 {
+            continue;
+        }
+        let mut unique_locs = Vec::new();
+        let mut seen_locs = std::collections::HashSet::new();
+        for &idx in &indices {
+            let c = &candidates[idx];
+            if seen_locs.insert((c.path.clone(), c.line)) {
+                unique_locs.push(idx);
+            }
+        }
+        if unique_locs.len() < 2 {
+            continue;
+        }
+
+        unique_locs.sort_by(|&a, &b| {
+            candidates[a]
+                .path
+                .cmp(&candidates[b].path)
+                .then_with(|| candidates[a].line.cmp(&candidates[b].line))
+        });
+
+        let mut dup_line_locations = 0;
+        for &idx in &unique_locs[1..] {
+            let c = &candidates[idx];
+            if counted_duplicate_locations.insert((c.path.clone(), c.line)) {
+                dup_line_locations += 1;
+            }
+        }
+
+        let first = &candidates[unique_locs[0]];
+        let line_count = first.end_line.saturating_sub(first.line) + 1;
+        let locations: Vec<Value> = unique_locs
+            .iter()
+            .map(|&i| {
+                let c = &candidates[i];
+                json!({
+                    "path": c.path,
+                    "line": c.line,
+                    "end_line": c.end_line,
+                })
+            })
+            .collect();
+        let dup_count = locations.len();
+        let duplicated_lines = line_count * dup_line_locations;
+        let suggestion = format_suggestion(&first.name, &locations);
+        result_groups.push(DuplicateGroup {
+            name: first.name.clone(),
+            kind: first.kind.clone(),
+            line_count,
+            match_type: "exact".to_string(),
+            locations,
+            duplicate_count: dup_count,
+            duplicated_lines,
+            suggestion,
+        });
+    }
+
+    let mut by_name: std::collections::BTreeMap<String, Vec<usize>> =
+        std::collections::BTreeMap::new();
+    for (idx, c) in candidates.iter().enumerate() {
+        if c.normalized_lines.is_some() {
+            by_name.entry(c.name.clone()).or_default().push(idx);
+        }
+    }
+
+    for (name, indices) in by_name {
+        if indices.len() < 2 {
+            continue;
+        }
+        let mut hash_to_candidates: std::collections::BTreeMap<String, Vec<usize>> =
+            std::collections::BTreeMap::new();
+        for &i in &indices {
+            if let Some(h) = &candidates[i].body_hash {
+                hash_to_candidates.entry(h.clone()).or_default().push(i);
+            }
+        }
+        if hash_to_candidates.len() < 2 {
+            continue;
+        }
+
+        let distinct_hashes: Vec<(String, usize)> = hash_to_candidates
+            .iter()
+            .map(|(h, inds)| (h.clone(), inds[0]))
+            .collect();
+
+        let mut hash_clusters: Vec<Vec<String>> = Vec::new();
+        for (h, rep_idx) in distinct_hashes {
+            let lines_rep = candidates[rep_idx].normalized_lines.as_ref().unwrap();
+            let mut clustered = false;
+            for cluster in &mut hash_clusters {
+                let rep_h = &cluster[0];
+                let cluster_rep_idx = hash_to_candidates[rep_h][0];
+                let cluster_rep_lines = candidates[cluster_rep_idx]
+                    .normalized_lines
+                    .as_ref()
+                    .unwrap();
+                let sim = compute_line_similarity(lines_rep, cluster_rep_lines);
+                if sim >= 0.80 {
+                    cluster.push(h.clone());
+                    clustered = true;
+                    break;
+                }
+            }
+            if !clustered {
+                hash_clusters.push(vec![h]);
+            }
+        }
+
+        for cluster in hash_clusters {
+            if cluster.len() < 2 {
+                continue;
+            }
+            let mut all_indices = Vec::new();
+            let mut seen_locs = std::collections::HashSet::new();
+            for h in &cluster {
+                for &idx in &hash_to_candidates[h] {
+                    let c = &candidates[idx];
+                    if seen_locs.insert((c.path.clone(), c.line)) {
+                        all_indices.push(idx);
+                    }
+                }
+            }
+            if all_indices.len() < 2 {
+                continue;
+            }
+
+            all_indices.sort_by(|&a, &b| {
+                candidates[a]
+                    .path
+                    .cmp(&candidates[b].path)
+                    .then_with(|| candidates[a].line.cmp(&candidates[b].line))
+            });
+
+            let mut dup_line_locations = 0;
+            for &idx in &all_indices[1..] {
+                let c = &candidates[idx];
+                if counted_duplicate_locations.insert((c.path.clone(), c.line)) {
+                    dup_line_locations += 1;
+                }
+            }
+
+            let first = &candidates[all_indices[0]];
+            let line_count = first.end_line.saturating_sub(first.line) + 1;
+            let locations: Vec<Value> = all_indices
+                .iter()
+                .map(|&i| {
+                    let c = &candidates[i];
+                    json!({
+                        "path": c.path,
+                        "line": c.line,
+                        "end_line": c.end_line,
+                    })
+                })
+                .collect();
+            let dup_count = locations.len();
+            let duplicated_lines = line_count * dup_line_locations;
+            let suggestion = format_suggestion(&name, &locations);
+            result_groups.push(DuplicateGroup {
+                name: name.clone(),
+                kind: first.kind.clone(),
+                line_count,
+                match_type: "similar".to_string(),
+                locations,
+                duplicate_count: dup_count,
+                duplicated_lines,
+                suggestion,
+            });
+        }
+    }
+
+    result_groups.sort_by(|a, b| {
+        b.duplicated_lines
+            .cmp(&a.duplicated_lines)
+            .then_with(|| b.duplicate_count.cmp(&a.duplicate_count))
+            .then_with(|| a.name.cmp(&b.name))
+            .then_with(|| a.match_type.cmp(&b.match_type))
+            .then_with(|| {
+                let path_a = a
+                    .locations
+                    .first()
+                    .and_then(|l| l.get("path"))
+                    .and_then(|p| p.as_str())
+                    .unwrap_or("");
+                let path_b = b
+                    .locations
+                    .first()
+                    .and_then(|l| l.get("path"))
+                    .and_then(|p| p.as_str())
+                    .unwrap_or("");
+                path_a.cmp(path_b)
+            })
+            .then_with(|| {
+                let line_a = a
+                    .locations
+                    .first()
+                    .and_then(|l| l.get("line"))
+                    .and_then(|p| p.as_u64())
+                    .unwrap_or(0);
+                let line_b = b
+                    .locations
+                    .first()
+                    .and_then(|l| l.get("line"))
+                    .and_then(|p| p.as_u64())
+                    .unwrap_or(0);
+                line_a.cmp(&line_b)
+            })
+    });
+
+    let total = result_groups.len();
+    let total_duplicated_lines: usize = result_groups.iter().map(|g| g.duplicated_lines).sum();
+
+    let items: Vec<Value> = result_groups
+        .into_iter()
+        .skip(options.offset)
+        .take(options.limit)
+        .map(|g| {
+            json!({
+                "name": g.name,
+                "kind": g.kind,
+                "line_count": g.line_count,
+                "match_type": g.match_type,
+                "locations": g.locations,
+                "duplicate_count": g.duplicate_count,
+                "duplicated_lines": g.duplicated_lines,
+                "suggestion": g.suggestion,
+            })
+        })
+        .collect();
+
+    let next = options.offset.saturating_add(items.len());
+    let has_more = next < total;
+
+    let mut response = json!({
+        "operation": "duplicates",
+        "level": "symbol",
+        "scope": if scope.is_empty() { None } else { Some(scope) },
+        "min_lines": min_lines,
+        "total_duplicate_groups": total,
+        "total_duplicated_lines": total_duplicated_lines,
+        "items": items,
+        "total": total,
+        "offset": options.offset,
+        "limit": options.limit,
+        "has_more": has_more,
+        "next_offset": if has_more { Some(next) } else { None },
+        "generation": generation,
+    });
+
+    if !stale_files.is_empty() {
+        response["stale_files"] = json!(stale_files);
+    }
+
+    Ok(response)
+}
+
 fn untested_paged(
     conn: &Connection,
     selector: Option<&str>,
@@ -1733,8 +2333,22 @@ pub fn query_with_path_options(
                 page: options,
             },
         ),
+        "duplicates" => {
+            let (target, level) = match selector {
+                Some("file") | Some("symbol") => (None, selector),
+                _ => (selector, direction),
+            };
+            duplicates_paged(
+                conn,
+                target,
+                path,
+                level,
+                (depth > 0 && depth != 2).then_some(depth as usize),
+                options,
+            )
+        }
         _ => {
-            bail!("unknown operation; supported: overview,inspect,explain,impact,slice,unwired,sql,untested,implementations")
+            bail!("unknown operation; supported: overview,inspect,explain,impact,slice,unwired,sql,untested,implementations,duplicates")
         }
     }
 }

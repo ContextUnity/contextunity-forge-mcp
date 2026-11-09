@@ -1,5 +1,5 @@
 use super::*;
-use std::path::{Component, PathBuf};
+use std::path::PathBuf;
 
 pub fn parse_profile_reference(
     reference: &str,
@@ -20,11 +20,7 @@ pub fn parse_profile_reference(
         }
     }
     let path = Path::new(path);
-    if path.is_absolute()
-        || path
-            .components()
-            .any(|component| !matches!(component, Component::Normal(_)))
-    {
+    if !forge_core::fs::is_normalized_relative(path) {
         bail!("ACDD_PROFILE_PATH_INVALID: profile path must be relative and confined to the workspace");
     }
     Ok((path.to_path_buf(), pin))

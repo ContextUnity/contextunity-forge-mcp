@@ -22,6 +22,9 @@ impl GateProfile {
             return Some(scope_args.to_owned());
         }
         let file_stem = Path::new(path).file_stem()?.to_str()?;
+        if forge_core::fs::contains_shell_metacharacters(file_stem) || file_stem.contains(' ') {
+            return None;
+        }
         Some(scope_args.replace("{file_stem}", file_stem))
     }
 
@@ -59,6 +62,9 @@ impl GateProfile {
             return Some(scope_args.to_owned());
         }
         let file_stem = Path::new(path).file_stem()?.to_str()?;
+        if forge_core::fs::contains_shell_metacharacters(file_stem) || file_stem.contains(' ') {
+            return None;
+        }
         Some(scope_args.replace("{file_stem}", file_stem))
     }
 

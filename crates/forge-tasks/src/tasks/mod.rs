@@ -1396,12 +1396,7 @@ pub(crate) fn valid_identity(value: &str) -> Result<()> {
 /// Performs relative path.
 pub fn relative_path(value: &str) -> Result<PathBuf> {
     let path = Path::new(value);
-    if value.is_empty()
-        || path.is_absolute()
-        || path
-            .components()
-            .any(|c| !matches!(c, Component::Normal(_) | Component::CurDir))
-    {
+    if !forge_core::fs::safe_relative(path) {
         bail!("TASK_SCOPE_INVALID: expected relative path without traversal");
     }
     let normalized: PathBuf = path

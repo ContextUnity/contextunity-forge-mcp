@@ -29,11 +29,7 @@ fn parse_seam_reference(reference: &str) -> Option<SeamReference> {
         None => (without_line, None),
     };
     let path = Path::new(path);
-    if path.is_absolute()
-        || path
-            .components()
-            .any(|component| !matches!(component, std::path::Component::Normal(_)))
-    {
+    if !forge_core::fs::is_normalized_relative(path) {
         return None;
     }
     Some(SeamReference {
@@ -49,6 +45,15 @@ fn seam_symbol_matches(node: &forge_core::models::Node, symbol: &str) -> bool {
         node.qualname == normalized
     } else {
         node.name == symbol
+    }
+}
+
+fn seam_identity_matches(identity: &SeamNodeIdentity, symbol: &str) -> bool {
+    let normalized = symbol.replace("::", ".");
+    if symbol.contains("::") || symbol.contains('.') {
+        identity.qualname == normalized
+    } else {
+        identity.name == symbol
     }
 }
 
@@ -876,6 +881,42 @@ pub(crate) fn validate_seam_reachability(
     scope: &[String],
     reference_str: &str,
 ) -> Result<()> {
+    validate_seam_reachability_with_target(
+        connection,
+        task_id,
+        worktree,
+        scope,
+        None,
+        reference_str,
+    )
+}
+
+pub(crate) fn validate_seam_reachability_with_target(
+    connection: &rusqlite::Connection,
+    task_id: &str,
+    worktree: &Path,
+    scope: &[String],
+    target_symbol: Option<&str>,
+    reference_str: &str,
+) -> Result<()> {
+    if let Some(symbol) = target_symbol {
+        if let Some(target_file) = scope.first() {
+            let source_path = super::super::confined_path(worktree, target_file)
+                .map_err(|_| anyhow::anyhow!("TASK_SEAM_DISCONNECTED: {task_id}. seam target '{target_file}' is not present in the claimed worktree."))?;
+            let source = std::fs::read_to_string(&source_path).map_err(|_| {
+                anyhow::anyhow!("TASK_SEAM_DISCONNECTED: {task_id}. seam target '{target_file}' cannot be read.")
+            })?;
+            let nodes = typed_source_nodes(target_file, &source).map_err(|_| {
+                anyhow::anyhow!("TASK_SEAM_DISCONNECTED: {task_id}. seam target '{target_file}' cannot be parsed.")
+            })?;
+            let symbol_exists = nodes.iter().any(|node| {
+                !node.is_test && (node.name == symbol || seam_symbol_matches(node, symbol))
+            });
+            if !symbol_exists {
+                bail!("TASK_SEAM_DISCONNECTED: {task_id}. explicit seam target symbol '{symbol}' does not exist in '{target_file}'.");
+            }
+        }
+    }
     let (reference, test_nodes) = validate_seam_file_and_symbol(task_id, worktree, reference_str)?;
     let local_connection = super::code_map_connection(Some(connection), worktree)?;
     let connection = local_connection.as_ref().unwrap_or(connection);
@@ -921,17 +962,28 @@ pub(crate) fn validate_seam_reachability(
                     remaining,
                     scope,
                 )? {
-                    reached.extend(
-                        import_path
-                            .iter()
-                            .map(|edge| seam_node_label(&edge.dst_path, &edge.dst)),
-                    );
-                    calls.insert(format!(
-                        "{} -call/import chain-> {}",
-                        seam_node_label(&source_path, &source),
-                        seam_path_label(&import_path)
-                    ));
-                    return Ok(());
+                    let matches_target = match target_symbol {
+                        Some(symbol) => import_path.iter().any(|edge| {
+                            !edge.dst.is_test
+                                && path_is_in_scope(&edge.dst_path, scope)
+                                && (edge.dst.name == symbol
+                                    || seam_identity_matches(&edge.dst, symbol))
+                        }),
+                        None => true,
+                    };
+                    if matches_target {
+                        reached.extend(
+                            import_path
+                                .iter()
+                                .map(|edge| seam_node_label(&edge.dst_path, &edge.dst)),
+                        );
+                        calls.insert(format!(
+                            "{} -call/import chain-> {}",
+                            seam_node_label(&source_path, &source),
+                            seam_path_label(&import_path)
+                        ));
+                        return Ok(());
+                    }
                 }
             }
         }
@@ -964,7 +1016,15 @@ pub(crate) fn validate_seam_reachability(
             current_edges += 1;
             reached.insert(seam_node_label(&edge.dst_path, &edge.dst));
             if !edge.dst.is_test && path_is_in_scope(&edge.dst_path, scope) {
-                return Ok(());
+                let matches_target = match target_symbol {
+                    Some(symbol) => {
+                        edge.dst.name == symbol || seam_identity_matches(&edge.dst, symbol)
+                    }
+                    None => true,
+                };
+                if matches_target {
+                    return Ok(());
+                }
             }
             let next_depth = depth + 1;
             if visited.insert((edge.dst_hash, next_depth)) {

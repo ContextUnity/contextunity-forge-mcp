@@ -370,7 +370,35 @@ pub(super) fn validate_public_signature_scope(
         )?
     };
     // Preserve accepted task proofs across history integration (rebase/amend/merge)
-    // without failing closed on navigation SHA changes.
+    // when tree content is identical, but fail closed if baseline content changed.
+    if let Some(snapshot) = captured_callers {
+        if snapshot.baseline_commit != baseline {
+            let snapshot_tree = crate::git::git_stdout(
+                worktree,
+                &[
+                    "rev-parse",
+                    "--verify",
+                    &format!("{}^{{tree}}", snapshot.baseline_commit),
+                ],
+                "TASK_CANDIDATE_BASELINE_INVALID",
+            );
+            let current_tree = crate::git::git_stdout(
+                worktree,
+                &["rev-parse", "--verify", &format!("{baseline}^{{tree}}")],
+                "TASK_CANDIDATE_BASELINE_INVALID",
+            );
+            match (snapshot_tree, current_tree) {
+                (Ok(s_tree), Ok(c_tree))
+                    if !s_tree.trim().is_empty() && s_tree.trim() == c_tree.trim() =>
+                {
+                    // Tree content is identical; navigation SHA changed via rebase/amend/squash.
+                }
+                _ => {
+                    bail!("TASK_CANDIDATE_BASELINE_MISMATCH: accepted contract caller evidence is tied to a different Git baseline content");
+                }
+            }
+        }
+    }
     let baseline_files = baseline_scope_files(worktree, &baseline, scope)?;
     let current_files = current_scope_files(worktree, scope)?;
     let mut baseline_symbols = Vec::new();

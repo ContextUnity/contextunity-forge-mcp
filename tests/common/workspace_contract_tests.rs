@@ -73,7 +73,7 @@ fn workspace_builds_and_applies_delta_in_its_owned_temp_directory() {
 fn cargo_workspace_declares_independent_crates_and_unidirectional_boundaries() {
     // Verify forge-core crate public API & real Merkle root computation
     assert_eq!(stable_hash64("workspace_boundary"), 7897085170651836845);
-    assert_eq!(forge_core::version(), "0.4.0");
+    assert_eq!(forge_core::version(), "0.4.1");
     let path_id = PathId(42);
     let sym_id = SymbolId(101);
     assert_eq!(u32::from(path_id), 42);
@@ -109,7 +109,7 @@ fn cargo_workspace_declares_independent_crates_and_unidirectional_boundaries() {
     };
 
     // Verify forge-index crate public API & real route matching and schema initialization
-    assert_eq!(forge_index::version(), "0.4.0");
+    assert_eq!(forge_index::version(), "0.4.1");
     let mut reg = LanguageRegistry::new();
     assert!(reg.is_empty());
     reg.enable("rust");
@@ -145,7 +145,7 @@ fn cargo_workspace_declares_independent_crates_and_unidirectional_boundaries() {
     assert_eq!(table_count, 4);
 
     // Verify forge-tasks crate public API & real lifecycle, blackboard, and store operations
-    assert_eq!(forge_tasks::version(), "0.4.0");
+    assert_eq!(forge_tasks::version(), "0.4.1");
     assert_eq!(TaskStage::Build, TaskStage::Build);
     assert_eq!(TaskStatus::InProgress, TaskStatus::InProgress);
     assert_eq!(ProofPolicy::DirectProof, ProofPolicy::DirectProof);

@@ -16,7 +16,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-mod command_gate;
+pub(crate) mod command_gate;
 mod contract;
 pub mod handoff;
 mod integration;
@@ -44,8 +44,10 @@ pub fn execute_command_gate(
     command_gate::execute_command_gate(root, task_id, gate_path, commands, paths)
 }
 
-pub use command_gate::{execute_command_gate_with_options, resolve_command_plan};
-pub(crate) use command_gate::{expand_command_args, parse_command_output};
+pub(crate) use command_gate::parse_command_output;
+pub use command_gate::{
+    execute_command_gate_with_options, expand_command_args, resolve_command_plan,
+};
 
 /// Validate task dependencies and return stable topological execution waves.
 pub fn validate_wave_dag(

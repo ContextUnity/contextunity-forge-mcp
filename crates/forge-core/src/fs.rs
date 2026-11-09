@@ -53,6 +53,69 @@ pub fn safe_relative(path: &Path) -> bool {
         })
 }
 
+/// Return whether a path consists only of normal relative components (no `.`, `..`, root, or prefix).
+pub fn is_normalized_relative(path: &Path) -> bool {
+    !path.as_os_str().is_empty()
+        && !path.is_absolute()
+        && path
+            .components()
+            .all(|part| matches!(part, std::path::Component::Normal(_)))
+}
+
+/// Return whether a string contains POSIX shell metacharacters that could enable command injection or argument splitting.
+pub fn contains_shell_metacharacters(value: &str) -> bool {
+    value.chars().any(|c| {
+        matches!(
+            c,
+            '$' | '`'
+                | ';'
+                | '&'
+                | '|'
+                | '('
+                | ')'
+                | '{'
+                | '}'
+                | '<'
+                | '>'
+                | '"'
+                | '\''
+                | '\\'
+                | '\n'
+                | '\r'
+                | '\t'
+        )
+    })
+}
+
+/// Return whether a string is a safe project-relative command path without shell metacharacters.
+pub fn is_safe_project_path(path: &str) -> bool {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let path_ref = Path::new(trimmed);
+    is_normalized_relative(path_ref) && !contains_shell_metacharacters(trimmed)
+}
+
+/// Return whether a string is a valid alphanumeric/underscore identifier symbol.
+pub fn is_valid_symbol_identifier(symbol: &str) -> bool {
+    !symbol.is_empty()
+        && symbol
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Return whether a string is a valid qualified symbol identifier (e.g. `foo::bar::baz` or `foo.bar`).
+pub fn is_valid_qualified_symbol_identifier(symbol: &str) -> bool {
+    if symbol.is_empty() || contains_shell_metacharacters(symbol) {
+        return false;
+    }
+    symbol
+        .split("::")
+        .flat_map(|seg| seg.split('.'))
+        .all(is_valid_symbol_identifier)
+}
+
 /// Return whether a path represents a documentation file.
 pub fn is_doc_path(p: &str) -> bool {
     p.starts_with("docs/")
@@ -173,4 +236,70 @@ fn commit_atomic_temp(
         let _ = fs::remove_file(temporary);
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_normalized_relative() {
+        assert!(is_normalized_relative(Path::new("src/lib.rs")));
+        assert!(is_normalized_relative(Path::new("tests/acdd/tasks.rs")));
+        assert!(is_normalized_relative(Path::new("src/space # λ.rs")));
+        assert!(!is_normalized_relative(Path::new("")));
+        assert!(!is_normalized_relative(Path::new("/src/lib.rs")));
+        assert!(!is_normalized_relative(Path::new("../src/lib.rs")));
+        assert!(!is_normalized_relative(Path::new("./src/lib.rs")));
+        assert!(!is_normalized_relative(Path::new("foo/../bar.rs")));
+    }
+
+    #[test]
+    fn test_contains_shell_metacharacters() {
+        assert!(!contains_shell_metacharacters("src/lib.rs"));
+        assert!(!contains_shell_metacharacters("src/space # λ.rs"));
+        assert!(!contains_shell_metacharacters("my_test_fn"));
+        assert!(contains_shell_metacharacters("$(touch evil)"));
+        assert!(contains_shell_metacharacters("foo; rm -rf"));
+        assert!(contains_shell_metacharacters("foo && bar"));
+        assert!(contains_shell_metacharacters("foo | bar"));
+        assert!(contains_shell_metacharacters("`id`"));
+        assert!(contains_shell_metacharacters("foo\nbar"));
+        assert!(contains_shell_metacharacters("foo'bar"));
+        assert!(contains_shell_metacharacters("foo\"bar"));
+    }
+
+    #[test]
+    fn test_is_safe_project_path() {
+        assert!(is_safe_project_path("src/lib.rs"));
+        assert!(is_safe_project_path("src/space # λ.rs"));
+        assert!(!is_safe_project_path(""));
+        assert!(!is_safe_project_path("   "));
+        assert!(!is_safe_project_path("/etc/passwd"));
+        assert!(!is_safe_project_path("../outside.rs"));
+        assert!(!is_safe_project_path("tests/x$(touch bad).rs"));
+    }
+
+    #[test]
+    fn test_is_valid_symbol_identifier() {
+        assert!(is_valid_symbol_identifier("my_test_fn"));
+        assert!(is_valid_symbol_identifier("Test123_abc"));
+        assert!(!is_valid_symbol_identifier(""));
+        assert!(!is_valid_symbol_identifier("my test"));
+        assert!(!is_valid_symbol_identifier("my_test; evil"));
+        assert!(!is_valid_symbol_identifier("test-dash"));
+    }
+
+    #[test]
+    fn test_is_valid_qualified_symbol_identifier() {
+        assert!(is_valid_qualified_symbol_identifier("my_test_fn"));
+        assert!(is_valid_qualified_symbol_identifier("foo::bar::my_test"));
+        assert!(is_valid_qualified_symbol_identifier("module.test_func"));
+        assert!(!is_valid_qualified_symbol_identifier(""));
+        assert!(!is_valid_qualified_symbol_identifier("foo::"));
+        assert!(!is_valid_qualified_symbol_identifier("::bar"));
+        assert!(!is_valid_qualified_symbol_identifier("foo::::bar"));
+        assert!(!is_valid_qualified_symbol_identifier("foo; rm -rf"));
+        assert!(!is_valid_qualified_symbol_identifier("foo::bar bad"));
+    }
 }

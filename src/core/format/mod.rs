@@ -176,7 +176,12 @@ pub fn compact(value: &mut Value, operation: OperationKind, explain: Option<bool
         }
     }
 
-    if !source_continuation && !active_nested_continuation {
+    let root_continuation = root.get("has_more") == Some(&Value::Bool(true))
+        || root
+            .get("next_offset")
+            .is_some_and(|offset| !offset.is_null());
+
+    if !source_continuation && !active_nested_continuation && !root_continuation {
         root.remove("generation");
     }
 

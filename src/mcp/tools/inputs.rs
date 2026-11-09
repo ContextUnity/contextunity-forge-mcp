@@ -429,7 +429,7 @@ pub struct Impact {
 /// Bounded graph or read-only SQL query. SQL uses the compact canonical tables;
 /// join nodes to path_dictionary on path_id and edges to nodes on node_hash.
 pub struct Query {
-    /// Query operation: 'sql' (default when 'sql' is provided), 'untested', 'implementations', 'slice', or 'unwired'.
+    /// Query operation: 'sql' (default when 'sql' is provided), 'untested', 'implementations', 'slice', 'unwired', or 'duplicates'.
     #[serde(default)]
     pub operation: String,
     /// Exact symbol ID or name (path:name, path:known_kind:name, path:line, path#Lline), or the read-only SELECT/WITH SQL statement when operation='sql'.
@@ -441,8 +441,12 @@ pub struct Query {
     pub sql: Option<String>,
     /// Alias for selector (or SQL query when operation='sql').
     pub query: Option<String>,
-    /// File or directory scope for the untested operation; cannot conflict with selector or path.
+    /// File or directory scope for untested and duplicates operations; cannot conflict with selector or path.
     pub target: Option<String>,
+    /// Duplicate search granularity for duplicates operation: 'symbol' (default) or 'file'.
+    pub level: Option<String>,
+    /// Minimum function/method line count for duplicates operation (default: 10).
+    pub min_lines: Option<usize>,
     /// Restrict selector resolution to a workspace-relative file or directory.
     pub path: Option<String>,
     /// Impact direction: 'inbound' (default) or 'outbound'.

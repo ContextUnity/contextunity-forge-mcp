@@ -888,7 +888,7 @@ pub enum QueryCommand {
     },
     /// Represents the run case.
     Run {
-        /// The operation value ('sql', 'untested', 'implementations', 'slice', 'unwired', or a direct SELECT/WITH statement).
+        /// The operation value ('sql', 'untested', 'implementations', 'slice', 'unwired', 'duplicates', or a direct SELECT/WITH statement).
         operation: String,
         /// Optional selector value.
         selector: Option<String>,
@@ -901,6 +901,18 @@ pub enum QueryCommand {
         #[arg(long, default_value_t = 100)]
         /// The limit value.
         limit: usize,
+        #[arg(long, default_value_t = 0)]
+        /// Result page offset.
+        offset: usize,
+        #[arg(long)]
+        /// Continuation generation from the preceding result page.
+        generation: Option<String>,
+        #[arg(long)]
+        /// Deduplication level: 'symbol' (functions/methods) or 'file' (identical files).
+        level: Option<String>,
+        #[arg(long, default_value_t = 10)]
+        /// Minimum line count for duplicates detection (default 10).
+        min_lines: usize,
     },
 }
 #[derive(Subcommand, Debug)]
@@ -1067,6 +1079,20 @@ fn looks_like_sql(value: &str) -> bool {
 
 fn cli_page(limit: usize) -> Result<QueryOptions> {
     QueryOptions::resolve(&ResponsePolicy::default(), Some(limit), 0, None, None)
+}
+
+fn cli_page_with_offset(
+    limit: usize,
+    offset: usize,
+    generation: Option<String>,
+) -> Result<QueryOptions> {
+    QueryOptions::resolve(
+        &ResponsePolicy::default(),
+        Some(limit),
+        offset,
+        None,
+        generation,
+    )
 }
 
 fn cli_source(enabled: bool) -> Result<SourceOptions> {
@@ -1555,6 +1581,10 @@ impl Cli {
                         path,
                         depth,
                         limit,
+                        offset,
+                        generation,
+                        level,
+                        min_lines,
                     } => {
                         let (effective_op, effective_selector) =
                             if selector.is_none() && looks_like_sql(&operation) {
@@ -1562,18 +1592,30 @@ impl Cli {
                             } else {
                                 (operation.as_str(), selector.as_deref())
                             };
-                        traversal::query_with_path_options(
-                            &conn,
-                            effective_op,
-                            effective_selector,
-                            path.as_deref(),
-                            &traversal::GraphQueryOptions {
-                                depth,
-                                direction: None,
-                                coverage: CoverageOptions::default(),
-                                page: &cli_page(limit)?,
-                            },
-                        )?
+                        let page = cli_page_with_offset(limit, offset, generation)?;
+                        if effective_op.trim() == "duplicates" {
+                            traversal::duplicates_paged(
+                                &conn,
+                                effective_selector,
+                                path.as_deref(),
+                                level.as_deref(),
+                                Some(min_lines),
+                                &page,
+                            )?
+                        } else {
+                            traversal::query_with_path_options(
+                                &conn,
+                                effective_op,
+                                effective_selector,
+                                path.as_deref(),
+                                &traversal::GraphQueryOptions {
+                                    depth,
+                                    direction: None,
+                                    coverage: CoverageOptions::default(),
+                                    page: &page,
+                                },
+                            )?
+                        }
                     }
                 }
             }

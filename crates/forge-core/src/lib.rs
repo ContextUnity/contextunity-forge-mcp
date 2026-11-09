@@ -17,7 +17,10 @@ pub mod typed_facts;
 pub use commitments::{DomainCommitment, MerkleCommitment};
 pub use config::{Detail, ResponsePolicy, ScannerLimits, SourceContextPolicy};
 pub use format::stable_hash64;
-pub use fs::is_doc_path;
+pub use fs::{
+    contains_shell_metacharacters, is_doc_path, is_normalized_relative, is_safe_project_path,
+    is_valid_qualified_symbol_identifier, is_valid_symbol_identifier, safe_relative,
+};
 pub use interner::{LinkerInterner, PathId, SymbolId};
 pub use models::NodeSemanticMeta;
 pub use models::{is_test, Coverage, Edge, Facts, FileEntry, Graph, Node, Reference};

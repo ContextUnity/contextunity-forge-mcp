@@ -116,6 +116,8 @@ fn allowed_fields_for_tool(tool_name: &str) -> &'static [&'static str] {
             "direction",
             "include_coverage",
             "depth",
+            "level",
+            "min_lines",
             "limit",
             "offset",
             "detail",
@@ -789,7 +791,7 @@ impl Server {
         )
     }
     #[tool(
-        description = "Bounded graph operation or one read-only SELECT/WITH. untested lists production functions without direct indexed test callers; implementations lists indexed subclasses and implementors. unwired is not a dead-code proof."
+        description = "Bounded graph operation or one read-only SELECT/WITH. untested lists production functions without direct indexed test callers; implementations lists indexed subclasses and implementors; duplicates lists duplicate functions/methods or identical files. unwired is not a dead-code proof."
     )]
     fn code_map_query(&self, Parameters(p): Parameters<Query>) -> CallToolResult {
         let format = p.page.output_format();
@@ -828,8 +830,11 @@ impl Server {
             |adapter, policy| {
                 self.read_with_adapter(adapter, |c| {
                     let page = p.page.resolve(policy)?;
-                    if p.target.is_some() && effective_op.trim() != "untested" {
-                        anyhow::bail!("target is supported only for untested");
+                    if p.target.is_some()
+                        && effective_op.trim() != "untested"
+                        && effective_op.trim() != "duplicates"
+                    {
+                        anyhow::bail!("target is supported only for untested and duplicates");
                     }
                     if let Some(target) = p.target.as_deref() {
                         anyhow::ensure!(
@@ -838,20 +843,31 @@ impl Server {
                             "target conflicts with selector or path"
                         );
                     }
-                    let mut result = traversal::query_with_path_options(
-                        c,
-                        effective_op,
-                        effective_selector,
-                        p.path.as_deref(),
-                        &traversal::GraphQueryOptions {
-                            depth: p.depth,
-                            direction: p.direction.as_deref(),
-                            coverage: CoverageOptions {
-                                include_coverage: p.include_coverage,
+                    let mut result = if effective_op.trim() == "duplicates" {
+                        traversal::duplicates_paged(
+                            c,
+                            effective_selector,
+                            p.path.as_deref(),
+                            p.level.as_deref(),
+                            p.min_lines,
+                            &page,
+                        )?
+                    } else {
+                        traversal::query_with_path_options(
+                            c,
+                            effective_op,
+                            effective_selector,
+                            p.path.as_deref(),
+                            &traversal::GraphQueryOptions {
+                                depth: p.depth,
+                                direction: p.direction.as_deref(),
+                                coverage: CoverageOptions {
+                                    include_coverage: p.include_coverage,
+                                },
+                                page: &page,
                             },
-                            page: &page,
-                        },
-                    )?;
+                        )?
+                    };
                     if is_inspect && format == OutputFormat::Markdown && page.detail == Detail::Full
                     {
                         symbols::attach_inspect_document_contents(c, &mut result)?;

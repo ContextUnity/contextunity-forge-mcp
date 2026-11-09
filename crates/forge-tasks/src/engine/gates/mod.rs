@@ -14,7 +14,10 @@ use proof::{validate_delivery_commit, validate_extended_scope_review, Provisiona
 use scope::{
     accepted_boundary_callers, capture_baseline_boundary_callers, validate_public_signature_scope,
 };
-pub(crate) use seam::{validate_seam_file_and_symbol, validate_seam_reachability};
+pub(crate) use seam::{
+    validate_seam_file_and_symbol, validate_seam_reachability,
+    validate_seam_reachability_with_target,
+};
 
 pub(crate) use scope::{
     accepted_evidence_for_cursor, code_map_connection, extract_typed, public_callable_nodes,

@@ -368,7 +368,7 @@ fn command_scope_guard_observes_paths_before_and_after_execution() {
                 let expected = match args {
                     Some(args) if placeholder => command.replace("{scope_target}", args),
                     Some(args) => format!("{command} {args}"),
-                    None => command.clone(),
+                    None => forge_tasks::milestones::expand_command_args(&command, None),
                 };
                 assert_eq!(traces.last().unwrap().command_str, expected, "{context}");
                 let cached =

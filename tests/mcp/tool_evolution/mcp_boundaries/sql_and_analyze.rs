@@ -401,6 +401,261 @@ fn query_router_accepts_registered_operations_and_rejects_invalid_sql_and_names(
 }
 
 #[test]
+fn duplicates_query_discovers_identical_files_and_function_clones_with_actionable_suggestions() {
+    let fixture = AnalysisFixture::indexed_files(&[
+        (
+            "src/module_a.py",
+            "def shared_worker():\n    val = 10\n    total = 0\n    for i in range(val):\n        total += i\n    return total\n\ndef loop_func():\n    val = 10\n    for i in range(val):\n        x = i * 2\n    return x\n\ndef string_fn():\n    val = 10\n    x = 20\n    s = \"\"\"line 1   \nline 2\"\"\"\n    return s\n",
+        ),
+        (
+            "src/module_b.py",
+            "def shared_worker():\n    val = 10\n    total = 0\n    for i in range(val):\n        total += i\n    return total\n\ndef loop_func():\n    val = 10\n    for i in range(val):\n        x = i * 2\n        return x\n\ndef string_fn():\n    val = 10\n    x = 20\n    s = \"\"\"line 1\nline 2\"\"\"\n    return s\n",
+        ),
+        (
+            "src/module_c.py",
+            "def shared_worker():\n    val = 20\n    total = 0\n    for i in range(val):\n        total += i\n    return total\n",
+        ),
+        (
+            "src/copy_1.py",
+            "# exact file clone\nx = 42\n",
+        ),
+        (
+            "src/copy_2.py",
+            "# exact file clone\nx = 42\n",
+        ),
+    ]);
+    let mut m = fixture
+        .start_mcp()
+        .expect("indexed MCP fixture should initialize");
+
+    // 1. File-level duplicate search
+    let file_dups = m
+        .payload(
+            "code_map_query",
+            json!({
+                "operation": "duplicates",
+                "level": "file",
+            }),
+        )
+        .expect("duplicates query should succeed");
+    assert_eq!(file_dups["operation"], "duplicates");
+    assert_eq!(file_dups["level"], "file");
+    assert_eq!(file_dups["has_more"], false);
+    let items = file_dups["items"].as_array().expect("items array");
+    let has_file_copy = items.iter().any(|item| {
+        let locs = item["locations"].as_array().unwrap();
+        locs.iter().any(|l| l.as_str() == Some("src/copy_1.py"))
+            && locs.iter().any(|l| l.as_str() == Some("src/copy_2.py"))
+    });
+    assert!(
+        has_file_copy,
+        "file duplicates should include src/copy_1.py and src/copy_2.py"
+    );
+
+    // 2. Symbol-level duplicate search with min_lines=5 and pagination continuation
+    let sym_page_1 = m
+        .payload(
+            "code_map_query",
+            json!({
+                "operation": "duplicates",
+                "level": "symbol",
+                "min_lines": 5,
+                "limit": 1,
+            }),
+        )
+        .expect("duplicates query should succeed");
+    assert_eq!(sym_page_1["operation"], "duplicates");
+    assert_eq!(sym_page_1["level"], "symbol");
+    assert_eq!(sym_page_1["has_more"], true);
+    assert_eq!(sym_page_1["next_offset"], 1);
+    let gen = sym_page_1["generation"]
+        .as_str()
+        .expect("continuation generation");
+
+    // Continue with valid generation
+    let sym_page_2 = m
+        .payload(
+            "code_map_query",
+            json!({
+                "operation": "duplicates",
+                "level": "symbol",
+                "min_lines": 5,
+                "offset": 1,
+                "generation": gen,
+            }),
+        )
+        .expect("duplicates continuation should succeed");
+    assert_eq!(sym_page_2["operation"], "duplicates");
+
+    // Fetch full unpaged symbol duplicates for checks
+    let sym_dups = m
+        .payload(
+            "code_map_query",
+            json!({
+                "operation": "duplicates",
+                "level": "symbol",
+                "min_lines": 5,
+            }),
+        )
+        .expect("duplicates query should succeed");
+    let sym_items = sym_dups["items"].as_array().expect("items array");
+
+    // Exact clone shared_worker (in module_a and module_b)
+    let has_exact_shared_worker = sym_items.iter().any(|item| {
+        item["name"] == "shared_worker"
+            && item["match_type"] == "exact"
+            && item["suggestion"]
+                .as_str()
+                .is_some_and(|s| s.contains("shared_worker"))
+    });
+    assert!(
+        has_exact_shared_worker,
+        "symbol duplicates should detect exact shared_worker clone"
+    );
+
+    // Near duplicate clone shared_worker (module_c compared to module_a/b)
+    let has_similar_shared_worker = sym_items.iter().any(|item| {
+        item["name"] == "shared_worker"
+            && item["match_type"] == "similar"
+            && item["locations"].as_array().map_or(0, |l| l.len()) >= 3
+    });
+    assert!(
+        has_similar_shared_worker,
+        "similarity clustering should include near-clone from module_c"
+    );
+
+    // Python indentation difference prevents false exact match for loop_func
+    let has_exact_loop_func = sym_items
+        .iter()
+        .any(|item| item["name"] == "loop_func" && item["match_type"] == "exact");
+    assert!(
+        !has_exact_loop_func,
+        "functions differing in relative indentation must not be exact duplicates"
+    );
+
+    // Multiline string trailing whitespace difference prevents false exact match for string_fn
+    let has_exact_string_fn = sym_items
+        .iter()
+        .any(|item| item["name"] == "string_fn" && item["match_type"] == "exact");
+    assert!(
+        !has_exact_string_fn,
+        "functions differing in multiline string whitespace must not be exact duplicates"
+    );
+
+    // Overlapping groups must not double-count duplicate lines in aggregate accounting
+    let total_dup_lines = sym_dups["total_duplicated_lines"].as_u64().unwrap();
+    assert_eq!(
+        total_dup_lines, 23,
+        "shared_worker (6 exact + 6 near) + loop_func (5 near) + string_fn (6 near) = 23 lines; overlapping duplicate locations are not double-counted"
+    );
+
+    // 3. Stale generation rejection on offset > 0
+    let stale_err = m
+        .text(
+            "code_map_query",
+            json!({
+                "operation": "duplicates",
+                "level": "symbol",
+                "offset": 1,
+                "generation": "definitely-stale",
+            }),
+        )
+        .expect_err("stale generation should be rejected");
+    assert!(stale_err
+        .tool_message()
+        .unwrap()
+        .contains("index generation changed"));
+
+    // 4. Validation: reject invalid level
+    let err = m
+        .text(
+            "code_map_query",
+            json!({
+                "operation": "duplicates",
+                "level": "invalid_level",
+            }),
+        )
+        .expect_err("should reject invalid level");
+    assert!(err
+        .tool_message()
+        .unwrap()
+        .contains("invalid level 'invalid_level'"));
+
+    m.finish().expect("server must finish successfully");
+}
+
+#[test]
+fn duplicates_query_preserves_whitespace_only_literal_lines_in_exact_clones() {
+    let fixture = AnalysisFixture::indexed_files(&[
+        (
+            "src/module_ws1.py",
+            "def worker():\n    value = \"\"\"head\n  \ntail\"\"\"\n    return value\n",
+        ),
+        (
+            "src/module_ws2.py",
+            "def worker():\n    value = \"\"\"head\n\ntail\"\"\"\n    return value\n",
+        ),
+        (
+            "src/module_method1.py",
+            "class Holder:\n    def method_worker(self):\n        value = \"\"\"head\n    \n        tail\"\"\"\n        return value\n",
+        ),
+        (
+            "src/module_method2.py",
+            "class Holder:\n    def method_worker(self):\n        value = \"\"\"head\n\n        tail\"\"\"\n        return value\n",
+        ),
+        (
+            "src/module_depth1.py",
+            "class Holder:\n    def depth_worker(self):\n        value = \"\"\"head\n        tail\"\"\"\n        marker = 0\n        return value\n",
+        ),
+        (
+            "src/module_depth2.py",
+            "class Outer:\n    class Holder:\n        def depth_worker(self):\n            value = \"\"\"head\n            tail\"\"\"\n            marker = 0\n            return value\n",
+        ),
+    ]);
+    let mut m = fixture
+        .start_mcp()
+        .expect("indexed MCP fixture should initialize");
+
+    let sym_dups = m
+        .payload(
+            "code_map_query",
+            json!({
+                "operation": "duplicates",
+                "level": "symbol",
+                "min_lines": 5,
+            }),
+        )
+        .expect("duplicates query should succeed");
+    let sym_items = sym_dups["items"].as_array().expect("items array");
+
+    let has_exact_worker = sym_items
+        .iter()
+        .any(|item| item["name"] == "worker" && item["match_type"] == "exact");
+    assert!(
+        !has_exact_worker,
+        "functions differing in whitespace-only literal lines must not be reported as exact duplicates"
+    );
+
+    let has_exact_method = sym_items
+        .iter()
+        .any(|item| item["name"] == "method_worker" && item["match_type"] == "exact");
+    assert!(
+        !has_exact_method,
+        "indented methods differing in whitespace-only literal lines must not be reported as exact duplicates"
+    );
+
+    let has_exact_depth = sym_items
+        .iter()
+        .any(|item| item["name"] == "depth_worker" && item["match_type"] == "exact");
+    assert!(
+        !has_exact_depth,
+        "methods at different nesting depths with different literal indentation must not be reported as exact duplicates"
+    );
+
+    m.finish().expect("server must finish successfully");
+}
+
+#[test]
 fn checkpoint_crud_enforces_scope_and_uses_sqlite_instead_of_legacy_json() {
     let (w, m) =
         McpTestHarness::with_files(&[("forge-mcp.yaml", "tasks_db: .forge/tasks.sqlite\n")]);
