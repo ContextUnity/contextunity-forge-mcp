@@ -348,31 +348,133 @@ receipt:
 
 ```yaml
 task_ref: headless-task-lifecycle-and-rejection-router
-target: "Implement CLI task run command advancing a task through active profile gates with rejection routing and subtask completion guard"
+target: Implement CLI task run command advancing a task through active profile gates with rejection routing and subtask completion guard
 proof_policy: seam-test-first
 contract_revision: 1
 depends_on:
-  - subagent-process-spawner-and-runner-environment
+- subagent-process-spawner-and-runner-environment
 scope:
-  - crates/forge-tasks/src/engine/orchestrator/mod.rs
-  - crates/forge-tasks/src/engine/orchestrator/task_runner.rs
-  - crates/forge-tasks/src/engine/submit.rs
-  - src/cli/task.rs
-  - docs/reference/cli.md
-  - tests/acdd/orchestrator.rs
+- crates/forge-tasks/src/engine/orchestrator/mod.rs
+- crates/forge-tasks/src/engine/orchestrator/task_runner.rs
+- crates/forge-tasks/src/engine/submit.rs
+- src/cli/task.rs
+- docs/reference/cli.md
+- tests/acdd/orchestrator.rs
+- tests/acdd/orchestrator/lifecycle.rs
+- tests/acdd/orchestrator/lifecycle/harness.rs
+- tests/acdd/orchestrator/lifecycle/role_fixture.py
+- crates/forge-tasks/src/engine/orchestrator/spawner.rs
+- src/cli/mod.rs
 symbols:
-  - fn:run_task_lifecycle
-  - fn:handle_gate_rejection
-status: planned
+- fn:run_task_lifecycle
+- fn:handle_gate_rejection
+status: completed
 subtasks:
-  - subtask_ref: task-run-gate-progression
-    title: "Iterate across active task gates, triggering runner execution on role gates and zero-token verification on command gates"
-  - subtask_ref: rejection-routing-feedback-injection
-    title: "Route review rejections according to reject_routing/reject_to and feed structured findings to the next builder turn"
-  - subtask_ref: delivery-subtask-completion-guard
-    title: "Validate that all declared subtasks are completed (with evidence) or cancelled, failing closed with TASK_SUBTASKS_INCOMPLETE or TASK_SUBTASK_EVIDENCE_MISSING"
-  - subtask_ref: delivery-snapshot-and-receipt
-    title: "Finalize delivery gate automatically using existing candidate snapshot and receipt persistence"
+- subtask_ref: task-run-gate-progression
+  title: Iterate across active task gates, triggering runner execution on role gates and zero-token verification on command gates
+  status: completed
+  evidence: 'Complete task run CLI and profile-driven persisted cursor loop implemented; src/cli/mod.rs admitted under #1648/#1649 and exhaustive response-title arm integrated. cargo test --test acdd orchestrator::lifecycle::: 11 passed, 0 failed, 0 ignored, including task_run_cli_accepts_in_place_and_uses_lifecycle. Command-only gates and autonomous delivery use normal zero-argument submission; role+command gates still run the role. Spawner 18/0/0, bootstrap 8/0/0; cargo clippy --all-targets --all-features -- -D warnings exit 0.'
+- subtask_ref: rejection-routing-feedback-injection
+  title: Route review rejections according to reject_routing/reject_to and feed structured findings to the next builder turn
+  status: completed
+  evidence: 'Full lifecycle suite including CLI smoke: 11 passed, 0 failed, 0 ignored. Real role process and real CLI submissions prove scope-to-build and symbols-to-contract routing, exact structured findings, target worker/session reuse and persisted rejection restart. Uses existing guidance producer and gate graph, no second routing authority. Spawner 18/0/0, bootstrap 8/0/0, full strict all-target Clippy exit 0. Prior CLI scope blocker resolved by #1648/#1649.'
+- subtask_ref: delivery-subtask-completion-guard
+  title: Validate that all declared subtasks are completed (with evidence) or cancelled, failing closed with TASK_SUBTASKS_INCOMPLETE or TASK_SUBTASK_EVIDENCE_MISSING
+  status: completed
+  evidence: Existing delivery guard unchanged. Full lifecycle suite 11/0/0 proves ready, in_progress, blocked, legacy pending, completed-with-missing/empty/whitespace-evidence rejection without candidate/receipt/HEAD/manifest mutation. Primary fixture accepts cancelled subtasks. CLI in-place smoke passes; spawner 18/0/0 and bootstrap 8/0/0; full strict all-target Clippy exit 0.
+- subtask_ref: delivery-snapshot-and-receipt
+  title: Finalize delivery gate automatically using existing candidate snapshot and receipt persistence
+  status: completed
+  evidence: Full lifecycle suite 11/0/0, including CLI smoke, proves durable completed status, receipt commit matching accepted candidate content, manifest receipt/completion, completed rerun idempotence and candidate-drift refusal. Existing candidate/receipt/submit paths reused without guard or proof weakening. Spawner 18/0/0, bootstrap 8/0/0, full strict all-target Clippy exit 0. Only isolated test fixtures were delivered; project review/delivery remains outside this build.
+extended_scope:
+- tests/acdd/orchestrator/lifecycle.rs
+- tests/acdd/orchestrator/lifecycle/harness.rs
+- tests/acdd/orchestrator/lifecycle/role_fixture.py
+- crates/forge-tasks/src/engine/orchestrator/spawner.rs
+- src/cli/mod.rs
+receipt:
+  delivery_gate: deliver
+  candidate_gate: build
+  contract_revision: 1
+  passed_at: 2026-11-09T15:57:09.031664559+00:00
+  evidence:
+    command_proof:
+      command: rust-check-and-test
+      exit_code: 0
+      log: |
+        [rust-check-and-test::tests/acdd/orchestrator/lifecycle.rs]
+        SCOPE_VIOLATION_WARNING: docs/milestones/AC-003-headless-orchestrator-and-role-runners.md
+        PASS rust-check-and-test::tests/acdd/orchestrator/lifecycle.rs: exit=0 passed=1 failed=0 (3874 ms)
+      tests_passed: 1
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: 'All nine accepted candidate blobs match current files, with baseline HEAD 50d99e88caf801f4239d3d061ff74b65c70a010d. Full source/test/doc diff reviewed. Five extended paths directly support lifecycle seam tests, pre-claim session selection and the exhaustive CLI Run presentation arm admitted by #1648/#1649. No protected config/store edits. Starting index, status, branch and preexisting milestone metadata remain unchanged.'
+        claims:
+          applicable: true
+          evidence: 'Milestone acceptance 1-4 and blueprint #1641/#1643 traced through production CLI -> run_task_lifecycle -> canonical profile/cursor -> claim -> complete internal context -> real spawner -> child verify/submit -> persisted gate evidence. Agent driver precedence is preserved. Accepted rejections and structured findings drive retained target worker/session lookup, including persisted restart. Command-only gates and delivery call existing zero-argument verification/submission. Existing subtask guard, candidate drift checks and receipt pipeline remain unchanged. cargo test --test acdd orchestrator::lifecycle::: exit 0; 11 passed, 0 failed, 0 ignored.'
+        concurrency:
+          applicable: true
+          evidence: No new durable state or transition authority. Role claims bind prepared identity before spawning; parent environment remains unchanged and child submissions use that identity. Store handles are dropped before process monitoring; no transaction/lock is held across the child lifetime. Foreign active role claims are preserved; mechanical resumption requires matching worker, session and canonical worktree. Exit zero alone cannot advance; persisted submission for the exact claim is required. Real timeout, failure, rejection, active-claim and restart seams pass. Existing owned POSIX group supervision and bounded dual stream readers are preserved.
+        project_isolation:
+          applicable: true
+          evidence: 'Registry ownership and canonical worktree checks precede execution; normal claim and submit enforce pinned authority, scope, namespace and snapshot boundaries. Read-only claim/session queries bind the exact task and claim revision with SQL parameters. No new profile path discovery, global environment mutation, Git history operation, cross-project write or shell interpolation. CLI uses selected canonical root. cargo test --test acdd orchestrator::spawner::: 18 passed/0 failed/0 ignored; cargo test --test acdd orchestrator::types::: 8 passed/0 failed/0 ignored; both exit 0.'
+        administration:
+          applicable: true
+          evidence: 'Accepted contract claim 7 and build claim 12 at contract revision 1 verified through complete task inspect; all four subtasks completed with evidence. Review claim 27 uses genuine independent session 01a1bdd1-3650-7c50-9ba7-5bf4cdd6f747, distinct from builder session. No manual proof/receipt/guard bypass. Strict cargo clippy --all-targets --all-features -- -D warnings exited 0 with zero warnings; git diff --check exited 0. CLI reference matches implemented behavior. Shared skill usage sync is already routed to admitted guide owner in #1645. No authority-grounded blocking findings.'
+      extended_scope_review:
+        approved_paths:
+        - tests/acdd/orchestrator/lifecycle.rs
+        - tests/acdd/orchestrator/lifecycle/harness.rs
+        - tests/acdd/orchestrator/lifecycle/role_fixture.py
+        - crates/forge-tasks/src/engine/orchestrator/spawner.rs
+        - src/cli/mod.rs
+        reason_verified: true
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-HEADLESS-ROLE-RUNNER-ORCHESTRATION: When roles declare runner and prompt_template, Forge CLI (task run / milestone run) autonomously claims gates, renders role prompts with gate context bundles, spawns subagent runner processes in isolated POSIX process groups with distinct session fingerprints, executes command and delivery gates with zero tokens, and routes review rejections via reject_routing until completion.'
+    - 'INV-INDEPENDENT-REVIEWER-SESSION: Reviewer runners execute with an isolated session identity and fingerprint distinct from the builder runner session, satisfying reviewer separation and proof independence invariants.'
+    - 'INV-REJECT-ROUTING-FEEDBACK-LOOP: When review gates reject with structured findings, the orchestrator routes execution back to the configured upstream stage (scope -> build, symbols -> contract) and passes the review findings into the resumed builder session without cold restarts.'
+    - 'INV-TOPOLOGICAL-WAVE-EXECUTION: Milestone run executes tasks in topological wave order, collecting and verifying evidence envelopes automatically and gating subsequent waves until dependencies complete.'
+    - 'INV-IN-PLACE-EXECUTION: Task, milestone, and plan orchestration supports execution directly in the current workspace (--in-place) without mandatory worktree cloning or branching when isolated worktrees are not requested.'
+    - 'INV-PLAN-WORKFLOW-ORCHESTRATION: The orchestrator supports standalone workflows (docs/workflows/*.yaml) via contextunity-forge-mcp workflow [list|show|run] and structured plans (doc_type: plan in docs/plans/*.md) via contextunity-forge-mcp plan [list|show|run], executing in-place under universal gate governance.'
+    - 'INV-DELIVERY-SUBTASK-COMPLETION-GUARD: Mechanical delivery verification fails closed with TASK_SUBTASKS_INCOMPLETE if any declared subtask under the active task or plan step is not completed or cancelled, and with TASK_SUBTASK_EVIDENCE_MISSING if any completed subtask lacks non-empty verification evidence.'
+    - 'INV-CLI-UNIFIED-ARGUMENTS: Global CLI and orchestrator execution accept explicit path parameters (--root, --db, --config for custom forge-mcp.yaml, and --profile for custom profile.yaml) with deterministic resolution order.'
+    - 'INV-PLAN-WORKFLOW-HARNESS: All tests for structured plans (docs/plans/*.md) and standalone workflows (docs/workflows/*.yaml) must use PlanHarness and WorkflowHarness with canonical templates in tests/acdd/fixtures/plans/ and workflows/. Ad-hoc markdown heredocs and subprocess CLI spawning are strictly banned.'
+    architectural_notes:
+    - |
+      decisions: Architectural synthesis: revision 1 / claim 7. Genuine session 01a1c08b-4515-7e72-9466-b989c7b20048. Baseline 50d99e88caf801f4239d3d061ff74b65c70a010d, initially clean. Read current authority, claim workflow, synthesis #1618, spawner blueprint #1633, repository instructions and test-contract-seam.
+
+      DECISION: a synchronous thin task_runner drives the existing persisted cursor. No new task/gate tables, registries, proof authority, hardcoded gate sequence or orchestration checkpoints. Public run_task_lifecycle(root, task_id, TaskRunOptions, event_observer) returns the authoritative task result including snapshot/receipt. Options carry worktree, coordinator worker/fingerprint and runner timeout. OrchestratorEvent is observation only. CLI task run TASK --in-place uses current CLI root resolution. The subsequent wave task consumes this API and owns worktree provisioning, global argument extensions and wave/handoff.
+
+      REAL PATH: CLI -> lifecycle claim_inner/finish_claim -> pinned GateProfile/cursor -> TasksStore::claim/checkpoint -> context_bundle/workflow_guidance -> spawner render/spawn/monitor -> child task verify/submit -> evidence_compiler/submit_inner -> gates::submit_with_pre_persist -> durable gates/findings/transitions/candidate/receipt. Reinspect after accepted transitions. GateDef::driver gives role precedence over command. Do not auto-pass a role gate merely because it names a command. Command-only gates use existing verification/evidence compilation/submission. Delivery proof is mechanical even if its gate names a reviewer role. Traverse canonical graph, conditions, pass/fail and max_attempts. Completion requires durable completed status and receipt, never child exit zero.
+
+      IDENTITY: claims and child submissions share the selected fingerprint. Spawner currently selects Fresh identity inside spawn, after claim context is needed. Approved spawner scope permits extracting its existing entropy selection into a small prepare-session API during Build: select before claim, spawn with that bound identity. Preserve literal argv transport, isolated process group, timeout, drainage and cleanup. Do not copy entropy or use coordinator fingerprint for an independent reviewer. Reuse-on-reject recovers the prior accepted target-stage worker/session from task_claims by accepted claim revision. Build target resumes builder; contract target resumes its accepted contract worker. Missing prior identity fails closed. A store/lifecycle.rs scope extension was denied as outside admitted roots and is NOT authorized. Use an engine-owned read-only lookup of the existing claim through its store connection; no store edit or new registry. Restart derives cursor, sessions and findings from persisted authority. Completed invocation is idempotent. Do not steal or release another in-progress claim.
+
+      REJECTION: handle_gate_rejection consumes accepted rejection records, task_findings and workflow_guidance.rejection. gate_graph::resolve_failure_reference/resolve_fail_target remain routing authority: scope/symbols, configured fail/reject_to fallback and exhaustion. No second routing table or stdout prose parsing. Preserve exact structured findings in the next role context. Emit GateRejected only for a persisted rejection. Runner error, timeout or no accepted progress stops without invented proof; spawner owns cleanup.
+
+      DELIVERY: manifest engine/submit.rs is obsolete. Actual owners are engine/mod.rs::submit_inner and engine/gates/submit.rs::submit_with_pre_persist. They already check completed/cancelled subtasks and nonblank completed evidence before receipt writing/commit callback. Prove unchanged through lifecycle and direct submission; do not duplicate the guard or create the obsolete facade. Reuse candidate/baseline, drift validation, commit/receipt rollback and idempotence. No live .forge, Cargo.toml, build.rs or history changes. Existing isolated canonical test profile/store/Git infrastructure is permitted.
+
+      PROOF DRAFT: tests in registered orchestrator/lifecycle.rs; domain harness composes TaskHarness::disk_with_profile, MilestoneFixtureBuilder and canonical command runner fixture. A protocol-faithful external role fixture substitutes only the unavailable LLM: invokes real task CLI verify/submit, uses canonical typed reviewer proof, records session/prompt, and can withhold submission or exit. No fake engine, command proof, store, snapshot or claim. Cover mixed role/command/delivery progression; persisted restart/idempotence; scope/symbol rejection routing with exact structured feedback/session reuse; exit zero without submission and process error/timeout; ready/in_progress/blocked/pending and completed missing/empty/whitespace proof rejection with nonmutation; cancelled acceptance; receipt commit/accepted snapshot; drift refusal; CLI --in-place ingress. Distinct behavior gets a dedicated test. Runtime-red is actual missing orchestration returning Unsupported from a minimal compiling signature stub, not a panic or fabricated command failure. Execute scoped Cargo, refresh graph, then Forge verify --test exact ref and CLI Contract pass with this genuine identity. Record green existing behavior honestly.
+
+      SENSITIVITY: omit loop -> progression fails; wrong driver precedence -> missing role invocation; exit-zero-as-proof -> stall test fails; fresh-on-reject/drop-findings -> recorded session/payload differs; omit guard -> unfinished delivery succeeds; skip candidate validation -> drift succeeds; bypass submission -> no accepted receipt/candidate. Build must prove these green; Contract proves the current missing orchestration red. No existing green implementation is removed.
+
+      HANDOFF: implement task_runner/CLI glue and approved additive identity preparation; preserve delivered process semantics and existing guard. Reconcile docs/reference/cli.md during Build after reading documentation owner instructions. No Build/Review/Delivery or main landing in this role.
+    - 'decisions: Blueprint refinement from observed real protocol execution: canonical verbose review context can be byte-limited by lifecycle::bound_task_response; delivered render_role_prompt correctly refuses incomplete authority. Build must obtain the complete context through the existing internal context_bundle producer (same pinned task/profile, no clearing omission flags or fabricating fields), or fail closed with its actual diagnostic. The focused external-agent fixture uses a valid compact role guidance profile so its complete claim envelope is transportable. A real claim -> prompt -> process -> real CLI verify/submit baseline test now passes across configured role gates, proving the fixture is not a fake engine. No production behavior was weakened. CLI run smoke uses a dedicated binary subprocess to set its isolated coordinator session without process-global env mutation; engine lifecycle tests stay in-process. Guard acceptance of cancelled subtasks is covered by the primary delivery fixture; no duplicate standalone cancelled test is needed. Foreign active-claim nonmutation has a dedicated lifecycle test. All product-loop assertions remain red until Build.'
+    - 'deferred: Genuine builder session 01a1c09d-0043-7601-b745-a82481fcbfe7, CLI claim 12. CLI documentation updated within admitted docs/reference/cli.md. docs/AGENTS.md also requests shared skill synchronization for CLI changes; Forge CLI extend-scope skills/contextunity-forge/SKILL.md was rejected TASK_SCOPE_INVALID outside admitted roots. No skill edit made. Route that bounded task-run usage synchronization to the admitted forge-guide-lifecycle-gates-and-subtasks owner/milestone documentation scan; CLI reference remains current authority. Initial compile exposed exhaustive response-title matching in src/cli/mod.rs requiring a single new Run match arm; requesting admitted-root scope extension rather than a wildcard or bypass.'
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Acceptance
@@ -390,14 +492,13 @@ subtasks:
 task_ref: milestone-wave-runner-and-autonomous-delivery
 target: "Implement CLI milestone run, plan [list|show|run], and workflow [list|show|run] with wave scheduling and global CLI path options"
 proof_policy: seam-test-first
-contract_revision: 1
+contract_revision: 2
 depends_on:
   - headless-task-lifecycle-and-rejection-router
 scope:
   - crates/forge-tasks/src/engine/orchestrator/mod.rs
   - crates/forge-tasks/src/engine/orchestrator/waves.rs
   - crates/forge-tasks/src/milestones/mod.rs
-  - src/cli/mod.rs
   - src/cli/milestone.rs
   - src/cli/plan.rs
   - src/cli/workflow.rs

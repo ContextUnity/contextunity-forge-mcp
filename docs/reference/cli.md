@@ -118,7 +118,7 @@ shared page parity.
 ## Repository tasks
 
 Use [repository tasks](tasks.md) for `task list`, `create`, `sync`, `inspect`,
-`claim`, `verify`, `submit`, `blackboard`, `extend-scope`, `delete`, `reset`, `cleanup`, and the
+`claim`, `run`, `verify`, `submit`, `blackboard`, `extend-scope`, `delete`, `reset`, `cleanup`, and the
 `migrate preview/apply/verify` administration commands. These operations use
 `tasks_db` from `forge-mcp.yaml`; global `--db` selects only the code index.
 `task submit --evidence` accepts a JSON object with claim-bound identity and
@@ -203,6 +203,48 @@ contract/build receive symbols and test seams; review receives the candidate
 snapshot; delivery receives snapshot and milestone references; completed tasks
 include the receipt. See
 [task context](tasks.md#unified-task-context-bundle) for fields and limits.
+
+### Headless task execution
+
+```sh
+contextunity-forge-mcp --root PATH task run TASK_ID --in-place
+```
+
+`task run` executes the task's pinned profile in the selected root. `--in-place`
+explicitly selects this behavior; the command creates no worktree or branch.
+It resumes the persisted applicable gate, follows profile transitions and
+conditions, and returns the completed task with its durable receipt. Repeating
+the command for a completed task returns that receipt without rerunning gates.
+
+Supply the coordinator's genuine host session through `FORGE_AGENT_SESSION_ID`
+or a supported host session variable. Each configured role runner receives a
+separate session selected before its gate claim; that same identity is passed
+in its arguments and child environment for submission. The runner receives the
+prepared role prompt and complete claim context. A role takes precedence when
+a gate declares both a role and a command. Role runners submit their own typed
+or observed evidence through normal task operations; process success alone
+does not prove a gate passed. Child output streams to stderr, preserving stdout
+for the final Markdown or JSON response. A role process has a one-hour timeout,
+including output drainage.
+
+Command-only gates execute registered verification and submit claim-bound
+proof automatically. Delivery gates use the accepted candidate and the existing
+receipt/commit path, including configured reviewer separation, immutable
+candidate checks and subtask validation. Every subtask must be completed with
+nonblank verification evidence or explicitly cancelled. Incomplete subtasks,
+missing evidence and candidate drift retain their normal delivery errors.
+
+Accepted rejections follow the profile's routing and attempt limits. Roles with
+`reuse_on_reject` enabled resume the accepted target-stage worker and session,
+with structured rejection findings in the next claim context. Missing retained
+identity fails closed. Process failure, timeout, missing accepted submission,
+unconfigured runners and exhausted attempts stop execution. Active foreign
+claims remain unchanged; an already claimed mechanical gate resumes only for
+the same coordinator, session and worktree. Use task inspection to diagnose a
+stopped run before performing the normal task recovery operations.
+
+### Task response format
+
 Task commands print the shared lifecycle Markdown by default. It keeps the
 current task status, dependencies, requested subtask detail, active guidance,
 inspect history, findings, candidate bindings, and receipts; use `--format json`

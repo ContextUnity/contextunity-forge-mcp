@@ -106,6 +106,22 @@ pub fn render_role_prompt(claim: &Value) -> Result<String, RunnerError> {
     ))
 }
 
+/// Select an identity before claiming a gate; pass it back with `Resume` when spawning.
+pub fn prepare_runner_session(
+    identity: &str,
+    policy: RunnerSessionPolicy,
+) -> Result<String, RunnerError> {
+    #[cfg(unix)]
+    {
+        unix::prepare_session(identity, policy)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (identity, policy);
+        Err(unsupported())
+    }
+}
+
 /// Spawn original template arguments with literal runtime values in an isolated group.
 pub fn spawn_role_runner(
     config: &RunnerConfig,
@@ -239,20 +255,7 @@ mod unix {
     ) -> Result<RunnerProcess, RunnerError> {
         let words = command_words(&config.runner)?;
         let mut context = context.clone();
-        match session {
-            RunnerSessionPolicy::Resume => {
-                if context.session_id.trim().is_empty() || context.session_id.contains('\0') {
-                    return Err(RunnerError::InvalidSession(
-                        "resume requires a nonblank session identity without NUL".into(),
-                    ));
-                }
-            }
-            RunnerSessionPolicy::Fresh => {
-                let mut entropy = [0; 32];
-                File::open("/dev/urandom")?.read_exact(&mut entropy)?;
-                context.session_id = format!("forge-runner-{}", hex::encode(entropy));
-            }
-        }
+        context.session_id = prepare_session(&context.session_id, session)?;
         let argv: Vec<String> = words
             .into_iter()
             .map(|runner| {
@@ -281,6 +284,27 @@ mod unix {
             session_fingerprint: context.session_id,
             cleaned_up: false,
         })
+    }
+
+    pub(super) fn prepare_session(
+        identity: &str,
+        policy: RunnerSessionPolicy,
+    ) -> Result<String, RunnerError> {
+        match policy {
+            RunnerSessionPolicy::Resume => {
+                if identity.trim().is_empty() || identity.contains('\0') {
+                    return Err(RunnerError::InvalidSession(
+                        "resume requires a nonblank session identity without NUL".into(),
+                    ));
+                }
+                Ok(identity.to_owned())
+            }
+            RunnerSessionPolicy::Fresh => {
+                let mut entropy = [0; 32];
+                File::open("/dev/urandom")?.read_exact(&mut entropy)?;
+                Ok(format!("forge-runner-{}", hex::encode(entropy)))
+            }
+        }
     }
 
     impl RunnerProcess {

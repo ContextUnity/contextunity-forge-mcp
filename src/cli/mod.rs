@@ -971,6 +971,7 @@ fn command_presentation(command: &Command) -> (OperationKind, &'static str, Opti
         Command::Read { .. } => (OperationKind::Navigation, "forge_read", None),
         Command::Task { command } => {
             let title = match command {
+                task::TaskCommand::Run { .. } => "task_manage",
                 task::TaskCommand::List { .. } => "task_list",
                 task::TaskCommand::Claim { .. } => "task_claim",
                 task::TaskCommand::Submit { .. } => "task_submit",

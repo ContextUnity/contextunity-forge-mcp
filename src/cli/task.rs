@@ -117,6 +117,14 @@ pub enum SubtaskCommand {
 #[derive(Debug, Subcommand)]
 /// Enumerates the supported task command values.
 pub enum TaskCommand {
+    /// Execute the active task profile in the selected workspace.
+    Run {
+        /// Task identifier to execute from its persisted gate cursor.
+        task_id: String,
+        /// Execute in the selected root without creating a worktree or branch.
+        #[arg(long)]
+        in_place: bool,
+    },
     /// Atomically claim the highest-priority eligible task gate.
     Next {
         /// Worker receiving the selected claim.
@@ -316,6 +324,27 @@ pub fn run(root: &Path, command: TaskCommand) -> Result<Value> {
     crate::mcp::tasks::ensure_extractors();
     let mut manage = Manage::default();
     match command {
+        TaskCommand::Run {
+            task_id,
+            in_place: _,
+        } => {
+            let session = forge_tasks::store::host_session_fingerprint().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "TASK_RUN_SESSION_REQUIRED: supply the genuine host session identity"
+                )
+            })?;
+            return tasks::orchestrator::task_runner::run_task_lifecycle(
+                root,
+                &task_id,
+                &tasks::orchestrator::task_runner::TaskRunOptions {
+                    worktree: root.canonicalize()?,
+                    worker_id: "task-run-coordinator".into(),
+                    session_fingerprint: session,
+                    runner_timeout: std::time::Duration::from_secs(3600),
+                },
+                &mut |_| {},
+            );
+        }
         TaskCommand::Next {
             worker,
             worktree,
