@@ -170,7 +170,7 @@ absent signals produce no hints. CLI flags use hyphens, for example
 | `search_docs` | Search indexed Markdown by `query` and optional `doc_type`; `include_excerpt=true` adds a bounded match excerpt. |
 | `get_doc` | Retrieve a Markdown document by `path_or_id` and optionally a heading `section`; full responses include source locations, citation links, uniquely verified referenced symbols, and a paged `referenced_symbol_candidates` collection for ambiguous eligible claims. Unscoped claims match symbols in the source document's workspace; an explicit normalized file link can cross workspaces. Compact responses omit candidate details and return a hint to request `detail="full"`. |
 | `session_checkpoint` | List SQLite checkpoints by full breadcrumb and serialized byte size; save, get, or delete an opaque JSON state payload by breadcrumb. |
-| `forge_guide` | Return the built-in usage guide. |
+| `forge_guide` | Return shared CLI/MCP guidance by `topic`; defaults to `query`, whose topic index reflects enabled capabilities. |
 | `task_list` | List ready tasks in the selected workspace and unique active milestone by default; zero active milestones returns an empty page and multiple active milestones require an explicit milestone selector/status. Accepts `limit` (1–100, default 30), `offset` (default 0), and `generation` (required for nonzero offsets), plus repository, task status, milestone, stage, and detail filters. Pagination reports total matches, actual returned count, byte-omitted records, and a continuation hint; its generation binds the workspace, filters, and task/subtask state, not the code index. Status accepts `ready`, `in_progress`, `blocked`, `parked`, `completed`, `cancelled`, or `all`. A targeted milestone defaults to all milestone statuses; explicit `milestone_status: "all"` retains archived tasks. Subtasks are compact by default; request `detail: "full"` for titles and evidence. |
 | `task_claim` | Atomically claim the current task gate for a worker and worktree. |
 | `task_submit` | Submit a revision-bound JSON `evidence` object, or omit evidence on automated Contract/Command proof gates to run the registered command or reuse fresh claim-bound proof. Delivery can infer proof from the accepted candidate snapshot without running a command. Optional `timeout_seconds` overrides autonomous execution within profile limits and conflicts with explicit evidence. Passing the active profile's terminal delivery gate (default ID: `deliver`) writes the validated task receipt and context rollup. |
@@ -178,6 +178,50 @@ absent signals produce no hints. CLI flags use hyphens, for example
 | `task_blackboard` | Post, read, or inspect milestone-, task-, and subtask-scoped SQLite messages. `scope` selects the hierarchy level; `milestone_ref`, `task_id`, and `subtask_ref` identify or constrain it, with fail-closed resolution for omitted ambiguous context. `post` requires `topic` and `payload`, accepts optional `author`, and returns `{id}`. `read` accepts `topic`, `limit` (default 10, maximum 50), and `offset`; it returns newest-first payload-free `{messages}` and `{pagination}` from the resolved context. `inspect` with `message_id` searches configured task workspaces and returns the first matching message including its payload, ignoring optional `scope`, `task_id`, `milestone_ref`, and `subtask_ref`; without `message_id`, it returns the scoped read page. |
 
 See [repository tasks](tasks.md) for schemas, receipts, configuration, and CLI parity, and the `contextunity-forge` skill for the task lifecycle.
+
+## Built-in guide
+
+`forge_guide` and CLI `guide TOPIC` use the same producer, resolved adapter and
+response formatter. Omitted or blank MCP topics select `query`; blank topic
+strings also select `query` in the shared API and CLI. The query response retains
+its navigation fields and adds a capability-filtered `topics` array.
+
+| Topic | Guidance | Required capability |
+| --- | --- | --- |
+| `query` | Existing navigation and topic index | Always available |
+| `init`, `adapter`, `validate` | Configuration creation, syntax and selected-adapter validation | Always available |
+| `code`, `ast` | Verified navigation, structural search and language capabilities | `codemap` |
+| `docs` | Search, outlines, source reads, frontmatter and invariants | `docs` |
+| `lifecycle` | Claims, proof, submission, role runners, rejection recovery and delivery | `acdd` |
+| `acdd` | Implemented Workflow, Plan and Milestone execution | `acdd` |
+| `gates` | Conditions, profile routes, persistence and observed proof | `acdd` |
+| `subtasks` | Slice status, evidence and delivery checks | `acdd` |
+
+Known disabled topics return `{}` on both surfaces. Disabling `blackboard`
+removes its ACDD fields and lifecycle instructions. Unknown topics retain the
+`unknown guide topic` diagnostic. `init` bypasses adapter loading and requires
+`force: true` (CLI `--force`) to replace an existing configuration.
+
+The six guidance topics provide `purpose`, `steps`, an `example` containing MCP
+`name`/`arguments` and CLI text, and `references`. `acdd` and `docs` retain their
+existing keys. Request `format: "json"` for these structured values; omitted
+format and `format: "markdown"` use the shared readable Markdown renderer with
+the configured response budget.
+
+```json
+{"topic":"lifecycle","format":"json"}
+```
+
+Use the returned active profile and claim `workflow_guidance` as authority;
+guide gate names are examples. Verification observes without advancing, and
+submission consumes current claim-bound proof. Subtask delivery permits
+`completed` or `cancelled`, with nonempty evidence required for completed
+subtasks. Storing an evidence string does not execute its verification command.
+The guide describes current runner identities and independent-gate checks;
+future identity-policy changes are not implemented by this interface. Workflow
+execution uses `save: none`; persistent autonomous run logging remains planned.
+See [headless execution](acdd.md#headless-task-milestone-plan-and-workflow-execution)
+and [CLI guide usage](cli.md#server-guide-and-checkpoints).
 
 ## Worktree selection
 

@@ -535,14 +535,33 @@ contextunity-forge-mcp --root /path/to/repository serve
 contextunity-forge-mcp reload
 contextunity-forge-mcp guide init
 contextunity-forge-mcp guide query
-contextunity-forge-mcp checkpoint save --name review --content '{"status":"in-progress"}'
-contextunity-forge-mcp checkpoint get --name review
+contextunity-forge-mcp guide lifecycle --format json
+contextunity-forge-mcp guide gates
+contextunity-forge-mcp guide subtasks
+contextunity-forge-mcp guide code
+contextunity-forge-mcp guide docs
+contextunity-forge-mcp checkpoint save --name repository/project/milestone/tasks/task/build --content '{"status":"in-progress"}'
+contextunity-forge-mcp checkpoint get --name repository/project/milestone/tasks/task/build
 contextunity-forge-mcp checkpoint list
-contextunity-forge-mcp checkpoint delete --name review
+contextunity-forge-mcp checkpoint delete --name repository/project/milestone/tasks/task/build
 ```
 
 Markdown checkpoint lists show returned names and serialized byte sizes. Save
 and delete show the actual action and name; get preserves the saved JSON value,
 including user fields that resemble Forge metadata.
 
-`serve` uses stdin and stdout for MCP messages; the [MCP setup guide](mcp-setup.md) covers client configuration and automatic indexing. On Unix, `SIGHUP` replaces the server process with the executable currently installed at its path while preserving its PID and standard streams. On Linux, `reload` signals running `serve` processes owned by the current user and launched from the same executable path; it reports the signaled PIDs or fails when none are found. Start `serve` with this version once before using `reload`, then run `reload` after installing subsequent replacement binaries. An in-flight MCP request can be interrupted during replacement. The replacement restores that process's negotiated client handshake, so the client retries the interrupted request on the same connection. `guide` accepts `init`, `adapter`, `docs`, `acdd`, `query`, `ast`, and `validate`. `guide ast` prints the registered profile capability matrix and wildcard conventions. `guide init` creates `forge-mcp.yaml` and requires `--force` to replace it. Checkpoint content must be valid JSON; entries live in `.forge/checkpoints.json`.
+`serve` uses stdin and stdout for MCP messages; the [MCP setup guide](mcp-setup.md) covers client configuration and automatic indexing. On Unix, `SIGHUP` replaces the server process with the executable currently installed at its path while preserving its PID and standard streams. On Linux, `reload` signals running `serve` processes owned by the current user and launched from the same executable path; it reports the signaled PIDs or fails when none are found. Start `serve` with this version once before using `reload`, then run `reload` after installing subsequent replacement binaries. An in-flight MCP request can be interrupted during replacement. The replacement restores that process's negotiated client handshake, so the client retries the interrupted request on the same connection.
+
+`guide query` lists available topics. `lifecycle`, `acdd`, `gates`, `subtasks`,
+`code` and `docs` provide steps, MCP/CLI examples and references; `ast`, `adapter`,
+`init` and `validate` remain available. The CLI and MCP share guide content,
+formatting and capability filtering. Disabled topics return empty guidance;
+unknown topics fail. Explicit `--config` controls the selected module policy.
+Omitted format returns Markdown; `--format json` returns structured guidance.
+See the [topic and capability reference](mcp-tools.md#built-in-guide).
+
+`guide ast` prints profile capabilities and wildcard conventions. `guide init`
+creates `forge-mcp.yaml`, requires `--force` to replace it, and can bootstrap a
+workspace with an invalid existing adapter. `guide validate` scans using the
+selected adapter. Checkpoints accept valid JSON state addressed by the full gate
+breadcrumb and persist in the selected task-store project's SQLite database.

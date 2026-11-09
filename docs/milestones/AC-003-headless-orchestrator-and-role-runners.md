@@ -774,38 +774,151 @@ receipt:
 
 ```yaml
 task_ref: forge-guide-lifecycle-gates-and-subtasks
-target: "Extend forge_guide with compact agent guidance for lifecycle, ACDD, code, documentation and gates"
+target: Extend forge_guide with compact agent guidance for lifecycle, ACDD, code, documentation and gates
 proof_policy: seam-test-first
-contract_revision: 3
+contract_revision: 4
 depends_on:
-  - milestone-wave-runner-and-autonomous-delivery
+- milestone-wave-runner-and-autonomous-delivery
 scope_roots:
-  - src/cli/
-  - src/mcp/
-  - docs/reference/
-  - skills/contextunity-forge/references/
-  - tests/
+- src/cli/
+- src/mcp/
+- docs/reference/
+- skills/contextunity-forge/references/
+- tests/
 scope:
-  - src/mcp/tools/inputs.rs
-  - docs/reference/mcp-tools.md
-  - docs/reference/cli.md
-  - skills/contextunity-forge/references/tool-catalog.md
-  - tests/acdd/mcp.rs
-  - tests/mcp/context.rs
-  - tests/cli_roots.rs
+- src/mcp/tools/inputs.rs
+- docs/reference/mcp-tools.md
+- docs/reference/cli.md
+- skills/contextunity-forge/references/tool-catalog.md
+- tests/acdd/mcp.rs
+- tests/mcp/context.rs
+- tests/cli_roots.rs
+- src/cli/guide.rs
+- src/mcp/tools.rs
+- tests/mcp/context/guide.rs
+- src/cli/mod.rs
+- tests/acdd/mcp/claims_and_leases.rs
 symbols: []
-status: planned
+status: completed
 subtasks:
-  - subtask_ref: lifecycle-guidance
-    title: "Explain task lifecycle operations and ACDD execution subjects"
-  - subtask_ref: gate-and-proof-guidance
-    title: "Explain profile transitions, persistence, observations and proof"
-  - subtask_ref: subtask-guidance
-    title: "Explain subtask management and the implemented delivery guard"
-  - subtask_ref: code-and-docs-guidance
-    title: "Guide agents through code navigation and documentation tools"
-  - subtask_ref: discovery-and-verification
-    title: "Advertise topics, honor enabled modules and verify MCP and CLI responses"
+- subtask_ref: lifecycle-guidance
+  title: Explain task lifecycle operations and ACDD execution subjects
+  status: completed
+  evidence: 'Shared lifecycle/acdd production guidance covers active profile authority, claims, observed verify/submit, runner identities, rejection resume, recovery and execution subjects with logging marked planned. cargo test --test mcp context::guide:: -- --nocapture: 12 passed, 0 failed, including lifecycle and execution-subject seams; archive 6894da42440b51d2.'
+- subtask_ref: gate-and-proof-guidance
+  title: Explain profile transitions, persistence, observations and proof
+  status: completed
+  evidence: Gates guidance describes actual code/doc/migration/concurrency/exported-callable conditions, pass/fail and classified routes, snapshot/commit/immutable persistence and claim-bound observations. Both dedicated gates production seams passed in 12/12 guide suite (archive 6894da42440b51d2).
+- subtask_ref: subtask-guidance
+  title: Explain subtask management and the implemented delivery guard
+  status: completed
+  evidence: Guide documents subtask_add/update/list, completed or cancelled terminal statuses, nonempty completed evidence, actual TASK_SUBTASKS_INCOMPLETE/TASK_SUBTASK_EVIDENCE_MISSING diagnostics and unverified-string boundary. Dedicated subtasks production seam passed in 12/12 guide suite (archive 6894da42440b51d2); no guard implementation changed.
+- subtask_ref: code-and-docs-guidance
+  title: Guide agents through code navigation and documentation tools
+  status: completed
+  evidence: Code guidance reuses canonical query navigation; docs retains existing keys and adds real search/get/read examples. Production navigation/examples tests passed in 12/12 guide suite (archive 6894da42440b51d2). MCP/CLI references and skill catalog reconciled with current APIs; docs check reports 173 files ok, git diff --check passes.
+- subtask_ref: discovery-and-verification
+  title: Advertise topics, honor enabled modules and verify MCP and CLI responses
+  status: completed
+  evidence: 'Final regressions passed: MCP 150/150 and CLI roots 7/7 plus strict all-target/all-feature Clippy (archive 2c59bd0ac24e09bf); full ACDD 302/302 (archive a3bb716a1e24d1f5), total459 zero failures. Original nine contract tests plus three dedicated bootstrap/diagnostic/config-selection cases pass. Claim24/revision4 exact lifecycle seam verify passed1/1 (archive 823b6984d24b925e). Shared formats, module combinations, copyable examples, minimal four-topic index and installed-skill links verified. Docs173 ok; diff check clean; pending task6 revision2 bytes preserved.'
+extended_scope:
+- src/cli/guide.rs
+- src/mcp/tools.rs
+- tests/mcp/context/guide.rs
+- src/cli/mod.rs
+- tests/acdd/mcp/claims_and_leases.rs
+receipt:
+  delivery_gate: deliver
+  candidate_gate: build
+  contract_revision: 4
+  passed_at: 2026-11-09T21:00:35.929206325+00:00
+  evidence:
+    command_proof:
+      command: rust-check-and-test
+      exit_code: 0
+      log: |
+        [rust-check-and-test::tests/mcp/context/guide.rs]
+        SCOPE_VIOLATION_WARNING: docs/milestones/AC-003-headless-orchestrator-and-role-runners.md
+        PASS rust-check-and-test::tests/mcp/context/guide.rs: exit=0 passed=1 failed=0 (1221 ms)
+      tests_passed: 1
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: All10 changed implementation/test/doc paths within12 snapshot paths and admitted scope. Five extensions individually justified. Protected configuration/build files untouched; unrelated manifest/task6r2 preserved.
+        claims:
+          applicable: true
+          evidence: Acceptance1-10 traced to canonical owners and real CLI/MCP seams.185 regression tests plus2 independent scratch probes pass; strict Clippy exit0/warnings0. Completed/cancelled and completed evidence semantics match current guard/user1730; no open acceptance-backed findings.
+        concurrency:
+          applicable: true
+          evidence: Guide projection is request-local over the existing resolved adapter snapshot; no added locks, transactions, task claims/proof mutation or shadow lifecycle. Same-server module reload probe passes; invocation configuration remains scoped. Init retains canonical atomic_write.
+        project_isolation:
+          applicable: true
+          evidence: Canonical root plus selected invocation config on CLI; MCP reuses owning server adapter. Explicit config/roots7tests and16module combos pass. Scratch operations confined to disposable fixtures; task6r2 preserved byteexact hash616743a498b8d726d3f0f2ec5c13f52e81823c80f77de9819c27e17d66c51bd3.
+        administration:
+          applicable: true
+          evidence: Guide grants no commit/transition authority; active profile/claim and observed proof owners retained. Init force semantics/invalid-adapter repair, unknown error, capability disabling tested. No schema/profile/guard/receipt changes; delivery remains Forge generated and immutable.
+      extended_scope_review:
+        approved_paths:
+        - src/cli/guide.rs
+        - src/mcp/tools.rs
+        - tests/mcp/context/guide.rs
+        - src/cli/mod.rs
+        - tests/acdd/mcp/claims_and_leases.rs
+        reason_verified: true
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-HEADLESS-ROLE-RUNNER-ORCHESTRATION: When roles declare runner and prompt_template, Forge CLI (task run / milestone run) autonomously claims gates, renders role prompts with gate context bundles, spawns subagent runner processes in isolated POSIX process groups with distinct session fingerprints, executes command and delivery gates with zero tokens, and routes review rejections via reject_routing until completion.'
+    - 'INV-INDEPENDENT-REVIEWER-SESSION: Reviewer runners execute with an isolated session identity and fingerprint distinct from the builder runner session, satisfying reviewer separation and proof independence invariants.'
+    - 'INV-REJECT-ROUTING-FEEDBACK-LOOP: When review gates reject with structured findings, the orchestrator routes execution back to the configured upstream stage (scope -> build, symbols -> contract) and passes the review findings into the resumed builder session without cold restarts.'
+    - 'INV-TOPOLOGICAL-WAVE-EXECUTION: Milestone run executes tasks in topological wave order, collecting and verifying evidence envelopes automatically and gating subsequent waves until dependencies complete.'
+    - 'INV-IN-PLACE-EXECUTION: Task, milestone, and plan orchestration supports execution directly in the current workspace (--in-place) without mandatory worktree cloning or branching when isolated worktrees are not requested.'
+    - 'INV-PLAN-WORKFLOW-ORCHESTRATION: The orchestrator supports standalone workflows (docs/workflows/*.yaml) via contextunity-forge-mcp workflow [list|show|run] and structured plans (doc_type: plan in docs/plans/*.md) via contextunity-forge-mcp plan [list|show|run], executing in-place under universal gate governance.'
+    - 'INV-DELIVERY-SUBTASK-COMPLETION-GUARD: Mechanical delivery verification fails closed with TASK_SUBTASKS_INCOMPLETE if any declared subtask under the active task or plan step is not completed or cancelled, and with TASK_SUBTASK_EVIDENCE_MISSING if any completed subtask lacks non-empty verification evidence.'
+    - 'INV-CLI-UNIFIED-ARGUMENTS: Global CLI and orchestrator execution accept explicit path parameters (--root, --db, --config for custom forge-mcp.yaml, and --profile for custom profile.yaml) with deterministic resolution order.'
+    - 'INV-PLAN-WORKFLOW-HARNESS: All tests for structured plans (docs/plans/*.md) and standalone workflows (docs/workflows/*.yaml) must use PlanHarness and WorkflowHarness with canonical templates in tests/acdd/fixtures/plans/ and workflows/. Ad-hoc markdown heredocs and subprocess CLI spawning are strictly banned.'
+    architectural_notes:
+    - 'decisions: User resolved milestone #1728: see milestone message #1730. completed OR cancelled are permitted; completed requires evidence. Guide acceptance 7 currently contradicts this and coordinator will revise task authority after your current claim stops. Continue independent synthesis and red tests, but do not present completed-only as required; report and stop before final contract submit if you see this message so coordinator can amend specification cleanly.'
+    - |
+      decisions: AC-003 guide contract revision 3; claim 15; architect ac003-guide-contract-01a1c08b; genuine session 01a1c08b-4515-7e72-9466-b989c7b20048; base bcb442f784f9eda6be720bee0fa2d7803a475e21.
+
+      Decision: extend the existing guide producer, not the gate engine or tool registry. Current path is CLI Clap -> Cli::run_selected -> cli::guide::run -> Value -> core::format::render_for_operation; MCP tools/call -> Server::forge_guide -> responding(adapter_snapshot) -> cli::guide::run -> response::result_for -> the same formatter. OperationKind::Guide is opaque to field-name compaction. MCP alone currently filters modules. Put topic availability and semantic filtering beside the existing guide producer, using the resolved Adapter.modules. Retain run(root, topic, force) for CLI/current callers; an additive adapter-aware entry may let MCP reuse its already validated adapter. CLI loads the selected config through tasks::configuration::current, preserving wave-delivered --config/--root behavior. No second formatter, tool catalog, storage, lifecycle state, profile interpreter, or command executor.
+
+      Capabilities: query, init, adapter, validate remain generally available. code/ast require codemap; docs requires docs; lifecycle/acdd/gates/subtasks require acdd. The query topics array lists only available topics. Explicit requests for known disabled topics return {} on both surfaces, preserving current MCP behavior. Preserve query's existing key filtering, acdd's blackboard_topics/blackboard_gate_targeting/blackboard_schema_version removal when blackboard is disabled, all existing JSON keys, the omitted/blank query default, and the unknown-guide-topic error family. Suppress blackboard instructions in lifecycle when blackboard is disabled. Keep init's bootstrap bypass and force semantics; validate consumes the selected adapter. Do not alter checkpoint helpers.
+
+      Guidance remains additive JSON, rendered through the existing shared formatter. Each of lifecycle/acdd/gates/subtasks/code/docs supplies purpose (string), steps (array), example {mcp:{name,arguments},cli:string}, references (array). Existing query gains topics (array of topic strings). Additional semantic blocks: lifecycle authority, runners, recovery keyed by actual error codes; gates when, transitions, persistence, verification; subtasks delivery; acdd subjects. These are readable guidance, never an alternative authority for profile state. Examples use current CLI commands/tools. Navigation examples execute against indexed temporary fixtures; state-changing lifecycle/proof examples are parser/schema checked, not executed against the live milestone.
+
+      Live authority and necessary distinctions:
+      - tasks::claim and submit_inner own claims/transitions; profile gate_graph owns when/pass/fail/loop. evidence_compiler::verify_task_with_options observes claim-bound executions and does not advance. submit consumes observed proofs and immutable candidate bindings. Explain gate_execution_traces, commands.output.tests, individually observed seam_test_refs, and why caller JSON is not command observation. Include concise next steps for stale/foreign claims, missing proof, and TASK_CANDIDATE_MISMATCH.
+      - gate_condition_matches: code is any non-doc path; doc is nonempty all-doc scope; db_migration is SQL/migrations scope; seam is Speculative/Parallel concurrency (not merely test presence); public_api is an exported AST callable. Explain pass/fail fallthrough and classified loop, save.pre/post, parentless Git snapshots versus branch commits, configured auto_commit/receipt and content immutability. Gate IDs/order shown only as examples. Claim workflow_guidance + selected active profile remain authoritative.
+      - task_runner::run_task_lifecycle uses canonical engine claim/submit, configured role runners, genuine separate runner identities, accepted structured submissions, resumed rejected builder identity and captured findings. A runner exit alone does not pass a gate. Describe current worker/fingerprint separation; pending task6 r2 is a future consumer and must not be presented as implemented.
+      - workflow::run_standalone_workflow executes root gates without task rows/claims and accepts save:none only; persistent autonomous audit logging remains planned. plan::run_plan_workflow executes source-owned steps in the active tree, snapshots without branch commits. waves::run_milestone_waves coordinates admitted DAG waves and root verify/review/handoff through existing authority. Actual CLI: task run TASK --in-place; milestone run ID --in-place --target-base BASE; workflow list/show/run SELECTOR; plan list/show/run SELECTOR --in-place. Do not repeat stale ADR planned-execution statements after delivered AC-003 prerequisites; distinguish implemented execution from still-planned log persistence.
+      - Acceptance 7 has a stale historical premise: current tasks::gates::validate_subtask_delivery and the milestone INV-DELIVERY-SUBTASK-COMPLETION-GUARD agree on completed OR cancelled, with nonempty evidence for completed only. Document TASK_SUBTASKS_INCOMPLETE and TASK_SUBTASK_EVIDENCE_MISSING accurately; subtask_update stores an evidence string without independently running it. Do not falsely claim cancelled is rejected, and do not change the accepted prerequisite guard. No unmet stricter invariant exists in the current milestone authority.
+
+      Ownership/scope: Forge explicitly reacquired src/cli/guide.rs and src/mcp/tools.rs per #1693/#1703/#1725. Forge also admitted tests/mcp/context/guide.rs under tests/; tests/mcp/context.rs registers that domain. Production source edits belong to Build, not this contract author. Existing admitted inputs.rs and CLI/MCP/tool-catalog docs cover schema discovery and documentation. Architecture/ADRs are references, unchanged. No protected Cargo.toml/build.rs/.forge edits. No task6 manifest edits. Initial manifest bytes/inventory retained under /tmp/ac003-guide-contract-r3-01a1c08b; bytes outside the guide task block verified identical after scope updates.
+
+      Builder sequence:
+      1. Implement the small shared topic/capability projection in guide.rs; delegate MCP to it using the current adapter. Preserve init/validate/global selection and response budget boundaries.
+      2. Populate guidance from the real owners above; retain existing data keys and all supported old topics. Keep planned logging explicit and profile-specific transitions illustrative. Advertise new topics in Guide schema description and shared query index, without a shadow tool registry.
+      3. Make dedicated production-seam tests green through MCP handlers and real in-process CLI parsing/dispatch. Keep format parity (JSON values, Markdown modulo terminal newline), capability combinations, bounded output, unknown errors, executable navigation examples and real command/schema discovery. No mock inside the guide boundary and no new execution harness or plan/workflow fixture.
+      4. Co-evolve docs/reference/mcp-tools.md, docs/reference/cli.md and skills/contextunity-forge/references/tool-catalog.md. Follow docs/AGENTS and agent-instructions. If a genuinely needed owner lies outside current scope, extend exact paths through Forge first; never edit protected files or accepted prerequisite behavior.
+      5. Run scoped mcp guide suite, existing guide compatibility and selected-config regression, strict Clippy, then claim-bound build verification. Independent review/delivery remain later roles; this architect stops after contract pass.
+
+      Proof target: tests/mcp/context/guide.rs::lifecycle_guide_preserves_live_claim_and_proof_authority enters the real shared guide API and MCP handler, comparing real CLI output. Current live producer rejects lifecycle; a positive assertion must fail at runtime (exit101) after clean compilation. No fabricated failure or implementation replacement is involved. Other dedicated tests specify each material acceptance dimension; contract red does not claim those future green behaviors are implemented.
+    - 'decisions: Revision4 contract re-admission, claim21, genuine session01a1c08b-4515-7e72-9466-b989c7b20048, worker ac003-guide-contract-01a1c08b. Read user decision #1730/#1731 and corrected full task authority: completed OR cancelled permitted; completed requires nonempty evidence. Current acceptance7 now matches milestone invariant, real delivered guard, existing tests and decision #1732. Only revision3->4 changed in spec; scope/extensions retained exactly. Only acceptance7 changed in prose. All source/tests/config hashes and modes match prior accepted r3 state; task6 bytes unchanged. Decision #1732 / builder blueprint #1733 retained without implementation or test edits. #1731 historical stop-before-submit request is satisfied by coordinator revision4 sync and current explicit user instruction to re-claim/verify/submit. Fresh claim-bound red proof will be observed against unchanged live production; old r3 execution is not reused as current claim authority. No scope/protected/history/production changes or subagents. Full initial1060-path inventory, backup of existing test+manifest bytes and authority comparison at /tmp/ac003-guide-contract-r4-01a1c08b. Single ongoing evidence map /tmp/ac003-guide-contract-r3-01a1c08b/evidence-map.md updated with r4 section.'
+    - 'decisions: {"task_id":"forge-mcp/AC-003-headless-orchestrator-and-role-runners:forge-guide-lifecycle-gates-and-subtasks","candidate":"cc5f92b7bdcf85b99477871b8a5895b45cb1e307","baseline":"bcb442f784f9eda6be720bee0fa2d7803a475e21","contract_revision":4,"build_claim_revision":24,"review_claim_revision":36,"reviewer":"codex-sol-reviewer","reviewer_session":"01a1bdd1-3650-7c50-9ba7-5bf4cdd6f747","builder_session":"01a1c09d-0043-7601-b745-a82481fcbfe7","decision":"pass","open_findings":[],"authority":["Complete task acceptance1-10 at manifest773-846","Blackboard1732,1733,1736,1741,1742,1743","User decisions1730 and1725","Active profile task.review/guidance.contours; TESTS.md; root/src/tests/docs owners; performance architecture; ADR0001/0019 presentation ownership and ADR0021 hierarchy"],"change_binding":"Parentless candidate contains12 scoped files. Compared each snapshot path against accepted baseline bcb442f78;10 files changed915add/77delete. All12 live blobs match. Other absent snapshot paths are not deletions.","acceptance":[{"id":1,"source":"src/cli/guide.rs:111-130","evidence":"Lifecycle purpose/authority/steps/runners/recovery and optional blackboard; real MCP/shared/CLI equal in named contract seam. Verified gate identity/session and structured role-submission descriptions against accepted lifecycle."},{"id":2,"source":"src/cli/guide.rs:174-204","evidence":"Workflow/Plan/Milestone subject guidance matches delivered production; taskless save:none, active-tree snapshot plans without auto branch commit, waves/root verify/independent review/handoff; run logging explicitly planned."},{"id":3,"source":"src/cli/guide.rs:131-146; crates/forge-tasks/src/engine/gate_graph.rs:534-573","evidence":"All5 conditions traced to canonical evaluator; seam is concurrency, public_api exported callable; pass/fail/loop and configured persistence/immutable semantics described. No alternate router."},{"id":4,"source":"src/cli/guide.rs:142,147-158; crates/forge-tasks/src/engine/evidence_compiler.rs:406-481","evidence":"Verify does not advance; submit consumes claim-bound execution observation; traces, output.tests and individual seam_test_refs explained. Subtask actions/statuses and stored-string boundary accurate."},{"id":5,"source":"src/cli/guide.rs:159-164 and205-216","evidence":"Code topic derives six steps from canonical query producer, adds AST and candidate/lexical caution. Query branch byte-identical to baseline; no divergent catalog. MCP and real in-process CLI navigation examples execute."},{"id":6,"source":"src/cli/guide.rs:168-173; docs/reference/{mcp-tools,cli}.md; skills/contextunity-forge/references/tool-catalog.md","evidence":"Docs retains frontmatter/invariant/types plus navigation example and references; all3 required owner docs updated. Reference links check passes."},{"id":7,"source":"crates/forge-tasks/src/tasks/gates.rs:641-658; guide subtasks delivery","evidence":"Confirmed completed OR cancelled; only completed requires nonempty evidence. Correct error codes and unverified evidence-string boundary. Five task subtasks completed with evidence; current guide test and8 real subtask regressions pass. No accepted guard changes."},{"id":8,"source":"src/cli/guide.rs:8-98; src/mcp/tools.rs:1035-1055","evidence":"Shared module policy, all16 combinations, query index, known-disabled{}, blank/default query, unknown diagnostics, blackboard filtering; existing query/AST branch data unchanged. Same-server config disable/enable independent probe passes."},{"id":9,"source":"src/cli/mod.rs:1249-1263; src/core/format/mod.rs:111; src/mcp/response.rs:80","evidence":"Both paths reuse original formatter/Guide operation. Default/explicit Markdown and parsed JSON parity tested. Default bounds pass; independent1024byte opaque-guide error responses bounded in both formats, no partial guide."},{"id":10,"source":"tests/mcp/context/guide.rs12 dedicated tests; tests/acdd/mcp/claims_and_leases.rs157","evidence":"Actual JSON-RPC handler and real Clap/CLI dispatcher, no substitute guide/lifecycle. Discovery/example parsing/schema, actual navigation example execution,16 capability configurations. Minimal index expectation updated for accepted added topics; no tests disabled."}],"extended_scope":{"src/cli/guide.rs":"Canonical existing guide owner and shared capability projection, reacquired by Forge under user-approved transfer1725.","src/mcp/tools.rs":"Delegate to canonical producer using resolved adapter; transfer1725 preserves future task6 ownership after delivery.","tests/mcp/context/guide.rs":"Dedicated guide contract seam module;12 coherent production tests.","src/cli/mod.rs":"Early init bootstrap path repairs invalid adapter without loading it; otherwise unchanged selection/dispatch.","tests/acdd/mcp/claims_and_leases.rs":"Update obsolete exact empty-query expectation to accepted minimal four-topic discovery index; all other assertions retained."},"contours":{"paths":{"applicable":true,"evidence":"All10 changed implementation/test/doc paths within12 snapshot paths and admitted scope. Five extensions individually justified. Protected configuration/build files untouched; unrelated manifest/task6r2 preserved."},"claims":{"applicable":true,"evidence":"Acceptance1-10 traced to canonical owners and real CLI/MCP seams.185 regression tests plus2 independent scratch probes pass; strict Clippy exit0/warnings0. Completed/cancelled and completed evidence semantics match current guard/user1730; no open acceptance-backed findings."},"concurrency":{"applicable":true,"evidence":"Guide projection is request-local over the existing resolved adapter snapshot; no added locks, transactions, task claims/proof mutation or shadow lifecycle. Same-server module reload probe passes; invocation configuration remains scoped. Init retains canonical atomic_write."},"project_isolation":{"applicable":true,"evidence":"Canonical root plus selected invocation config on CLI; MCP reuses owning server adapter. Explicit config/roots7tests and16module combos pass. Scratch operations confined to disposable fixtures; task6r2 preserved byteexact hash616743a498b8d726d3f0f2ec5c13f52e81823c80f77de9819c27e17d66c51bd3."},"administration":{"applicable":true,"evidence":"Guide grants no commit/transition authority; active profile/claim and observed proof owners retained. Init force semantics/invalid-adapter repair, unknown error, capability disabling tested. No schema/profile/guard/receipt changes; delivery remains Forge generated and immutable."}},"verification":{"commands":[{"command":"cargo clippy --all-targets --all-features -- -D warnings","exit_code":0,"warnings":0},{"command":"cargo test --test mcp","exit_code":0,"passed":150,"failed":0,"ignored":0},{"command":"cargo test --test acdd mcp::","exit_code":0,"passed":20,"failed":0,"ignored":0},{"command":"cargo test --test cli_roots","exit_code":0,"passed":7,"failed":0,"ignored":0},{"command":"cargo test --test acdd subtasks::","exit_code":0,"passed":8,"failed":0,"ignored":0},{"command":"contextunity-forge-mcp docs check","exit_code":0},{"command":"git diff --check","exit_code":0}],"passed":185,"failed":0,"ignored":0,"scratch":{"passed":2,"failed":0,"ignored":0,"compile_exit_code":0,"exit_code":0,"method":"Unmodified production libraries selected by fresh Cargo rustc discovery; tests copied to /tmp, appended reviewer-only module to scratch copy, real MCP harness/formatter/server. No candidate edits.","command":"/tmp/ac003-guide-review-6478pdpj/mcp-cb49399709a21446 reviewer_probe:: --nocapture --test-threads=1"},"guide_cases_in_mcp":12,"full_all_targets_tests":"Deferred to milestone handoff as TESTS.md requires."},"artifact":"/tmp/ac003-guide-review-6478pdpj","proof_file":"/tmp/ac003-guide-review-6478pdpj/review-proof.json","report":"/tmp/ac003-guide-review-6478pdpj/review-report.md","integrity":"/tmp/ac003-guide-review-6478pdpj/integrity-before-pass.json","conclusion":"Independent PASS warranted. Submit typed review proof, then follow actual applicable remaining gates and same-session Forge-generated delivery. No candidate edits or unrelated task6 decision."}'
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Guide structure
@@ -829,7 +942,7 @@ subtasks:
 4. Explain that verification observes without advancing, while submission consumes claim-bound proof. Cover `gate_execution_traces`, declarative `commands.output.tests` and individual `seam_test_refs`: caller-supplied JSON alone cannot replace the required execution observation. `subtasks` shows `task_manage` actions `subtask_add`, `subtask_update` and `subtask_list`, status and evidence, and the implemented delivery diagnostics. A recorded evidence string is not independently verified by `subtask_update`.
 5. `code` shows how to start with `code_map_overview`, find a symbol with `code_map_search`, inspect it with `code_map_inspect` or `forge_read`, trace callers and impact with `code_map_explain`/`code_map_impact`, inspect tests with `code_map_tests`, and use `ast_grep_search` for code patterns. Explain that candidate relationships and lexical test suggestions are not verified calls or coverage. Reuse the existing `query` guidance without creating a second, divergent tool catalog.
 6. Extend `docs` with `search_docs`, `get_doc` and `forge_read` for finding and reading documents, while retaining its existing frontmatter, invariant and type guidance. Give a compact MCP example and the corresponding CLI documentation commands; update the MCP and CLI references and the skill tool catalog.
-7. Before writing the guidance, compare the completed prerequisite with the real CLI/MCP and delivery paths. The current manual delivery path accepts `cancelled` subtasks, while this milestone requires all subtasks completed with evidence. If the prerequisite has not resolved that mismatch, return it to its task owner; do not present the stricter rule as already enforced. Describe actual delivery diagnostics, including `TASK_SUBTASKS_INCOMPLETE` and, where applicable, `TASK_SUBTASK_EVIDENCE_MISSING`. Mark other ADR behavior not implemented by this milestone as planned.
+7. Before writing the guidance, compare the completed prerequisite with the real CLI/MCP and delivery paths. In accordance with the milestone invariant, delivery accepts subtasks that are `completed` or `cancelled`, and each completed subtask requires nonempty evidence. Describe actual delivery diagnostics, including `TASK_SUBTASKS_INCOMPLETE` and, where applicable, `TASK_SUBTASK_EVIDENCE_MISSING`. Mark other ADR behavior not implemented by this milestone as planned.
 8. Preserve existing topic keys, default `query`, blackboard filtering and the unknown-topic error. Advertise only enabled capabilities: filter the topic index and guidance when ACDD, codemap, docs or blackboard is disabled; disabled topics follow the existing empty-guidance behavior.
 9. Reuse the shared CLI/MCP response formatter. Omitting `format` returns Markdown, as does `format: "markdown"` in MCP or `--format markdown` in the CLI; `format: "json"` and `--format json` return structured JSON. Both formats present the same guide information. Preserve readable Markdown, existing JSON keys and the current response-budget policy.
 10. Through real MCP and CLI calls, test default and explicit Markdown, JSON, content parity, copyable examples, topic discovery, module combinations and existing-topic compatibility. Compare CLI/MCP Markdown and parsed JSON for equivalent inputs, allowing the trailing CLI newline. Use dedicated tests in the scoped suites; run the focused tests and strict Clippy from `TESTS.md`.
@@ -841,11 +954,17 @@ subtasks:
 
 ```yaml
 task_ref: eliminate-session-scraping-and-enforce-worker-separation
-target: "Completely remove ambient host session scraping and fingerprint validation, enforce pure worker separation at independent gates, and emit explicit coordinator directives for subagent dispatch"
+target: "Remove ambient host session scraping from task lifecycle gate checks, enforce worker separation at independent gates while preserving runner session fingerprints, and emit explicit coordinator directives for subagent dispatch"
 proof_policy: seam-test-first
-contract_revision: 1
+contract_revision: 2
 depends_on:
   - forge-guide-lifecycle-gates-and-subtasks
+scope_roots:
+  - crates/forge-tasks/src/store/
+  - crates/forge-tasks/src/engine/
+  - src/mcp/
+  - docs/reference/
+  - tests/
 scope:
   - crates/forge-tasks/src/store/lifecycle.rs
   - crates/forge-tasks/src/store/lifecycle/session_tests.rs
@@ -853,7 +972,6 @@ scope:
   - crates/forge-tasks/src/engine/gates/submit.rs
   - crates/forge-tasks/src/engine/mod.rs
   - src/mcp/server.rs
-  - src/mcp/tools.rs
   - docs/reference/tasks.md
   - docs/reference/acdd.md
 symbols:
@@ -861,7 +979,7 @@ symbols:
 status: planned
 subtasks:
   - subtask_ref: remove-ambient-session-scraping
-    title: "Delete resolve_session_fingerprint, host_session_fingerprint, UNKNOWN_SESSION_FINGERPRINT, and stop reading CODEX_THREAD_ID/AGY_CONVERSATION_ID from process env and MCP server"
+    title: "Remove ambient host session scraping from lifecycle gate checks while preserving explicit runner session identities and fingerprints"
   - subtask_ref: pure-worker-independence-validation
     title: "Remove validate_session_independence; enforce gate independence purely via worker_id != prior_worker without session coupling"
   - subtask_ref: universal-independent-gate-dispatch-guidance
@@ -872,7 +990,7 @@ subtasks:
 
 #### Acceptance
 
-1. All ambient process/host environment session scraping (`resolve_session_fingerprint`, `CODEX_THREAD_ID`, `AGY_CONVERSATION_ID`, `FORGE_AGENT_SESSION_ID`, `UNKNOWN_SESSION_FINGERPRINT`) is completely removed from `crates/forge-tasks` and `src/mcp/server.rs`. No process environment sniffing remains in task lifecycle operations.
+1. Remove ambient host environment session scraping from task lifecycle gate checks, including reliance on `CODEX_THREAD_ID` and `AGY_CONVERSATION_ID`. Preserve distinct runner session identities and fingerprints, including explicit transport such as `FORGE_AGENT_SESSION_ID` where needed by runner invocation; these fingerprints are not gate-independence proof.
 2. Gate independence checking is decoupled from host process/session concepts: `validate_session_independence` is eliminated. If a gate declares `independent_from: "<prior>"`, Forge verifies only that `worker_id != prior_evidence.worker_id`.
 3. When any gate completes and the next gate declares `independent_from`, `task submit` returns an explicit structured `dispatch` block and coordinator directive:
    `[INDEPENDENT GATE DISPATCH REQUIRED] Next gate is '{gate}' (agent: '{agent}'). Rule: Must be independent from '{prior_gate}' worker '{prior_worker}'. Directs coordinator to spawn an independent subagent with worker_id '{task_slug}-{gate}'.`

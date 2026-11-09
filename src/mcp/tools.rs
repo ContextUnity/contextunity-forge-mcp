@@ -1051,54 +1051,7 @@ impl Server {
             );
         }
         self.responding(format, OperationKind::Guide, "forge_guide", |adapter, _| {
-            let mut guide = cli::guide::run(&self.root, topic, p.force)?;
-            if topic == "query" {
-                if let Some(sitemap) = guide.as_object_mut() {
-                    let codemap_enabled = adapter.modules.is_enabled("codemap");
-                    let docs_enabled = adapter.modules.is_enabled("docs");
-                    if !codemap_enabled {
-                        for key in [
-                            "start",
-                            "sql_schema",
-                            "symbols",
-                            "snippets",
-                            "tests",
-                            "queries",
-                            "diagnostics",
-                        ] {
-                            sitemap.remove(key);
-                        }
-                    }
-                    if !docs_enabled {
-                        sitemap.remove("documents");
-                    }
-                    if !codemap_enabled && !docs_enabled {
-                        sitemap.remove("pages");
-                    }
-                    if !codemap_enabled {
-                        sitemap.remove("recovery");
-                    }
-                }
-            } else if (topic == "ast" && !adapter.modules.is_enabled("codemap"))
-                || (topic == "docs" && !adapter.modules.is_enabled("docs"))
-            {
-                guide = Value::Object(serde_json::Map::new());
-            } else if topic == "acdd" {
-                if !adapter.modules.is_enabled("acdd") {
-                    guide = Value::Object(serde_json::Map::new());
-                } else if !adapter.modules.is_enabled("blackboard") {
-                    if let Some(guidance) = guide.as_object_mut() {
-                        for key in [
-                            "blackboard_topics",
-                            "blackboard_gate_targeting",
-                            "blackboard_schema_version",
-                        ] {
-                            guidance.remove(key);
-                        }
-                    }
-                }
-            }
-            Ok(guide)
+            cli::guide::run_with_adapter(&self.root, topic, p.force, adapter)
         })
     }
     #[tool(

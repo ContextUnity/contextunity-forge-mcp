@@ -21,6 +21,8 @@ mod ast_search;
 mod checkpoints_and_serialization;
 #[path = "context/entrypoints_and_delta.rs"]
 mod entrypoints_and_delta;
+#[path = "context/guide.rs"]
+mod guide;
 #[path = "context/navigation_and_search.rs"]
 mod navigation_and_search;
 #[path = "context/previews_and_repair.rs"]

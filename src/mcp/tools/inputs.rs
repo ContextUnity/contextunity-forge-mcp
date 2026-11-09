@@ -574,7 +574,7 @@ impl GetDoc {
 /// Represents guide data.
 pub struct Guide {
     #[serde(default)]
-    /// Optional topic: init, adapter, docs, acdd, query, ast, or validate.
+    /// Optional topic: query (default), lifecycle, acdd, gates, subtasks, code, docs, ast, adapter, init, or validate. The query index advertises enabled topics; known disabled topics return empty guidance.
     pub topic: Option<String>,
     #[serde(default)]
     /// Whether force applies.

@@ -1246,6 +1246,21 @@ impl Cli {
                 return Err(error);
             }
         };
+        // Initialization must work even when the adapter it repairs cannot be parsed.
+        if let Some(Command::Guide { topic, force }) = self.command.as_ref() {
+            if topic.trim() == "init" {
+                let result = guide::run(&root, topic, *force)?;
+                let formatted = format::render_for_operation(
+                    &result,
+                    OutputFormat::from(self.format),
+                    "forge_guide",
+                    None,
+                    OperationKind::Guide,
+                );
+                writeln!(output, "{formatted}")?;
+                return Ok(());
+            }
+        }
         let settings =
             paths::ResolvedPaths::resolve(&root, self.config.as_deref(), self.profile.as_deref())
                 .map_err(|error| match self.command.as_ref() {

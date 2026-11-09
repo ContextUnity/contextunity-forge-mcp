@@ -157,7 +157,10 @@ fn mcp_task_claim_guidance_includes_rules_without_schema_bloat() {
     let minimal_guide = client
         .payload("forge_guide", json!({"topic":"query"}))
         .expect("MCP payload should succeed");
-    assert_eq!(minimal_guide, json!({}));
+    assert_eq!(
+        minimal_guide,
+        json!({"topics":["query", "init", "adapter", "validate"]})
+    );
     let mut preflight_failures = Vec::new();
     for topic in ["ast", "docs", "acdd"] {
         let guide = client
