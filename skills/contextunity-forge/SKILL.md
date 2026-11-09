@@ -182,7 +182,7 @@ and `{goal}` slots; when configured, `task_claim` renders them in
 `workflow_guidance.role_runner` (`runner` + `rendered_prompt`). Gates with
 `independent_from` enforce independence at both `task_claim` and `task_submit`
 across `worker_id` and persisted `session_fingerprint`. CLI and MCP calls obtain
-the session fingerprint from `FORGE_AGENT_SESSION_ID` when it is set and nonempty.
+the session fingerprint from explicit arguments or environment variables (`FORGE_AGENT_SESSION_ID`, `CODEX_THREAD_ID`, `AGY_CONVERSATION_ID`, `CLAUDE_SESSION_ID`, `CURSOR_SESSION_ID`).
 
 Explicit gate `tools` are requirements validated against enabled modules.
 Empty tool lists receive module-filtered advisory navigation tools for contract,
