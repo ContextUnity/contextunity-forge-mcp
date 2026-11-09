@@ -2,7 +2,7 @@
 id: AC-003-headless-orchestrator-and-role-runners
 title: Headless CLI lifecycle orchestrator, role runner subagent execution, and rejection routing
 doc_type: contract
-status: active
+status: completed
 depends_on:
 - UX-002-lean-verification-and-forge-read
 guidance:
@@ -38,6 +38,187 @@ required_skills:
 - agent-instructions
 related_plans: []
 started_at: 2026-11-08T21:24:45+00:00
+repository: forge-mcp
+project: forge-mcp
+handoff:
+  completed_at: 2026-11-09T23:34:51.401117582+00:00
+  duration: 26h 10m
+  commit: 3ca8a1c4d1c66b2b74580e2a3f7bd63dd119ef95
+  target_base: 7e063965956790fb52fe5106286421e65a09c189
+  integration_evidence:
+    binding:
+      version: 1
+      repository: forge-mcp
+      project: forge-mcp
+      milestone: AC-003-headless-orchestrator-and-role-runners
+      authority_digest: 3e903d289de2a149d45fc70cbb8792f082cba3e36e50871ecadc4bb2a3c5f471
+      implementation_digest: abdded27d5337d6e120c680d8757774e4cbc760c609d00d3a3d5e0d9dcec2353
+      target_base_digest: 1c35b109c9b5b0c21c342f1eccfd2b7bfb198703895fc3d69fee192b908480cc
+      builders:
+      - codex-bootstrap-builder-recovery
+      - codex-guide-builder
+      - codex-lifecycle-builder
+      - codex-spawner-builder
+      - codex-wave-builder
+      - codex-worker-builder
+    target_base: main
+    review:
+      worker_id: codex-sol-reviewer
+      decision: pass
+      summary: Independently reviewed HEAD 3ca8a1c4d1c66b2b74580e2a3f7bd63dd119ef95 against main 7e063965956790fb52fe5106286421e65a09c189. All changed paths are admitted. Accepted task proofs, candidate bindings, checkpoint refs and delivery ancestry are preserved. Documentation findings remain closed, and user decisions on worker independence, runner fingerprints and subtask completion remain satisfied.
+      scope_findings: []
+      contract_findings: []
+    verification:
+      command: cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets
+      exit_code: 0
+      tests_passed: 1167
+      tests_failed: 0
+      project_command: check_full_repo
+  proof_shas:
+  - 2140260942748c27226b95ed79e22de90489030c
+  - 2fbda3cf518932342c123ef6900b76a9ecaeb368
+  - 308a5c544e18d04db941ad5d474bdbd57f0b173c
+  - 3ca8a1c4d1c66b2b74580e2a3f7bd63dd119ef95
+  - 411bbd6de740d9c10495ff4b75e5e052127a8183
+  - 424e99d1f31eab07ee7bc725c2c71da6c6fdb82d
+  - 48443de35ca9bc779cf019c20190e0d747f4fb96
+  - 4b98a3f68ad0c8818d0491a79edce07f530dd421
+  - 4c1ac3fb80ea983ae01d400a5f6c6fa5e492dbd7
+  - 50d99e88caf801f4239d3d061ff74b65c70a010d
+  - 61256e5ebc8b31985ddc767e65dab8178ad03223
+  - 63ec5df44fe48d7da2fd586381ec04973a90a3a5
+  - 6e4c8beef32393fa2fa619fd0d0a5bc3c781ad2c
+  - 72e8682462f5ffc36313cefb614d5676f7af711d
+  - 7e063965956790fb52fe5106286421e65a09c189
+  - 88f9ba36ab6eb0420b83d17a82491fef52a3f5f2
+  - 919957e1ee9eab5f98422213819dbbd4533db1df
+  - 9594492c961b3b74979553260827554088fa4b37
+  - 9fd28f191bda89fb648928fa8a6ef5ee01d75450
+  - a3b37935759acf7d249e1a2d1cb1757deca83a49
+  - a6c96600a381922b08fdad1c0b51b7c62e651a9f
+  - a813f830c7489d5cad70845674dffce2df0e6219
+  - b1a109404c3ddf563ff776bf2398011dc64f1f3e
+  - bcb442f784f9eda6be720bee0fa2d7803a475e21
+  - cc5f92b7bdcf85b99477871b8a5895b45cb1e307
+  - e68e45ab71e60b7889b6a407cd65ac7c68f775db
+  - ee39a41132c8dcad0c56a5b44e97cb07205e73db
+  - eea896f8bfc422873fd5d5f5ab7ca85a0e9dcc65
+  - f665cbef763a0de4f309fd7e87e0f92ca8d349a1
+  passport:
+    version: 1
+    identity: forge-mcp/forge-mcp/AC-003-headless-orchestrator-and-role-runners
+    binding:
+      version: 1
+      repository: forge-mcp
+      project: forge-mcp
+      milestone: AC-003-headless-orchestrator-and-role-runners
+      authority_digest: 3e903d289de2a149d45fc70cbb8792f082cba3e36e50871ecadc4bb2a3c5f471
+      implementation_digest: abdded27d5337d6e120c680d8757774e4cbc760c609d00d3a3d5e0d9dcec2353
+      target_base_digest: 1c35b109c9b5b0c21c342f1eccfd2b7bfb198703895fc3d69fee192b908480cc
+      builders:
+      - codex-bootstrap-builder-recovery
+      - codex-guide-builder
+      - codex-lifecycle-builder
+      - codex-spawner-builder
+      - codex-wave-builder
+      - codex-worker-builder
+    commit: 3ca8a1c4d1c66b2b74580e2a3f7bd63dd119ef95
+    target_base: 7e063965956790fb52fe5106286421e65a09c189
+    active_authority_digest: 1967075ef19034818e3199549a5028646028fcc60c84a09b77f44ca3432d71b8
+    started_at: 2026-11-08T21:24:45+00:00
+    completed_at: 2026-11-09T23:34:51.401117582+00:00
+    duration_seconds: 94206
+    tasks_count: 6
+    tasks:
+    - task_id: forge-mcp/AC-003-headless-orchestrator-and-role-runners:eliminate-session-scraping-and-enforce-worker-separation
+      status: completed
+      first_claimed_at: 1794258179
+      completed_at: 1794261961
+      execution_wall_seconds: 3782
+      review_cycles: 1
+      rejected_reviews: 0
+    - task_id: forge-mcp/AC-003-headless-orchestrator-and-role-runners:forge-guide-lifecycle-gates-and-subtasks
+      status: completed
+      first_claimed_at: 1794254708
+      completed_at: 1794258035
+      execution_wall_seconds: 3327
+      review_cycles: 1
+      rejected_reviews: 0
+    - task_id: forge-mcp/AC-003-headless-orchestrator-and-role-runners:headless-task-lifecycle-and-rejection-router
+      status: completed
+      first_claimed_at: 1794236582
+      completed_at: 1794239829
+      execution_wall_seconds: 3247
+      review_cycles: 1
+      rejected_reviews: 0
+    - task_id: forge-mcp/AC-003-headless-orchestrator-and-role-runners:milestone-wave-runner-and-autonomous-delivery
+      status: completed
+      first_claimed_at: 1794239910
+      completed_at: 1794254478
+      execution_wall_seconds: 14568
+      review_cycles: 3
+      rejected_reviews: 2
+    - task_id: forge-mcp/AC-003-headless-orchestrator-and-role-runners:orchestrator-types-and-runner-contracts-bootstrap
+      status: completed
+      first_claimed_at: 1794173085
+      completed_at: 1794233459
+      execution_wall_seconds: 60374
+      review_cycles: 2
+      rejected_reviews: 0
+    - task_id: forge-mcp/AC-003-headless-orchestrator-and-role-runners:subagent-process-spawner-and-runner-environment
+      status: completed
+      first_claimed_at: 1794233626
+      completed_at: 1794236435
+      execution_wall_seconds: 2809
+      review_cycles: 1
+      rejected_reviews: 0
+    diff:
+      docs:
+        files: 10
+        added: 1381
+        removed: 188
+      other:
+        files: 6
+        added: 93
+        removed: 52
+      src:
+        files: 39
+        added: 3972
+        removed: 631
+      tests:
+        files: 45
+        added: 5213
+        removed: 238
+    ast_symbol_deltas:
+      added: 556
+      removed: 31
+      modified: 91
+    test_suite_results:
+      command: cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets
+      exit_code: 0
+      tests_passed: 1167
+      tests_failed: 0
+      project_command: check_full_repo
+    automatic_project_verification:
+      selection: check_full_repo
+      command: cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets
+      exit_code: 0
+      stdout_digest: 0c9463661aec9845afe17bac7354540e26c4f5b6b762af1b27fe876f41a4a3d5
+      stderr_digest: eb208ad8e6dc95f1e887e7a4482eefefe0240287ec3ec8a5799008ab9fb56798
+      implementation_digest: abdded27d5337d6e120c680d8757774e4cbc760c609d00d3a3d5e0d9dcec2353
+    linter:
+      status: unobserved
+    topology:
+      upstream:
+      - forge-mcp/forge-mcp/UX-002-lean-verification-and-forge-read
+      downstream: []
+      unresolved_upstream: []
+    verified_handoff_proof: 682b63c1ba00467b18614d050218673b668915c85fc126775c129832aff9e3ff
+  verification:
+    command: cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets
+    status: passed
+    tests_passed: 1167
+    tests_failed: 0
 ---
 
 # Headless CLI lifecycle orchestrator, role runner subagent execution, and rejection routing
@@ -120,6 +301,7 @@ extended_scope:
 receipt:
   delivery_gate: deliver
   candidate_gate: build
+  commit: a3b37935759acf7d249e1a2d1cb1757deca83a49
   contract_revision: 2
   passed_at: 2026-11-09T14:10:59.942571795+00:00
   evidence:
@@ -228,6 +410,7 @@ extended_scope:
 receipt:
   delivery_gate: deliver
   candidate_gate: build
+  commit: 50d99e88caf801f4239d3d061ff74b65c70a010d
   contract_revision: 1
   passed_at: 2026-11-09T15:00:35.656710433+00:00
   evidence:
@@ -405,6 +588,7 @@ extended_scope:
 receipt:
   delivery_gate: deliver
   candidate_gate: build
+  commit: 2fbda3cf518932342c123ef6900b76a9ecaeb368
   contract_revision: 1
   passed_at: 2026-11-09T15:57:09.031664559+00:00
   evidence:
@@ -611,6 +795,7 @@ extended_scope:
 receipt:
   delivery_gate: deliver
   candidate_gate: build
+  commit: bcb442f784f9eda6be720bee0fa2d7803a475e21
   contract_revision: 4
   passed_at: 2026-11-09T20:01:18.726207742+00:00
   evidence:
@@ -840,6 +1025,7 @@ extended_scope:
 receipt:
   delivery_gate: deliver
   candidate_gate: build
+  commit: 63ec5df44fe48d7da2fd586381ec04973a90a3a5
   contract_revision: 4
   passed_at: 2026-11-09T21:00:35.929206325+00:00
   evidence:
@@ -1032,6 +1218,7 @@ extended_scope:
 receipt:
   delivery_gate: deliver
   candidate_gate: build
+  commit: ee39a41132c8dcad0c56a5b44e97cb07205e73db
   contract_revision: 3
   passed_at: 2026-11-09T22:06:01.306903323+00:00
   evidence:
