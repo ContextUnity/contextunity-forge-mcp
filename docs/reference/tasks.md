@@ -618,6 +618,16 @@ Post and read accept optional `gate`, which must name a gate in the active task
 profile. A gate on a post targets that message; a gate on a read filters for that
 gate. Without a read gate, the requested scope returns messages from all gates.
 
+Use `notes` for non-obvious technical context, rather than repeating routine gate
+status, passing tests, or SHAs without a context need. Required proof and binding
+records remain governed by their workflow. Before a review rejection, post
+structured `findings` identifying the issue and concrete remediation, then refer
+to that message ID in the rejection's typed findings. The reference does not
+replace the findings JSON or the gate's claim-bound evidence. On the CLI, provide
+these through `task submit TASK_ID --stage STAGE --action reject --evidence
+'<JSON_OBJECT>' --findings '<JSON>'`; MCP accepts `evidence` and `findings` on
+`task_submit`.
+
 Use `scope: "milestone"` for milestone-level messages. It resolves the explicit
 milestone or the unique active milestone and never includes task-scoped entries.
 An explicit milestone scope accepts the same safe logical aliases and unique
@@ -700,13 +710,16 @@ Git proof objects, and returns `binding`, resolved `target_base`, and diagnostic
 and run the repository verification from [TESTS.md](../../TESTS.md). The reviewer
 must differ from every worker listed in `binding.builders`.
 `milestone verify` runs the first applicable command gate from the profile's root
-gate graph once and records its ordinary command trace. It reports whether that
-command passed; it does not create a separate build, review, repair, or delivery
-lifecycle and is not required before handoff. Handoff validates every task as
-completed with its accepted receipt or cancelled, then checks the current content
-binding, independent passing review, and successful repository verification in
-`IntegrationEvidence`. Changes to the candidate or target-base binding require fresh
-integration evidence; no milestone verification checkpoint is required.
+gate graph and records its command transition and execution trace. Run
+`milestone verify <id> --target-base main` after preparing the binding. Initial
+handoff requires the latest command transition to pass and the latest matching
+trace to succeed for the current implementation, target base, profile and
+registered command. The evidence command and applicable counts must match that
+observation; external success assertions alone are insufficient. This does not
+create a separate build, review, repair, or delivery lifecycle. Handoff also
+validates every task as completed with its accepted receipt or cancelled, the
+current content binding, and an independent passing review. Changes to content,
+base, profile or command require fresh verification as applicable.
 
 Handoff validates the manifest's original task scope separately from operational
 scope extensions. The stored effective scope must equal the original scope plus
@@ -723,8 +736,8 @@ Supply a JSON `IntegrationEvidence` record through `--evidence-file`:
 | `review.worker_id` | Independent integration reviewer identity. |
 | `review.decision`, `review.summary` | `pass` and a nonempty account of the combined review. |
 | `review.scope_findings`, `review.contract_findings` | Empty arrays after resolving unadmitted changes and contract/invariant findings. |
-| `verification.command`, `verification.exit_code` | Exact completed repository verification command and `0`. |
-| `verification.tests_passed`, `verification.tests_failed` | Recorded counts and `0` failures. |
+| `verification.command`, `verification.exit_code` | Exact observed command returned by `milestone verify` and `0`. |
+| `verification.tests_passed`, `verification.tests_failed` | Counts returned by the successful observation and `0` failures; applicable counts must match the recorded proof. |
 | `verification.lint_command` | Optional registered command ID explicitly selected as the project linter. Forge executes it and records its exact command, exit code, output digests and content provenance. A missing selection is `unobserved`, never `clean`; a selected failing linter rejects handoff. |
 | `verification.project_command` | Registered verification command ID required when the integration commit contains source polish prepared by handoff context. Forge executes it against the reviewed content. |
 

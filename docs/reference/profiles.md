@@ -12,7 +12,7 @@ By separating workflow governance from code and task specifications, profiles al
 The embedded profile uses three subagent roles: `contract_author` (`sol-6.1:high`), `builder` (`gpt6-luna:xhigh`), and `independent_reviewer` (`sol-6.1:xhigh`). The contract author targets a draft to `build` on the task blackboard. The independent reviewer keeps the same worker session through `review` and `deliver`, remaining distinct from the builder. Claim guidance includes `NO_PREFLIGHT_SUBAGENTS` so gates start without preflight agents.
 
 > [!NOTE]
-> Contract, command, and seam-test passes require claim-bound execution observations. Seam-test references require individual passed-test observations, not only counts; see [supported commands](tasks.md). Milestone handoff, including archived retries, requires a closed root verification checkpoint matching the final candidate and target base. These checks do not implement the deferred lifecycle-kernel or immutable historical-source redesigns. Native headless dispatch is planned for AC-003.
+> Contract, command, and seam-test passes require claim-bound execution observations. Seam-test references require individual passed-test observations, not only counts; see [supported commands](tasks.md). Initial milestone handoff requires a passing root command transition and latest matching execution trace bound to final content and target base. Validated archived and journal retries follow their [recovery rules](tasks.md#milestone-cli-lifecycle). These checks do not implement the deferred lifecycle-kernel or immutable historical-source redesigns. Native headless dispatch is described in [CLI commands](cli.md#headless-task-execution).
 
 ---
 
@@ -268,12 +268,12 @@ Review gates bind explicitly to these lenses using `contours: guidance.contours`
 
 ### 3. Worker Independence and Role Guidance
 
-- **`independent_from`**: Enforces that the worker claiming this gate cannot share the same `worker_id` as the builder.
+- **`independent_from`**: At claim and submission, requires a `worker_id` different from the accepted worker of the named predecessor gate.
 - **`fail`**: Selects the failure target; **`pass`** selects the success target. **`loop`** maps finding classes to failure targets.
 - **`when`**: Selects a gate by scoped code, documentation, migration paths, concurrent seam mode, or AST public callable export.
 - **`need`**: Names required review sources. **`save`** controls persistence, and **`absorb`** controls working-tree absorption for delivery.
 - **`reuse_on_reject`**: If `true`, rejection guidance directs the task back to the original builder worker ID to remediate defects.
-- **`mode`**: `subagent` or `inline` describe the intended role execution. Autonomous role dispatch is planned for AC-003.
+- **`mode`**: `subagent` or `inline` describe the intended role execution. Headless commands execute configured role runners as described in the [CLI reference](cli.md#headless-task-execution).
 - **`models`**: Ordered list of recommended LLM models and reasoning tiers for that specific role.
 - The embedded `independent_reviewer` owns both review and delivery, so continue the same reviewer session through those gates. Its `NO_PREFLIGHT_SUBAGENTS` workflow rule prohibits launching preliminary subagents before the active gate work.
 

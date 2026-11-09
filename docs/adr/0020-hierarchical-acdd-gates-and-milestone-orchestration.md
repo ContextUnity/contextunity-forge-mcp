@@ -15,7 +15,7 @@ informed:
 # ADR 0020: Hierarchical ACDD Gates, Modular Catalogs, and Milestone Orchestration
 
 > [!NOTE]
-> This ADR describes the accepted architecture. Root verify and handoff operations exist, but Round 4 identified gaps in root graph execution and observed proof enforcement; see the [audit plan](../plans/gate-engine-bugs-and-coverage-audit.md). Autonomous multi-agent role dispatch and headless execution are planned for [AC-003](../milestones/AC-003-headless-orchestrator-and-role-runners.md). Statements below specify the target where those gaps remain.
+> This ADR describes the accepted architecture. Round 4 identified gaps in root graph execution and observed proof enforcement; see the [audit plan](../plans/gate-engine-bugs-and-coverage-audit.md). Native headless execution and role dispatch are implemented; their current behavior is described in the [ACDD reference](../reference/acdd.md#headless-task-milestone-plan-and-workflow-execution). Statements below specify the target where gaps remain.
 
 ## Context
 
@@ -206,9 +206,14 @@ proofs:
       required: [decision, contours]
       properties:
         decision: { type: string, enum: ["pass", "reject"] }
-        reviewer: { type: string }
-        contours: { type: array, items: { type: string } }
-        notes: { type: string }
+        contours:
+          type: object
+          additionalProperties:
+            type: object
+            required: [applicable, evidence]
+            properties:
+              applicable: { type: boolean }
+              evidence: { type: string }
 
   seam_test:
     description: "Joint seam integration proof verifying all referenced cross-task tests passed"
@@ -336,9 +341,9 @@ where:
 
 ### Pillar 4: Command Observation and Typed Proofs
 
-Command and contract proofs must consume engine-observed execution bound to the claim, candidate, command plan, and output policy. A runtime-red contract must prove the declared seam and failure signature; a successful build must verify the candidate. Reviewers submit typed `decision` (`pass` or `reject`) and `contours` (a list of strings), with `extended_scope_review` when needed. `task submit` can compile evidence from traces, but Round 4 found that typed submissions can bypass observation (R4-01 and R4-02). The common acceptance path must enforce the same proof binding for all submission surfaces.
+Command and contract proofs must consume engine-observed execution bound to the claim, candidate, command plan, and output policy. A runtime-red contract must prove the declared seam and failure signature; a successful build must verify the candidate. Reviewers submit typed `decision` (`pass` or `reject`) and a `contours` object mapping each configured contour to `applicable` and nonblank `evidence`, with `extended_scope_review` when needed; see the [typed proof reference](../reference/tasks.md#gates-and-evidence). `task submit` can compile evidence from traces, but Round 4 found that typed submissions can bypass observation (R4-01 and R4-02). The common acceptance path must enforce the same proof binding for all submission surfaces.
 
-Task execution can use a selected working tree. Native Plan execution, autonomous multi-agent role dispatch, and the headless runner are planned for AC-003. Run logs for that runner are likewise planned.
+Task execution can use a selected working tree. Native plan execution, role dispatch, and headless runners are implemented. Dedicated taskless workflow run logs are not implemented.
 
 ---
 
@@ -690,10 +695,10 @@ To eliminate runtime crashes during `task claim` or `task sync` caused by malfor
   - Validates YAML frontmatter, `id`, `invariants`, `owners`, and `depends_on`.
   - Parses `# Tasks` definitions, verifying disjoint write scopes and valid proof policies.
   - Constructs the in-memory execution DAG and asserts strict acyclicity (detects cycles before task initialization).
-- **Plan Document Validation (Deferred to AC-003)**:
-  - Validates `doc_type: plan` frontmatter, step declarations, and container references upon plan engine delivery in milestone AC-003.
+- **Plan Document Validation (Deferred)**:
+  - The planned validator would validate `doc_type: plan` frontmatter, step declarations, and container references. The `plan` commands validate their input separately.
 - **Whole-Workspace Scan (`validate` with no arguments)**:
-  - Scans active profile and all open milestone manifests across the repository in under 100 ms (plan document scanning deferred to AC-003).
+  - Scans active profile and all open milestone manifests across the repository in under 100 ms (plan document scanning is not implemented).
   - Emits machine-readable coordinates with line, column, and diagnostic code (`PASS` / `FAIL`), enabling agents to pre-flight any document modification before initiating workflow execution.
 
 ---

@@ -10,13 +10,13 @@ The `docs/workflows/` directory contains standalone, taskless gate graph definit
 ## Overview
 
 > [!NOTE]
-> Standalone Workflow dispatch (`contextunity-forge-mcp workflow run`) and dedicated run logging into `.forge/runs/` are admitted architecture planned for delivery in Milestone `AC-003`. Prior to AC-003 delivery, these are profile and test definitions; validation does not execute a taskless workflow. Native `plan run` is also planned for AC-003.
+> `contextunity-forge-mcp workflow run` executes a taskless workflow in the active workspace. `plan run` executes structured plans in-place. See the [CLI reference](../reference/cli.md#standalone-workflows) for the execution and persistence limits.
 
 Unlike **Milestones** (formal contractual releases with DAG waves and Level 0 preflight/post-verification) and **Plans** (in-place step-by-step operational manuals), a **Workflow** is a pure state machine of gates executed directly against repository state.
 
-- **Zero Tasks**: The planned model creates no task IDs or SQLite `tasks` rows.
-- **Zero Worktree Branching**: The planned runner uses the active workspace.
-- **Persistence**: The model defaults to `save: none` (in memory). Opt-in `save: log` and autonomous run logs are planned for AC-003.
+- **Zero Tasks**: The runner creates no task IDs or SQLite `tasks` rows.
+- **Zero Worktree Branching**: The runner uses the active workspace.
+- **Persistence**: Execution uses `save: none` (in memory); `save: log` and dedicated run logs are not implemented.
 - **Use Cases**: Continuous quality checks, polish loops, PR review automation, scheduled health audits, and lifecycle test suites.
 
 ## Example & Test Profiles

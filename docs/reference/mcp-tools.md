@@ -98,9 +98,16 @@ reader and response budgets. `mode` accepts `auto` (default), `lines`, `raw`,
 `search`, `delta`, `outline`, and `snippet`. Auto selects snippet when `selector`
 is present, search when `pattern` is present, and lines otherwise.
 
-Always prefer `selector` (e.g. `forge_read(path="src/lib.rs", selector="MyStruct")`
-or `forge_read(selector="src/lib.rs:MyStruct")`) to read entire functions, structs,
-or classes directly with verified digest and complete body source.
+When a symbol's unique name is already known, use
+`forge_read(selector="SymbolName")` for a digest-verified symbol read. Add the
+owner path with `forge_read(path="src/lib.rs", selector="SymbolName")` to
+restrict resolution. The response contains the complete body when it fits;
+continue any source pages using the returned offset and generation. Search when
+the name is unknown or disambiguation is needed.
+MCP also accepts `symbol` as an alias for `selector`, for example
+`forge_read(symbol="SymbolName")`. Supplying both fields with non-null values
+is rejected, including when either is an empty string; `null` is treated as
+absent. The alias has the same path restriction and source paging.
 
 Core text modes work with `profile: minimal` and create no code index.
 `start_line` is one-based; `line_count` defaults to 200 and accepts 1–10,000.
@@ -267,7 +274,7 @@ do not carry the client's current working directory. Set the server's
 
 ## Selectors and graph queries
 
-Use a symbol identifier returned by search whenever possible. A file path selects a module or file. Selectors accept an exact ID, `path:name` or `path::name`, `path:known_kind:name` when the middle token is a registered node kind, and `path:line` or `path#Lline` for the narrowest symbol covering that line. Relative paths may use `./`, `file:`, or `file://` prefixes. A bare name can be ambiguous when a module and symbol share that name; specify the path. Markdown belongs in `get_doc` and `search_docs`.
+Use a known unique symbol name directly; use an identifier returned by search when discovery or disambiguation is needed. A file path selects a module or file. Selectors accept an exact ID, `path:name` or `path::name`, `path:known_kind:name` when the middle token is a registered node kind, and `path:line` or `path#Lline` for the narrowest symbol covering that line. Relative paths may use `./`, `file:`, or `file://` prefixes. A bare name can be ambiguous when a module and symbol share that name; specify the path. Markdown belongs in `get_doc` and `search_docs`.
 
 `code_map_query` supports `overview`, `inspect`, `explain`, `impact`, `slice`, `unwired`, `untested`, `implementations`, `duplicates`, and `sql`. Its `impact` operation keeps the depth 2 default; the dedicated `code_map_impact` tool defaults to depth 1. Aliases: `doctor` for overview, and `search`, `discover`, or `find` for symbol search. `unwired` lists functions and methods with no indexed static caller, excludes classified entrypoints, and reports their number in `summary.excluded_entrypoints_count`; it is not a dead-code proof. Compact `inspect` and `explain` operations return the same symbol summary as their dedicated tools; `inspect` also uses the dedicated inspect Markdown layout and linked citation presentation. Explain retains its own `documents` page. Set `include_coverage=true` to add resolution coverage. For `operation="sql"` and SQL-targeted `code_map_analyze`, put exactly one read-only `SELECT` or `WITH` statement in `selector` or `target`. Leading whitespace and SQL comments are allowed, as are semicolons inside quoted values or comments and one trailing statement terminator; additional statements and writes are rejected. SQL rows preserve requested columns and SQLite values/text verbatim, including JSON-looking text; structural graph rows retain parsed JSON projections and omit internal ids. Secure SQL validation, query budget, and paged `QueryOptions` apply. Pass `limit`, `offset`, and `generation` as tool arguments. Impact direction defaults to `inbound`; `outbound` traverses dependencies used by the selected symbol. See [CLI reference](cli.md) for equivalent command forms.
 

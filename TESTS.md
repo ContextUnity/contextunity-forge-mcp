@@ -32,21 +32,26 @@ The root package's `--all-targets` run does not include the `forge-tasks`
 member's library unit tests. Record the separate member-library result alongside
 the root suite result.
 
-Record the complete command in the final integration evidence's
-`verification.command`:
-`cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets`.
-Set `verification.exit_code` to `0`, `tests_passed` to the sum of passed counts
-from `cargo test --all-targets`, and `tests_failed` to `0`; count the standalone
-commitment run only once and exclude Clippy from test counts.
-
 Prepare the binding with `milestone handoff-context <id> --target-base main` and
 obtain independent integration review against that exact final content and base.
 Follow the documentation-agent scan in [AGENTS.md](AGENTS.md#documentation-scan-before-handoff)
-before final verification. Supply the completed review and verification record to
-`milestone handoff <id> --evidence-file /tmp/handoff-evidence.json`; see the
-[record fields](docs/reference/tasks.md#milestone-cli-lifecycle). Handoff context
-commits admitted working-tree polish before producing the review binding. Run the
-required commands above on that content and obtain fresh independent review.
+before final verification. Handoff context commits admitted working-tree polish
+before producing the review binding. On that content, run
+`milestone verify <id> --target-base main` to execute the first applicable root
+command and persist its observation. The current repository profile's
+`check_full_repo` runs commands 1–3 above; run command 4 separately. Confirm
+the observed command still covers commands 1–3, and run any missing checks
+separately if the profile changes. Obtain fresh independent review.
+
+For initial handoff, copy the successful observation's `command`, `exit_code`,
+`tests_passed`, and `tests_failed` into the corresponding `verification` fields
+of `IntegrationEvidence`. Forge matches the command and applicable counts to
+its latest trace; do not replace its observed count with a deduplicated count.
+Separately report the unique passed-test count from `cargo test --all-targets`,
+counting the standalone commitment run only once and excluding Clippy, and report
+the member-library count without adding it to the trace-bound value. Supply the
+record to `milestone handoff <id> --evidence-file /tmp/handoff-evidence.json`;
+see the [record fields](docs/reference/tasks.md#milestone-cli-lifecycle).
 For source polish, select its registered project verification command through
 `verification.project_command`; handoff executes it again and records the observation.
 Select the registered lint command explicitly through `verification.lint_command`;
@@ -102,11 +107,12 @@ To prevent test-suite bloat, redundant execution storms, and synthetic masking, 
    - All tests for structured plans (`docs/plans/*.md`) and standalone workflows (`docs/workflows/*.yaml`) in Milestone AC-003 MUST use `PlanHarness` and `WorkflowHarness` with canonical static templates under `tests/acdd/fixtures/plans/` and `tests/acdd/fixtures/workflows/`.
    - Ad-hoc markdown/YAML heredoc copy-pasting, direct procedural bash-like scripting, and external CLI subprocess spawning are strictly banned for plan and workflow orchestrator test suites.
 
-10. **Profile-Driven Universal Lifecycle & Session Independence (`INV-TEST-PROFILE-DRIVEN-LIFECYCLE`)**:
+10. **Profile-Driven Universal Lifecycle & Worker Independence (`INV-TEST-PROFILE-DRIVEN-LIFECYCLE`)**:
     - Task integration and lifecycle tests must NOT hardcode private gate lists (`&["contract", "build", "review", "deliver"]`).
     - Task advancement must be driven dynamically via the task's active `GateProfile` (`harness.profile().executable_gates()`, `claim_next()`, `advance_to()`, `advance_to_completion()`).
     - The test harness automatically derives isolated synthetic sessions per simulated worker (`test-session-{worker}`) to make in-process tests immune to ambient host environment variables.
-    - Dedicated integration tests must explicitly verify the anti-cheat invariant: claiming an independent gate (e.g. `review`) from the same session as its prerequisite (`build`) must be rejected with `TASK_REVIEW_NOT_INDEPENDENT`.
+    - Dedicated integration tests must verify that an independent gate rejects the accepted predecessor's `worker_id` with `TASK_REVIEW_NOT_INDEPENDENT`, regardless of session metadata, while a distinct worker is not vetoed by missing or equal session metadata.
+    - Runner tests must separately verify distinct session identities and fingerprints, process isolation, and retained session reuse on rejection.
 
 ## Declarative Seam Testing via `<Domain>Harness`: Agent Authoring Guide
 
@@ -125,16 +131,16 @@ When writing or extending tests in this repository, agents MUST follow the **Pro
 | :--- | :--- | :--- | :--- |
 | `MilestoneHarness` | Milestone graph, DAG dependencies, verification evidence, handoff | `tests/acdd/fixtures/milestones/` (`linear.md`, `branching_deps.md`, `cancellation.md`) | `milestone_engine::handoff`, `milestone_engine::handoff_context` |
 | `TaskHarness` | Task state machine, claim, submit, profile-driven lifecycle, blackboard | In-memory SQLite for state-only cases; Git workspaces for persisted lifecycles | `tasks::claim`, `tasks::submit`, `tasks::manage` |
-| `PlanHarness` | Plan Markdown extraction; step DAG validation and execution await AC-003 | `tests/acdd/fixtures/plans/` (`linear.md`, `dag.md`) | `docs::extract_with_details` |
-| `WorkflowHarness` | Root-gate profile validation; standalone workflow dispatch and execution await AC-003 | `tests/acdd/fixtures/workflows/` (`simple.yaml`, `rejection_routing.yaml`) | `profile::validate_profile_document` |
+| `PlanHarness` | Plan fixtures, workspace materialization, and snapshot inspection | `tests/acdd/fixtures/plans/` (`linear.md`, `dag.md`) | `docs::extract_with_details`, plan runner |
+| `WorkflowHarness` | Root-gate profile validation and workspace materialization | `tests/acdd/fixtures/workflows/` (`simple.yaml`, `rejection_routing.yaml`) | `profile::validate_profile_document`, workflow runner |
 | `ExtractorHarness` | Syntax parsing, AST extraction, fact emission (zero disk I/O) | In-memory code snippets | `languages::rust::extract`, `languages::python::extract` |
 | `McpTestHarness` | MCP JSON-RPC protocol, tool routing, response compaction | Real Workspace files, SQLite, and workspace-local extraction cache | Production RMCP server over an in-process duplex stream |
 
-Run the plan and workflow skeleton checks with
+Run the plan and workflow harness checks with
 `cargo test --test acdd acdd::harness::`. These checks exercise Markdown
 extraction and the shared gate-profile schema from ADR 0021; they do not prove
 structured plan parsing, DAG execution, role dispatch, or persistence effects.
-Connect the harnesses to the production runners when AC-003 supplies those seams.
+Runner tests exercise those behaviors separately with materialized fixtures.
 
 ---
 
@@ -175,18 +181,18 @@ When a task introduces a distinct new behavioral contract or fail-closed invaria
       assert!(h.sections.iter().all(|section| section.doc_type == "plan"));
   }
   ```
-  This current harness exercises production Markdown extraction. Structured plan
-  execution and subtask delivery guards require the planned AC-003 runtime.
+  This example exercises production Markdown extraction. Separate runner tests
+  cover structured plan execution and subtask delivery guards.
 
 #### Scenario 3: Connecting an Existing Seam to a New Consumer
-When a new subsystem emerges (e.g. Headless Orchestrator in AC-003 driving `PlanHarness` or `TasksStore`):
+When a new subsystem emerges (e.g. a consumer of `PlanHarness` or `TasksStore`):
 1. **Extend the Harness API additively**: Once the production consumer exists,
    add its invocation to the domain harness so tests share the real wiring.
 2. **Author the Integration Seam Test**: Instantiate producer state via the
    harness, execute the consumer, and assert observable state transitions across
-   both components without mocking either collaborator. Plan and standalone
-   workflow execution APIs remain planned for AC-003; current harness checks
-   prove document extraction and gate-profile validation only.
+   both components without mocking either collaborator. Harness checks alone
+   prove document extraction and gate-profile validation; exercise the runner
+   separately to verify execution and persistence.
 
 ---
 

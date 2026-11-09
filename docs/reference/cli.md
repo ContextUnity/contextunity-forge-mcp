@@ -236,8 +236,8 @@ It resumes the persisted applicable gate, follows profile transitions and
 conditions, and returns the completed task with its durable receipt. Repeating
 the command for a completed task returns that receipt without rerunning gates.
 
-Supply the coordinator's genuine host session through `FORGE_AGENT_SESSION_ID`
-or a supported host session variable. Each configured role runner receives a
+Supply the coordinator's genuine session through `FORGE_AGENT_SESSION_ID`.
+Each configured role runner receives a
 separate session selected before its gate claim; that same identity is passed
 in its arguments and child environment for submission. The runner receives the
 prepared role prompt and complete claim context. A role takes precedence when
@@ -497,6 +497,9 @@ the former numbered-draft options; new draft workflows use `milestone draft`.
 
 `milestone handoff-context` prepares canonical content and accepted-task proof
 identities for external review and verification against an explicit target base.
+For initial handoff, `milestone verify <ID> --target-base <BASE>` runs the first
+applicable registered root command and records its transition and trace. The
+submitted verification command and applicable counts must match that observation.
 `milestone handoff --evidence-file` validates the resulting typed JSON record,
 requires every task to be completed with accepted proofs or identically cancelled
 in the manifest and task store without a completion receipt, plus a clean
@@ -504,8 +507,10 @@ committed implementation, and archives the
 milestone with the supplied evidence. The independent reviewer differs from all
 completed-task builders. Cancelled tasks retain their history without completion
 credit or implementation-scope permission. The manual `handoff` command consumes
-external evidence; `milestone run` executes the configured roles and verification
-before invoking that same pipeline.
+external review and verification evidence, and runs any selected registered
+project or lint commands; `milestone run` executes the configured roles and
+verification before invoking that same pipeline. Validated journal or archive
+retries use the [recovery rules](tasks.md#milestone-cli-lifecycle).
 
 See [integration evidence](tasks.md#milestone-cli-lifecycle) for the exact fields,
 content projection, proof retention, diagnostics, and optional commit pointers.

@@ -145,10 +145,11 @@ roles:
   independent_reviewer:
     mode: subagent
     reuse_on_reject: true
-    # Advisory templates returned in workflow_guidance.role_runner; the engine
-    # does not launch the runner. Quote/escape rendered values before execution.
-    # Runner slots: task_id, stage, role, worktree, model, reasoning.
-    runner: 'codex exec -C "{worktree}" -m "{model}" -c model_reasoning_effort="{reasoning}"'
+    # Templates are returned in workflow_guidance.role_runner. Headless run
+    # commands launch configured runners; manual coordinators may use the guidance.
+    # The process receives the prepared prompt through an argument; stdin is closed.
+    # Use an adapter that handles {session_id} when a role must resume a session.
+    runner: 'codex exec -C "{worktree}" -m "{model}" -c model_reasoning_effort="{reasoning}" "{prompt}"'
     # Prompt slots also include role_guidance and goal. Omitting prompt_template
     # with a runner configured supplies a default context/scope/evidence prompt.
     prompt_template: >-

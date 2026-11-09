@@ -19,6 +19,16 @@
 - Forge tool discovery and task operations: load the shared `contextunity-forge` skill.
 - Follow the [Blackboard procedure](skills/contextunity-forge/SKILL.md#blackboard) for claim context, progress reports, and gate or agent handoffs.
 
+When a symbol's unique name is already known, read it directly with
+`forge_read(selector="SymbolName")`; add `path="..."` to restrict resolution.
+Follow any source continuation to obtain the complete digest-verified body. Use
+search when discovery or disambiguation is needed.
+
+Use Blackboard `notes` for non-obvious technical context, not routine gate
+status, passing tests, or SHAs that add no context. Before rejecting a review,
+post structured `findings` with concrete remediation, then include the message
+ID in the required typed rejection findings; see the linked procedure.
+
 Use Forge MCP tools or the `contextunity-forge-mcp` CLI on the surface that provides the needed operation. Follow the active task profile and the `workflow_guidance` returned by task claim for gate sequence, proof policy, roles, models, review contours, and profile-specific behavior. Task builds and reviews run the scoped task seam test and strict Clippy (without forcing full unfiltered test suite execution during task iteration). Follow [TESTS.md](TESTS.md) for the exact task and milestone verification commands and count rules.
 
 The embedded ACDD profile registers `rust-check-and-test` as strict Clippy followed by tests. For automated gates (`contract`, `build`), run `contextunity-forge-mcp task verify <task_id> --test <test_path::test_fn> [--seam <target>]` (or MCP `task_manage(action: "verify", ...)`), then submit the stage via `task submit <task_id> --stage <stage> --action pass` without manual evidence assembly. Delivery infers proof from the accepted candidate snapshot. Review and schema-defined gates provide their declared typed evidence payload.
@@ -82,8 +92,7 @@ When every milestone task is completed with accepted proofs or identically cance
    - Emits the content binding (`authority_digest`, `implementation_digest`, `target_base_digest`, `commit`, `builders`).
 
 2. **Run Verification Commands**:
-   Run milestone verification commands (`cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets`).
-   Note the exact integer count of passed tests (e.g. 860) and 0 failed.
+   Run `contextunity-forge-mcp milestone verify <MILESTONE_ID> --target-base main` after preparing the binding. It executes the applicable registered root command and records the transition and trace required for initial handoff. Run the separate `cargo test -p forge-tasks --lib` gate and follow [TESTS.md](TESTS.md#milestone-handoff-gate) for counts and any remaining required checks.
 
 3. **Construct Integration Evidence File**:
    Write `.forge/integration-evidence.json` (ignored by Git) with:
@@ -96,10 +105,7 @@ When every milestone task is completed with accepted proofs or identically cance
      - `scope_findings`: `[]`
      - `contract_findings`: `[]`
    - `verification`:
-     - `command`: Full verification command string executed.
-     - `exit_code`: `0`
-     - `tests_passed`: Count of passed tests.
-     - `tests_failed`: `0`
+     - `command`, `exit_code`, `tests_passed`, `tests_failed`: Values returned by the successful `milestone verify` observation; the command and applicable counts must match its recorded trace.
      - `project_command`: Registered command ID from profile `commands:` (e.g. `"check_full_repo"`), NOT a raw shell string.
      - `lint_command`: Omit or specify a registered command ID from profile `commands:`.
 

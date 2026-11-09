@@ -104,7 +104,7 @@ cross-mount another suite's private files via `#[path = "../..."]`.
 | `McpTestHarness` | `tests/common/mcp_harness.rs` + `tests/mcp` | In-process MCP requests/tools (transport + session only) |
 | `CommitmentHarness` | `tests/commitment_integrity` | In-memory/disk commitment sealing, verification, and savepoint tamper probes |
 | Language / framework support | `tests/languages`, `tests/framework_manifests` | In-memory extract/index helpers and shared-cache cold parity checks |
-| `PlanHarness` / `WorkflowHarness` | `tests/acdd/harness` | Markdown/profile extract fixtures only until AC-003 admits execution |
+| `PlanHarness` / `WorkflowHarness` | `tests/acdd/harness` | Canonical plan and workflow fixtures, workspace materialization, and plan snapshot inspection for production runner tests |
 
 God-object growth, static utility dumping, and orphaned `*Observation` struct
 modules in domain harnesses are defects. Prefer small, composable primitives on the

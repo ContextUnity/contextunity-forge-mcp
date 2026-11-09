@@ -74,7 +74,18 @@ signature, docstring, and compact call summary; use `code_map_explain` for paged
 incoming/outgoing relationships. Request `include_coverage=true` when resolution
 evidence matters.
 
-**Symbol reads via `selector`**: ALWAYS prefer `forge_read(path="...", selector="Symbol")` or `forge_read(selector="path:Symbol")` to read entire functions, structs, or classes directly. It returns the complete symbol body with verified digest and enclosure context in one call.
+**Known symbol reads**: When the unique name is already known, use
+`forge_read(selector="SymbolName")` directly; add the owner path with
+`forge_read(path="...", selector="SymbolName")` to restrict resolution. For
+example, prefer `forge_read(selector="render_role_prompt")` over first calling
+`code_map_search(pattern="render_role_prompt")` and then reading a line range:
+the direct snippet checks the indexed digest and returns the complete symbol body
+within the response budget. If it is paged, continue with its `source_offset`
+and `generation` until complete. Search when the name is unknown or resolution
+needs disambiguation; inspect the returned node to confirm the intended owner.
+MCP also accepts `forge_read(symbol="SymbolName")` as an alias. Two non-null
+`symbol` and `selector` values conflict even if one is empty; `null` is absent.
+Path restriction and paging are unchanged.
 
 For arbitrary line bounds, `forge_read` accepts `start_line` and `line_count`, plus ergonomic variations: `end_line` computes the inclusive `line_count` from `start_line` (default 1) and rejects zero or an end before the start, `lines="100-200"` parses range bounds into `start_line` and `line_count`, `lines=50` or `max_lines=50` aliases `line_count`, `file_path` aliases `path`, and `query` aliases `pattern`. Workspace-root absolute paths are automatically stripped to relative workspace paths. When reading lines enclosed inside an indexed function, struct, or method, `forge_read` emits an enclosing symbol hint in the output footer with the copy-ready `selector` call. Use `mode="search"` with `pattern` for literal/regex search, `mode="delta"` for Git changes, and `mode="outline"` for Markdown or code declarations.
 CLI parity is `contextunity-forge-mcp read notes.txt --mode lines`. Snippets default to the complete symbol within the
@@ -181,8 +192,10 @@ Custom profiles (never the embedded default profile) may also configure optional
 and `{goal}` slots; when configured, `task_claim` renders them in
 `workflow_guidance.role_runner` (`runner` + `rendered_prompt`). Gates with
 `independent_from` enforce independence at both `task_claim` and `task_submit`
-across `worker_id` and persisted `session_fingerprint`. CLI and MCP calls obtain
-the session fingerprint from `FORGE_AGENT_SESSION_ID` when it is set and nonempty.
+by comparing `worker_id` with the accepted predecessor's worker. Optional
+session metadata comes from an explicit in-process identity or a nonempty
+`FORGE_AGENT_SESSION_ID`; it does not decide gate independence. Configured role
+runners retain distinct session fingerprints for isolation and rejection resumption.
 
 Explicit gate `tools` are requirements validated against enabled modules.
 Empty tool lists receive module-filtered advisory navigation tools for contract,
@@ -194,14 +207,14 @@ autonomously before expanding edits into unadmitted files within module roots; d
 or CLI `task verify <TASK_ID> [--test <file.rs::test_fn>] [--seam <target>]`; omit submit evidence to execute or reuse fresh
 claim-bound command proof.
 Typed contract and command proof require that observation and match its
-seam reference, exit code, and counts. `milestone verify` is an optional one-shot
-run of the first applicable root command gate from the profile; it reports pass or
-fail and records its command trace without creating a separate milestone repair or
-review lifecycle. Milestone handoff validates the current content binding, completed
-task receipts or cancelled task states, independent passing review, and successful
-verification supplied in `IntegrationEvidence`. Refresh integration evidence after
-changing the candidate. Handoff retries validate the accepted archive and evidence
-without requiring a root verification checkpoint.
+seam reference, exit code, and counts. After preparing the binding, run
+`milestone verify <id> --target-base <base>` for the first applicable root command.
+Initial handoff requires its latest passing transition and matching successful trace,
+as well as the current binding, completed task receipts or cancelled task states,
+and independent passing review. Copy the observed command and counts into
+`IntegrationEvidence`; external assertions alone cannot substitute for the trace.
+Refresh verification and review when bound content changes. Validated archive or
+journal retries follow their recovery rules without requiring pruned live rows.
 Command output schemas declare regex counts, noise, errors, and seam extraction
 under `commands.<id>.output`. Passing runs and short
 failures stay inline; truncated failures link worktree-confined trace logs.
@@ -218,7 +231,18 @@ preserve SQL/keeper state rather than repairing it manually.
 Use milestone scope for cross-task state and task/subtask scope for local
 decisions. Topics are `draft`, `notes`, `findings`, `blockers`, `decisions`, and
 `deferred`. Post material architectural decisions, findings, blockers, and
-scope justifications; gate telemetry already records routine transitions.
+scope justifications. Use `notes` only for non-obvious technical context that
+the next worker needs; do not duplicate routine gate status, successful tests,
+or SHAs unless they add context. Required verification and content-binding
+records still follow their governing workflow.
+
+Before rejecting a review, post structured `findings` with the affected code,
+the observed issue, and a concrete remediation. Then submit the rejection with
+the Blackboard message ID referenced in its findings. The ID supplements the
+required typed findings payload and claim-bound evidence; it does not replace
+them. MCP uses `task_submit(..., action="reject", findings=<JSON>)`; CLI uses
+`task submit TASK_ID --stage STAGE --action reject --evidence '<JSON_OBJECT>'
+--findings '<JSON>'`. Respect the active profile's evidence and routing rules.
 
 Read applicable messages after claim and inspect IDs for full payloads. A
 `contract_synthesis` architect records `topic="decisions"`; build drafts may

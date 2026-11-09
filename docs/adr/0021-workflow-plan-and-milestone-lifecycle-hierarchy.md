@@ -15,7 +15,7 @@ informed:
 # ADR 0021: Workflow, Plan, and Milestone Lifecycle Hierarchy
 
 > [!IMPORTANT]
-> This hierarchy is implemented across AC-001 (core task DAG and receipts), AC-002 (milestone graph and verification), and [AC-003](../milestones/AC-003-headless-orchestrator-and-role-runners.md) (planned headless orchestrator runtime and native `workflow run` and `plan run` commands). Root verify and handoff operations exist, but Round 4 found gaps in graph execution and verification authority; schema validation alone does not prove end-to-end execution.
+> This hierarchy includes the core task DAG and receipts, milestone verification, and the headless runtime with native `workflow run` and `plan run` commands. See the [ACDD execution reference](../reference/acdd.md#headless-task-milestone-plan-and-workflow-execution) for the implemented boundaries. Schema validation alone does not prove end-to-end execution.
 
 ## Context and decision
 
@@ -23,15 +23,15 @@ informed:
 
 ### Workflow
 
-A Workflow is a pure root `gates:` graph with no `tasks:` container, task IDs, task rows, or task claims. Execution is ephemeral and in memory by default (`save: none`). It can opt into an audit log. Native taskless dispatch, role execution, and autonomous run logs are planned for AC-003; a valid profile is not evidence that it has run.
+A Workflow is a pure root `gates:` graph with no `tasks:` container, task IDs, task rows, or task claims. The native runner executes it in memory with `save: none`, including configured role runners. Autonomous run logs are not implemented; a valid profile is not evidence that it has run.
 
 ### Plan
 
-A Plan uses only a `tasks:` container and executes its steps in the active working tree. It uses snapshots and does not automatically commit. It has no milestone synthesis or handoff gates. Native in-place `plan run` is planned for AC-003; completed plans may be archived separately.
+A Plan uses only a `tasks:` container and executes its steps in the active working tree. It uses snapshots and does not automatically commit. It has no milestone synthesis or handoff gates. Native `plan run` executes in place; completed plans may be archived separately.
 
 ### Milestone
 
-A Milestone combines root contract synthesis, a task DAG, engine verification, independent integration review, a delivery commit, and handoff context binding and archival. Root verification and handoff operations exist today. The accepted design uses a single root `gates:` graph and the declared transitions throughout; the Round 4 audit found that the existing root operations do not yet enforce that graph and that mandatory observed verification can be bypassed. Those defects remain under remediation.
+A Milestone combines root contract synthesis, a task DAG, engine verification, independent integration review, a delivery commit, and handoff context binding and archival. The headless runner executes the root `gates:` graph and its declared transitions, and the existing handoff validator checks content-bound verification and review. The [audit plan](../plans/gate-engine-bugs-and-coverage-audit.md) tracks additional identified boundaries.
 
 ```yaml
 gates:
@@ -67,7 +67,7 @@ gates:
 
 ## Persistence and audit log
 
-The architectural persistence levels are `none`, `log`, `snapshot`, and `commit`. `none` keeps execution in memory. `log` records gate progression, timestamps, commands, results, output digests, durations, review decisions, and terminal status in an audit log. `snapshot` adds working-tree snapshots; `commit` adds delivery commits and bound receipts. Workflow defaults to `none`, Plan to `snapshot`, and Milestone delivery to `commit`. Autonomous Workflow run logs, including `.forge/runs/` and associated trace records, are planned for AC-003 and are not evidence of current taskless execution. Existing task and milestone records retain their own evidence and lifecycle rules.
+The architectural persistence levels are `none`, `log`, `snapshot`, and `commit`. `none` keeps execution in memory. `log` records gate progression, timestamps, commands, results, output digests, durations, review decisions, and terminal status in an audit log. `snapshot` adds working-tree snapshots; `commit` adds delivery commits and bound receipts. Workflow defaults to `none`, Plan to `snapshot`, and Milestone delivery to `commit`. Autonomous Workflow run logs, including `.forge/runs/` and associated trace records, are not implemented. Existing task and milestone records retain their own evidence and lifecycle rules.
 
 ## Consequences and verification
 

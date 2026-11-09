@@ -54,7 +54,7 @@ The built-in profile walks a task through `contract`, `build`, `review`, and `de
 
 Augmented Context-Driven Development is the work loop around that queue.
 
-A milestone is a Markdown contract in `docs/milestones/`. It names the goal, the tasks, the files each task may change, and the proof expected. People create and close milestones from the CLI, so admission and archival stay a human action. Concurrent agents work in separate Git worktrees under `.worktrees/`. Each task holds an exclusive lock on its paths, so two agents do not edit the same file under one milestone.
+A milestone is a Markdown contract in `docs/milestones/`. It names the goal, the tasks, the files each task may change, and the proof expected. The CLI supports manual handoff and headless milestone execution with bound verification and review. Concurrent agents work in separate Git worktrees under `.worktrees/`. Each task holds an exclusive lock on its paths, so two agents do not edit the same file under one milestone.
 
 The built-in gates are:
 
@@ -124,18 +124,20 @@ Commit the profile and any framework manifests you rely on. Ignore the SQLite fi
 
 ### Milestones
 
-Milestone commands are CLI-only. Creating and archiving a milestone is a decision about scope, and it stays outside the agent's tool list.
+Milestone commands are CLI-only. Create a milestone explicitly and complete it through a validated handoff.
 
 ```bash
 contextunity-forge-mcp milestone init --num 045 --slug auth
 contextunity-forge-mcp milestone list --status active
 contextunity-forge-mcp milestone show 045 --full
 contextunity-forge-mcp milestone handoff-context 045 --target-base main > /tmp/045-context.json
-# Obtain independent review and run project verification for this exact context.
+# Obtain independent review for this exact context.
+contextunity-forge-mcp milestone verify 045 --target-base main
+# Complete all repository checks and prepare evidence from the observed result.
 contextunity-forge-mcp milestone handoff 045 --evidence-file /tmp/045-evidence.json
 ```
 
-`handoff` validates immutable task proofs and the [content-bound integration evidence](docs/reference/tasks.md#milestone-cli-lifecycle), then archives the milestone. Supply independent review and verification for the final content and selected target base. Rewriting branch commit SHAs does not invalidate unchanged content evidence; Forge records results without launching agents or running tests.
+`handoff` validates immutable task proofs, the observed root verification and [content-bound integration evidence](docs/reference/tasks.md#milestone-cli-lifecycle), then archives the milestone. Supply independent review and verification for the final content and selected target base. Forge executes selected registered project and lint commands during handoff; see [TESTS.md](TESTS.md#milestone-handoff-gate) for required checks. Rewriting branch commit SHAs does not invalidate unchanged content evidence.
 
 ### Tasks
 
