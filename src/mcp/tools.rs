@@ -54,6 +54,7 @@ fn allowed_fields_for_tool(tool_name: &str) -> &'static [&'static str] {
             "baseline",
             "output_file",
             "selector",
+            "symbol",
             "path",
             "paths",
             "show_source",
@@ -604,7 +605,7 @@ impl Server {
         )
     }
     #[tool(
-        description = "Read workspace text by path: lines, raw, search (pattern, optional regex/context), or Git delta (optional baseline). Auto selects snippet for selector, search for pattern, otherwise lines. Core reads work without an index. Outline uses docs for Markdown and codemap AST declarations for code; snippet requires codemap and preserves digest-verified complete-symbol paging with source_offset/generation. Optional output_file exports returned content to a confined path. Sensitive patterns, symlinks, traversal and NUL binary input are rejected. Enabled graph/task signals add scope badges and copy-ready Hints."
+        description = "Read workspace text by path: lines, raw, search (pattern, optional regex/context), or Git delta (optional baseline). To read a complete indexed function, struct, or class, pass symbol: \"SymbolName\" (or selector: \"SymbolName\"); optional path restricts lookup to a file. Auto selects snippet for symbol or selector, search for pattern, otherwise lines. Core reads work without an index. Outline uses docs for Markdown and codemap AST declarations for code; snippet requires codemap and preserves digest-verified complete-symbol paging with source_offset/generation. Optional output_file exports returned content to a confined path. Sensitive patterns, symlinks, traversal and NUL binary input are rejected. Enabled graph/task signals add scope badges and copy-ready Hints."
     )]
     fn forge_read(&self, Parameters(mut p): Parameters<Snippet>) -> CallToolResult {
         let format = p.page.output_format();

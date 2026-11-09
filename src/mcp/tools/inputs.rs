@@ -165,6 +165,8 @@ pub struct Snippet {
     #[serde(flatten)]
     /// Shared layered reader request.
     pub read: crate::engine::reader::ReadRequest,
+    /// Indexed symbol name, ID, or qualified selector; alias for selector. Supply only one.
+    pub symbol: Option<String>,
     /// Alias for path.
     pub file_path: Option<String>,
     /// One-based last line; computes line_count with start_line.
@@ -190,6 +192,12 @@ pub struct Snippet {
 }
 impl Snippet {
     pub(super) fn normalize(&mut self, root: &std::path::Path) -> anyhow::Result<()> {
+        self.read.selector = aliased_value(
+            self.read.selector.as_deref(),
+            &[self.symbol.as_deref()],
+            "selector",
+        )?
+        .map(str::to_owned);
         if self.read.path.is_none() {
             self.read.path = self.file_path.take();
         }

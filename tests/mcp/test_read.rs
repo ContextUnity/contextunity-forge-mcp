@@ -21,6 +21,132 @@ fn read_tool(client: &mut McpTestHarness, arguments: Value) -> Value {
 }
 
 #[test]
+fn forge_read_symbol_alias_is_discoverable_in_mcp_schema() {
+    let mut client = McpTestHarness::indexed(&[]).expect("MCP initialize");
+    let list = client
+        .request_value("tools/list", json!({}))
+        .expect("tools/list");
+    let tool = list["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "forge_read")
+        .expect("forge_read tool");
+    let properties = &tool["inputSchema"]["properties"];
+    assert!(properties["selector"].is_object(), "{tool}");
+    assert!(properties["symbol"].is_object(), "{tool}");
+    assert!(
+        tool["description"].as_str().unwrap().contains("symbol"),
+        "{tool}"
+    );
+    client.finish().expect("server must finish successfully");
+}
+
+#[test]
+fn forge_read_symbol_alias_matches_selector_with_and_without_path() {
+    let mut client =
+        McpTestHarness::indexed(&[("src/lib.rs", "pub fn unique_symbol() -> u32 {\n    42\n}\n")])
+            .expect("MCP initialize");
+    for path in [None, Some("src/lib.rs")] {
+        let mut selector = json!({"selector":"unique_symbol"});
+        let mut symbol = json!({"symbol":"unique_symbol"});
+        if let Some(path) = path {
+            selector["path"] = json!(path);
+            symbol["path"] = json!(path);
+        }
+        let expected = read_tool(&mut client, selector);
+        let actual = read_tool(&mut client, symbol);
+        assert_eq!(actual["source"], expected["source"]);
+        assert!(
+            actual["source"].as_str().unwrap().contains("42"),
+            "{actual}"
+        );
+        assert_eq!(actual["node"]["path"], "src/lib.rs");
+    }
+    client.finish().expect("server must finish successfully");
+}
+
+#[test]
+fn forge_read_symbol_alias_preserves_ambiguity_and_path_disambiguation() {
+    let mut client = McpTestHarness::indexed(&[
+        ("first.py", "def repeated():\n    return 1\n"),
+        ("second.py", "def repeated():\n    return 2\n"),
+    ])
+    .expect("MCP initialize");
+    let selector = read_response(&mut client, json!({"selector":"repeated"}));
+    let symbol = read_response(&mut client, json!({"symbol":"repeated"}));
+    assert_eq!(selector["result"]["isError"], true, "{selector}");
+    assert_eq!(symbol["result"]["isError"], true, "{symbol}");
+    assert!(
+        symbol.to_string().to_lowercase().contains("ambiguous"),
+        "{symbol}"
+    );
+    let actual = read_tool(&mut client, json!({"symbol":"repeated","path":"second.py"}));
+    assert_eq!(actual["node"]["path"], "second.py");
+    assert!(
+        actual["source"].as_str().unwrap().contains("return 2"),
+        "{actual}"
+    );
+    client.finish().expect("server must finish successfully");
+}
+
+#[test]
+fn forge_read_symbol_alias_rejects_duplicate_selector_fields() {
+    let mut client = McpTestHarness::indexed(&[("src/lib.rs", "pub fn example() {}\n")])
+        .expect("MCP initialize");
+    for (selector, symbol) in [
+        ("example", "example"),
+        ("example", "different"),
+        ("example", ""),
+        ("", "example"),
+    ] {
+        let response = read_response(&mut client, json!({"selector":selector,"symbol":symbol}));
+        assert_eq!(response["result"]["isError"], true, "{response}");
+        assert!(
+            response.to_string().contains("duplicate field"),
+            "{response}"
+        );
+    }
+    for arguments in [
+        json!({"selector":"example","symbol":null}),
+        json!({"selector":null,"symbol":"example"}),
+    ] {
+        let result = read_tool(&mut client, arguments);
+        assert!(
+            result["source"].as_str().unwrap().contains("example"),
+            "{result}"
+        );
+    }
+    client.finish().expect("server must finish successfully");
+}
+
+#[test]
+fn forge_read_symbol_alias_continues_digest_verified_source_pages() {
+    let mut client = McpTestHarness::indexed(&[(
+        "src/lib.rs", "pub fn paged_symbol() {\n    let x = 1;\n    let y = 2;\n    println!(\"{} {}\", x, y);\n}\n"
+    )]).expect("MCP initialize");
+    let first = read_tool(
+        &mut client,
+        json!({"symbol":"paged_symbol","max_body_lines":1,"leading_lines":0}),
+    );
+    assert_eq!(first["source_preview"]["next_source_offset"], 1, "{first}");
+    let next = read_tool(
+        &mut client,
+        json!({"symbol":"paged_symbol","max_body_lines":1,"leading_lines":0,
+        "source_offset":first["source_preview"]["next_source_offset"],"generation":first["generation"]}),
+    );
+    let selector_next = read_tool(
+        &mut client,
+        json!({"selector":"paged_symbol","max_body_lines":1,"leading_lines":0,
+        "source_offset":first["source_preview"]["next_source_offset"],"generation":first["generation"]}),
+    );
+    assert_eq!(next["source"], selector_next["source"]);
+    assert_eq!(next["source_preview"]["body_offset"], 1, "{next}");
+    assert_eq!(next["generation"], first["generation"]);
+    client.finish().expect("server must finish successfully");
+}
+
+#[test]
 fn forge_read_batch_snippet_exports_source() {
     let (w, harness) =
         McpTestHarness::with_files(&[("values.py", "def value():\n    return 42\n")]);
