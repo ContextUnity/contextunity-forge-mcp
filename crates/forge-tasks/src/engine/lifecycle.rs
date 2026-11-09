@@ -244,7 +244,8 @@ fn finish_claim(
         (None, None)
     };
     let response = (|| {
-        let mut details = workspace.guidance_envelope(store.inspect_details(id)?)?;
+        let mut details =
+            workspace.guidance_envelope_with_store(store, store.inspect_details(id)?)?;
         if let Some(object) = details.as_object_mut() {
             object.insert("breadcrumb".into(), json!(breadcrumb));
             object.insert("active_gate_path".into(), json!(cursor.gate_path.clone()));
@@ -848,13 +849,16 @@ fn manage_inner(root: &Path, p: &mut Manage) -> Result<Value> {
                 "retrieval_hint":"All selected tasks were synchronized. Use task_list or CLI task list for task summaries and CLI task inspect <task_id> for full details."}))
         }
         ManageAction::Inspect => {
-            let details = workspace
-                .guidance_envelope(checkpoint_details(&store, id.context("task_id required")?)?)?;
+            let details = workspace.guidance_envelope_with_store(
+                &store,
+                checkpoint_details(&store, id.context("task_id required")?)?,
+            )?;
             context::adapt_workspace_guidance(workspace, details)
         }
         ManageAction::Context => {
             let task_id = id.context("task_id required")?;
-            let details = workspace.guidance_envelope(checkpoint_details(&store, task_id)?)?;
+            let details = workspace
+                .guidance_envelope_with_store(&store, checkpoint_details(&store, task_id)?)?;
             context_bundle(root, workspace, task_id, details).map(bound_task_response)
         }
         ManageAction::Delete => Ok(serde_json::to_value(store.delete(

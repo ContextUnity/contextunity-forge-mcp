@@ -6,7 +6,7 @@ use crate::{
 use anyhow::{bail, Context, Result};
 use ignore::{gitignore::GitignoreBuilder, Match};
 use pulldown_cmark::{Event, Parser, Tag};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     collections::BTreeSet,
@@ -482,7 +482,75 @@ fn rejected_workflow_context(
     }))
 }
 
+#[derive(Serialize)]
+pub(crate) struct IndependentGateDispatch {
+    gate: String,
+    agent: String,
+    independent_from: String,
+    independent_from_worker_id: String,
+    suggested_worker_id: String,
+    directive: String,
+}
+
+fn subagent_role(profile: &crate::tasks::profile::GateProfile, stage: &str) -> String {
+    use crate::tasks::profile::ProofKind;
+    profile
+        .role_for_stage(stage)
+        .map(|(name, _)| name)
+        .unwrap_or_else(
+            || match profile.by_stage(stage).and_then(|gate| gate.proof.kind()) {
+                Some(ProofKind::Contract) => "contract_author",
+                Some(ProofKind::Command) => "builder",
+                Some(ProofKind::Review | ProofKind::Delivery) => "independent_reviewer",
+                _ if stage == "completed" => "completed",
+                _ => "worker",
+            },
+        )
+        .to_owned()
+}
+
 impl Workspace {
+    pub(crate) fn independent_dispatch(
+        &self,
+        store: &TasksStore,
+        value: &Value,
+    ) -> Result<Option<IndependentGateDispatch>> {
+        if matches!(value["status"].as_str(), Some("completed" | "cancelled")) {
+            return Ok(None);
+        }
+        let profile = self.profile_for_details(value)?;
+        let stage = value["stage"].as_str().context("task stage missing")?;
+        let cursor = super::claim::cursor_for_stage(&profile, stage)?;
+        let Some(prior) = cursor.gate.independent_from.as_deref() else {
+            return Ok(None);
+        };
+        let id = value["task_id"].as_str().context("task id missing")?;
+        let prior_cursor = super::claim::cursor_for_stage(&profile, prior)?;
+        let evidence = super::gates::accepted_evidence_for_cursor(
+            &store.connection,
+            id,
+            &profile,
+            &prior_cursor,
+        )?
+        .context("TASK_GATES_INVALID: independent gate has no accepted proof")?;
+        let slug = value["spec"]["task_ref"]
+            .as_str()
+            .context("task reference missing")?;
+        let gate = cursor.canonical_stage_id;
+        let agent = subagent_role(&profile, &gate);
+        let suggested_worker_id = format!("{slug}-{gate}");
+        let prior_worker = evidence.worker_id;
+        let directive = format!("[INDEPENDENT GATE DISPATCH REQUIRED] Next gate is '{gate}' (agent: '{agent}'). Rule: Must be independent from '{prior}' worker '{prior_worker}'. Directs coordinator to spawn an independent subagent with worker_id '{suggested_worker_id}'.");
+        Ok(Some(IndependentGateDispatch {
+            gate,
+            agent,
+            independent_from: prior.to_owned(),
+            independent_from_worker_id: prior_worker,
+            suggested_worker_id,
+            directive,
+        }))
+    }
+
     pub fn open(&self, database: &Path) -> Result<TasksStore> {
         let mut store = TasksStore::open_project(database, &self.repository, &self.project)?;
         store.set_profile(self.gates.clone());
@@ -522,7 +590,18 @@ impl Workspace {
         }
     }
     pub fn guidance_envelope(&self, value: Value) -> Result<Value> {
+        let registry = Registry::load(&self.root)?;
+        let store = registry.open(self)?;
+        self.guidance_envelope_with_store(&store, value)
+    }
+
+    pub(crate) fn guidance_envelope_with_store(
+        &self,
+        store: &TasksStore,
+        value: Value,
+    ) -> Result<Value> {
         let mut value = self.envelope(value)?;
+        let dispatch = self.independent_dispatch(store, &value)?;
         let profile = self.profile_for_details(&value)?;
         let stage = if value["status"] == "completed" {
             "completed"
@@ -541,18 +620,9 @@ impl Workspace {
                 })?)
             };
         let role_info = profile.role_for_stage(stage);
-        let configured_role = role_info.map(|(name, _)| name);
         let role_def = role_info.map(|(_, def)| def);
         let proof_kind = gate.and_then(|definition| definition.proof.kind());
-        let default_subagent_role = match proof_kind {
-            Some(crate::tasks::profile::ProofKind::Contract) => "contract_author",
-            Some(crate::tasks::profile::ProofKind::Command) => "builder",
-            Some(crate::tasks::profile::ProofKind::Review) => "independent_reviewer",
-            Some(crate::tasks::profile::ProofKind::Delivery) => "independent_reviewer",
-            _ if stage == "completed" => "completed",
-            _ => "worker",
-        };
-        let subagent_role = configured_role.unwrap_or(default_subagent_role);
+        let subagent_role = subagent_role(&profile, stage);
         let gap = guidance_gap(&self.root, &self.guidance);
         let mut steps = Vec::new();
         if gap.is_none() {
@@ -575,17 +645,9 @@ impl Workspace {
                 "Submit review proof for every contour in the configured contour set.".into(),
             );
         }
-        let builder = value["gates"].as_array().and_then(|gates| {
-            let prior = gate.and_then(|definition| definition.independent_from.as_deref())?;
-            gates.iter().rev().find_map(|gate| {
-                if gate["stage"] != prior || gate["state"] != "passed" {
-                    return None;
-                }
-                let evidence = gate["evidence"].as_str()?;
-                let parsed: Value = serde_json::from_str(evidence).ok()?;
-                parsed["worker_id"].as_str().map(str::to_owned)
-            })
-        });
+        if let Some(dispatch) = &dispatch {
+            steps.push(dispatch.directive.clone());
+        }
         let needs_independent_reviewer =
             gate.is_some_and(|definition| definition.independent_from.is_some());
         let rejection = rejected_workflow_context(&value, &profile, stage, role_def);
@@ -678,8 +740,8 @@ impl Workspace {
             "role": subagent_role,
             "steps": steps,
             "rules": rules,
-            "independence_rule": needs_independent_reviewer.then_some("Use a reviewer worker_id different from the accepted build worker_id."),
-            "independent_from_worker_id": if needs_independent_reviewer { builder } else { None },
+            "independence_rule": dispatch.as_ref().map(|dispatch| &dispatch.directive),
+            "independent_from_worker_id": dispatch.as_ref().map(|dispatch| &dispatch.independent_from_worker_id),
             "rejection": rejection,
             "warning": warning,
             "proof_kind": proof_kind.map(|kind| format!("{kind:?}").to_ascii_lowercase()),
@@ -688,6 +750,9 @@ impl Workspace {
             "policies": profile.policies,
             "review_sources": gate.map(|definition| definition.review_sources.clone()).unwrap_or_default(),
         });
+        if let Some(dispatch) = dispatch {
+            workflow_guidance["dispatch"] = serde_json::to_value(dispatch)?;
+        }
         if let Some(def) = role_def {
             workflow_guidance["mode"] = json!(def.effective_mode());
             let mut guide_parts = Vec::new();

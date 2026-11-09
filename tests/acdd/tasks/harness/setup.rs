@@ -182,6 +182,11 @@ impl TaskHarness {
     }
 
     pub fn persisted_claim_session(&self, revision: u64) -> String {
+        self.persisted_claim_session_optional(revision)
+            .expect("claim has explicit session metadata")
+    }
+
+    pub fn persisted_claim_session_optional(&self, revision: u64) -> Option<String> {
         self.store
             .connection
             .query_row(

@@ -24,7 +24,6 @@ use self::trace::prune_milestone_gate_records;
 
 pub(crate) use blackboard::clear_blackboard;
 pub use blackboard::is_canonical_blackboard_topic;
-pub(crate) use lifecycle::{current_session_fingerprint, validate_session_independence};
 pub use lifecycle::{host_session_fingerprint, UNKNOWN_SESSION_FINGERPRINT};
 pub use lifecycle::{ClaimBoundExecutionRun, ClaimBoundExecutionTrace};
 pub use trace::{

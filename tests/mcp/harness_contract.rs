@@ -120,7 +120,7 @@ fn shared_mcp_harness_supports_server_rpc_and_cli_seams() {
 }
 
 #[test]
-fn trusted_mcp_sessions_preserve_claim_and_next_independence() {
+fn mcp_claim_and_next_preserve_worker_independence_and_session_metadata() {
     for next in [false, true] {
         let workspace =
             crate::harness::session_workspace().expect("real session fixture should initialize");
@@ -166,14 +166,23 @@ fn trusted_mcp_sessions_preserve_claim_and_next_independence() {
             json!({"task_id":"test/m-session:first","stage":"review","worker_id":"reviewer","worktree":workspace.root(),"bundle":false})
         };
         let tool = if next { "task_manage" } else { "task_claim" };
-        let (_, same) = builder.call(tool, args.clone()).expect("MCP transport");
-        assert!(
-            same.to_string().contains("TASK_REVIEW_NOT_INDEPENDENT"),
-            "{same}"
-        );
         let mut reviewer =
             McpTestHarness::with_session(&workspace, "review-session").expect("MCP initialize");
-        let claimed = reviewer
+        let mut reused_worker = args.clone();
+        reused_worker["worker_id"] = json!("builder");
+        reused_worker["format"] = json!("json");
+        let (_, same) = reviewer.call(tool, reused_worker).expect("MCP transport");
+        if next {
+            let state = mcp_payload(&same);
+            assert_eq!(state["status"], "idle", "{same}");
+            assert_eq!(state["worker_id"], "builder", "{same}");
+        } else {
+            assert!(
+                same.to_string().contains("TASK_REVIEW_NOT_INDEPENDENT"),
+                "{same}"
+            );
+        }
+        let claimed = builder
             .payload(tool, args)
             .expect("MCP tool should succeed");
         assert_eq!(claimed["stage"], "review", "{claimed}");
@@ -183,14 +192,14 @@ fn trusted_mcp_sessions_preserve_claim_and_next_independence() {
             claimed["claim_revision"].as_u64().unwrap(),
         )
         .unwrap();
-        assert_eq!(persisted, "review-session");
+        assert_eq!(persisted, "builder-session");
         builder.finish().expect("server must finish successfully");
         reviewer.finish().expect("server must finish successfully");
     }
 }
 
 #[test]
-fn trusted_mcp_sessions_reject_builder_submit_with_typed_or_automatic_evidence() {
+fn mcp_submission_uses_claimed_worker_proof_across_transports() {
     for automatic in [false, true] {
         let workspace =
             crate::harness::session_workspace().expect("real session fixture should initialize");
@@ -243,13 +252,6 @@ fn trusted_mcp_sessions_reject_builder_submit_with_typed_or_automatic_evidence()
         if !automatic {
             args["evidence"] = checked["evidence"].clone();
         }
-        let (_, denied) = builder
-            .call("task_submit", args.clone())
-            .expect("MCP transport");
-        assert!(
-            denied.to_string().contains("TASK_REVIEW_NOT_INDEPENDENT"),
-            "automatic={automatic}: {denied}"
-        );
         assert_eq!(
             reviewer
                 .payload(
@@ -260,7 +262,7 @@ fn trusted_mcp_sessions_reject_builder_submit_with_typed_or_automatic_evidence()
             "review"
         );
         assert_eq!(
-            reviewer
+            builder
                 .payload("task_submit", args)
                 .expect("MCP tool should succeed")["stage"],
             "deliver"

@@ -14,3 +14,4 @@ mod session_recovery;
 mod snapshots;
 mod stores;
 mod submissions;
+mod worker_independence;

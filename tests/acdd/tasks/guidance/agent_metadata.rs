@@ -323,7 +323,15 @@ fn task_guidance_follows_agent_metadata_workspace_config_and_active_stage() {
             );
             assert!(review["workflow_guidance"]["independence_rule"]
                 .as_str()
-                .is_some_and(|rule| rule.contains("different")));
+                .is_some_and(
+                    |rule| rule.starts_with("[INDEPENDENT GATE DISPATCH REQUIRED]")
+                        && rule
+                            .contains("Must be independent from 'build' worker 'guidance-builder'")
+                ));
+            assert_eq!(
+                review["workflow_guidance"]["independence_rule"],
+                review["workflow_guidance"]["dispatch"]["directive"]
+            );
 
             let claimed_review = TaskHarness::claim_in_worktree(
                 server,

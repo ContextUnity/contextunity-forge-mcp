@@ -1352,6 +1352,9 @@ fn submit_inner(root: &Path, p: Submit) -> Result<Value> {
         }
     };
     let mut response = serde_json::to_value(task_result)?;
+    if let Some(dispatch) = workspace.independent_dispatch(&store, &response)? {
+        response["dispatch"] = serde_json::to_value(dispatch)?;
+    }
     if let Some(obj) = response.as_object_mut() {
         obj.remove("digest");
     }

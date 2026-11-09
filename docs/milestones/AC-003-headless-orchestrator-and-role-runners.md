@@ -954,38 +954,179 @@ receipt:
 
 ```yaml
 task_ref: eliminate-session-scraping-and-enforce-worker-separation
-target: "Remove ambient host session scraping from task lifecycle gate checks, enforce worker separation at independent gates while preserving runner session fingerprints, and emit explicit coordinator directives for subagent dispatch"
+target: Remove ambient host session scraping from task lifecycle gate checks, enforce worker separation at independent gates while preserving runner session fingerprints, and emit explicit coordinator directives for subagent dispatch
 proof_policy: seam-test-first
-contract_revision: 2
+contract_revision: 3
 depends_on:
-  - forge-guide-lifecycle-gates-and-subtasks
+- forge-guide-lifecycle-gates-and-subtasks
 scope_roots:
-  - crates/forge-tasks/src/store/
-  - crates/forge-tasks/src/engine/
-  - src/mcp/
-  - docs/reference/
-  - tests/
+- crates/forge-tasks/src/store/
+- crates/forge-tasks/src/engine/
+- src/cli/
+- src/mcp/
+- docs/reference/
+- tests/
 scope:
-  - crates/forge-tasks/src/store/lifecycle.rs
-  - crates/forge-tasks/src/store/lifecycle/session_tests.rs
-  - crates/forge-tasks/src/engine/workspaces.rs
-  - crates/forge-tasks/src/engine/gates/submit.rs
-  - crates/forge-tasks/src/engine/mod.rs
-  - src/mcp/server.rs
-  - docs/reference/tasks.md
-  - docs/reference/acdd.md
+- crates/forge-tasks/src/store/lifecycle.rs
+- crates/forge-tasks/src/store/lifecycle/session_tests.rs
+- crates/forge-tasks/src/engine/workspaces.rs
+- crates/forge-tasks/src/engine/gates/submit.rs
+- crates/forge-tasks/src/engine/mod.rs
+- src/cli/guide.rs
+- src/mcp/server.rs
+- docs/reference/tasks.md
+- docs/reference/acdd.md
+- src/mcp/tools.rs
+- tests/acdd/tasks/lifecycle.rs
+- tests/acdd/tasks/lifecycle/worker_independence.rs
+- tests/acdd/tasks/lifecycle/session_recovery.rs
+- tests/acdd/tasks/harness/setup.rs
+- crates/forge-tasks/src/engine/lifecycle.rs
+- tests/mcp/context/guide.rs
+- crates/forge-tasks/src/store/mod.rs
+- tests/acdd/tasks/lifecycle/profiles.rs
+- tests/mcp/harness_contract.rs
+- tests/acdd/tasks/guidance/agent_metadata.rs
 symbols:
-  - fn:submit_with_pre_persist
-status: planned
+- fn:submit_with_pre_persist
+status: completed
 subtasks:
-  - subtask_ref: remove-ambient-session-scraping
-    title: "Remove ambient host session scraping from lifecycle gate checks while preserving explicit runner session identities and fingerprints"
-  - subtask_ref: pure-worker-independence-validation
-    title: "Remove validate_session_independence; enforce gate independence purely via worker_id != prior_worker without session coupling"
-  - subtask_ref: universal-independent-gate-dispatch-guidance
-    title: "Emit explicit [INDEPENDENT GATE DISPATCH REQUIRED] directives with {task_slug}-{gate} and {agent} in workflow_guidance and submit dispatch response"
-  - subtask_ref: test-suite-and-seam-decoupling
-    title: "Replace obsolete session-probing unit tests with clean seam tests proving independent gate progression across CLI and MCP without ambient env coupling"
+- subtask_ref: remove-ambient-session-scraping
+  title: Remove ambient host session scraping from lifecycle gate checks while preserving explicit runner session identities and fingerprints
+  status: completed
+  evidence: Lifecycle resolver now accepts explicit in-process identity first, then nonblank FORGE_AGENT_SESSION_ID only; no CODEX/AGY/CLAUDE/CURSOR host lookups. MCP startup preserves optional explicit metadata without fabricating an unknown identity. Canonical runner generation, transport, process groups and rejection resumption untouched. Transport units2 and orchestrator86 plus runner23 pass (archive36edb572faa26d95). Real child-env CLI cases cover absent/legacy-only/equal/distinct transport.
+- subtask_ref: pure-worker-independence-validation
+  title: Remove validate_session_independence; enforce gate independence purely via worker_id != prior_worker without session coupling
+  status: completed
+  evidence: Removed validate_session_independence, both veto calls and obsolete crate-private re-export. Existing accepted-prior worker checks, active claim worker/revision/worktree, candidate and observed proof validation remain. Worker domain8 passes after final assertions (archive e3a631b88cd1fa03); task suite93 passes (6c88be37b4f4694d), including negative reused-worker/foreign-evidence cases and recovery. Distinct workers advance across missing/unknown/equal/changed session metadata.
+- subtask_ref: universal-independent-gate-dispatch-guidance
+  title: Emit explicit [INDEPENDENT GATE DISPATCH REQUIRED] directives with {task_slug}-{gate} and {agent} in workflow_guidance and submit dispatch response
+  status: completed
+  evidence: One typed nonpersisted projection uses selected/pinned profile canonical cursor, configured role/fallback, task_ref and canonical accepted prior evidence. Submit and guidance share exact dispatch/directive. Tests exercise arbitrary proof:none audit and review inspection, actual CLI/MCP submit responses and inspect/context parity, conditional skips/explicit pass/custom role, actionable steps and read-only repeats. Domain8 passed; fresh claim14 contract3 exact dispatch seam verify passed1/0 after final edits with strict root lint/docs173 (archive28d33178f865d6de).
+- subtask_ref: test-suite-and-seam-decoupling
+  title: Replace obsolete session-probing unit tests with clean seam tests proving independent gate progression across CLI and MCP without ambient env coupling
+  status: completed
+  evidence: 'Final unique regression coverage374: task93 + ACDD MCP20 + MCP150 (includes guide12, typed/automatic transport and stdio) archive6c88be37b4f4694d; orchestrator86 + command runner23 + resolver unit2 archive36edb572faa26d95. Final domain8 recheck e3a631b88cd1fa03 is a subset, not double-counted. Root strict all-target/all-feature Clippy passes, docs173 and diff check pass, final claim-bound seam1/0 archive28d33178f865d6de. Replaced obsolete session-veto expectations while retaining worker/metadata/proof/recovery dimensions; lifecycle collection47->48 for added route/role/nonmutation domain, MCP harness6->6. Updated admitted task/acdd docs and shared guide sentence/tests; out-of-root skill/TESTS wording routed to coordinator #1756, never bypassed scope.'
+extended_scope:
+- src/mcp/tools.rs
+- tests/acdd/tasks/lifecycle.rs
+- tests/acdd/tasks/lifecycle/worker_independence.rs
+- tests/acdd/tasks/lifecycle/session_recovery.rs
+- tests/acdd/tasks/harness/setup.rs
+- crates/forge-tasks/src/engine/lifecycle.rs
+- tests/mcp/context/guide.rs
+- crates/forge-tasks/src/store/mod.rs
+- tests/acdd/tasks/lifecycle/profiles.rs
+- tests/mcp/harness_contract.rs
+- tests/acdd/tasks/guidance/agent_metadata.rs
+receipt:
+  delivery_gate: deliver
+  candidate_gate: build
+  contract_revision: 3
+  passed_at: 2026-11-09T22:06:01.306903323+00:00
+  evidence:
+    command_proof:
+      command: rust-check-and-test
+      exit_code: 0
+      log: |
+        [rust-check-and-test::tests/acdd/tasks/lifecycle/worker_independence.rs]
+        SCOPE_VIOLATION_WARNING: docs/milestones/AC-003-headless-orchestrator-and-role-runners.md
+        PASS rust-check-and-test::tests/acdd/tasks/lifecycle/worker_independence.rs: exit=0 passed=1 failed=0 (1469 ms)
+      tests_passed: 1
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: All19 changed source/test/doc paths are within20 candidate paths and admitted scope. Eleven extensions individually justified. Guide correction explicitly admitted by revision3 decision1748/1751. No protected Cargo/build/profile edit; prior milestone receipts/user changes preserved.
+        claims:
+          applicable: true
+          evidence: Acceptance1-5 trace to canonical claim/submit/dispatch owners and exact current-library production tests.374 regressions+3 independent scratch probes pass. Forged worker/revision/task/stage/proof/worktree/candidate inputs rejected; observed proof/candidate checks retained. No current task defect.
+        concurrency:
+          applicable: true
+          evidence: Existing transaction/revision/claim fencing retained; removed only fingerprint veto. Read-only nonpersisted dispatch uses canonical accepted proof/cursor and current store; repeated context and failed mutation probes leave task state identical. No added locks, schema, shared cache, parallel executor or nested work.
+        project_isolation:
+          applicable: true
+          evidence: Workspace/profile/root and claim worktree bindings unchanged; explicit invocation identity transport only. MCP metadata remains in-process/transport, absent from tool JSON. Existing workspace tests and isolation/resume/spawner regressions pass. Scratch mutations confined to disposable Git/SQLite fixtures.
+        administration:
+          applicable: true
+          evidence: Typed proof, scope/candidate, configured gate conditions/roles and immutable receipt authorities retained. Dispatch is coordinator guidance with exact actual prior worker, not authorization or a launcher. Root strict Clippy0/warnings0, docs/diff0. Outside-root instruction reconciliation1756 explicitly routed, not edited or represented closed.
+      extended_scope_review:
+        approved_paths:
+        - src/mcp/tools.rs
+        - tests/acdd/tasks/lifecycle.rs
+        - tests/acdd/tasks/lifecycle/worker_independence.rs
+        - tests/acdd/tasks/lifecycle/session_recovery.rs
+        - tests/acdd/tasks/harness/setup.rs
+        - crates/forge-tasks/src/engine/lifecycle.rs
+        - tests/mcp/context/guide.rs
+        - crates/forge-tasks/src/store/mod.rs
+        - tests/acdd/tasks/lifecycle/profiles.rs
+        - tests/mcp/harness_contract.rs
+        - tests/acdd/tasks/guidance/agent_metadata.rs
+        reason_verified: true
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-HEADLESS-ROLE-RUNNER-ORCHESTRATION: When roles declare runner and prompt_template, Forge CLI (task run / milestone run) autonomously claims gates, renders role prompts with gate context bundles, spawns subagent runner processes in isolated POSIX process groups with distinct session fingerprints, executes command and delivery gates with zero tokens, and routes review rejections via reject_routing until completion.'
+    - 'INV-INDEPENDENT-REVIEWER-SESSION: Reviewer runners execute with an isolated session identity and fingerprint distinct from the builder runner session, satisfying reviewer separation and proof independence invariants.'
+    - 'INV-REJECT-ROUTING-FEEDBACK-LOOP: When review gates reject with structured findings, the orchestrator routes execution back to the configured upstream stage (scope -> build, symbols -> contract) and passes the review findings into the resumed builder session without cold restarts.'
+    - 'INV-TOPOLOGICAL-WAVE-EXECUTION: Milestone run executes tasks in topological wave order, collecting and verifying evidence envelopes automatically and gating subsequent waves until dependencies complete.'
+    - 'INV-IN-PLACE-EXECUTION: Task, milestone, and plan orchestration supports execution directly in the current workspace (--in-place) without mandatory worktree cloning or branching when isolated worktrees are not requested.'
+    - 'INV-PLAN-WORKFLOW-ORCHESTRATION: The orchestrator supports standalone workflows (docs/workflows/*.yaml) via contextunity-forge-mcp workflow [list|show|run] and structured plans (doc_type: plan in docs/plans/*.md) via contextunity-forge-mcp plan [list|show|run], executing in-place under universal gate governance.'
+    - 'INV-DELIVERY-SUBTASK-COMPLETION-GUARD: Mechanical delivery verification fails closed with TASK_SUBTASKS_INCOMPLETE if any declared subtask under the active task or plan step is not completed or cancelled, and with TASK_SUBTASK_EVIDENCE_MISSING if any completed subtask lacks non-empty verification evidence.'
+    - 'INV-CLI-UNIFIED-ARGUMENTS: Global CLI and orchestrator execution accept explicit path parameters (--root, --db, --config for custom forge-mcp.yaml, and --profile for custom profile.yaml) with deterministic resolution order.'
+    - 'INV-PLAN-WORKFLOW-HARNESS: All tests for structured plans (docs/plans/*.md) and standalone workflows (docs/workflows/*.yaml) must use PlanHarness and WorkflowHarness with canonical templates in tests/acdd/fixtures/plans/ and workflows/. Ad-hoc markdown heredocs and subprocess CLI spawning are strictly banned.'
+    architectural_notes:
+    - |
+      decisions: AC-003 eliminate-session-scraping-and-enforce-worker-separation, revision2, claim5, worker ac003-worker-contract-01a1c08b, actual session01a1c08b-4515-7e72-9466-b989c7b20048, base63ec5df44fe48d7da2fd586381ec04973a90a3a5.
+
+      Authority: full current task acceptance1-5 and unchanged dispatch sentence; milestone header/outcome/invariants and delivered predecessors; user decisions #1711/#1725. Runner identities/fingerprints and explicit transport remain required. Only lifecycle gate independence becomes worker-based. Read root/source/test/task owner instructions, architecture index, ADR0001/0015/0016/0019/0020/0021 and active profile/claim guidance. Reuse previously read unchanged owner instructions. No preflight agents. Forge graph fresh,889files/parse_errors0; static coverage30.63% is partial, so exact owner source reads supplement graph and AST. Current worktree initially clean at guide delivery63ec5df4.
+
+      Producer/consumer trace:
+      - CLI task claim/submit/next -> engine Claim/Submit/Manage -> Registry/Workspace authority -> TasksStore lifecycle ClaimContext::claim / engine::gates::submit_with_pre_persist -> SQLite claims, accepted gate evidence and existing checkpoint transaction. MCP tools task_claim/task_submit/task_manage inject Server.session_fingerprint and enter these same engine APIs. CLI Claim/Submit pass None today; store current_session_fingerprint then scrapes FORGE/CODEX/AGY/CLAUDE/CURSOR. Server::new similarly resolves a host identity/sentinel. Both claim and submit already reject identical worker IDs, then additionally call validate_session_independence, causing the unwanted missing/colliding-session veto. Existing stale claim/revision/evidence/candidate validation is independent of this veto and must stay.
+      - Workspace::guidance_envelope resolves selected/pinned profile, active stage/role, accepted prior evidence and independent_from_worker_id, but currently emits generic reviewer wording. Engine::submit_inner returns the actual post-transition task plus candidate metadata with no dispatch. These are the two consumers of one new internal projection, not independent policy owners.
+      - Headless task_runner selects fresh role sessions or retained rejected-builder identity, passes explicit Claim/Submit session metadata, spawns through spawn_role_runner, requires accepted gate submission, and preserves worker/session/worktree ownership of active claims. Spawner generates/validates fresh/resume identities, sets child FORGE_AGENT_SESSION_ID, preserves argv boundaries and process_group(0); monitor drains/reaps. RoleObservations maintains runner-level independence and restores observations. All these runner mechanisms remain unchanged. CLI task/milestone run bootstrap still requires a genuine explicit coordinator identity. No synthetic identity to appease a gate.
+
+      Decision / minimum implementation:
+      1. Remove validate_session_independence and both lifecycle calls. Keep the current worker_id comparison against accepted prior evidence in ClaimContext::claim and submit_with_pre_persist. Do not bypass typed proof, stale revision/worker/worktree binding, candidate equality, transaction/checkpoint behavior, profile pins, conditions or rejection routes. Same worker stays TASK_REVIEW_NOT_INDEPENDENT regardless of session; distinct workers may pass even with absent, unknown, equal or changed metadata. A fabricated evidence worker remains stale, not a way to bypass active claim ownership.
+      2. Limit lifecycle identity capture to explicit transport: explicit argument first, canonical FORGE_AGENT_SESSION_ID next, blank/absent -> None; never infer lifecycle identity from CODEX_THREAD_ID, AGY_CONVERSATION_ID, CLAUDE_SESSION_ID or CURSOR_SESSION_ID. Preserve current helper/public compatibility and session columns as metadata; no migration, table, registry or fingerprint deletion. The shared legacy-named host helper can consume canonical explicit transport only so Server::new cannot reintroduce host scraping. Runner bootstrap continues to require explicit FORGE when no argument is available. Explicit runner invocation/session generation/resume transport remains untouched. Server identity metadata can still be supplied using with_session_fingerprint and cloned/rebased to selected worktrees; it is no gate proof. Do not remove runner fields, session validation, process-group isolation or rejection resumption.
+      3. Add one small internal dispatch projection in the current engine/workspaces owner, using actual post-transition/pinned profile cursor, GateDef.independent_from, configured role (existing role fallback only when absent), TaskSpec.task_ref and accepted prior evidence.worker_id. No gate-name/review-proof heuristics, shadow role registry or new persisted dispatch state. Use existing canonical accepted-evidence/cursor helpers; if a prerequisite lacks accepted proof, preserve existing fail-closed validation and never invent a prior worker. Resolve the next actual gate after conditions/routing, not the lexical successor of the submitted gate.
+      4. Structured dispatch shape: {gate,agent,independent_from,independent_from_worker_id,suggested_worker_id,directive}. suggested_worker_id is {task_slug}-{gate}. directive must exactly implement the existing acceptance3 sentence: [INDEPENDENT GATE DISPATCH REQUIRED] Next gate is '{gate}' (agent: '{agent}'). Rule: Must be independent from '{prior_gate}' worker '{prior_worker}'. Directs coordinator to spawn an independent subagent with worker_id '{task_slug}-{gate}'. No wording downgrade, hardcoded review/build role, or execution side effect. Engine submit returns dispatch when the resulting next gate declares independent_from. workflow_guidance.dispatch uses the identical object; its independence_rule and actionable steps include the exact directive. No dispatch for a non-independent next gate or completed task. Repeated context reads are read-only; submit idempotency and stored proof remain canonical. Preserve bounded formatter behavior and existing guidance fields. Actual dispatch remains the coordinator/orchestrator consumer, not a new launcher in the gate engine.
+      5. Update admitted tasks/acdd references to distinguish worker-based lifecycle independence from real separate runner sessions and explicit FORGE transport. The newly delivered guide currently mentions fingerprints as live gate identity; if its exact text requires correction, admit the smallest owner path through Forge first. Never broadly rewrite accepted guide work. Task scope permits src/mcp and docs/reference only; cli guide code is outside scope_roots and cannot be silently edited. Any required correction there must be routed to coordinator rather than hidden as test repair.
+
+      Contract tests / replacement plan:
+      - Dedicated tests/acdd/tasks/lifecycle/worker_independence.rs registered in lifecycle.rs; existing TaskHarness::disk_with_profile + MilestoneFixtureBuilder, real SQLite/engine and McpTestHarness. Small shared domain fixture has author proof:none -> audit proof:none independent_from author -> inspection proof:review independent_from author -> finish delivery. This isolates independence from command proof and also proves arbitrary gate names and non-review independence; review proof still uses existing canonical fixture evidence. Stop before actual delivery.
+      - Real MCP claim and submit with unknown/equal/distinct metadata; separate submission test claims with a valid distinct fingerprint first then changes transport metadata to expose submit's independent veto independently of claim. Assert actual task state and accepted evidence workers. Negative same-worker claim and forged evidence-worker tests preserve nonmutation/revision checks.
+      - Dedicated CLI transport smoke cases use a child-only environment, clearing all session variables; absent, legacy-host-only and explicit FORGE values (equal/distinct) must progress based on workers. Inspect persisted optional metadata using the existing TaskHarness SQLite readback owner. No global set_var/remove_var and no fake CLI.
+      - Dedicated dispatch test enters public engine submit, compares actual CLI inspect and MCP context, and checks the exact sentence and structured shape for both audit/builder and inspection/independent_reviewer. Another case confirms absent dispatch when next gate has no independence. Primary proof target is this missing production dispatch seam; independence tests separately expose the authentic coupling.
+      - Replace obsolete first CLI session-fallback-veto test in session_recovery.rs, retaining its unrelated rejection/recovery test unchanged. Replace obsolete raw-SQL validate_session_independence unit probes with explicit/canonical transport precedence and legacy-host-exclusion cases; production-seam tests subsume their admitted worker/session variation dimensions. Preserve spawner transport/fresh/resume/process-group regressions and headless real-runner/rejection tests. No production stubs needed because all called APIs already compile.
+      - Extend scope exactly for lifecycle registration/new domain/obsolete CLI owner/harness nullable readback. Scope already reacquired src/mcp/tools.rs after guide delivery. Changes in this role are tests and Forge-managed manifest extension only. No protected Cargo.toml/build.rs/.forge edits or Git history operations.
+
+      Builder sequence: remove gate veto while retaining worker guard; canonicalize explicit metadata transport; implement one shared dispatch projection and connect engine submit/guidance; retire superseded tests through the replacement map without losing runner transport coverage; update admitted docs and route any frozen guide correction to coordinator; run focused owner tests + runner/guide/rejection regressions and strict Clippy, then fresh claim-bound build proof. Contract author runs authentic clean compiling assertion red101 and submits contract only. Builder/reviewer/delivery are subsequent roles.
+    - |
+      decisions: Revision3 contract re-admission: eliminate-session-scraping-and-enforce-worker-separation, genuine session 01a1c08b-4515-7e72-9466-b989c7b20048, worker ac003-worker-contract-01a1c08b, fresh contract claim11, unchanged HEAD63ec5df44fe48d7da2fd586381ec04973a90a3a5.
+
+      Verified complete live authority against revision2: only contract_revision2->3, added scope_root src/cli/, and exact scope path src/cli/guide.rs changed. Full tracked/nonignored-untracked inventory1061 paths, all bytes+modes unchanged except that coordinator-owned milestone amendment; all prior milestone content before task6 and acceptance1-5 are byte-identical. Existing source/tests, active profile, AGENTS and architectural authority match the previous synthesis. Read #1748/#1749; #1748 explicitly resolves the shared-guide owner omission. #1750 AUTHORITY_GAP is now resolved, not deferred to Build. Current claim workflow_guidance is read and retained; seam-test-first, no preflight agents, genuine session CLI proof/submit only.
+
+      Architectural decision #1746 and builder blueprint #1747 remain authoritative without redesign: lifecycle independent gates compare worker_id only against accepted prior evidence; remove validate_session_independence and its claim/submit veto calls while preserving stale ownership, revision/worktree/candidate/proof/transaction controls. Keep optional explicit session metadata and canonical FORGE_AGENT_SESSION_ID transport; remove ambient host scraping from gate path, not runner identities. Keep real role runner distinct session/fingerprint enforcement, resume/forbidden-session sets, explicit spawner environment, process groups/timeouts/drain/reap unchanged. No schema or duplicate authority. Universal dispatch remains one typed nonpersisted projection in the existing engine owner, shared by submit and workflow_guidance and derived from the actual next profile gate/role/independent_from plus accepted prior worker. Retain the exact task acceptance directive and task_slug-gate suggestion; no shadow registry or launcher.
+
+      Only builder-plan amendment: src/cli/guide.rs:120 lifecycle.runners is now admitted. Correct its fingerprint-based gate-check sentence in the existing shared CLI/MCP producer to explain that independent gate checks compare worker_id, while configured runners still receive distinct session identities/fingerprints and explicit transport. Preserve the rest of the accepted producer, capability policy, formatter, response bounds and CLI/MCP parity. Reuse affected guide tests; if a test expectation truly needs correction, extend the exact tests/ path via Forge before editing (tests/ is already an admitted root). Co-evolve already-admitted docs/reference/tasks.md and acdd.md. This is the necessary direct consumer correction from #1748, not additional functionality. No guide text or any production source is edited by this contract author.
+
+      The existing dedicated production-seam contracts are intact. Fresh claim11/r3 proof will run exact tests/acdd/tasks/lifecycle/worker_independence.rs::independent_gate_dispatch_is_shared_by_submit_and_guidance with seam crates/forge-tasks/src/engine/mod.rs::submit against unchanged live production. It must compile cleanly then assert runtime101 on missing dispatch. Old run34 is retained historical observation, not reused as fresh claim authority. Later parity/role/dispatch assertions after the first red remain builder green obligations. Prior required strict Clippy and42 preservation tests passed; files are unchanged, so no redundant broad rerun is needed. Extra unchanged package-only gates.rs baseline lint remains separately disclosed, not repaired or suppressed.
+
+      After fresh valid verify, submit contract pass through CLI with the same genuine session, inspect accepted candidate and final inventory, then stop at ready/build. No production implementation, protected edits, manual manifest updates, history/staging changes, review, delivery or main landing. Evidence: /tmp/ac003-worker-contract-r3-01a1c08b; the single evidence map remains /tmp/ac003-worker-contract-r2-01a1c08b/evidence-map.md with this revision continuation.
+    - 'decisions: {"task_id":"forge-mcp/AC-003-headless-orchestrator-and-role-runners:eliminate-session-scraping-and-enforce-worker-separation","contract_revision":3,"build_claim_revision":14,"review_claim_revision":25,"candidate":"48443de35ca9bc779cf019c20190e0d747f4fb96","baseline":"63ec5df44fe48d7da2fd586381ec04973a90a3a5","reviewer":"codex-sol-reviewer","reviewer_session":"01a1bdd1-3650-7c50-9ba7-5bf4cdd6f747","builder_session":"01a1c09d-0043-7601-b745-a82481fcbfe7","decision":"pass","open_findings":[],"authority":["Full task authority manifest953-1023 (acceptance1-5)","User decisions1711,1725,1748 and contract1746,1747,1751","Builder1753-1755,1757,1758; latest scoped messages","Active profile task.review and five contours; root/source/tests/docs owner rules, tests/acdd/tasks/AGENTS.md, TESTS.md, performance architecture (unchanged from preceding reviews)"],"binding":"Parentless candidate has20 admitted blobs/modes. Compared each path against guide delivery63ec5df4:19 changed,725 insertions/536 deletions. Absent snapshot paths are not deletions. No candidate edits.","acceptance":[{"id":1,"source":"store/lifecycle.rs:1-24; src/mcp/server.rs:87; orchestrator/task_runner.rs32-166 and spawner.rs309-312 (unchanged)","proof":"Resolver observes explicit argument then nonblank FORGE transport only; AST and exact source contain no legacy host lookup in gate path. Canonical runner/session types, generation, process groups, environment isolation, timeout/drain/reap and rejection resume untouched.86 orchestration+23 command-runner+2 resolver tests pass; real child CLI absence/legacy-only/equal/distinct metadata matrix passes."},{"id":2,"source":"store/lifecycle.rs1094-1106; engine/gates/submit.rs93-178,275-321","proof":"Both gates compare against canonical accepted prior evidence.worker_id. Session veto deleted, not weakened. Active evidence task/stage/revision/worker/worktree, concurrent revision fence, observed proof and candidate checks retained. Same-worker negatives and forged worker tests pass. Independent scratch8 field mutations fail without task mutation; correct evidence accepts changed metadata."},{"id":3,"source":"engine/workspaces.rs486-552; engine/mod.rs1355-1357","proof":"Single typed nonpersisted dispatch projection from actual resulting canonical gate, selected/pinned profile role/fallback, task_ref and accepted prior evidence helper. Exact six fields and acceptance sentence tested for arbitrary proof:none audit and review inspection; conditional skip, explicit pass, custom configured role. Scratch rejection/rebuild proves latest prior worker is used, not immediate predecessor or stale author. No dispatch for non-independent/completed/cancelled states."},{"id":4,"source":"engine/workspaces.rs598-755; engine/lifecycle.rs245,852,861","proof":"Submit and guidance use same projection; exact directive included in independence_rule, steps and adapted actionable_steps. Real CLI inspect/MCP context parity plus repeat read-only state checks. Scratch default/explicit Markdown and JSON retain exact directive/object, Markdown equality and existing response bound."},{"id":5,"source":"tests/acdd/tasks/lifecycle/worker_independence.rs; store/lifecycle/session_tests.rs; changed profile/recovery/MCP tests","proof":"Six obsolete private session-veto tests replaced by2 explicit-transport tests and8 production contracts. Old CLI host-veto replaced with real process child-only env matrix. Recovery corruption dimensions, same-worker guard, null/forged evidence and typed/automatic proof remain; no ignore/stub/new launcher.374 unique regressions pass, no repeats double-counted."}],"extended_scope":{"src/mcp/tools.rs":"Reacquired shared MCP owner after guide delivery; included snapshot remains unchanged, no needless edit.","tests/acdd/tasks/lifecycle.rs":"Register focused worker-independence domain.","tests/acdd/tasks/lifecycle/worker_independence.rs":"Eight dedicated real CLI/MCP/engine contracts for worker identity, bindings, dispatch, profile routes and read-only context.","tests/acdd/tasks/lifecycle/session_recovery.rs":"Replace obsolete CLI session-veto coverage with worker transport domain; retain rejection/checkpoint recovery matrix.","tests/acdd/tasks/harness/setup.rs":"Nullable persisted metadata readback for multiple explicit/missing-session callers.","crates/forge-tasks/src/engine/lifecycle.rs":"Reuse current TasksStore for canonical dispatch in claim/inspect/context, avoiding extra database opens.","tests/mcp/context/guide.rs":"Assert admitted shared-guide correction distinguishes worker gates from real runner fingerprints.","crates/forge-tasks/src/store/mod.rs":"Remove obsolete crate-private validator/current-session re-export.","tests/acdd/tasks/lifecycle/profiles.rs":"Update obsolete metadata veto expectations while retaining arbitrary profiles, worker rejection, proof/candidate and recovery behavior.","tests/mcp/harness_contract.rs":"Keep same-worker claim/next rejection and metadata readback; prove typed/automatic claimed-worker submission across transports.","tests/acdd/tasks/guidance/agent_metadata.rs":"Assert exact directive and dispatch agreement instead of obsolete generic wording."},"contours":{"paths":{"applicable":true,"evidence":"All19 changed source/test/doc paths are within20 candidate paths and admitted scope. Eleven extensions individually justified. Guide correction explicitly admitted by revision3 decision1748/1751. No protected Cargo/build/profile edit; prior milestone receipts/user changes preserved."},"claims":{"applicable":true,"evidence":"Acceptance1-5 trace to canonical claim/submit/dispatch owners and exact current-library production tests.374 regressions+3 independent scratch probes pass. Forged worker/revision/task/stage/proof/worktree/candidate inputs rejected; observed proof/candidate checks retained. No current task defect."},"concurrency":{"applicable":true,"evidence":"Existing transaction/revision/claim fencing retained; removed only fingerprint veto. Read-only nonpersisted dispatch uses canonical accepted proof/cursor and current store; repeated context and failed mutation probes leave task state identical. No added locks, schema, shared cache, parallel executor or nested work."},"project_isolation":{"applicable":true,"evidence":"Workspace/profile/root and claim worktree bindings unchanged; explicit invocation identity transport only. MCP metadata remains in-process/transport, absent from tool JSON. Existing workspace tests and isolation/resume/spawner regressions pass. Scratch mutations confined to disposable Git/SQLite fixtures."},"administration":{"applicable":true,"evidence":"Typed proof, scope/candidate, configured gate conditions/roles and immutable receipt authorities retained. Dispatch is coordinator guidance with exact actual prior worker, not authorization or a launcher. Root strict Clippy0/warnings0, docs/diff0. Outside-root instruction reconciliation1756 explicitly routed, not edited or represented closed."}},"verification":{"commands":[{"command":"cargo clippy --all-targets --all-features -- -D warnings","exit_code":0,"warnings":0},{"command":"cargo test --test acdd acdd::tasks::","exit_code":0,"passed":93,"failed":0,"ignored":0},{"command":"cargo test --test acdd acdd::mcp::","exit_code":0,"passed":20,"failed":0,"ignored":0},{"command":"cargo test --test mcp","exit_code":0,"passed":150,"failed":0,"ignored":0},{"command":"cargo test --test acdd acdd::orchestrator::","exit_code":0,"passed":86,"failed":0,"ignored":0},{"command":"cargo test --test acdd acdd::runner::","exit_code":0,"passed":23,"failed":0,"ignored":0},{"command":"cargo test -p forge-tasks --lib store::lifecycle::session_tests::","exit_code":0,"passed":2,"failed":0,"ignored":0},{"command":"contextunity-forge-mcp docs check","exit_code":0},{"command":"git diff --check","exit_code":0}],"passed":374,"failed":0,"ignored":0,"scratch":{"command":"/tmp/ac003-identity-review-m671u9aj/acdd-eb447d574a36190a reviewer_ --nocapture --test-threads=1","compile_exit_code":0,"exit_code":0,"passed":3,"failed":0,"ignored":0,"method":"Copy current tests to /tmp, append reviewer-only probes to copied domain, compile with fresh Cargo-selected exact current libraries/argv. Read-only includes/copies resolve relocated fixture paths. Real engine/SQLite/MCP/Clap/formatter paths, no candidate edits.","setup_history":"First scratch compiler attempts failed solely on relocated include_str paths; exact docs/skills and default/profile YAML dependencies supplied under /tmp before clean compile. Earlier logs retained.","checks_transport_note":"Long ctx_shell RPC timed out at120s while subprocess checks continued; durable subprocess exit/count ledger read after all commands completed. No command failure reclassified as pass."},"count_note":"Eight worker tests are within93 tasks; guide12 within150 MCP, not double-counted. Root strict all-target/all-feature Clippy lane only; no claim of member-package Clippy or full milestone all-target test verification."},"deferred":[{"blackboard":1756,"owner":"coordinator documentation/instruction reconciliation before milestone closure","paths":["skills/contextunity-forge/SKILL.md:184","TESTS.md:109"],"description":"Prior text still couples independent gates to session fingerprints. Outside task roots; preserve and route exact correction while retaining genuine runner identity separation. Not represented as fixed by this candidate."}],"artifact":"/tmp/ac003-identity-review-m671u9aj","report":"/tmp/ac003-identity-review-m671u9aj/review-report.md","proof_file":"/tmp/ac003-identity-review-m671u9aj/review-proof.json","integrity_file":"/tmp/ac003-identity-review-m671u9aj/integrity-before-pass.json","conclusion":"Independent PASS warranted. Preserve #1756 coordinator instruction reconciliation before milestone closure; this task does not claim it fixed. Follow actual applicable remaining gates and same-session Forge-generated delivery."}'
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Acceptance

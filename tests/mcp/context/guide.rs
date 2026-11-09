@@ -167,6 +167,9 @@ fn lifecycle_guide_preserves_live_claim_and_proof_authority() {
         );
     }
     let runners = mcp["runners"].to_string().to_lowercase();
+    assert!(runners.contains("independent gate checks compare worker_id"));
+    assert!(runners.contains("forge_agent_session_id"));
+    assert!(runners.contains("recovery metadata and runner isolation controls"));
     for rule in [
         "runner",
         "independent",

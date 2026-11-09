@@ -343,17 +343,37 @@ subtasks:
 Gates are dynamically governed by the active profile (`acdd_profile`), defaulting to `contract`, `build`, `review`, and `deliver`.
 The final task gate performs task delivery; `milestone handoff` is the separate
 command that closes and archives the whole milestone.
-Each accepted submission releases ownership. Review requires a worker different from the
-accepted builder and verifying the same candidate commit. For gates configured with
-`independent_from`, Forge also compares nonempty session fingerprints at claim and
-submission. `FORGE_AGENT_SESSION_ID` takes priority; when it is unset or blank, Forge
-checks the supported host variables `CODEX_THREAD_ID`, `AGY_CONVERSATION_ID`,
-`CLAUDE_SESSION_ID`, and `CURSOR_SESSION_ID`. The MCP server captures this identity
-at startup and does not accept it from tool JSON. If either claim has no nonempty
-fingerprint, Forge rejects the independent gate with `TASK_REVIEW_SESSION_UNKNOWN`;
-set a stable, distinct session identity for each reviewer and builder. Review/delivery
+Each accepted submission releases ownership. A gate with `independent_from` requires
+a `worker_id` different from the accepted worker of that configured predecessor,
+at both claim and submission. This applies to arbitrary gate names and proof kinds.
+Session fingerprints do not prove gate independence: missing, equal or changed
+session metadata does not bypass or veto the worker check. Existing claim revision,
+worker, worktree, candidate and observed-proof bindings still apply.
+
+Optional session metadata comes from an explicit in-process argument first, then
+nonblank `FORGE_AGENT_SESSION_ID`; absent or blank transport leaves no metadata.
+Forge does not infer it from legacy agent host variables. The MCP server captures
+the explicit transport at startup, supports trusted in-process metadata, and does
+not accept session identity from tool JSON. Configured role runners still generate
+and transport real distinct session identities/fingerprints for process isolation
+and rejection resumption. Those runner controls remain separate from gate checks.
+Review/delivery
 rejection records findings and returns the task to remediation at `gate.reject_to`
 (defaulting to `build` in standard profile).
+
+When the resulting next gate declares `independent_from`, submission returns
+`dispatch` with `gate`, `agent`, `independent_from`, `independent_from_worker_id`,
+`suggested_worker_id` and `directive`. The same object appears in
+`workflow_guidance.dispatch`; its directive also appears in `independence_rule`
+and `steps`. It uses the actual selected profile gate/role and accepted prior
+worker, with suggested worker `{task_slug}-{gate}`:
+
+```text
+[INDEPENDENT GATE DISPATCH REQUIRED] Next gate is '{gate}' (agent: '{agent}'). Rule: Must be independent from '{prior_gate}' worker '{prior_worker}'. Directs coordinator to spawn an independent subagent with worker_id '{task_slug}-{gate}'.
+```
+
+Dispatch is guidance for the coordinator, not a process launch or stored proof.
+It is absent when the next gate is not independent or the task is completed.
 
 The embedded profile assigns `contract_author`, `builder`, and
 `independent_reviewer` subagents. The contract author posts a blackboard `draft`
@@ -556,9 +576,9 @@ Contract digests bind `repository`, `project`, `id`, `invariants`, `owners`, `de
 - `TASK_CANDIDATE_MISMATCH`: The candidate snapshot from the build gate does not match current worktree state. Restore the worktree to the candidate snapshot before retrying delivery or submitting rejection.
 - `TASK_NOT_READY`: The task is blocked by unsatisfied dependencies or parent milestone state.
 - `TASK_ALREADY_CLAIMED`: The task gate is currently held under an active claim revision by another worker.
-- `TASK_REVIEW_SESSION_UNKNOWN`: An independent gate has no verifiable session fingerprint for its prior claim or current reviewer; configure a supported session identity and reclaim the affected gate.
 - `TASK_STALE_SUBMISSION`: Submission evidence does not match the active gate, claim revision, or candidate snapshot baseline.
-- `TASK_REVIEW_NOT_INDEPENDENT`: An independent gate uses a worker or nonempty session fingerprint that matches its configured predecessor.
+- `TASK_REVIEW_NOT_INDEPENDENT`: An independent gate uses the same `worker_id` as its configured predecessor's accepted proof. Dispatch a distinct worker; changing session metadata does not satisfy this rule.
+- `TASK_REVIEW_SESSION_UNKNOWN`: The headless milestone runner lacks accepted builder session metadata required for isolated integration review. Restore explicit runner identity/recovery data; task gate worker checks do not emit this diagnostic.
 - `TASK_SELECTOR_INVALID`: Unknown action or invalid field combination in `task_manage` or CLI commands.
 - `TASK_STALE_CLAIM`: Active claim revision diverged or open claim row is missing; release or reclaim the task.
 - `TASK_NOT_FOUND`: The requested task ID is not found in SQLite.

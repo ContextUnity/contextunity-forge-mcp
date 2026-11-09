@@ -84,11 +84,7 @@ impl Server {
             request_adapter: None,
             extraction_cache_dir: None,
             invocation,
-            session_fingerprint: Some(
-                crate::forge_tasks::store::host_session_fingerprint().unwrap_or_else(|| {
-                    crate::forge_tasks::store::UNKNOWN_SESSION_FINGERPRINT.to_owned()
-                }),
-            ),
+            session_fingerprint: crate::forge_tasks::store::host_session_fingerprint(),
         }
     }
 
@@ -120,7 +116,7 @@ impl Server {
         )
     }
 
-    /// Supplies trusted host session identity without exposing it to tool JSON.
+    /// Supplies explicit session metadata without exposing it to tool JSON.
     pub fn with_session_fingerprint(mut self, session_fingerprint: String) -> Self {
         self.session_fingerprint = Some(session_fingerprint);
         self

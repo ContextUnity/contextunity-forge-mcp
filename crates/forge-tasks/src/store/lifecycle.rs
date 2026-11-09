@@ -1,13 +1,13 @@
 use super::*;
 
-/// Internal marker for a host process that could not resolve an agent session.
+/// Compatibility marker for unavailable runner session metadata.
 pub const UNKNOWN_SESSION_FINGERPRINT: &str = "__forge_unknown_agent_session__";
 
 pub(crate) fn current_session_fingerprint(explicit: Option<&str>) -> Option<String> {
     resolve_session_fingerprint(explicit, |key| std::env::var(key).ok())
 }
 
-/// Resolve the host agent identity from the canonical Forge variable or known host variables.
+/// Read optional session metadata from the explicit Forge transport.
 pub fn host_session_fingerprint() -> Option<String> {
     resolve_session_fingerprint(None, |key| std::env::var(key).ok())
 }
@@ -19,73 +19,11 @@ fn resolve_session_fingerprint(
     if let Some(session) = explicit.filter(|session| !session.trim().is_empty()) {
         return Some(session.to_owned());
     }
-    [
-        "FORGE_AGENT_SESSION_ID",
-        "CODEX_THREAD_ID",
-        "AGY_CONVERSATION_ID",
-        "CLAUDE_SESSION_ID",
-        "CURSOR_SESSION_ID",
-    ]
-    .into_iter()
-    .find_map(|key| environment(key).filter(|value| !value.trim().is_empty()))
+    environment("FORGE_AGENT_SESSION_ID").filter(|value| !value.trim().is_empty())
 }
 
 #[cfg(test)]
 mod session_tests;
-
-#[expect(
-    clippy::too_many_arguments,
-    reason = "independence compares the prior proof, active claim, and submitting session in one check"
-)]
-pub(crate) fn validate_session_independence(
-    conn: &Connection,
-    id: &str,
-    stage: &str,
-    prior: &str,
-    evidence: &crate::tasks::gates::Evidence,
-    worker: &str,
-    claim_revision: Option<u64>,
-    current_fp: Option<&str>,
-) -> Result<()> {
-    let prior_fp: Option<String> = conn
-        .query_row(
-            "SELECT session_fingerprint FROM task_claims WHERE task_id=?1 AND revision=?2",
-            params![id, evidence.claim_revision],
-            |row| row.get(0),
-        )
-        .optional()?
-        .flatten();
-    let claim_fp: Option<String> = if let Some(revision) = claim_revision {
-        conn.query_row(
-            "SELECT session_fingerprint FROM task_claims WHERE task_id=?1 AND revision=?2",
-            params![id, revision],
-            |row| row.get(0),
-        )
-        .optional()?
-        .flatten()
-    } else {
-        None
-    };
-    let known_fingerprint = |fingerprint: &str| {
-        !fingerprint.trim().is_empty() && fingerprint != UNKNOWN_SESSION_FINGERPRINT
-    };
-    let prior_fp = prior_fp.filter(|fingerprint| known_fingerprint(fingerprint));
-    let claim_fp = claim_fp.filter(|fingerprint| known_fingerprint(fingerprint));
-    let current_fp = current_fp.filter(|fingerprint| known_fingerprint(fingerprint));
-    if prior_fp.is_none()
-        || current_fp.is_none()
-        || (claim_revision.is_some() && claim_fp.is_none())
-    {
-        bail!("TASK_REVIEW_SESSION_UNKNOWN: independent gate '{stage}' requires a known session fingerprint for both the prior claim and current reviewer; set FORGE_AGENT_SESSION_ID or use a supported agent host session variable, then reclaim the affected gate");
-    }
-    let prior_fp = prior_fp.as_deref().unwrap_or_default();
-    let current_fp = current_fp.unwrap_or_default();
-    if prior_fp == current_fp || claim_fp.as_deref() == Some(prior_fp) {
-        let prior_worker = &evidence.worker_id;
-        bail!("TASK_REVIEW_NOT_INDEPENDENT: task '{id}'. gate '{stage}' was claimed from the same agent session fingerprint ('{current_fp}') as '{prior}' despite changing worker_id from '{prior_worker}' to '{worker}'. Do: spawn a separate subagent process/session to claim and review this gate.");
-    }
-    Ok(())
-}
 
 /// One persisted command gate execution bound to an active claim and Git candidate.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1165,16 +1103,6 @@ impl ClaimContext {
                 if prior_worker == worker {
                     bail!("TASK_REVIEW_NOT_INDEPENDENT: task '{id}'. gate '{}' requires an independent worker distinct from '{prior}' worker '{prior_worker}'. Do: dispatch a separate independent agent session to claim and execute stage '{}'.", task.stage, task.stage);
                 }
-                validate_session_independence(
-                    tx,
-                    id,
-                    &task.stage,
-                    prior,
-                    &prior_evidence,
-                    worker,
-                    None,
-                    self.session_fingerprint.as_deref(),
-                )?;
             }
         }
         let my_scope_paths: Vec<PathBuf> = tx

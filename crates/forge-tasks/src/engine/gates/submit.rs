@@ -48,10 +48,9 @@ impl TasksStore {
         evidence: &mut Evidence,
         action: &str,
         findings: Option<&serde_json::Value>,
-        session_fingerprint: Option<&str>,
+        _session_fingerprint: Option<&str>,
         before_persist: impl FnOnce(&Task) -> Result<Option<String>>,
     ) -> Result<Task> {
-        let session_fingerprint = crate::store::current_session_fingerprint(session_fingerprint);
         self.assert_id(id)?;
         if evidence.stage != stage {
             bail!("TASK_STAGE_INVALID: task '{id}'. evidence.stage '{}' != submitted stage '{stage}'. Do: set evidence.stage to '{stage}'.", evidence.stage);
@@ -303,16 +302,6 @@ impl TasksStore {
             if builder == evidence.worker_id {
                 bail!("TASK_REVIEW_NOT_INDEPENDENT: task '{id}'. reviewer worker '{}' matches builder '{builder}'. Do: dispatch a separate independent reviewer agent session to claim and submit review (do not reuse builder '{builder}').", evidence.worker_id);
             }
-            crate::store::validate_session_independence(
-                &tx,
-                id,
-                stage,
-                prior,
-                &prior_evidence,
-                &evidence.worker_id,
-                Some(task.claim_revision),
-                session_fingerprint.as_deref(),
-            )?;
             let build = prior_evidence;
             if gate_def.proof.kind() != Some(ProofKind::Delivery) {
                 let canonical = evidence.commit.as_deref().and_then(|supplied| {

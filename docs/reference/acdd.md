@@ -19,6 +19,20 @@ recoverable caution callout. See the
 
 The embedded profile assigns contract author, builder, and independent reviewer roles. The contract author posts the draft as a blackboard `draft` targeted to `build`; the reviewer continues from review through delivery in the same worker session. Workflow guidance includes `NO_PREFLIGHT_SUBAGENTS`, the registered combined Rust command, and scoped test commands. Contract and build context includes indexed scope symbols, external callers, covering tests, ADR invariant summaries, and a task-bound expected evidence template. The task engine rejects disconnected contract seams and public signature changes whose indexed callers fall outside admitted scope.
 
+For any gate declaring `independent_from`, claim and submission compare its
+`worker_id` with the accepted worker of that predecessor. Session metadata is
+optional and does not decide gate independence. Lifecycle metadata uses explicit
+in-process identity or `FORGE_AGENT_SESSION_ID`, without legacy host scraping.
+Configured runners retain distinct real session fingerprints, isolated process
+groups and rejection resumption. Claim, worktree, candidate and proof bindings
+continue to apply.
+
+Submission to an independent next gate returns a structured `dispatch` derived
+from the actual profile role and accepted prior worker. The same object and exact
+`[INDEPENDENT GATE DISPATCH REQUIRED]` directive appear in workflow guidance,
+with suggested worker `{task_slug}-{gate}`. The coordinator performs that dispatch;
+reading guidance launches no process. See [gate dispatch and evidence](tasks.md#gates-and-evidence).
+
 ## Hierarchical gate cursors and seam proofs
 
 A profile gate can contain child gates. [`claim_nested_gate`](../../crates/forge-tasks/src/engine/claim.rs) resolves the persisted stage to its active leaf gate, applies that leaf's role and proof requirements, and accepts qualified child stage IDs. Passing a child advances the cursor to the next child. Claims expose the active gate path and breadcrumb in `workflow_guidance`; task-specific RFCs and gate-targeted blackboard messages are injected there alongside current RFC broadcasts, while the general `blackboard` field retains task, sibling, and milestone context.
