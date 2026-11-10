@@ -165,12 +165,7 @@ pub(crate) fn run_command_process(
     on_output: &mut dyn FnMut(RunnerStream, &[u8]) -> io::Result<()>,
 ) -> Result<RunnerOutcome, RunnerError> {
     use std::{os::unix::process::CommandExt, process::Stdio};
-    if let Some(settings) = command
-        .get_current_dir()
-        .and_then(crate::tasks::configuration::current)
-    {
-        settings.configure_child(command);
-    }
+    crate::tasks::configuration::sanitize_command_process(command);
     let child = command
         .process_group(0)
         .stdin(Stdio::null())

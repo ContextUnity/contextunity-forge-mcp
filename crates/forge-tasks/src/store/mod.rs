@@ -866,6 +866,34 @@ impl TasksStore {
         self.set_runtime_gate(&mut task, &profile)?;
         Ok(task)
     }
+    /// Returns the persisted maximum allocated revision for a task, if any.
+    pub fn task_revision(&self, id: &str) -> Result<Option<u64>> {
+        use rusqlite::OptionalExtension;
+        self.connection
+            .query_row(
+                "SELECT revision FROM task_revisions WHERE task_id=?1",
+                [id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+    /// Returns stored gate rows (gate, revision, state, evidence) for a task.
+    pub fn task_gates(&self, id: &str) -> Result<Vec<recovery::StoredGateRecord>> {
+        let mut stmt = self.connection.prepare(
+            "SELECT gate,revision,state,evidence FROM task_gates WHERE task_id=?1 ORDER BY revision,gate",
+        )?;
+        let rows = stmt.query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
+        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Into::into)
+    }
+    /// Returns stored submission rows (revision, result) for a task.
+    pub fn task_submissions(&self, id: &str) -> Result<Vec<(u64, String)>> {
+        let mut stmt = self.connection.prepare(
+            "SELECT revision,result FROM task_submissions WHERE task_id=?1 ORDER BY revision",
+        )?;
+        let rows = stmt.query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Into::into)
+    }
     /// Performs inspect details.
     pub fn inspect_details(&self, id: &str) -> Result<serde_json::Value> {
         let _snapshot = recovery::read_snapshot(&self.connection)?;

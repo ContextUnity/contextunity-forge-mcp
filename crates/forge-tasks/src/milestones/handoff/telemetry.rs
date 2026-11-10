@@ -329,10 +329,10 @@ fn observe_command(
     let commands = command.commands_for_root(root);
     let mut last_output = None;
     for cmd in &commands {
-        let output = std::process::Command::new("sh")
-            .args(["-c", cmd])
-            .current_dir(root)
-            .output()?;
+        let mut command = std::process::Command::new("sh");
+        command.args(["-c", cmd]).current_dir(root);
+        crate::tasks::configuration::sanitize_command_process(&mut command);
+        let output = command.output()?;
         if !output.status.success() {
             bail!(
                 "HANDOFF_VERIFICATION_FAILED: selected {kind} command '{selection}' ('{cmd}') exited {}:\n--- STDOUT ---\n{}\n--- STDERR ---\n{}",

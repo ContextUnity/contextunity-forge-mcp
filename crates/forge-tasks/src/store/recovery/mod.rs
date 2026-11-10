@@ -175,6 +175,9 @@ pub(crate) fn ensure_observable(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Stored gate tuple (gate, revision, state, evidence).
+pub type StoredGateRecord = (String, u64, String, Option<String>);
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 /// A real task's active SQL provenance, with revision reservations independent of claim state.
@@ -194,14 +197,14 @@ pub struct ActiveCheckpoint {
     pub task: Option<Task>,
     /// Maximum allocated revision, including revoked reservations.
     pub max_revision: u64,
-    claims: Vec<(u64, String, String, i64, bool)>,
+    pub(crate) claims: Vec<(u64, String, String, i64, bool)>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     claim_session_fingerprints: BTreeMap<u64, String>,
-    gates: Vec<(String, u64, String, Option<String>)>,
+    pub(crate) gates: Vec<StoredGateRecord>,
     findings: Vec<(u64, String)>,
     scopes: Vec<(String, String, bool)>,
     dependencies: Vec<(String, bool)>,
-    submissions: Vec<(u64, String)>,
+    pub(crate) submissions: Vec<(u64, String)>,
     prepared_proofs: BTreeSet<String>,
     intent: Option<String>,
     cohort: Vec<(PathBuf, String)>,
@@ -222,6 +225,7 @@ struct Publication {
 /// The payload stores the exact relative path, the expected current-content hash,
 /// and the target bytes/hash so recovery can finish the write without re-running
 /// the task mutation.
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ManifestReplacement {
@@ -565,11 +569,19 @@ pub(crate) fn probe_copy(path: &Path) -> Result<StoreHealth> {
     fn inspect(path: &Path) -> Result<StoreHealth> {
         let connection =
             Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-        let index: u64 = connection.query_row("SELECT COUNT(*) FROM sqlite_schema WHERE type='table' AND name IN ('nodes','edges','files')", [], |r| r.get(0))?;
+        let index: u64 = connection.query_row(
+            "SELECT COUNT(*) FROM sqlite_schema WHERE type='table' AND name IN ('nodes','edges','files')",
+            [],
+            |r| r.get(0),
+        )?;
         if index >= 2 {
             bail!("TASK_DATABASE_COLLISION: recovery refuses a code map database");
         }
-        let metadata: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='task_store_metadata' AND type='table')", [], |r| r.get(0))?;
+        let metadata: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='task_store_metadata' AND type='table')",
+            [],
+            |r| r.get(0),
+        )?;
         if !metadata {
             bail!("TASK_RECOVERY_DATABASE_UNKNOWN: no task store metadata; preserve the original database");
         }

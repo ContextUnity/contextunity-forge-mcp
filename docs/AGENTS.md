@@ -104,6 +104,15 @@ to code symbols in the SQLite code map. Follow these structural standards:
    the repository root, for example `docs/reference/tasks.md`, instead of links.
    After archiving a document, verify its links and links to its former path.
 
+## Milestone and plan authoring
+
+When creating, reviewing, or materially amending a milestone (`docs/milestones/`) or plan:
+- **Mandatory skill**: Load and execute the [`contract-planning`](../skills/contract-planning/SKILL.md) skill and its repository add-on [`ADDON.md`](../skills/contract-planning/ADDON.md).
+- **Architectural viability audit**: Evaluate whether the proposed architecture is appropriate and minimal (Occam's razor). Challenge unnecessary code creation or in-binary bloat before committing to task boundaries.
+- **ADR and invariant reconciliation**: Reconcile the proposal against `docs/adr/`, `docs/architecture/`, and active repository invariants. Reconcile past architectural trade-offs rather than silently overturning them.
+- **Probe weak spots and ambiguities**: Identify ambiguous completion criteria, operational pitfalls (I/O amplification, concurrency bottlenecks, cross-platform traps), and failure modes before implementation starts.
+- **Synthesize constructive improvements**: Formulate simpler, durable designs and leverage existing codebase patterns so builder agents have unambiguous, viable targets.
+
 ## Milestone documentation alignment
 
 Rely on `workflow_guidance` returned by `task claim` for current gates, operational rules, and review criteria; use the [task reference](reference/tasks.md) for schema definitions and offline operations.

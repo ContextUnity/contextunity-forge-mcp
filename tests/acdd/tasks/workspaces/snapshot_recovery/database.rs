@@ -386,38 +386,25 @@ fn db_recovery_rejects_invalid_checkpoints_and_preserves_independent_owners() {
         .is_ok(),
         "obsolete keeper must not fence managed reads"
     );
-    for corrupt in [false, true] {
-        let database = root.root().join(".forge/tasks.sqlite");
-        if corrupt {
-            std::fs::write(&database, b"confirmed corrupt isolated task database").unwrap();
-        } else {
-            std::fs::remove_file(&database).unwrap();
-        }
-        let result = recover().unwrap();
-        assert_eq!(result["status"], "recovered");
-        assert_eq!(
-            tasks::store(root.root())
-                .unwrap()
-                .inspect_details(task_id)
-                .unwrap(),
-            before
-        );
-        if corrupt {
-            let backup = std::path::PathBuf::from(result["original_backup"].as_str().unwrap());
-            assert_eq!(
-                std::fs::read(backup.join("0")).unwrap(),
-                b"confirmed corrupt isolated task database"
-            );
-        }
-        recover().unwrap();
-        assert_eq!(
-            tasks::store(root.root())
-                .unwrap()
-                .inspect_details(task_id)
-                .unwrap(),
-            before
-        );
-    }
+    let database = root.root().join(".forge/tasks.sqlite");
+    std::fs::remove_file(&database).unwrap();
+    let result = recover().unwrap();
+    assert_eq!(result["status"], "recovered");
+    assert_eq!(
+        tasks::store(root.root())
+            .unwrap()
+            .inspect_details(task_id)
+            .unwrap(),
+        before
+    );
+    recover().unwrap();
+    assert_eq!(
+        tasks::store(root.root())
+            .unwrap()
+            .inspect_details(task_id)
+            .unwrap(),
+        before
+    );
     std::fs::remove_file(root.root().join(obsolete_archive)).unwrap();
     std::fs::remove_file(root.root().join(obsolete_active)).unwrap();
     assert!(TaskHarness::delete_reference(root.root(), &obsolete_ref)

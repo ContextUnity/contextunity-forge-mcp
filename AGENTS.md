@@ -45,12 +45,16 @@ When authoring contracts or testing capabilities:
 ## Architectural Contract Synthesis Gate (contract_synthesis)
 
 The initial gate of the milestone workflow is `contract_synthesis` (role: `architect`).
-Follow `guidance.milestone.synthesis` in `.forge/acdd/profile.yaml` for:
-1. Broad architectural exploration via Forge MCP (`code_map_*`, `ast_grep_search`, `forge_read`).
-2. Minimal intervention principle (no duplicate registries or parallel tables).
-3. Scope integrity (protected files `Cargo.toml`, `build.rs` are strictly off-limits).
-4. Recording the architectural decision on `task_blackboard` before submission.
-5. Authoring a compiling runtime-red seam test (exit code 101).
+Load and execute the [`contract-planning`](skills/contract-planning/SKILL.md) skill (with [`ADDON.md`](skills/contract-planning/ADDON.md)) during milestone authoring and contract synthesis:
+1. Architectural Viability Audit: Critically evaluate design appropriateness and minimal complexity (Occam's razor).
+2. ADR & Invariant Reconciliation: Reconcile proposals against `docs/adr/`, `docs/architecture/`, and active repository invariants before defining tasks.
+3. Risk & Ambiguity Discovery: Probe for vague completion criteria, operational pitfalls, and failure semantics.
+4. Constructive Improvement: Synthesize simpler, durable designs and leverage existing patterns before implementation begins.
+5. Broad architectural exploration via Forge MCP (`code_map_*`, `ast_grep_search`, `forge_read`).
+6. Minimal intervention principle (no duplicate registries or parallel tables).
+7. Scope integrity (protected files `Cargo.toml`, `build.rs` are strictly off-limits).
+8. Recording the architectural decision on `task_blackboard` before submission.
+9. Authoring a compiling runtime-red seam test (exit code 101).
 <!-- acdd-forge:contract-synthesis:end -->
 
 ## Documentation scan before handoff

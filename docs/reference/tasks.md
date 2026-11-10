@@ -538,6 +538,13 @@ commands, and pattern commands. Matching arguments replace `{scope_target}` or
 are appended when the placeholder is absent; equivalent expanded commands run
 once. Changes to the configured argument plan invalidate cached proof.
 
+Command processes (verification commands and handoff checks) execute in an
+isolated environment where internal Forge orchestration variables (`FORGE_CONFIG`,
+`FORGE_PROFILE`, `FORGE_DB`, `FORGE_WORKSPACE_ROOT`, `FORGE_AGENT_SESSION_ID`) are
+explicitly removed. This process isolation ensures that external build, test, and
+linter tools run against a clean project environment without inheriting parent
+workspace configuration or leaking paths into test fixtures.
+
 CLI `task verify` and evidence-free `task submit` accept `--timeout SECONDS`;
 the corresponding MCP calls accept `timeout_seconds`. The default comes from
 `commands.<id>.timeout_seconds` (300 seconds when omitted). Overrides are bounded
@@ -920,42 +927,29 @@ ordinary receipt/HEAD rollback, reset and handoff. Release the underlying Git
 publication fault and run:
 
 ```sh
-contextunity-forge-mcp milestone db-recover
+contextunity-forge-mcp milestone db-recover [<id-or-number-or-path>]
 ```
 
-With healthy SQL and a pending publication, this command publishes the exact
-committed checkpoint without replaying SQL, claims, receipts or submissions.
-Otherwise healthy SQL enrolls current validated owners before legacy cleanup.
-Orphaned precommit intents are recovered automatically: keeper refs return to
-their previous acknowledged checkpoint (`ref@{1}`, with no intent). Interrupted
-submit claims are ended, their reservations remain consumed, and claim revisions
-advance. Worker/worktree ownership is cleared; tasks return to `ready`, or
-`parked` when parked ownership exists. SQL commits before refs are rewound, so
-a retry after interruption does not release the claim twice. Recovery accepts no
-provisional gate proof or receipt and does not roll back committed SQL. A missing
-or unacknowledged reflog predecessor is refused rather than guessed.
-Automatic release requires the exact acknowledged/SQL preimage, a bounded
-reservation and matching live claim, with consistent operation tokens and prior
-cohorts. A corrupt tip cannot allocate arbitrary revisions or revoke another claim.
-
-For a missing/corrupt database, recovery discovers all linked worktrees and
-configured milestone roots. It creates schema6 staging, validates archives and
-preseeds canonical tombstones before admitting active checkpoints. A stale,
-unmerged active manifest cannot resurrect an archived milestone. Completed task
-IDs receive dependency credit; cancelled tasks do not. Active imports validate
-namespace, current manifest contract, scope, profile, claims, gate/submission
-provenance and publication cohort. Terminal gate rows must match their historical
-submitted stage, pinned gate proof requirements, ended claim and exact idempotent
-submission outcome. Unresolved intents, missing legacy checkpoints,
-incomplete cohorts or conflicting authority fail closed. Already-lost runtime
-state cannot be reconstructed from manifest receipts alone.
+`db-recover` restores active milestone tasks from durable per-task checkpoints (`refs/forge/state/`).
+The SQLite task store represents current active state only:
+- **Active state scope**: Archived milestones (`docs/milestones/archive/`) represent terminal history. They are not seeded into the active task database. Archived manifests containing a `handoff.proof_shas` block are checked for well-formed proof list structure (malformed, scalar, or null proof lists fail closed); valid archives are excluded from active task staging, and their receipts are not re-validated against the active gate profile during recovery.
+- **Root-confined active manifests**: Active milestone manifests are loaded strictly from the current workspace root. Manifests in other worktrees (e.g. unmerged branches or other milestones) are never crawled or cross-imported.
+- **Targeted milestone recovery**: Accepts an optional milestone ID, numeric prefix, stem, or manifest file path (e.g. `IN-001`, `010`, `010-alpha`, `m-installer-distribution-and-acdd-onboarding`). When provided, recovery canonically resolves and targets that specific milestone while preserving any other active milestones in the store.
+- **Unconditional store health classification**: Original database bytes are backed up to scratch and probed unconditionally before mutation; non-task stores (e.g. code map index databases) and unsupported schemas fail closed.
+- **Logical staleness detection**: Recovery compares SQLite task status, claim revisions, and subtask progress with durable Git checkpoint state. If SQLite is logically stale (e.g. missing tasks, state cleared after rollback, or Git checkpoints containing advanced subtasks, claim revisions, or accepted gates), `db-recover` runs full recovery from Git checkpoints into a clean staging database, verifies integrity, archives a timestamped backup of prior database bytes (`tasks.sqlite-recovery-backup.<nonce>`), and performs fenced, compensated file-by-file promotion.
+- **Resilient worktree discovery**: Pruned or deleted worktree directories on disk are safely skipped without failing with `ENOENT`.
+- **Complete task progress restoration**: All accepted gate proofs (`contract`, `build`, etc.), claim revisions, and completed subtasks stored in Git checkpoint snapshots (`checkpoint.json`) are fully restored. Tasks without checkpoints remain admitted in their initial manifest state.
+- **Pending publication reconciliation**: When SQLite is fully up-to-date and an interrupted publication exists, it completes publication of the exact committed checkpoint without replaying SQL mutations, rewinds orphaned precommit intents, and releases interrupted submit claims.
 
 Archives without `handoff.proof_shas` are obsolete and are skipped before task
 parsing, validation and tombstone seeding. They provide no new dependency credit.
 Their keeper namespaces are ignored without parsing or mutation during healthy
 recovery, composed reads and SQL restoration.
-Archives containing that field remain strictly validated, including malformed or
-null proof lists.
+Archives containing `handoff.proof_shas` must have a well-formed proof SHA list;
+malformed, scalar, or null proof lists fail closed during discovery. Validated
+archives are excluded from active staging, and their keeper references are pruned
+during post-recovery cleanup on a best-effort basis without gating active recovery
+on historic receipt schemas.
 
 Classification reads a private copy. Index, unknown and unsupported-schema stores
 are refused without changing main/WAL/SHM bytes. Before replacement, original bytes

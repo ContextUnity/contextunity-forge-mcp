@@ -576,13 +576,36 @@ impl TaskSettings {
     }
     pub fn path(&self, root: &Path) -> Result<std::path::PathBuf> {
         let path = &self.tasks_db;
-        let base = primary_worktree_root(root).unwrap_or_else(|| root.to_path_buf());
-        let resolved = crate::tasks::confined_target(&base, path)?;
+        let canon_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+        let base = primary_worktree_root(root).unwrap_or_else(|| canon_root.clone());
+        let resolved = if path.is_absolute() {
+            if path
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+            {
+                bail!("TASK_SCOPE_INVALID: expected path without traversal");
+            }
+            if path.starts_with(root) || path.starts_with(&canon_root) || path.starts_with(&base) {
+                crate::tasks::confined_target(&base, path)?
+            } else if let Ok(canon) = path.canonicalize() {
+                canon
+            } else if let Some(parent) = path.parent() {
+                if let Ok(canon_parent) = parent.canonicalize() {
+                    canon_parent.join(path.file_name().unwrap_or_default())
+                } else {
+                    path.to_path_buf()
+                }
+            } else {
+                path.to_path_buf()
+            }
+        } else {
+            crate::tasks::confined_target(&base, path)?
+        };
         let default_root = default_db(root);
         let default_base = default_db(&base);
         if resolved == default_root
             || resolved == default_base
-            || resolved == default_db(&root.canonicalize().unwrap_or_else(|_| root.to_path_buf()))
+            || resolved == default_db(&canon_root)
         {
             bail!("tasks_db must be separate from code index");
         }

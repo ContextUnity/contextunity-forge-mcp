@@ -417,3 +417,53 @@ fn store_reopen_preserves_durable_facts_and_output_policy_invalidation() {
         "{err:#}"
     );
 }
+
+#[test]
+fn command_gate_cleans_orchestration_environment_variables() {
+    let harness = CommandGateHarness::with_command(
+        "sh -c 'test -z \"$FORGE_CONFIG\" && test -z \"$FORGE_PROFILE\" && test -z \"$FORGE_DB\" && test -z \"$FORGE_WORKSPACE_ROOT\" && test -z \"$FORGE_AGENT_SESSION_ID\"'",
+        None,
+    );
+    let original_config = std::env::var_os("FORGE_CONFIG");
+    let original_profile = std::env::var_os("FORGE_PROFILE");
+    let original_db = std::env::var_os("FORGE_DB");
+    let original_root = std::env::var_os("FORGE_WORKSPACE_ROOT");
+    let original_session = std::env::var_os("FORGE_AGENT_SESSION_ID");
+
+    std::env::set_var("FORGE_CONFIG", "/outside/fake-config.yaml");
+    std::env::set_var("FORGE_PROFILE", "/outside/fake-profile.yaml");
+    std::env::set_var("FORGE_DB", "/outside/fake-db.sqlite");
+    std::env::set_var("FORGE_WORKSPACE_ROOT", "/outside/fake-root");
+    std::env::set_var("FORGE_AGENT_SESSION_ID", "ambient-session-id");
+
+    struct ResetEnv {
+        config: Option<std::ffi::OsString>,
+        profile: Option<std::ffi::OsString>,
+        db: Option<std::ffi::OsString>,
+        root: Option<std::ffi::OsString>,
+        session: Option<std::ffi::OsString>,
+    }
+    impl Drop for ResetEnv {
+        fn drop(&mut self) {
+            let restore = |key: &str, val: &Option<std::ffi::OsString>| match val {
+                Some(v) => std::env::set_var(key, v),
+                None => std::env::remove_var(key),
+            };
+            restore("FORGE_CONFIG", &self.config);
+            restore("FORGE_PROFILE", &self.profile);
+            restore("FORGE_DB", &self.db);
+            restore("FORGE_WORKSPACE_ROOT", &self.root);
+            restore("FORGE_AGENT_SESSION_ID", &self.session);
+        }
+    }
+    let _guard = ResetEnv {
+        config: original_config,
+        profile: original_profile,
+        db: original_db,
+        root: original_root,
+        session: original_session,
+    };
+
+    let result = harness.verify().expect("verification should succeed when env is scrubbed");
+    assert_eq!(result["verification"]["exit_code"], 0, "{result}");
+}

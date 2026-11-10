@@ -22,7 +22,11 @@ pub enum MilestoneCommand {
         target_base: String,
     },
     /// Restores acknowledged active tasks from durable per-task checkpoints.
-    DbRecover,
+    DbRecover {
+        /// Optional milestone ID or reference to recover.
+        #[arg(value_name = "MILESTONE")]
+        milestone: Option<String>,
+    },
     /// Lists milestone metadata and SQLite task progress.
     List {
         /// Includes documents in the milestone archive.
@@ -162,7 +166,9 @@ pub fn run(root: &Path, command: MilestoneCommand) -> Result<Value> {
                 &mut |_| {},
             )
         }
-        MilestoneCommand::DbRecover => milestones::db_recover(root),
+        MilestoneCommand::DbRecover { milestone } => {
+            milestones::db_recover_milestone(root, milestone.as_deref())
+        }
         MilestoneCommand::List {
             archive,
             status,

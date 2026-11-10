@@ -27,8 +27,13 @@ Configuration and profile paths resolve under the chosen root; absolute paths
 must remain confined there. A selected config without `acdd_profile` falls back
 to the repository/embedded profile, not another configuration file.
 Task-store resolution continues to use `tasks_db` and the primary Git worktree.
-Owned runner children receive selected paths without mutating the parent
-environment. Concurrent in-process invocations retain separate selections.
+Owned runner children (agent sessions claiming gates) receive selected paths and
+session identity (`FORGE_CONFIG`, `FORGE_PROFILE`, `FORGE_DB`, `FORGE_AGENT_SESSION_ID`)
+without mutating the parent environment. Command processes (project build, lint,
+and test commands executed by command gates and handoff verification) execute in
+a sanitized environment where internal Forge orchestration variables are scrubbed,
+preventing cross-workspace configuration pollution. Concurrent in-process invocations
+retain separate selections.
 
 `serve` retains the selected config and profile for its lifetime, including
 module visibility, task loaders, request policy, refreshes and reloads. Selected
@@ -429,7 +434,7 @@ contextunity-forge-mcp milestone draft [--num 011] [--slug short-name] [--title 
 contextunity-forge-mcp milestone handoff-context <id-or-number> --target-base <git-selector>
 contextunity-forge-mcp milestone handoff <id-or-number> [--commit <git-selector>] --evidence-file <external-review.json>
 contextunity-forge-mcp milestone clear <id-or-number>
-contextunity-forge-mcp milestone db-recover
+contextunity-forge-mcp milestone db-recover [<id-or-number-or-path>]
 ```
 
 `milestone list` renders Markdown sections for active and planned milestones,
@@ -535,18 +540,16 @@ optional `--commit` resolves a Git selector whose content must match the current
 clean worktree HEAD. Commit the archived manifest and working-file removal after
 handoff; that archive commit is not recorded in its own receipt.
 
-`milestone db-recover` enrolls healthy active SQL or completes a committed pending
-checkpoint publication without replaying its mutation. With healthy SQL, it also
-automatically rewinds orphaned intents to their prior acknowledged keeper and
-releases interrupted submit claims without accepting their provisional proofs.
-Archives without `handoff.proof_shas` are obsolete and skipped.
-For missing/corrupt SQL,
-it discovers linked worktrees/configured roots, preseeds archive tombstones, and
-imports validated active task keepers. It preserves original main/WAL/SHM bytes
-and reports their backup directory. Unknown/index/future stores, intents without
-healthy SQL authority, incomplete cohorts and missing legacy checkpoints fail closed. See
-[active recovery](tasks.md#active-task-checkpoints-and-database-recovery) for
-acknowledgment fencing, healthy-first enrollment and recovery limits.
+`milestone db-recover [<id-or-number-or-path>]` restores active milestone tasks from durable per-task Git checkpoints (`refs/forge/state/`).
+The SQLite task store represents current active state only:
+- **Active state scope**: Archived milestones (`docs/milestones/archive/`) represent terminal history. They are not seeded into the active task database. Archived manifests containing a `handoff.proof_shas` block are checked for well-formed proof list structure (malformed, scalar, or null proof lists fail closed); valid archives are excluded from active task staging, and their receipts are not re-validated against the active gate profile during recovery.
+- **Root-confined active manifests**: Active milestone manifests are loaded strictly from the current workspace root. Manifests in other worktrees (e.g. unmerged branches or other milestones) are never crawled or cross-imported, preventing foreign task pollution.
+- **Targeted milestone recovery**: Accepts an optional milestone ID, numeric prefix, stem, or manifest file path (e.g. `IN-001`, `010`, `010-alpha`, `m-installer-distribution-and-acdd-onboarding`, `docs/milestones/IN-001-...md`). When provided, recovery canonically resolves and targets that specific milestone while preserving any other active milestones in the store.
+- **Unconditional store health classification**: Original database bytes are backed up to scratch and probed unconditionally before mutation; non-task stores (e.g. code map index databases) and unsupported schemas fail closed.
+- **Logical staleness detection**: Recovery compares SQLite task status, claim revisions, and subtask progress with durable Git checkpoint state. If SQLite is logically stale (e.g. missing tasks, state cleared after rollback, or Git checkpoints containing advanced subtasks, claim revisions, or accepted gates), `db-recover` runs full recovery from Git checkpoints into a clean staging database, verifies integrity, archives a timestamped backup of prior database bytes (`tasks.sqlite-recovery-backup.<nonce>`), and performs fenced, compensated file-by-file promotion.
+- **Resilient worktree discovery**: Pruned or deleted worktree directories on disk are safely skipped without failing with `ENOENT` (`os error 2`).
+- **Complete task progress restoration**: All accepted gate proofs (`contract`, `build`, etc.), claim revisions, and completed subtasks stored in Git checkpoint snapshots (`checkpoint.json`) are fully restored. Tasks without checkpoints remain admitted in their initial manifest state.
+- **Pending publication reconciliation**: When SQLite is fully up-to-date and an interrupted publication exists, it completes publication of the exact committed checkpoint without replaying SQL mutations, rewinds orphaned precommit intents, and releases interrupted submit claims. See [active recovery](tasks.md#active-task-checkpoints-and-database-recovery) for details.
 
 `milestone clear <id-or-number>` acquires an exclusive physical database fence (`tasks.receipt.lock`), checks that no active checkpoints are pending publication (`TASK_CHECKPOINT_PENDING`), resolves the milestone (failing closed with `MILESTONE_AMBIGUOUS` on multiple candidates), deletes SQLite tasks strictly scoped to the milestone prefix (`substr(task_id, 1, length(?1)) = ?1`), purges blackboard entries, provenance records (`command_execution_proofs`, `gate_execution_attempts`, `gate_execution_runs`), gate execution traces, and gate transitions, and prunes scoped Git state references (`refs/forge/state/<namespace>/<id>/*`) via atomic `git update-ref --stdin`.
 

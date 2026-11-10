@@ -1026,6 +1026,7 @@ pub(crate) fn run_shell(root: &Path, command_str: &str, timeout: Duration) -> Re
 fn shell_command(command: &str) -> Command {
     let mut process = Command::new("sh");
     process.arg("-c").arg(command);
+    crate::tasks::configuration::sanitize_command_process(&mut process);
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -1038,6 +1039,7 @@ fn shell_command(command: &str) -> Command {
 fn shell_command(command: &str) -> Command {
     let mut process = Command::new("cmd");
     process.arg("/C").arg(command);
+    crate::tasks::configuration::sanitize_command_process(&mut process);
     process
 }
 

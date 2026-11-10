@@ -103,6 +103,22 @@ impl InvocationSettings {
     }
 }
 
+/// Internal Forge orchestration environment variables that must never leak into project commands.
+pub const FORGE_ORCHESTRATION_ENVS: &[&str] = &[
+    "FORGE_CONFIG",
+    "FORGE_PROFILE",
+    "FORGE_DB",
+    "FORGE_WORKSPACE_ROOT",
+    "FORGE_AGENT_SESSION_ID",
+];
+
+/// Clear internal Forge orchestration variables from a project command process.
+pub fn sanitize_command_process(command: &mut Command) {
+    for var in FORGE_ORCHESTRATION_ENVS {
+        command.env_remove(var);
+    }
+}
+
 /// Return the immutable selection for this exact workspace, if explicitly scoped by the caller.
 pub fn current(root: &Path) -> Option<Arc<InvocationSettings>> {
     let root = root.canonicalize().ok()?;

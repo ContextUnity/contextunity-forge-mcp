@@ -63,4 +63,11 @@ doc_type: guide
   runbooks rather than copying another project's command list.
 - Preserve approval and security boundaries. Update this file and the owning documentation page
   when the documented workflow changes.
+
+## Milestone and plan authoring
+
+- When creating or revising milestones (`docs/milestones/`), architectural plans, or task contracts, load the `contract-planning` skill.
+- Evaluate architectural viability and Occam's razor before specifying code changes.
+- Reconcile proposals against existing ADRs, architecture docs, and invariants.
+- Uncover ambiguities, failure modes, and cross-platform risks, and constructively propose cleaner designs.
 ````
