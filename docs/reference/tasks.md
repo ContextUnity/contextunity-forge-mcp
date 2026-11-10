@@ -738,8 +738,8 @@ Supply a JSON `IntegrationEvidence` record through `--evidence-file`:
 | `review.scope_findings`, `review.contract_findings` | Empty arrays after resolving unadmitted changes and contract/invariant findings. |
 | `verification.command`, `verification.exit_code` | Exact observed command returned by `milestone verify` and `0`. |
 | `verification.tests_passed`, `verification.tests_failed` | Counts returned by the successful observation and `0` failures; applicable counts must match the recorded proof. |
-| `verification.lint_command` | Optional registered command ID explicitly selected as the project linter. Forge executes it and records its exact command, exit code, output digests and content provenance. A missing selection is `unobserved`, never `clean`; a selected failing linter rejects handoff. |
-| `verification.project_command` | Registered verification command ID required when the integration commit contains source polish prepared by handoff context. Forge executes it against the reviewed content. |
+| `verification.lint_command` | Optional registered command ID explicitly selected as the project linter. Forge verifies or reuses the recorded observation, preserving its exact command, exit code, output digests and content provenance. A missing selection is `unobserved`, never `clean`; a selected failing linter rejects handoff. |
+| `verification.project_command` | Registered verification command ID required when the integration commit contains source polish prepared by handoff context. Forge verifies or reuses the recorded observation against the reviewed content. |
 
 Keep the evidence file outside tracked implementation content, for example under
 `/tmp/`. The coordinator supplies independent review and repository verification.

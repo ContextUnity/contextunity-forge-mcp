@@ -6,6 +6,7 @@ roots:
   - build.rs
 docs:
   - README.md
+  - INSTALL.md
   - TESTS.md
   - docs/AGENTS.md
   - docs/README.md

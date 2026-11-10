@@ -1,11 +1,12 @@
 ---
-title: "Augmented Context-Driven Development"
+title: "Augmented Context-Driven Delivery"
 doc_type: guide
 ---
 
-# Augmented Context-Driven Development
+# Augmented Context-Driven Delivery
 
-ACDD is how Forge runs milestone work. People keep the contract in Git (`docs/milestones/*.md`). Forge syncs tasks into `.forge/tasks.sqlite` and serves them to agents through `task_list`, `task_claim`, and `task_submit`. A code-index rebuild does not reset that queue.
+ACDD (Augmented Context-Driven Delivery) is a system that injects tailored context into verified gates. Rather than relying on open-ended or unstructured agent coding loops, ACDD dynamically serves each agent the exact context it needs — admitted write scopes, governing architectural invariants, in-scope symbol skeletons, covering test seams, and reviewer rejection findings — bound to atomic, verifiable gates.
+People keep the contract in Git (`docs/milestones/*.md`). Forge syncs tasks into `.forge/tasks.sqlite` and serves them to agents through `task_list`, `task_claim`, and `task_submit`. A code-index rebuild does not reset that queue.
 
 The active profile names the gates, their order, the proof each gate requires, the roles, and the review contours. The profile compiled into Forge uses `contract`, `build`, `review`, and `deliver`. A repository file at `.forge/acdd/profile.yaml`, or a pin on a milestone or task, replaces that shape. Writing one is covered in [ACDD profiles](profiles.md).
 

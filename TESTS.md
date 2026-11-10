@@ -53,9 +53,9 @@ the member-library count without adding it to the trace-bound value. Supply the
 record to `milestone handoff <id> --evidence-file /tmp/handoff-evidence.json`;
 see the [record fields](docs/reference/tasks.md#milestone-cli-lifecycle).
 For source polish, select its registered project verification command through
-`verification.project_command`; handoff executes it again and records the observation.
+`verification.project_command`; handoff verifies or reuses the recorded observation.
 Select the registered lint command explicitly through `verification.lint_command`;
-only its actual successful execution reports clean lint. These observations do not
+handoff verifies or reuses its recorded successful observation. These observations do not
 replace the mandatory commands or their count rules. Changed content or authority
 requires fresh final review and verification.
 

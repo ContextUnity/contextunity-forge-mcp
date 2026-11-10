@@ -2,6 +2,10 @@
 
 Thank you for your interest in contributing to **ContextUnity Forge MCP**! We welcome community contributions, bug reports, documentation enhancements, and feature proposals.
 
+> [!NOTE]
+> - **Workflows and Plans**: Standalone root-gate workflows (`workflow run`) and structured documentation plans (`plan run`) are currently under active testing and validation.
+> - **Extended Language Scope**: While default languages are stable, the extended language profiles (`--features all-languages` covering Go, Java, C#, Kotlin, PHP, Ruby, C, C++) need further refinement and community contributions to improve language linkers and AST extractions.
+
 ---
 
 ## Getting Started

@@ -18,7 +18,7 @@ invariants:
 - 'INV-HANDOFF-ANCESTRY-SAFETY: Milestone handoff strictly validates that delivery commits descend from the task baseline and are genuine ancestors of the handoff commit, preventing obsolete or foreign commits from being resolved as landed task SHAs.'
 - 'INV-FAIL-CLOSED-BASELINE: Retrieval of candidate snapshot baselines from task_gates evidence fails closed on corrupted records or missing baseline fields without swallowing errors in synchronization or migration verification.'
 - 'INV-STRICT-PROFILE-SPECIFICATION: ModelSpec and RoleDef enforce strict field parsing and deny unknown attributes; role guidance text dynamically adapts for inline execution modes without stale subagent delegation text.'
-- 'INV-ACDD-NOMENCLATURE-ALIGNMENT: Documentation and agent guidance uniformly use Augmented Context-Driven Development nomenclature, reflecting active runbooks and standing Git permission distinctions between automated and manual deliveries.'
+- 'INV-ACDD-NOMENCLATURE-ALIGNMENT: Documentation and agent guidance uniformly use Augmented Context-Driven Delivery nomenclature, reflecting active runbooks and standing Git permission distinctions between automated and manual deliveries.'
 related_plans: []
 started_at: 2026-10-11T11:53:26+00:00
 handoff:
@@ -41,7 +41,7 @@ Harden the ACDD execution engine and milestone handoff mechanics in ContextUnity
 2. Secure milestone handoff by validating commit ancestry, rejecting foreign or obsolete delivery commits, and resolving true landed commits in the milestone branch.
 3. Eliminate error-swallowing when retrieving candidate baselines from `task_gates`, ensuring fail-closed verification across `sync` and `migrate verify`.
 4. Enforce strict profile validation: reject unknown fields on `ModelSpec` and `RoleDef`, parse compound `model:reasoning` identifiers cleanly, and dynamically adapt guidance text for inline role modes.
-5. Standardize repository documentation and agent skills around **Augmented Context-Driven Development**, purging dead links and clarifying fast-forward Git landing permissions.
+5. Standardize repository documentation and agent skills around **Augmented Context-Driven Delivery**, purging dead links and clarifying fast-forward Git landing permissions.
 
 ---
 
@@ -116,7 +116,7 @@ receipt:
     - 'INV-HANDOFF-ANCESTRY-SAFETY: Milestone handoff strictly validates that delivery commits descend from the task baseline and are genuine ancestors of the handoff commit, preventing obsolete or foreign commits from being resolved as landed task SHAs.'
     - 'INV-FAIL-CLOSED-BASELINE: Retrieval of candidate snapshot baselines from task_gates evidence fails closed on corrupted records or missing baseline fields without swallowing errors in synchronization or migration verification.'
     - 'INV-STRICT-PROFILE-SPECIFICATION: ModelSpec and RoleDef enforce strict field parsing and deny unknown attributes; role guidance text dynamically adapts for inline execution modes without stale subagent delegation text.'
-    - 'INV-ACDD-NOMENCLATURE-ALIGNMENT: Documentation and agent guidance uniformly use Augmented Context-Driven Development nomenclature, reflecting active runbooks and standing Git permission distinctions between automated and manual deliveries.'
+    - 'INV-ACDD-NOMENCLATURE-ALIGNMENT: Documentation and agent guidance uniformly use Augmented Context-Driven Delivery nomenclature, reflecting active runbooks and standing Git permission distinctions between automated and manual deliveries.'
     architectural_notes: []
     review_summary:
       decision: pass
@@ -193,7 +193,7 @@ receipt:
     - 'INV-HANDOFF-ANCESTRY-SAFETY: Milestone handoff strictly validates that delivery commits descend from the task baseline and are genuine ancestors of the handoff commit, preventing obsolete or foreign commits from being resolved as landed task SHAs.'
     - 'INV-FAIL-CLOSED-BASELINE: Retrieval of candidate snapshot baselines from task_gates evidence fails closed on corrupted records or missing baseline fields without swallowing errors in synchronization or migration verification.'
     - 'INV-STRICT-PROFILE-SPECIFICATION: ModelSpec and RoleDef enforce strict field parsing and deny unknown attributes; role guidance text dynamically adapts for inline execution modes without stale subagent delegation text.'
-    - 'INV-ACDD-NOMENCLATURE-ALIGNMENT: Documentation and agent guidance uniformly use Augmented Context-Driven Development nomenclature, reflecting active runbooks and standing Git permission distinctions between automated and manual deliveries.'
+    - 'INV-ACDD-NOMENCLATURE-ALIGNMENT: Documentation and agent guidance uniformly use Augmented Context-Driven Delivery nomenclature, reflecting active runbooks and standing Git permission distinctions between automated and manual deliveries.'
     architectural_notes: []
     review_summary:
       decision: pass
@@ -209,7 +209,7 @@ receipt:
 
 ```yaml
 task_ref: documentation-and-workflow-alignment
-target: Align repository documentation, agent guidance, and skills with Augmented Context-Driven Development nomenclature and accurate Git permissions
+target: Align repository documentation, agent guidance, and skills with Augmented Context-Driven Delivery nomenclature and accurate Git permissions
 proof_policy: direct-proof
 contract_revision: 2
 scope:
@@ -228,7 +228,7 @@ scope:
 status: completed
 subtasks:
 - subtask_ref: acdd-nomenclature-standardization
-  title: Standardize documentation headings and references to Augmented Context-Driven Development
+  title: Standardize documentation headings and references to Augmented Context-Driven Delivery
   status: completed
   evidence: null
 - subtask_ref: purge-dead-runbook-links
@@ -258,7 +258,7 @@ receipt:
           evidence: Documentation, agent instructions, and skill references strictly confined to task scope.
         claims:
           applicable: true
-          evidence: Augmented Context-Driven Development nomenclature and accurate Git permissions verified.
+          evidence: Augmented Context-Driven Delivery nomenclature and accurate Git permissions verified.
         concurrency:
           applicable: true
           evidence: No concurrent store state conflicts; documents verified.
@@ -275,7 +275,7 @@ receipt:
     - 'INV-HANDOFF-ANCESTRY-SAFETY: Milestone handoff strictly validates that delivery commits descend from the task baseline and are genuine ancestors of the handoff commit, preventing obsolete or foreign commits from being resolved as landed task SHAs.'
     - 'INV-FAIL-CLOSED-BASELINE: Retrieval of candidate snapshot baselines from task_gates evidence fails closed on corrupted records or missing baseline fields without swallowing errors in synchronization or migration verification.'
     - 'INV-STRICT-PROFILE-SPECIFICATION: ModelSpec and RoleDef enforce strict field parsing and deny unknown attributes; role guidance text dynamically adapts for inline execution modes without stale subagent delegation text.'
-    - 'INV-ACDD-NOMENCLATURE-ALIGNMENT: Documentation and agent guidance uniformly use Augmented Context-Driven Development nomenclature, reflecting active runbooks and standing Git permission distinctions between automated and manual deliveries.'
+    - 'INV-ACDD-NOMENCLATURE-ALIGNMENT: Documentation and agent guidance uniformly use Augmented Context-Driven Delivery nomenclature, reflecting active runbooks and standing Git permission distinctions between automated and manual deliveries.'
     architectural_notes: []
     review_summary:
       decision: pass

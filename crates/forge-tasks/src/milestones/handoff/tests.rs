@@ -84,7 +84,14 @@ fn handoff_accepts_completed_reviewed_shared_scope() {
         assert_eq!(fixture.file_bytes(ACTIVE).unwrap(), before);
         assert!(!fixture.exists(ARCHIVE));
     }
-    result.expect("a later completed reviewed task may change an earlier task's shared path");
+    let outcome =
+        result.expect("a later completed reviewed task may change an earlier task's shared path");
+    let verification_passport = &outcome["handoff"]["passport"]["automatic_project_verification"];
+    assert_eq!(verification_passport["reused_verification"], true);
+    assert_eq!(
+        verification_passport["stdout_digest"].as_str(),
+        check_current["stdout_sha256"].as_str()
+    );
     let reopened = fixture.store().unwrap();
     let archived_doc = fixture.document(ARCHIVE).unwrap();
     let parsed = crate::core::tasks::Milestone::parse(&archived_doc, "forge-mcp").unwrap();

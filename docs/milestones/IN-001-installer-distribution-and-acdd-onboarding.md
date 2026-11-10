@@ -13,11 +13,11 @@ owners:
   - build.rs
   - crates/forge-core/src/paths/
 invariants:
-  - 'INV-DISTRIBUTION-PROFILES: Distribution must explicitly support Recommended Languages (default: Python, Rust, TS, JS, Vue, Proto, HTML, YAML, TOML), All Languages (all-languages: +Go, Java, C#, Kotlin, PHP, Ruby, C, C++), and Targeted Single Flavors (Python, Web, Rust).'
+  - 'INV-DISTRIBUTION-PROFILES: Distribution must explicitly support Recommended Languages (default: Python, Rust, TS, JS, Vue, Proto, HTML, YAML, TOML), All Languages (all-languages: experimental/under refinement; +Go, Java, C#, Kotlin, PHP, Ruby, C, C++), and Targeted Single Flavors (Python, Web, Rust).'
   - 'INV-ZERO-DEPENDENCY-INSTALL: The install.sh installer must run via standard POSIX sh using only curl/wget and tar, installing working binaries without requiring cargo, rustc, or C compilers for precompiled flavors.'
   - 'INV-SKILL-PARITY: Skills installed into global agent directories (~/.agents/skills/, ~/.claude/skills/) or repository-local (.agents/skills/) must match canonical contextunity-forge and acdd specifications.'
   - 'INV-ACDD-ONBOARDING: Adapter scaffolding must detect project language boundaries and generate valid, repo-tailored forge-mcp.yaml, AGENTS.md workflow guidance, and .mcp.json client configuration.'
-  - 'INV-UPDATE-SEAMLESSNESS: The updater must cleanly detect existing installations, preserve user-tailored forge-mcp.yaml adapter configurations, and update binary and skills without data loss.'
+  - 'INV-UPDATE-SEAMLESSNESS: The updater must cleanly detect existing installations, preserve user-tailored forge-mcp.yaml adapter configurations, update binary and skills without data loss, and execute contextunity-forge-mcp reload (sending SIGHUP) to seamlessly notify running MCP server processes.'
   - 'INV-POSIX-DARWIN-PARITY: Filesystem operations and compilation workflows on macOS must resolve /var and /tmp symlinks to canonical paths, preserve APFS case-casing, normalize Unicode paths to NFC, and configure C11/no-warnings flags for vendored Tree-sitter parsers.'
 related_plans: []
 ---
@@ -27,12 +27,11 @@ related_plans: []
 ## Outcome and purpose
 
 Deliver an end-to-end seamless installation, update, and onboarding experience for ContextUnity Forge MCP:
-1. Establish fixed distribution profiles: Recommended Languages (default), All Languages (`all-languages`), and targeted single flavors (Python, Web, Rust).
-2. Provide a zero-dependency POSIX `install.sh` (`curl -fsSL https://.../install.sh | bash`) supporting interactive flavor selection, custom source compilation, and automated self-updates.
-3. Provide zero-config installation of agent skills (`contextunity-forge`, `acdd`) globally into agent environments (`~/.agents/skills/`, `~/.claude/skills/`) or repo-locally (`.agents/skills/`).
-4. Provide intelligent scaffolding for repo-tailored `forge-mcp.yaml` adapters, `AGENTS.md` ACDD rules, and `.mcp.json` client registrations.
-5. Establish a robust GitHub Actions release workflow for automated multi-platform binary compilation and release asset publishing.
-6. Ensure robust POSIX compatibility for macOS (Darwin), resolving symlinks (/var, /tmp), APFS case-insensitivity, Unicode NFC normalization, and Apple Clang compiler standards.
+1. Establish fixed distribution profiles: Recommended Languages (default, production-ready), Targeted Single Flavors (Python, Web, Rust), and All Languages (`all-languages` marked experimental / under active development).
+2. Provide a zero-dependency POSIX `install.sh` executable via a single line (`curl -fsSL https://contextunity.org/install.sh | sh`) supporting auto-detection of OS (Linux, macOS) and architecture (x86_64, arm64), interactive flavor selection, automated `.tar.gz` extraction, and seamless self-updates.
+3. Integrate skill distribution and project onboarding into `install.sh`: bundle automatic installation of companion skills into `~/.agents/skills/` (with symlinks to detected agent runtimes) and provide optional repo scaffolding (`forge-mcp.yaml`, `AGENTS.md`, `.mcp.json`).
+4. Establish a GitHub Actions release workflow for tagged semver releases and automated `nightly` builds on push to `main` with stripped binaries, `.tar.gz` compression, and SHA256 verification sums.
+5. Ensure robust POSIX compatibility for macOS (Darwin), resolving symlinks (/var, /tmp), APFS case-insensitivity, Unicode NFC normalization, and Apple Clang compiler standards.
 
 ---
 
@@ -55,20 +54,25 @@ subtasks:
     title: "Implement POSIX platform detection for Linux (x86_64, aarch64) and macOS (x86_64, arm64) with SHA256 checksum verification"
     status: pending
   - subtask_ref: interactive-and-cli-flavor-selection
-    title: "Implement interactive menu and non-interactive CLI flags for recommended languages, all-languages, single flavors, or source cargo build"
+    title: "Implement interactive menu and non-interactive CLI flags for recommended languages, targeted flavors, experimental all-languages, or source cargo build"
     status: pending
   - subtask_ref: binary-placement-and-update-lifecycle
-    title: "Implement atomic binary installation to ~/.local/bin/ and support seamless update check/upgrade command"
+    title: "Implement atomic binary installation to ~/.local/bin/ with automatic tar.gz decompression, seamless update check/upgrade, and automatic SIGHUP reload of active servers"
+    status: pending
+  - subtask_ref: onboarding-and-skills-integration
+    title: "Provide optional flags/prompts (--skills, --init) in install.sh to install companion skills globally and scaffold target repository adapter/guidance"
     status: pending
 ```
 
 #### Acceptance
 
-1. `install.sh` must execute in pure POSIX `sh` without bashisms, external language runtimes, or compilation tools when fetching precompiled releases.
+1. `install.sh` must execute in pure POSIX `sh` without bashisms, external language runtimes, or compilation tools when fetching precompiled releases (`curl -fsSL https://contextunity.org/install.sh | sh`).
 2. Architecture and OS detection accurately handles Linux (`x86_64`, `aarch64`) and macOS (`x86_64`, `arm64`) with fallback prompt to build from source via Cargo.
-3. Cryptographic integrity verified via SHA256 sums prior to unpack.
+3. Cryptographic integrity verified via SHA256 sums prior to unpack; `.tar.gz` distribution minimizes download bandwidth (~8 MB vs ~35 MB) while `install.sh` transparently decompresses and preserves execute permissions.
 4. Binary atomically placed in `~/.local/bin/` with correct execute permissions, warning if `PATH` lacks directory.
-5. Provide non-interactive mode via environment variables and flags (`--flavor`, `--prefix`, `--version`, `--yes`).
+5. Provide non-interactive mode via environment variables and flags (`--flavor`, `--prefix`, `--version`, `--yes`, `--skills`, `--init`).
+6. Clearly mark `all-languages` in both CLI help and interactive selection as experimental / under active development.
+7. Upon successful update of an existing binary, automatically trigger `contextunity-forge-mcp reload` (or SIGHUP) to ensure running MCP servers switch to the new executable without requiring client restarts.
 
 ---
 
@@ -130,14 +134,18 @@ subtasks:
   - subtask_ref: automated-github-releases
     title: "Publish release archives and checksums to GitHub Releases on tag push"
     status: pending
+  - subtask_ref: automated-nightly-builds
+    title: "Configure automated rolling nightly builds and release artifacts on push to main"
+    status: pending
 ```
 
 #### Acceptance
 
 1. Matrix workflow builds for `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin`, and `aarch64-apple-darwin`.
-2. Packages binaries for `recommended` (default), `all-languages`, and single-language flavors (`python`, `web`, `rust`).
+2. Packages binaries for `recommended` (default), `all-languages` (experimental), and single-language flavors (`python`, `web`, `rust`).
 3. Strips debug symbols, produces `.tar.gz` archives, and generates `SHA256SUMS`.
-4. Publishes release assets and checksums to GitHub Releases upon semver tag push.
+4. Publishes release assets and checksums to GitHub Releases upon semver tag push (`v*`).
+5. Generates and updates automated rolling `nightly` release builds on every commit push to `main`.
 
 ---
 

@@ -1,4 +1,5 @@
 use super::*;
+use rusqlite::OptionalExtension;
 use sha2::{Digest, Sha256};
 
 pub(in crate::milestones) fn proof_shas(text: &str) -> Result<BTreeSet<String>> {
@@ -353,6 +354,77 @@ fn observe_command(
     }))
 }
 
+fn observe_or_reuse_command(
+    root: &Path,
+    store: &TasksStore,
+    identity: &str,
+    selection: &str,
+    kind: &str,
+    implementation_digest: &str,
+) -> Result<Option<integration::CommandObservation>> {
+    let recorded: Option<(String, String)> = store
+        .connection
+        .query_row(
+            "SELECT t.gate_path, t.proof_payload
+             FROM gate_transitions t
+             WHERE t.milestone_id = ?1
+               AND t.subject = 'milestone'
+               AND t.proof_kind = 'command'
+               AND t.action = 'pass'
+             ORDER BY t.id DESC LIMIT 1",
+            rusqlite::params![identity],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+
+    if let Some((gate_path, payload_str)) = recorded {
+        if let Ok(payload) = serde_json::from_str::<Value>(&payload_str) {
+            let digest_matches = payload["implementation_digest"]
+                .as_str()
+                .is_some_and(|d| d == implementation_digest);
+            let cmd_matches = payload["command_id"].as_str() == Some(selection);
+            let exit_zero = payload["exit_code"].as_i64() == Some(0);
+            let no_failed = payload["tests_failed"].as_u64() == Some(0);
+            let attempt_id = payload["attempt_id"].as_i64().unwrap_or(1);
+
+            if digest_matches && cmd_matches && exit_zero && no_failed {
+                let trace: Option<(Option<String>, String)> = store
+                    .connection
+                    .query_row(
+                        "SELECT stdout_sha256, command_str
+                         FROM gate_execution_traces
+                         WHERE milestone_id = ?1
+                           AND subject = 'milestone'
+                           AND gate_path = ?2
+                           AND command_id = ?3
+                           AND attempt_id = ?4
+                           AND status = 'completed'
+                           AND exit_code = 0
+                         ORDER BY id DESC LIMIT 1",
+                        rusqlite::params![identity, gate_path, selection, attempt_id],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()?;
+
+                if let Some((stdout_sha, cmd_str)) = trace {
+                    return Ok(Some(integration::CommandObservation {
+                        selection: selection.to_owned(),
+                        command: cmd_str,
+                        exit_code: 0,
+                        stdout_digest: stdout_sha
+                            .or_else(|| payload["stdout_sha256"].as_str().map(str::to_owned)),
+                        stderr_digest: None,
+                        reused_verification: Some(true),
+                        implementation_digest: implementation_digest.to_owned(),
+                    }));
+                }
+            }
+        }
+    }
+
+    observe_command(root, selection, kind, implementation_digest)
+}
+
 pub(super) fn telemetry_passport(
     root: &Path,
     item: &Snapshot,
@@ -524,8 +596,10 @@ pub(super) fn telemetry_passport(
         }
     }
     let lint = if let Some(selection) = &evidence.verification.lint_command {
-        match observe_command(
+        match observe_or_reuse_command(
             root,
+            store,
+            &identity,
             selection,
             "lint",
             &evidence.binding.implementation_digest,
@@ -537,8 +611,10 @@ pub(super) fn telemetry_passport(
         json!({"status":"unobserved"})
     };
     let verification = if let Some(selection) = &evidence.verification.project_command {
-        observe_command(
+        observe_or_reuse_command(
             root,
+            store,
+            &identity,
             selection,
             "project",
             &evidence.binding.implementation_digest,

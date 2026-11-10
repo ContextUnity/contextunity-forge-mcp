@@ -4,301 +4,221 @@
 [![MCP Protocol](https://img.shields.io/badge/MCP-Model%20Context%20Protocol-green.svg)](https://modelcontextprotocol.io)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](#license)
 
-Forge is a local Rust engine for AI coding agents. It keeps a structural map of the repository, indexes the documentation next to that map, and runs milestone work through a task queue with proof at each gate. The same binary is a stdio [Model Context Protocol](https://modelcontextprotocol.io) server (`contextunity-forge-mcp`, 20 tools) and a command-line interface.
+ContextUnity Forge MCP is a local-first, zero-daemon Rust engine for AI coding agents. It brings together deep code graph navigation, living documentation indexing, and an Augmented Context-Driven Delivery (ACDD) lifecycle state machine into a single high-performance binary.
 
-It follows a **zero-daemon, local-first architecture**: pure execution over stdio or CLI without background daemons, cloud dependencies, or idle RAM consumption. High-speed Tree-sitter indexing creates `.forge/code-map.sqlite` incrementally on the first call and refreshes only changed files on subsequent reads.
+The same binary acts as both a standard stdio [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server (20 tools) for coding assistants and an autonomous command-line interface (CLI) for headless workflows.
 
-Each tool call returns a bounded slice: a symbol and its neighbors, a documentation section linked to that symbol, or the task bundle for the gate just claimed. MCP responses have a 96 KiB default and maximum; smaller configured limits remain authoritative, including this repository's 64 KiB setting. The agent continues from that slice — the contract, the code, and the docs that bear on the current step — while the rest of the repository stays on disk.
+---
 
-Tool content and CLI command results default to Markdown. Select MCP
-`format: "json"` or CLI `--format json` for structured processing. Stdio MCP
-keeps JSON-RPC framing. See the [presentation contract](docs/reference/mcp-markdown-contracts.md)
-for shared formatting, preserved evidence, and continuations.
+## The Three Core Pillars
 
-## How the pieces work together
+Forge is architected around three foundational pillars designed to eliminate LLM hallucinations, enforce architectural discipline, and enable reliable multi-agent software engineering:
 
-Three local stores share one workspace. `forge-mcp.yaml` in the repository root decides what is admitted.
+```text
+┌───────────────────────────────────────────────────────────────────────────┐
+│                          CONTEXTUNITY FORGE MCP                           │
+└─────────────────────────────────────┬─────────────────────────────────────┘
+                                      │
+         ┌────────────────────────────┼────────────────────────────┐
+         ▼                            ▼                            ▼
+┌──────────────────┐        ┌──────────────────┐        ┌──────────────────┐
+│ 1. CODE          │        │ 2. LIVING        │        │ 3. ACDD STATE    │
+│    INTELLIGENCE  │        │    DOCUMENTATION │        │    MACHINE       │
+│                  │        │                  │        │                  │
+│ • Tree-sitter AST│        │ • SQLite Graph   │        │ • Flexible Gates │
+│ • code_map_*     │        │ • BM25 Sections  │        │ • DAG Wave Concur│
+│ • Direct Symbol  │        │ • Code Traceable │        │ • Feedback Loops │
+│ • ast_grep_search│        │ • INV-* Invariant│        │ • Lean Guidance  │
+│ • Blast Radius   │        │   Auto-Surfacing │        │ • Delivery Guard │
+└──────────────────┘        └──────────────────┘        └──────────────────┘
+```
+
+---
+
+### 1. Code Intelligence and Structural Navigation
+
+Forge parses repository source code into an incremental, queryable SQLite graph (`.forge/code-map.sqlite`) using native Tree-sitter grammars. Rather than relying on fuzzy text grep, agents navigate code using high-level structural semantics:
+
+- **Direct Single-Shot Symbol Reads (`forge_read`)**: When an agent knows a declaration name, it reads the complete, digest-verified implementation in a single call via `forge_read(selector="SymbolName")` (or `forge_read(selector="path:SymbolName")`). This completely replaces wasteful two-step text grepping and partial line scanning.
+- **Deep Relationship Graph**:
+  - `code_map_search`: Find declarations by exact name, prefix pattern (`parse*`), or semantic query.
+  - `code_map_inspect`: Inspect full signatures, docstrings, callers, callees, and linked documentation.
+  - `code_map_explain` & `code_map_impact`: Calculate the blast radius of proposed changes across call and reference hierarchies.
+  - `code_map_tests`: Identify covering tests reaching a symbol or discover production components exercised by a test.
+  - `code_map_prove_removal`: Statically estimate structural side-effects before removing functions or types.
+- **Syntactic Pattern Search (`ast_grep_search`)**: Match structural AST patterns (e.g. `fn $NAME($ARGS) -> Result<$T> { $$$ }`) across admitted source files.
+- **Multi-Language & Multi-Repo Federation**: Built-in support for Python, Rust, TypeScript, JavaScript, Vue, HTML, Protocol Buffers, YAML, and TOML (extended with `--features all-languages` for Go, Java, C#, Kotlin, PHP, Ruby, C, C++).
+- **Linked Workspaces & Cross-Repository Indexing**: Forge natively supports multi-repository architectures through `linked_workspaces` in `forge-mcp.yaml`. Sibling repositories are integrated into the unified code graph for cross-workspace symbol resolution, import linking, and cross-repo impact analysis:
+  ```yaml
+  # forge-mcp.yaml: federate external repositories into the code map
+  linked_workspaces:
+    - name: shared-core
+      path: ../shared-core
+      roots: [src]
+      docs: [docs]
+      ignore: [target, node_modules]
+  ```
+
+---
+
+### 2. Living Documentation Alongside Code
+
+Documentation in Forge is not an afterthought stored in disconnected wikis; it is indexed into the very same SQLite graph as the source code:
+
+- **BM25 Searchable Section Chunks**: Markdown files under configured `docs` paths are parsed at `##` and `###` headings into distinct `DocSection` units. Agents search technical documentation using full-text BM25 queries (`search_docs`) filtered by `doc_type` (such as `architecture`, `guide`, `plan`, `adr`).
+- **Bidirectional Symbol Traceability**: References to code declarations (e.g. `` `TokenValidator` `` or `` [`TokenValidator`](src/auth/token.rs) ``) are resolved against the AST code map. When unique matches occur, Forge creates verified edges connecting documentation sections directly to code declarations.
+- **Automatic Invariant Surfacing (`INV-*`)**:
+  - Architectural invariants defined in Markdown GitHub alert callouts (`> [!IMPORTANT] Invariant: ...`) containing `INV-*` identifiers are indexed as governance rules.
+  - Whenever an agent inspects a symbol (`code_map_inspect`) or performs an impact analysis (`code_map_impact`), Forge automatically surfaces the governing invariants directly in the agent's context. Agents are alerted to architectural constraints *before* writing code.
+
+---
+
+### 3. ACDD — Lifecycle State Machine and Orchestration
+
+**Augmented Context-Driven Delivery (ACDD)** is a system that injects tailored context into verified gates. Rather than relying on unstructured, open-ended coding loops, ACDD dynamically serves each agent the exact context it needs — admitted write scopes, governing architectural invariants, in-scope symbol skeletons, covering test seams, and reviewer rejection findings — bound to atomic, verifiable gates:
+
+- **Flexible, Composable Gates**: The task queue advances through distinct verification gates. The default lifecycle guides tasks through:
+  1. `contract`: Contract author produces an architectural decision and a compiling, failing seam test (runtime exit code 101).
+  2. `build`: Builder implements the functionality until the task seam test and project checks pass (exit code 0).
+  3. `review`: An independent reviewer (`worker_id` strictly separated from builder) inspects the candidate diff against 5 review contours (`paths`, `claims`, `concurrency`, `project_isolation`, `administration`).
+  4. `deliver`: Validates delivery subtask completion, records immutable cryptographic proofs in SQLite and milestone Markdown, and cleans up scratch context.
+  Custom universal profiles (`version: 2`) allow defining arbitrary gate sequences, commands, and roles.
+- **Topological DAG Waves and Path Isolation**: Milestones declare task dependencies (`depends_on`), which Forge resolves into topological execution waves. Autonomous milestone runners execute waves with state verification, while multi-agent workflows operate in isolated Git worktrees under `.worktrees/` protected by exclusive path locking to prevent merge conflicts.
+- **Cyclic Repair Loops Without Context Loss (`reject_routing`)**:
+  - When an independent reviewer rejects a candidate with structured findings, Forge routes the rejection back to the *same* builder session.
+  - The builder resumes with its full reasoning history, active workspace state, and structured reviewer findings without cold restarts or lost context.
+- **Dynamic Contextual Guidance (`workflow_guidance`)**:
+  - Every atomic gate claim delivers tailored role instructions, concrete acceptance criteria, and a lean context bundle (contract symbols, candidate diffs, or receipt rules).
+  - Agents collaborate asynchronously via `task_blackboard` to exchange technical notes and blockers in SQLite without polluting Git history.
+- **Delivery Guard**: Enforces that all subtasks and gate proof requirements are fully satisfied before landing changes.
+- **Execution Tiers: Milestones, Plans, and Workflows**: Delivery operates across three distinct operational layers:
+  1. **Milestones (`docs/milestones/*.md`)**: Durable, reviewed team delivery contracts tracked in Git. Milestones define strict task perimeters, dependency waves, isolated worktree concurrency, independent review contours, and cryptographically verified handoff receipts.
+  2. **Documentation Plans (`docs/plans/*.md`)**: Structured, multi-step documentation-driven plans (`doc_type: plan`) executed in-place with snapshot persistence (*currently under active alpha testing*).
+  3. **Standalone Workflows (`docs/workflows/*.yaml`)**: Lightweight, taskless root-gate pipelines with ephemeral observations for automated sweeps, linting, and checks without persistent task queue state (*currently under active alpha testing*).
+
+---
+
+## Architectural Principles
+
+- **Zero-Daemon, Local-First**: No background daemons, cloud dependencies, or idle RAM consumption. The server starts instantly over stdio or CLI, incrementally updates `.forge/code-map.sqlite`, and releases resources immediately.
+- **Strict Context Budgeting**: All tool outputs are formatted for high signal-to-noise ratio in Markdown or JSON. Output sizes are bounded by configurable limits (default 64–96 KiB) to prevent context window saturation.
+- **Branch-Local State Isolation**: Each Git worktree maintains its own `.forge/code-map.sqlite` and configuration, while linked worktrees share the task database to coordinate milestone execution safely.
 
 ```text
 repository files
-        │
-        ▼
+       │
+       ▼
  forge-mcp.yaml          which roots, docs, milestones, and linked repos
-        │
-        ├──► .forge/code-map.sqlite     symbols, calls, docs sections, edges
-        │
-        └──► .forge/tasks.sqlite        claims, proofs, receipts
-                    ▲
-                    │
-        docs/milestones/*.md            the contracts people review in Git
+       │
+       ├──► .forge/code-map.sqlite     symbols, AST edges, docs sections, invariants
+       │
+       └──► .forge/tasks.sqlite        queue, claims, proofs, receipts, blackboard
+                   ▲
+                   │
+       docs/milestones/*.md            reviewed contracts committed in Git
 ```
 
-A session moves through those stores in order:
+---
 
-1. The first `code_map_overview` builds `.forge/code-map.sqlite` from the admitted source and Markdown. Later reads refresh it when files change.
-2. The agent looks up a symbol, then asks for callers, impact, or tests. Inspection also returns documentation sections that mention that symbol, so an architectural rule arrives with the code it governs.
-3. People write milestones in Git. Forge syncs those specifications into `.forge/tasks.sqlite`. Rebuilding the code index leaves the task queue alone.
-4. When an agent claims a gate, Forge returns `workflow_guidance` for that gate and a context bundle sized to the role. A contract claim carries the write scope, governing decisions, in-scope symbols, and covering tests. A review claim carries the candidate snapshot and the invariants to check. Gate history stays in SQLite and comes back through `task inspect` when someone asks for it.
-5. A passing delivery writes a receipt into SQLite and into the milestone document.
+## Dual-Surface Interface: MCP Tools and CLI
 
-The built-in profile walks a task through `contract`, `build`, `review`, and `deliver`. A repository profile can rename gates, change proof, and assign roles. The claim response is what the agent follows.
+Every core operation is available both to AI agents over MCP and to developers/scripts via the CLI:
 
-### Worktrees and multi-repo workspaces
-
-- **Branch-local workspace state**: Each worktree keeps its own `.forge/code-map.sqlite`, adapter/configuration, milestone manifests, and `.forge/checkpoints.json`, so indexed and file-backed state follows the checked-out branch.
-- **Git-shared task state**: Git-linked worktrees use the shared task database resolved by the task store. Standalone repositories keep independent databases unless explicitly configured to share one.
-- **Linked Workspaces (Multi-Repo)**: Sibling repositories listed under `linked_workspaces` in `forge-mcp.yaml` join the workspace code graph for cross-repo symbol resolution, import linking, and task federation.
-
-
-## ACDD
-
-Augmented Context-Driven Development is the work loop around that queue.
-
-A milestone is a Markdown contract in `docs/milestones/`. It names the goal, the tasks, the files each task may change, and the proof expected. The CLI supports manual handoff and headless milestone execution with bound verification and review. Concurrent agents work in separate Git worktrees under `.worktrees/`. Each task holds an exclusive lock on its paths, so two agents do not edit the same file under one milestone.
-
-The built-in gates are:
-
-| Gate | Who claims it | What "pass" means |
+| Capability | MCP Tool (AI Agents) | CLI Command (Terminal / Automation) |
 |---|---|---|
-| `contract` | Contract author | A failing seam test that states the behavior, or a direct proof when the profile allows it |
-| `build` | Builder | The implementation and a test command that exits 0 |
-| `review` | A worker other than the builder | The candidate checked against the profile's review contours |
-| `deliver` | A worker other than the builder | A receipt written into SQLite and the milestone |
+| **Build / Refresh Graph** | Automatic on first call & file change | `scan`, `build`, `delta` |
+| **Search Symbols** | `code_map_search` | `query search` |
+| **AST Pattern Match** | `ast_grep_search` | `ast grep` |
+| **Inspect Declarations** | `code_map_inspect` | `query inspect` |
+| **Read Symbol Source** | `forge_read(selector="...")` | `read --selector "..."` |
+| **Blast Radius & Impact** | `code_map_impact`, `code_map_explain` | `query impact`, `query explain` |
+| **Test Coverage Seams** | `code_map_tests` | `query tests` |
+| **Safe Deletion Analysis** | `code_map_prove_removal` | `query remove` |
+| **Documentation Search** | `search_docs`, `get_doc` | `docs search`, `docs get` |
+| **Task Queue & Claims** | `task_list`, `task_claim`, `task_submit` | `task list`, `task claim`, `task submit` |
+| **Task Gate Verification** | `task_manage(action: "verify")` | `task verify` |
+| **Blackboard Messaging** | `task_blackboard` | `task blackboard post / read / inspect` |
+| **Subtask Tracking** | `task_manage(action: "subtask_*")` | `task subtask add / update / list` |
+| **Scope Extension** | `task_manage(action: "extend_scope")` | `task extend-scope` |
+| **Headless Milestone Run**| *CLI only* | `milestone run` |
+| **Milestone Handoff** | *CLI only* | `milestone handoff-context`, `verify`, `handoff` |
+| **Structured Plans** | *CLI only* | `plan list`, `plan show`, `plan run` |
+| **Standalone Workflows** | *CLI only* | `workflow list`, `workflow show`, `workflow run` |
+| **Built-in Reference** | `forge_guide` | `guide init`, `guide validate`, `guide lifecycle` |
 
-Review in the built-in profile uses five contours: paths, claims, concurrency, project isolation, and administration. A rejection sends the task back to `build` with the findings attached. The next claim for the builder includes those findings, so the repair starts from the review.
+---
 
-On every claim the agent also receives the role, the steps, and the tools that fit the gate. Contract work is pointed at overview, docs, and inspect. Build work is pointed at structural search and explain. Review work is pointed at impact, tests, and removal analysis. That list is advisory context: it tells the agent where to look before it starts reading unrelated files.
+## Getting Started
 
-Evidence submitted at each gate is a JSON object bound to the claim. The field shapes live in the [task operations](docs/reference/tasks.md) reference.
+### Installation & Setup
 
-### What the agent receives
+For step-by-step setup, configuration options, and platform integrations, see the dedicated [Installation and Setup Guide](INSTALL.md):
 
-`task claim` is the moment Forge assembles context. The bundle depends on the gate:
+- [Prerequisites and Building from Source](INSTALL.md#1-prerequisites-and-installation)
+- [Connecting MCP to Antigravity, Codex, Claude, and Cursor](INSTALL.md#connecting-to-ai-agent-clients-mcp-stdio)
+- [Creating `forge-mcp.yaml` and `.gitignore`](INSTALL.md#2-workspace-initialization-and-forge-mcpyaml)
+- [Selecting Built-in vs Universal Profiles](INSTALL.md#3-profiles-built-in-vs-custom-universal-profile)
+- [Installing Companion Skills Globally (`skills/install.sh`)](INSTALL.md#4-global-skill-installation)
+- [Setting Repository Rules (`AGENTS.md`)](INSTALL.md#5-repository-rules-setup)
+- [Authoring Indexed Documentation and Architectural Invariants](INSTALL.md#6-authoring-documentation-for-indexing)
+- [Milestones, Plans, and Workflow Execution](INSTALL.md#7-working-with-milestones-plans-and-workflows)
 
-- **Contract.** The task target, allowed write scope, dependencies, invariants, architectural decisions that apply, the symbol skeleton inside the scope, covering tests, and recent blackboard notes.
-- **Build.** The same contract material, plus the accepted seam test and any review findings still open after a rejection.
-- **Review.** The contract's scope and invariants, the candidate commit and how to inspect it, and blackboard notes. The reviewer works from the diff.
-- **Deliver.** The contract, the snapshot to land, and the receipt rules.
-
-Blackboard text in that bundle is shortened. The full message is still there via `task_blackboard` inspect. Full gate logs stay available through `task inspect`. The trim exists so a long task history does not crowd out the current gate. The accepted decision for this shape is [ADR 0016](docs/adr/0016-lean-stage-tailored-task-context-bundles.md).
-
-## Workspace adapter
-
-`forge-mcp.yaml` is the only project file Forge needs. It lists indexing roots, documentation paths, milestone and plan directories, linked repositories, the task database, and response limits. Generate a starter with:
+### Quick One-Liner Setup
 
 ```bash
+# 1. Install binary
+cargo install --path . --locked
+
+# 2. Sync bundled companion skills globally to detected agents
+./skills/install.sh
+
+# 3. Initialize starter configuration in your project
+cd /path/to/my-project
 contextunity-forge-mcp guide init
 ```
 
-A minimal starter looks like:
+---
 
-```yaml
-roots:
-  - src
-docs:
-  - docs
-milestones:
-  - docs/milestones
-ignore:
-  - target
-  - node_modules
-tasks_db: .forge/tasks.sqlite
-agents_guidance: AGENTS.md
-```
+## Companion Skills
 
-With no adapter, Forge scans the selected workspace root, respects `.gitignore`, skips common build and cache directories, and writes that worktree's `.forge/code-map.sqlite`. The task database defaults to `.forge/tasks.sqlite`; Git-linked worktrees share it through task-store resolution, while standalone repositories remain independent unless configured to share a store.
+Companion skills teach AI agents how to leverage Forge MCP tools, structure tests, handle review rejections, and maintain documentation:
 
-| Path | What it holds | In Git |
-|---|---|---|
-| `forge-mcp.yaml` | Roots, docs, milestones, linked workspaces, response limits | Yes |
-| `docs/milestones/*.md` | Milestone contracts and task specifications | Yes |
-| `.forge/acdd/profile.yaml` | Gate order, roles, proof, and review contours for this repo | Yes, when you pin a profile |
-| `.forge/frameworks/*.{toml,yaml,yml}` | Project rules using existing typed framework operations | Yes, when you add one |
-| `.forge/code-map.sqlite` | Symbols, AST facts, documentation sections, edges | No |
-| `.forge/tasks.sqlite` | Queue, claims, proofs, receipts | No |
-| `.forge/checkpoints.json` | Named session bookmarks | No |
-
-Commit the profile and any framework manifests you rely on. Ignore the SQLite files and checkpoints. The [gitignore example](skills/contextunity-forge/references/gitignore.example) matches that split. Field-by-field rules are in the [configuration reference](docs/reference/configuration.md).
-
-## Planning and the task queue
-
-### Milestones
-
-Milestone commands are CLI-only. Create a milestone explicitly and complete it through a validated handoff.
-
-```bash
-contextunity-forge-mcp milestone init --num 045 --slug auth
-contextunity-forge-mcp milestone list --status active
-contextunity-forge-mcp milestone show 045 --full
-contextunity-forge-mcp milestone handoff-context 045 --target-base main > /tmp/045-context.json
-# Obtain independent review for this exact context.
-contextunity-forge-mcp milestone verify 045 --target-base main
-# Complete all repository checks and prepare evidence from the observed result.
-contextunity-forge-mcp milestone handoff 045 --evidence-file /tmp/045-evidence.json
-```
-
-`handoff` validates immutable task proofs, the observed root verification and [content-bound integration evidence](docs/reference/tasks.md#milestone-cli-lifecycle), then archives the milestone. Supply independent review and verification for the final content and selected target base. Forge executes selected registered project and lint commands during handoff; see [TESTS.md](TESTS.md#milestone-handoff-gate) for required checks. Rewriting branch commit SHAs does not invalidate unchanged content evidence.
-
-### Tasks
-
-`task sync` reads task blocks from milestone Markdown into `.forge/tasks.sqlite`. From then on the agent works the queue:
-
-```bash
-contextunity-forge-mcp task list
-contextunity-forge-mcp task claim <task-id> --stage contract --worker agent-1 --worktree .
-contextunity-forge-mcp task submit <task-id> --stage contract --action pass --evidence '<JSON>'
-```
-
-`task list` defaults to ready tasks in the selected workspace's unique active milestone. No active milestone returns an empty page; multiple active milestones require an explicit milestone or milestone-status filter. Claim is atomic: a second worker asking for the same gate gets `TASK_ALREADY_CLAIMED`. Submit records pass or reject against that claim revision. Scope can grow during the task with `extend-scope`, and Forge refuses paths another active task already owns. Profiles under `.forge/acdd/` are protected from casual scope extension, so an agent in an ordinary task leaves the gate rules alone.
-
-Subtasks record discoveries under the current task. They do not become new milestone roots. The [task reference](docs/reference/tasks.md) has the evidence schemas, state transitions, and the matching MCP arguments.
-
-### Blackboard
-
-`task_blackboard` is a small message board in the same SQLite file, at milestone, task, or subtask scope. Agents post drafts, notes, findings, blockers, decisions, and deferred items there instead of committing scratch discussion. A claim includes the recent notes that apply to the current gate, so the next worker sees them without a separate search. On delivery, decisions and deferred items are copied into the receipt and the task's messages are cleared.
-
-### Profiles
-
-A profile is a YAML file that names gates, proof kinds, review contours, roles, and recommended models. Forge resolves it in this order: a pin on the task, a pin on the milestone, `acdd_profile` in `forge-mcp.yaml`, `.forge/acdd/profile.yaml`, then the built-in profile compiled into the binary.
-
-Pin a profile as `path:sha256-prefix`. On later claims Forge recomputes the hash and stops with `TASK_PROFILE_TAMPERED` if the file changed. That keeps the gate rules stable for the life of the task.
-
-Forge supports **Universal Task Profiles** (`version: 2`), decoupled from hardcoded language assumptions. A universal profile defines:
-- **`commands`**: Scoped command mappings (e.g. `rust-check-and-test`, `pytest-check`, `npm-test`) referenced by gates and verification contours.
-- **`guidance`**: Role- and stage-specific guidance with structured descriptions and concrete acceptance criteria, injected directly into the agent's context under `workflow_guidance`.
-- **`review_contours`**: Enforced review contours (`paths`, `claims`, `concurrency`, `project_isolation`, `administration`, etc.) tailored to repository conventions.
-- **`roles` & Runners**: Configurable role definitions with optional execution runners (`runner`) and prompt templates (`prompt_template`) for customized agent dispatch.
-
-See the complete [ACDD profiles reference](docs/reference/profiles.md) and the version 2 executable template in [`skills/contextunity-forge/references/acdd_profile.yaml.example`](skills/contextunity-forge/references/acdd_profile.yaml.example).
-
-## Code graph
-
-The code map is a SQLite graph built from Tree-sitter. It records declarations, imports, and the references the linker can resolve inside the indexed roots. An edge means a candidate was found in that scope. Dynamic dispatch, macros, and generated code can leave a reference unresolved; the [language reference](docs/reference/languages.md) lists those limits per language.
-
-The agent walks the graph through a short series of calls. Each one adds a narrower fact to context:
-
-1. `code_map_overview` reports the workspace, generation, language coverage, and documentation counts. This is the check that the index matches the repository you think you opened.
-2. `code_map_search` finds symbols by exact name, prefix (`parse*`), or full text. `ast_grep_search` matches a syntax pattern (`print($VALUE)`) in admitted files of one language.
-3. `code_map_inspect` returns the signature, docstring, and a short caller and callee preview. Linked documentation sections come with it. `forge_read(selector="path:Symbol")` adds digest-verified source. Read any workspace text through `forge_read(path="notes.txt", mode="lines")` or CLI `read notes.txt`; `search`, `delta`, and `output_file` are available with the minimal profile. Docs and codemap enable their respective outlines; active task claims add scope badges and conditional hints.
-4. `code_map_explain` lists direct relationships. `code_map_impact` walks the inbound blast radius, one edge deep unless you ask for more.
-5. `code_map_tests` names tests that reach the symbol, or the production code a test depends on. `code_map_prove_removal` estimates what a deletion would disturb from static references. It is a structural estimate, and runtime safety still belongs to the tests.
-6. `code_map_analyze` returns stored syntax diagnostics and, on request, dependency cycles. `code_map_query` runs the same graph operations or one read-only `SELECT`.
-
-Search hits include the selector to pass into inspect. Pages continue with `offset` and the `generation` token from the previous page, so a long result arrives in parts.
-
-### Languages
-
-A default build indexes Python, Rust, TypeScript, JavaScript, Vue, HTML, Protocol Buffers, YAML, and TOML. Markdown and MDX are indexed as documentation, separate from those code profiles. `--features all-languages` adds Go, Java, C#, Kotlin, PHP, Ruby, C, and C++.
-
-The graph matches the binary you installed. After changing features, rebuild the index. Extensions, static limits, and linker behavior are in the [language support](docs/reference/languages.md) reference.
-
-### Adding a language or a framework
-
-These are different jobs.
-
-A **framework** adds rules for a language Forge already parses. Put a TOML or YAML manifest under `.forge/frameworks/`; its filename stem is the pack ID. A same-ID project file merges with the bundle by default, with local rules taking precedence. Use `replace = true` for full replacement or `enabled = false` to disable that effective pack. Bundled files are inventoried automatically at build time. Supported typed operations and pack examples are in [framework manifests](docs/reference/framework-manifests.md).
-
-A **language** needs a compiled profile. Implement `LanguageProfile` for discovery and extraction, and `LanguageLinker` when import or receiver resolution is language-specific. Register a `lang-*` Cargo feature and rebuild. The traits, the directory layout, and where framework data plugs into a linker are in [engine modularity](docs/architecture/modularity.md). The same [framework manifests](docs/reference/framework-manifests.md) page has the section on extending language support, including what a project manifest can supply only when a linker already asks for it.
-
-### Documentation in the same graph
-
-Markdown under the adapter's `docs` paths is split into sections at `##` and `###` headings. `search_docs` runs full-text search over those sections, optionally filtered by `doc_type`. `get_doc` returns one document or one heading.
-
-Uniquely resolved documentary symbol claims, such as `LanguageProfile`, become edges between the section and the code entity; ambiguous candidates remain navigation only. `code_map_inspect` and `code_map_explain` return verified sections with the symbol. A GitHub alert containing `Invariant:` marks an invariant section. An `INV-*` rule creates a governance edge only when a uniquely resolved code claim with an explicit source-file target appears on the same line, so verified rules can arrive with impact and inspection.
-
-That is why documentation pages use YAML frontmatter, stable headings, and backticked symbols. The authoring rules are in [documentation instructions](docs/AGENTS.md).
-
-## Tools and the command line
-
-MCP is the surface agents use. The CLI is the same operations for a terminal, plus indexing commands and milestone administration. MCP reads refresh the index when source changes. CLI queries read the database as it is; run `build` or `delta` after edits when you are working from the terminal.
-
-| You want | MCP | CLI |
-|---|---|---|
-| Build or refresh the map | First overview, then automatic refresh | `scan`, `build`, `delta` |
-| Find and read symbols | `code_map_search`, `code_map_inspect`, `forge_read`, `ast_grep_search` | `query search`, `query inspect`, `read`, `ast grep` |
-| Callers, impact, tests | `code_map_explain`, `code_map_impact`, `code_map_tests`, `code_map_prove_removal` | `query explain`, `query impact`, `query tests`, `query remove` |
-| Diagnostics and SQL | `code_map_analyze`, `code_map_query` | `query analyze`, `query run sql` |
-| Documentation | `search_docs`, `get_doc` | `docs search`, `docs get` |
-| Task queue | `task_list`, `task_claim`, `task_submit`, `task_manage`, `task_blackboard` | `task …` |
-| Session notes and help | `session_checkpoint`, `forge_guide` | `guide init`, `guide validate` |
-| Open or archive a milestone | CLI only | `milestone init`, `list`, `show`, `handoff-context`, `handoff` |
-
-`forge_guide` with a topic (`acdd`, `query`, `adapter`, `docs`, `ast`) returns the short built-in guide for that area. Field-level contracts are in the [MCP tools](docs/reference/mcp-tools.md) reference and the [CLI reference](docs/reference/cli.md).
-
-## Install and connect
-
-You need a stable Rust toolchain and a C compiler. The C compiler builds the bundled SQLite and the Tree-sitter grammars.
-
-```bash
-cargo install --path . --locked
-cargo install --path . --locked --features all-languages   # optional languages
-```
-
-Point the MCP client at the binary. The process working directory is the workspace. If the client starts the server somewhere else, set `cwd` or pass `--root`. Both forms, plus what to check when the server does not appear, are in the [MCP setup guide](docs/reference/mcp-setup.md).
-
-```json
-{
-  "mcpServers": {
-    "contextunity-forge": {
-      "type": "stdio",
-      "command": "contextunity-forge-mcp"
-    }
-  }
-}
-```
-
-Call `code_map_overview` once. That first call creates the index. On Unix, `contextunity-forge-mcp reload` sends `SIGHUP` so a running server picks up a new binary.
-
-### Skills
-
-Install the `contextunity-forge` skill where the agent loads skills. Use the bundled zero-config installation script:
-
-```bash
-# Sync all bundled skills into ~/.agents/skills and symlink to detected agent runtimes
-./skills/install.sh
-
-# Or install specific skills:
-./skills/install.sh contextunity-forge test-contract-seam
-```
-
-`skills/install.sh` establishes `~/.agents/skills/` as the canonical global hub and automatically symlinks skills into detected agent directories:
-- Antigravity / Gemini CLI (`~/.gemini/config/skills/`)
-- OpenAI Codex (`~/.codex/skills/`)
-- Anthropic Claude (`~/.claude/skills/`)
-- Cursor (`~/.cursor/skills/`)
-
-Use `--copy` to perform isolated file copies instead of symlinks, or `--dry-run` to preview actions without touching disk.
-
-Claim and inspect report `TASK_GUIDANCE_MISSING` when that skill is absent, when `AGENTS.md` does not name it, when the guidance file is missing, or when `.gitignore` lacks the canonical protective rules.
-
-In the repository `AGENTS.md`, tell the agent to load `contextunity-forge`, to follow `workflow_guidance` from the claim, and to use this repo's `TESTS.md` for verification commands. The copy-paste router is [`agents.md.example`](skills/contextunity-forge/references/agents.md.example).
-
-Companion skills cover the work around a Forge session. Copy a skill into the agent skills directory when you want it; a local copy with the same name shadows a global one.
-
-| Skill | When it helps |
+| Skill | Purpose |
 |---|---|
-| [`contextunity-forge`](skills/contextunity-forge/SKILL.md) | Every session: which tool to call, how a claim is answered, how delivery and handoff work |
-| [`test-contract-seam`](skills/test-contract-seam/SKILL.md) | Writing the failing seam test the contract gate asks for |
-| [`test-suite-refactor`](skills/test-suite-refactor/SKILL.md) | Splitting a test suite while production-path coverage stays |
-| [`close-review-findings`](skills/close-review-findings/SKILL.md) | Turning review findings into a fix with evidence |
-| [`agent-instructions`](skills/agent-instructions/SKILL.md) | Editing `AGENTS.md`, skills, and docs |
-| [`lean-ctx`](skills/lean-ctx/SKILL.md) | Reading source and command output in less context |
+| [`contextunity-forge`](skills/contextunity-forge/SKILL.md) | Primary operational skill: code navigation, single-shot symbol reads, task claims, blackboard, delivery |
+| [`test-contract-seam`](skills/test-contract-seam/SKILL.md) | Synthesizing architectural contracts and authoring compiling runtime-red seam tests |
+| [`close-review-findings`](skills/close-review-findings/SKILL.md) | Diagnosing review rejections and implementing evidence-closed remediations |
+| [`test-suite-refactor`](skills/test-suite-refactor/SKILL.md) | Refactoring and modularizing test suites without losing production coverage |
+| [`agent-instructions`](skills/agent-instructions/SKILL.md) | Authoring and updating `AGENTS.md`, `SKILL.md`, and documentation |
+| [`lean-ctx`](skills/lean-ctx/SKILL.md) | Reading source and command output with minimal token consumption |
 
-The [skills index](skills/README.md) is the same list with install notes.
+---
 
-## Contributing
+## Contributing and Verification
 
-Bug reports, documentation, language profiles, and framework manifests are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) covers the toolchain, the branch, and the gates every change passes:
+We welcome contributions, bug fixes, documentation improvements, language profiles, and framework manifests.
+
+> [!NOTE]
+> - **Workflows and Plans**: Standalone root-gate workflows (`workflow run`) and structured documentation plans (`plan run`) are currently under active testing and validation.
+> - **Extended Language Scope**: While default languages are fully stable, the extended language profiles (`--features all-languages` covering Go, Java, C#, Kotlin, PHP, Ruby, C, C++) need further refinement and community contributions to improve language linkers and AST extractions.
+
+Before submitting changes, ensure all verification gates pass:
 
 ```bash
+# Code formatting
 cargo fmt --check
-cargo clippy --all-targets -- -D warnings
+
+# Strict Clippy analysis
+cargo clippy --all-targets --all-features -- -D warnings
+
+# Task engine and integration tests
+cargo test -p forge-tasks --lib
 cargo test --locked
 ```
 
-Domain commands and milestone handoff counts are in [TESTS.md](TESTS.md). A change to a CLI command, MCP tool, or configuration field updates the matching page under `docs/reference/` in the same change. Pages that Forge indexes follow the [documentation instructions](docs/AGENTS.md).
+Refer to [TESTS.md](TESTS.md) for domain-specific verification commands and count rules, and [docs/AGENTS.md](docs/AGENTS.md) for documentation authoring governance.
 
-The rest of the map — architecture, decisions, runbooks, roadmap, and milestones — starts at [docs/README.md](docs/README.md).
+---
 
 ## License
 
