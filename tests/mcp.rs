@@ -34,6 +34,9 @@ mod fastmcp_registration;
 mod freshness;
 #[path = "mcp/harness_contract.rs"]
 mod harness_contract;
+#[cfg(unix)]
+#[path = "mcp/installer.rs"]
+mod installer;
 #[path = "mcp/lint_tools.rs"]
 mod lint_tools;
 #[path = "mcp/query_ranking.rs"]

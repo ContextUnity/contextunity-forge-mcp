@@ -9,7 +9,59 @@ Forge runs as a local stdio MCP server. The executable also provides CLI command
 
 ## Install the binary
 
-From the Forge checkout:
+Run the installer from the project directory whose `.mcp.json` should be configured:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ContextUnity/contextunity-forge-mcp/main/install.sh | sh
+```
+
+The installer uses POSIX `sh`, ordinary shell utilities, `tar` with gzip support,
+`curl` or `wget`, and `sha256sum` or `shasum`. It requires no compiler, Rust
+toolchain, Python, Node, or `jq`. Supported release targets are Linux x86_64 and
+aarch64, and macOS x86_64 and arm64. It downloads the latest stable release by
+default and verifies the exact archive entry in `SHA256SUMS` before extracting
+or changing the installation. Unsupported platforms and missing or mismatched
+checksums stop installation.
+
+Select a tagged release or nightly through its asset directory:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ContextUnity/contextunity-forge-mcp/main/install.sh -o /tmp/forge-install.sh
+FORGE_RELEASE_BASE_URL="https://github.com/ContextUnity/contextunity-forge-mcp/releases/download/<tag>" sh /tmp/forge-install.sh
+# Or use .../releases/download/nightly for nightly assets.
+```
+
+`FORGE_RELEASE_BASE_URL` is an absolute release asset directory, containing
+`SHA256SUMS` and `contextunity-forge-mcp-<rust-target>.tar.gz`. The archive has
+the executable and companion `skills/` directory at its root. Verification
+checks download integrity against that release manifest.
+
+The binary is staged beside its destination and atomically renamed into
+`~/.local/bin/contextunity-forge-mcp`. Add `~/.local/bin` to your shell `PATH`
+when the installer prints the PATH notice. Client configuration uses the
+absolute executable path. The bundled `skills/install.sh` refreshes
+`~/.agents/skills` and links skills into detected Claude, Codex, Gemini and
+Cursor homes; existing regular skill directories receive copies. Unrelated
+skills remain present. The companion script also supports `--copy`,
+`--dry-run`, selected skill names, and an `AGENTS_SKILLS_DIR` hub override.
+
+The installer creates or updates the current project `.mcp.json`, setting only
+the Forge server `command` and `type` fields. Other servers, root fields and
+tailored Forge `args`, `env`, and `cwd` values survive. Formatting may change.
+Malformed JSON, a nonobject root, nonobject `mcpServers` or Forge entry, and
+symlink configuration files are rejected without overwriting configuration.
+
+Run the same installer to update binary and companion skills. For an existing
+installation, it invokes the installed binary `reload` command after atomic
+replacement. On Linux and macOS, reload signals matching MCP server processes
+for the same executable path and user. Both the default invocation without a
+subcommand and explicit `serve` are recognized through the CLI grammar;
+other CLI commands are excluded. Initialized MCP sessions retain their stdio
+pipes. A notice reports when no matching server is running. The
+installer preserves project adapters and does not promise a transaction across
+binary, skills, and configuration changes.
+
+To build from a Forge checkout instead:
 
 ```sh
 cargo install --path . --locked

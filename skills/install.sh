@@ -1,135 +1,78 @@
-#!/usr/bin/env bash
-# Sync bundled Forge skills to the canonical ~/.agents/skills hub and link/sync
-# them into detected agent skill directories (Antigravity/Gemini, Codex, Claude, Cursor).
-
-set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CANONICAL_HUB="${AGENTS_SKILLS_DIR:-$HOME/.agents/skills}"
-MODE="link"
+#!/bin/sh
+# Sync companion skills through the canonical hub into detected agent homes.
+set -eu
+SCRIPT_DIR=$(CDPATH= cd -P "$(dirname "$0")" && pwd)
+CANONICAL_HUB=${AGENTS_SKILLS_DIR:-$HOME/.agents/skills}
+MODE=link
 DRY_RUN=0
-SELECTED_SKILLS=()
-
 usage() {
-    cat <<'EOF'
-Usage: ./skills/install.sh [OPTIONS] [SKILL...]
-
-Syncs bundled skills from skills/ into ~/.agents/skills and updates typical
-global agent skill directories (~/.gemini/config/skills, ~/.codex/skills,
-~/.claude/skills, ~/.cursor/skills).
-
-Options:
-  --copy       Copy files into each agent directory instead of symlinking to ~/.agents/skills
-  --dry-run    Print planned actions without modifying disk
-  -h, --help   Show this help message
-EOF
+    echo 'Usage: ./skills/install.sh [--copy] [--dry-run] [SKILL...]'
+    echo 'Sync bundled skills to ~/.agents/skills and detected agent directories.'
 }
-
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --copy)
-            MODE="copy"
-            shift
-            ;;
-        --dry-run)
-            DRY_RUN=1
-            shift
-            ;;
-        -h|--help)
-            usage
-            exit 0
-            ;;
-        -*)
-            echo "Unknown option: $1" >&2
-            usage >&2
-            exit 1
-            ;;
-        *)
-            SELECTED_SKILLS+=("$1")
-            shift
-            ;;
+run_cmd() {
+    if [ "$DRY_RUN" = 1 ]; then printf '[dry-run]'; printf ' %s' "$@"; printf '\n'; else "$@"; fi
+}
+same_dir() {
+    [ -d "$1" ] && [ -d "$2" ] &&
+        [ "$(CDPATH= cd -P "$1" && pwd -P)" = "$(CDPATH= cd -P "$2" && pwd -P)" ]
+}
+sync_dir() {
+    if same_dir "$1" "$2"; then return; fi
+    if command -v rsync >/dev/null 2>&1; then
+        run_cmd mkdir -p "$2"
+        run_cmd rsync -a --delete "$1/" "$2/"
+    else
+        run_cmd rm -rf "$2"
+        run_cmd mkdir -p "$2"
+        run_cmd cp -pR "$1/." "$2/"
+    fi
+}
+# Retain selected names as positional arguments without eval or word splitting.
+remaining=$#
+while [ "$remaining" -gt 0 ]; do
+    arg=$1; shift; remaining=$((remaining - 1))
+    case $arg in
+        --copy) MODE=copy ;;
+        --dry-run) DRY_RUN=1 ;;
+        -h|--help) usage; exit 0 ;;
+        -*) echo "Unknown option: $arg" >&2; exit 1 ;;
+        *) set -- "$@" "$arg" ;;
     esac
 done
-
-run_cmd() {
-    if [[ "$DRY_RUN" -eq 1 ]]; then
-        echo "[dry-run] $*"
-    else
-        "$@"
-    fi
-}
-
-sync_dir() {
-    local src="$1"
-    local dst="$2"
-    if command -v rsync >/dev/null 2>&1; then
-        run_cmd mkdir -p "$dst"
-        run_cmd rsync -a --delete "$src/" "$dst/"
-    else
-        run_cmd rm -rf "$dst"
-        run_cmd mkdir -p "$dst"
-        run_cmd cp -a "$src/." "$dst/"
-    fi
-}
-
-if [[ ${#SELECTED_SKILLS[@]} -eq 0 ]]; then
+if [ "$#" -eq 0 ]; then
     for dir in "$SCRIPT_DIR"/*/; do
-        [[ -d "$dir" ]] || continue
-        if [[ -f "${dir}SKILL.md" ]]; then
-            SELECTED_SKILLS+=("$(basename "$dir")")
-        fi
+        [ -f "${dir}SKILL.md" ] || continue
+        name=${dir%/}; set -- "$@" "${name##*/}"
     done
 fi
-
-if [[ ${#SELECTED_SKILLS[@]} -eq 0 ]]; then
-    echo "No skills found in $SCRIPT_DIR" >&2
-    exit 1
-fi
-
+[ "$#" -gt 0 ] || { echo 'No bundled skills found' >&2; exit 1; }
+for skill do
+    case $skill in ''|.|..|*/*) echo "Invalid skill name: $skill" >&2; exit 1 ;; esac
+    [ -f "$SCRIPT_DIR/$skill/SKILL.md" ] || { echo "Skill not found: $skill" >&2; exit 1; }
+done
 run_cmd mkdir -p "$CANONICAL_HUB"
-if [[ -f "$SCRIPT_DIR/README.md" ]]; then
+if [ -f "$SCRIPT_DIR/README.md" ] && ! same_dir "$SCRIPT_DIR" "$CANONICAL_HUB"; then
     run_cmd cp -f "$SCRIPT_DIR/README.md" "$CANONICAL_HUB/README.md"
 fi
-
-for skill in "${SELECTED_SKILLS[@]}"; do
-    src_dir="$SCRIPT_DIR/$skill"
-    if [[ ! -f "$src_dir/SKILL.md" ]]; then
-        echo "Error: skill '$skill' not found at $src_dir/SKILL.md" >&2
-        exit 1
-    fi
-    dst_dir="$CANONICAL_HUB/$skill"
-    if [[ -L "$dst_dir" ]]; then
-        run_cmd rm -f "$dst_dir"
-    fi
-    sync_dir "$src_dir" "$dst_dir"
-    echo "[hub]     synced $skill -> $dst_dir"
+for skill do
+    dst=$CANONICAL_HUB/$skill
+    if [ -L "$dst" ]; then run_cmd rm -f "$dst"; fi
+    sync_dir "$SCRIPT_DIR/$skill" "$dst"
+    printf '[hub] synced %s -> %s\n' "$skill" "$dst"
 done
-
-AGENT_TARGETS=(
-    "gemini:$HOME/.gemini:$HOME/.gemini/config/skills"
-    "codex:$HOME/.codex:$HOME/.codex/skills"
-    "claude:$HOME/.claude:$HOME/.claude/skills"
-    "cursor:$HOME/.cursor:$HOME/.cursor/skills"
-)
-
-for entry in "${AGENT_TARGETS[@]}"; do
-    IFS=':' read -r agent_name agent_root agent_skills_dir <<<"$entry"
-    [[ -d "$agent_root" ]] || continue
-    run_cmd mkdir -p "$agent_skills_dir"
-
-    for skill in "${SELECTED_SKILLS[@]}"; do
-        hub_skill="$CANONICAL_HUB/$skill"
-        target_skill="$agent_skills_dir/$skill"
-
-        if [[ "$MODE" == "link" && ( ! -e "$target_skill" || -L "$target_skill" ) ]]; then
-            run_cmd ln -sfn "$hub_skill" "$target_skill"
-            echo "[$agent_name] linked $skill -> $target_skill"
+for agent in gemini codex claude cursor; do
+    [ -d "$HOME/.$agent" ] || continue
+    case $agent in gemini) target=$HOME/.gemini/config/skills ;; *) target=$HOME/.$agent/skills ;; esac
+    run_cmd mkdir -p "$target"
+    for skill do
+        dst=$target/$skill
+        if [ "$MODE" = link ] && { [ ! -e "$dst" ] || [ -L "$dst" ]; }; then
+            if [ -L "$dst" ]; then run_cmd rm -f "$dst"; fi
+            run_cmd ln -sf "$CANONICAL_HUB/$skill" "$dst"
         else
-            if [[ -L "$target_skill" ]]; then
-                run_cmd rm -f "$target_skill"
-            fi
-            sync_dir "$hub_skill" "$target_skill"
-            echo "[$agent_name] copied $skill -> $target_skill"
+            if [ -L "$dst" ]; then run_cmd rm -f "$dst"; fi
+            sync_dir "$CANONICAL_HUB/$skill" "$dst"
         fi
+        printf '[%s] synced %s -> %s\n' "$agent" "$skill" "$dst"
     done
 done
