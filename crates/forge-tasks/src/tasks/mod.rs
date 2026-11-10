@@ -1449,11 +1449,21 @@ pub(crate) fn claim_worktree(value: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
-/// Performs confined path.
-pub fn confined_path(root: &Path, value: &str) -> Result<PathBuf> {
+/// Resolve and confine an existing or target path to root without symlink escape.
+pub fn confined_target(root: &Path, target: &Path) -> Result<PathBuf> {
     let root = root.canonicalize()?;
-    let relative = relative_path(value)?;
-    let path = root.join(relative);
+    let path = if target.is_absolute() {
+        if target
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            bail!("TASK_SCOPE_INVALID: expected path without traversal");
+        }
+        target.to_path_buf()
+    } else {
+        let relative = relative_path(&target.to_string_lossy())?;
+        root.join(relative)
+    };
     let mut ancestor = path.as_path();
     while !ancestor.exists() {
         if std::fs::symlink_metadata(ancestor).is_ok() {
@@ -1471,6 +1481,11 @@ pub fn confined_path(root: &Path, value: &str) -> Result<PathBuf> {
         bail!("TASK_SCOPE_INVALID: symlink escape");
     }
     Ok(resolved)
+}
+
+/// Performs confined path.
+pub fn confined_path(root: &Path, value: &str) -> Result<PathBuf> {
+    confined_target(root, Path::new(value))
 }
 
 /// Infers project name from a relative milestone or plan path structurally without arbitrary folder name whitelists.

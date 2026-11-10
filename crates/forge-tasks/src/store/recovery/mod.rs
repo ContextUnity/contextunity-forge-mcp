@@ -124,8 +124,25 @@ pub(crate) fn ensure_no_intents_except(root: &Path, obsolete: &BTreeSet<String>)
         {
             continue;
         }
-        if read_checkpoint(root, reference)?.intent.is_some() {
-            return Err(CheckpointPending.into());
+        match read_checkpoint(root, reference) {
+            Ok(cp) => {
+                if cp.intent.is_some() {
+                    return Err(CheckpointPending.into());
+                }
+            }
+            Err(error) => {
+                if let Ok(output) =
+                    git_command(root, &["show", &format!("{reference}:checkpoint.json")])
+                {
+                    if let Ok(cp) = serde_json::from_slice::<ActiveCheckpoint>(&output.stdout) {
+                        if !cp.workspace.exists() {
+                            let _ = git_command(root, &["update-ref", "-d", reference]);
+                            continue;
+                        }
+                    }
+                }
+                return Err(error);
+            }
         }
     }
     Ok(())
@@ -505,6 +522,12 @@ fn read_checkpoint_revision(
         bail!("TASK_RECOVERY_CHECKPOINT_INVALID: cannot read {reference}");
     }
     let checkpoint: ActiveCheckpoint = serde_json::from_slice(&output.stdout)?;
+    if !checkpoint.workspace.exists() {
+        bail!(
+            "TASK_RECOVERY_CHECKPOINT_INVALID: checkpoint '{reference}' references missing worktree '{}'. The worktree was removed from disk.",
+            checkpoint.workspace.display()
+        );
+    }
     let home = crate::git::git_stdout(
         &checkpoint.workspace,
         &["rev-parse", "--path-format=absolute", "--git-common-dir"],

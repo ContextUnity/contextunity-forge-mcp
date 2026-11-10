@@ -4,11 +4,57 @@ impl TasksStore {
     pub(crate) fn checkpoint_homes(&self) -> Result<Vec<PathBuf>> {
         Ok(self.connection.prepare("SELECT DISTINCT value FROM task_store_metadata WHERE key=?1 OR key LIKE 'checkpoint_home:%'")?
             .query_map([ROOT], |row| row.get::<_, String>(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?.into_iter().map(PathBuf::from).collect())
+            .collect::<rusqlite::Result<Vec<_>>>()?.into_iter().map(PathBuf::from).filter(|p| p.exists()).collect())
     }
 
     pub(crate) fn set_obsolete_checkpoint_owners(&mut self, owners: BTreeSet<String>) {
         self.obsolete_checkpoint_owners = owners;
+    }
+
+    /// Prunes orphaned Git checkpoint refs and stale SQLite metadata pointing to deleted worktrees.
+    pub fn cleanup_orphaned_checkpoints(&mut self, root: &Path) -> Result<Vec<String>> {
+        let output = git_command(
+            root,
+            &["for-each-ref", "--format=%(refname)", "refs/forge/state/"],
+        )?;
+        if !output.status.success() {
+            return Ok(Vec::new());
+        }
+        let mut pruned = Vec::new();
+        for reference in String::from_utf8(output.stdout)?.lines() {
+            if let Ok(show_output) =
+                git_command(root, &["show", &format!("{reference}:checkpoint.json")])
+            {
+                if let Ok(checkpoint) =
+                    serde_json::from_slice::<ActiveCheckpoint>(&show_output.stdout)
+                {
+                    if !checkpoint.workspace.exists() {
+                        let _ = git_command(root, &["update-ref", "-d", reference]);
+                        pruned.push(reference.to_owned());
+                    }
+                }
+            }
+        }
+        let homes: Vec<(String, PathBuf)> = self
+            .connection
+            .prepare(
+                "SELECT key, value FROM task_store_metadata WHERE key LIKE 'checkpoint_home:%'",
+            )?
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    PathBuf::from(row.get::<_, String>(1)?),
+                ))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        for (key, path) in homes {
+            if !path.exists() {
+                let _ = self
+                    .connection
+                    .execute("DELETE FROM task_store_metadata WHERE key=?1", [&key]);
+            }
+        }
+        Ok(pruned)
     }
     pub(crate) fn checkpoint_enrolled(&self, task: &Task) -> Result<bool> {
         let Some(authority) = &task.authority_snapshot else {
@@ -103,6 +149,7 @@ impl TasksStore {
                     .ok()
                     .flatten()
                     .map(PathBuf::from)
+                    .filter(|p| p.exists())
             })
             .or_else(|| {
                 let parent = self.database_path.parent()?;
@@ -116,6 +163,7 @@ impl TasksStore {
                             .map(|root| PathBuf::from(root.trim()))
                     })
                     .flatten()
+                    .filter(|p| p.exists())
             });
         let Some(root) = root else {
             return Ok(None);

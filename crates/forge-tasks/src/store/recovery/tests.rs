@@ -75,3 +75,11 @@ fn pending_manifest_publication_replays_for_non_git_task_store() -> Result<()> {
     ensure_observable(&store.connection)?;
     Ok(())
 }
+
+#[test]
+fn git_command_reports_missing_worktree_clearly() {
+    let non_existent = Path::new("/tmp/non_existent_worktree_1234567890");
+    let err = crate::git::git_command(non_existent, &["status"]).unwrap_err();
+    assert!(err.to_string().contains("TASK_GIT_WORKTREE_MISSING"));
+    assert!(err.to_string().contains(non_existent.to_str().unwrap()));
+}

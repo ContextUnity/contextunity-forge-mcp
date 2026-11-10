@@ -104,6 +104,19 @@ pub struct Task {
     pub applicable_invariants: Vec<String>,
 }
 
+/// Result of clearing a milestone from the task store.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MilestoneClearResult {
+    /// Count of tasks deleted from the store.
+    pub tasks_deleted: usize,
+    /// Count of gate execution traces deleted.
+    pub traces_deleted: usize,
+    /// Count of blackboard messages deleted.
+    pub blackboard_deleted: usize,
+    /// Count of task store metadata entries deleted.
+    pub metadata_deleted: usize,
+}
+
 /// A milestone-, task-, or subtask-scoped collaboration message persisted in the task store.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BlackboardMessage {
@@ -1859,6 +1872,94 @@ impl TasksStore {
         }
         tx.commit()?;
         Ok(())
+    }
+
+    /// Clear all SQLite task records, telemetry traces, metadata, and blackboard messages for a milestone.
+    pub fn clear_milestone(
+        &mut self,
+        milestone_prefix: &str,
+        milestone_id: &str,
+        milestone_ref: Option<&str>,
+    ) -> Result<MilestoneClearResult> {
+        let milestone_identity = self.milestone_identity(milestone_id);
+        let old_scope = milestone_ref.and_then(|r| self.milestone_scope_ref(r).ok());
+        recovery::ensure_observable(&self.connection)?;
+        let tx = self.connection.transaction()?;
+
+        let mut task_ids: Vec<String> = tx
+            .prepare("SELECT task_id FROM tasks WHERE substr(task_id, 1, length(?1)) = ?1")?
+            .query_map([milestone_prefix], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        task_ids.sort();
+        task_ids.dedup();
+
+        let tasks_deleted = task_ids.len();
+
+        let has_runs_table: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='gate_execution_runs')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+        if has_runs_table {
+            tx.execute(
+                "DELETE FROM command_execution_proofs WHERE run_id IN (
+                    SELECT id FROM gate_execution_runs WHERE milestone_id=?1 OR milestone_id=?2 OR substr(subject, 1, length(?3))=?3
+                )",
+                params![milestone_identity, milestone_id, milestone_prefix],
+            )?;
+            tx.execute(
+                "DELETE FROM gate_execution_attempts WHERE milestone_id=?1 OR milestone_id=?2 OR substr(subject, 1, length(?3))=?3",
+                params![milestone_identity, milestone_id, milestone_prefix],
+            )?;
+            tx.execute(
+                "DELETE FROM gate_execution_runs WHERE milestone_id=?1 OR milestone_id=?2 OR substr(subject, 1, length(?3))=?3",
+                params![milestone_identity, milestone_id, milestone_prefix],
+            )?;
+        }
+
+        trace::prune_milestone_gate_records(&tx, &milestone_identity)?;
+        let traces_deleted = tx.execute(
+            "DELETE FROM gate_execution_traces WHERE milestone_id=?1 OR milestone_id=?2 OR substr(subject, 1, length(?3))=?3",
+            params![milestone_identity, milestone_id, milestone_prefix],
+        )?;
+        tx.execute(
+            "DELETE FROM gate_transitions WHERE milestone_id=?1 OR milestone_id=?2 OR substr(subject, 1, length(?3))=?3",
+            params![milestone_identity, milestone_id, milestone_prefix],
+        )?;
+
+        let mut metadata_deleted = 0;
+        for task_id in &task_ids {
+            metadata_deleted += tx.execute(
+                "DELETE FROM task_store_metadata WHERE key=?1",
+                [format!("checkpoint_home:{task_id}")],
+            )?;
+        }
+
+        for task_id in &task_ids {
+            tx.execute("DELETE FROM task_revisions WHERE task_id=?1", [task_id])?;
+        }
+
+        let mut blackboard_deleted = 0;
+        if let Some(r) = milestone_ref {
+            blackboard_deleted += tx.execute(
+                "DELETE FROM task_blackboard WHERE milestone_ref=?1 OR milestone_ref=?2",
+                params![r, old_scope.as_deref().unwrap_or(r)],
+            )?;
+        }
+
+        for task_id in &task_ids {
+            tx.execute("DELETE FROM tasks WHERE task_id=?1", [task_id])?;
+        }
+
+        tx.commit()?;
+        Ok(MilestoneClearResult {
+            tasks_deleted,
+            traces_deleted,
+            blackboard_deleted,
+            metadata_deleted,
+        })
     }
 
     /// Select whether handoff prunes terminal SQLite state (enabled by default).

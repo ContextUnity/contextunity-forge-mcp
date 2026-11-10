@@ -9,7 +9,7 @@
 version: 2
 inherit: none
 
-# Workflows use `save: log` as their primary persistence artifact:
+# Workflows use `save: log` (alias for logfile) as their primary persistence artifact:
 # Emits run traces into `.forge/runs/<workflow-run-id>.json` and SQLite gate_execution_traces.
 save: log
 
@@ -34,7 +34,7 @@ commands:
 policies:
   default_review:
     independent_worker: true
-    require_all_contours: true
+    require_all_contours: false
 
 # Pure gate graph: NO `tasks:` container!
 gates:

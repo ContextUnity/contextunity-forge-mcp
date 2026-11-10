@@ -82,7 +82,10 @@ Documentation in Forge is not an afterthought stored in disconnected wikis; it i
   2. `build`: Builder implements the functionality until the task seam test and project checks pass (exit code 0).
   3. `review`: An independent reviewer (`worker_id` strictly separated from builder) inspects the candidate diff against 5 review contours (`paths`, `claims`, `concurrency`, `project_isolation`, `administration`).
   4. `deliver`: Validates delivery subtask completion, records immutable cryptographic proofs in SQLite and milestone Markdown, and cleans up scratch context.
-  Custom universal profiles (`version: 2`) allow defining arbitrary gate sequences, commands, and roles.
+  All default gates, commands, proofs, and roles are defined in the [built-in profile (`crates/forge-tasks/src/tasks/acdd.default.yaml`)](crates/forge-tasks/src/tasks/acdd.default.yaml). Repositories can customize, extend, or replace them via a workspace profile (`.forge/acdd/profile.yaml` or `acdd_profile` in `forge-mcp.yaml`) in two modes:
+  - **Extension & Override** (default, when `inherit` is omitted): inherits the built-in profile, merging project-defined commands, roles, proofs, and gates over defaults.
+  - **Full Replacement** (`inherit: none`): completely replaces the built-in profile, allowing teams to build bespoke, multi-gate lifecycles entirely from scratch without inherited gates.
+  A starter template is available in [acdd_profile.yaml.example](skills/contextunity-forge/references/acdd_profile.yaml.example), and comprehensive multi-domain patterns (milestones, plans, workflows) are documented in the companion skill's [ACDD profile examples directory (`skills/contextunity-forge/references/acdd-profile-examples/`)](skills/contextunity-forge/references/acdd-profile-examples/) (see [profile-milestone.example.yaml](skills/contextunity-forge/references/acdd-profile-examples/profile-milestone.example.yaml), [profile-plan.example.yaml](skills/contextunity-forge/references/acdd-profile-examples/profile-plan.example.yaml), and [profile-workflow.example.yaml](skills/contextunity-forge/references/acdd-profile-examples/profile-workflow.example.yaml)).
 - **Topological DAG Waves and Path Isolation**: Milestones declare task dependencies (`depends_on`), which Forge resolves into topological execution waves. Autonomous milestone runners execute waves with state verification, while multi-agent workflows operate in isolated Git worktrees under `.worktrees/` protected by exclusive path locking to prevent merge conflicts.
 - **Cyclic Repair Loops Without Context Loss (`reject_routing`)**:
   - When an independent reviewer rejects a candidate with structured findings, Forge routes the rejection back to the *same* builder session.
@@ -95,6 +98,12 @@ Documentation in Forge is not an afterthought stored in disconnected wikis; it i
   1. **Milestones (`docs/milestones/*.md`)**: Durable, reviewed team delivery contracts tracked in Git. Milestones define strict task perimeters, dependency waves, isolated worktree concurrency, independent review contours, and cryptographically verified handoff receipts.
   2. **Documentation Plans (`docs/plans/*.md`)**: Structured, multi-step documentation-driven plans (`doc_type: plan`) executed in-place with snapshot persistence (*currently under active alpha testing*).
   3. **Standalone Workflows (`docs/workflows/*.yaml`)**: Lightweight, taskless root-gate pipelines with ephemeral observations for automated sweeps, linting, and checks without persistent task queue state (*currently under active alpha testing*).
+
+> [!TIP] Complete Tool & CLI References
+> For exhaustive parameter specifications, schemas, error invariants, and copy-ready examples:
+> - [**MCP Tools Reference (`docs/reference/mcp-tools.md`)**](docs/reference/mcp-tools.md) — full reference for all 20 MCP tools exposed to AI agents.
+> - [**CLI Reference (`docs/reference/cli.md`)**](docs/reference/cli.md) — complete reference for all command-line operations and terminal automation.
+> - [**Task Lifecycle Reference (`docs/reference/tasks.md`)**](docs/reference/tasks.md) — in-depth guide to task state machines, blackboard, and evidence envelopes.
 
 ---
 
@@ -122,7 +131,7 @@ repository files
 
 ## Dual-Surface Interface: MCP Tools and CLI
 
-Every core operation is available both to AI agents over MCP and to developers/scripts via the CLI:
+Every core operation is available both to AI agents over MCP and to developers/scripts via the CLI (detailed in [**`docs/reference/mcp-tools.md`**](docs/reference/mcp-tools.md) and [**`docs/reference/cli.md`**](docs/reference/cli.md)):
 
 | Capability | MCP Tool (AI Agents) | CLI Command (Terminal / Automation) |
 |---|---|---|

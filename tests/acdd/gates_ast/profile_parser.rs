@@ -46,6 +46,30 @@ guidance:
     ))
     .expect("the v2 profile example should satisfy the production validators");
     assert_eq!(v2.version, Some(2));
+
+    let canonical_example = validate_profile_document(include_str!(
+        "../../../skills/contextunity-forge/references/acdd_profile.yaml.example"
+    ))
+    .expect("the canonical profile example should satisfy production validators");
+    assert_eq!(canonical_example.version, Some(2));
+
+    let milestone_example = validate_profile_document(include_str!(
+        "../../../skills/contextunity-forge/references/acdd-profile-examples/profile-milestone.example.yaml"
+    ))
+    .expect("the milestone profile example should satisfy production validators");
+    assert_eq!(milestone_example.version, Some(2));
+
+    let plan_example = validate_profile_document(include_str!(
+        "../../../skills/contextunity-forge/references/acdd-profile-examples/profile-plan.example.yaml"
+    ))
+    .expect("the plan profile example should satisfy production validators");
+    assert_eq!(plan_example.version, Some(2));
+
+    let workflow_example = validate_profile_document(include_str!(
+        "../../../skills/contextunity-forge/references/acdd-profile-examples/profile-workflow.example.yaml"
+    ))
+    .expect("the workflow profile example should satisfy production validators");
+    assert_eq!(workflow_example.version, Some(2));
     assert_eq!(
         v2.commands["check_task"].command_for_path("src/lib.rs"),
         Some(

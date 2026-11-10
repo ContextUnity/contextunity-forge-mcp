@@ -770,7 +770,13 @@ fn manage_inner(root: &Path, p: &mut Manage) -> Result<Value> {
                     bail!("STORE_SYNC_FAILED: milestone '{reference}' is archived");
                 }
                 let full_path = confined_path(&workspace.root, &reference)?;
-                let text = std::fs::read_to_string(full_path)?;
+                let text = std::fs::read_to_string(&full_path).with_context(|| {
+                    format!(
+                        "unable to read milestone manifest '{}' at '{}'",
+                        reference,
+                        full_path.display()
+                    )
+                })?;
                 let parsed = registry
                     .parse_milestone_manifest(workspace, &reference, &text)
                     .with_context(|| format!("invalid milestone manifest '{reference}'"))?;

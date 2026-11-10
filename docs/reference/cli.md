@@ -309,6 +309,9 @@ contextunity-forge-mcp task subtask list TASK_ID [--workspace WS]
 contextunity-forge-mcp task reset TASK_ID
 contextunity-forge-mcp task reopen TASK_ID
 contextunity-forge-mcp task context TASK_ID
+contextunity-forge-mcp task extend-scope TASK_ID PATH1 [PATH2...]
+contextunity-forge-mcp task delete TASK_ID [--force]
+contextunity-forge-mcp task cleanup
 ```
 
 Subtasks default to `ready`; legacy `pending` aliases `ready` and responses use
@@ -323,6 +326,8 @@ Resetting or reopening a completed task clears terminal receipt state from both
 SQLite and milestone Markdown, resets the task to the first gate in its active profile
 (default ID: `contract`), and retains existing subtask history so new work and audits can proceed.
 
+`task extend-scope TASK_ID PATH...` dynamically extends the admitted write scope of an in-progress task within repository perimeters. `task delete TASK_ID [--force]` removes a task from SQLite (`--milestone REF` deletes all tasks for a milestone; `--force` bypasses confirmation). `task cleanup` purges expired tasks and orphaned checkpoint refs.
+
 ## Structured plans
 
 ```sh
@@ -330,6 +335,8 @@ contextunity-forge-mcp --root PATH plan list
 contextunity-forge-mcp --root PATH plan show NAME
 contextunity-forge-mcp --root PATH --format json plan run NAME --in-place
 contextunity-forge-mcp --root PATH --config config/custom.yaml --profile profiles/plan.yaml plan run NAME
+contextunity-forge-mcp --root PATH plan clear NAME
+contextunity-forge-mcp --root PATH plan archive NAME
 ```
 
 Plans are Markdown documents with `doc_type: plan`, discovered recursively in
@@ -337,6 +344,10 @@ configured `plans` directories (default `docs/plans`), excluding `archive`.
 Select a unique filename stem or discovered root-relative path. `list` and
 `show` perform no gate execution. Discovery rejects symlinks and escaping paths.
 `show` exposes validated steps, scopes, statuses and dependency edges.
+
+`plan clear <selector>` purges Git working snapshot references (`refs/forge/snapshots/{namespace}/plan-*`) and deletes SQLite execution traces matching literal `path#` and `slug#`, leaving the plan Markdown manifest untouched.
+
+`plan archive <selector>` enforces ADR 0005 symlink confinement on destination ancestor directories (`docs/plans/archive`), fails closed if the destination archive file already exists (`PLAN_ARCHIVE_EXISTS`), prunes snapshot references and traces, and renames the plan manifest into `docs/plans/archive/`.
 
 Use numbered step headings (`## 1. Step name`) and explicit bullet fields:
 `- **Target**: goal`, `- **Scope**: ["src/module.rs"]`,
@@ -370,11 +381,14 @@ results include the path, steps and snapshots. A failure retains work for repair
 contextunity-forge-mcp --root PATH workflow list
 contextunity-forge-mcp --root PATH workflow show NAME
 contextunity-forge-mcp --root PATH --format json workflow run NAME
+contextunity-forge-mcp --root PATH workflow clear NAME
 ```
 
 Workflows are validated profile documents in `docs/workflows/*.yaml` or `*.yml`.
 Select a workflow by its unique filename stem or discovered root-relative path.
 Discovery is read-only; missing, ambiguous, or escaping paths fail.
+
+`workflow clear <selector>` resolves the workflow name or path (failing closed with `WORKFLOW_AMBIGUOUS` on multiple candidates), verifies that `.forge/runs` and its contents contain no symlinks (ADR 0005), deletes run logs matching `{slug}.log` or timestamp-delimited `{slug}-<timestamp>.log` / `{slug}_<timestamp>.log` while strictly preserving neighbor logs, and purges SQLite execution traces matching `{slug}#`.
 
 `workflow run` executes command-owned and agent-owned root gates in-place with `save: none`.
 It follows the profile's pass, failure, condition, and retry edges, drains both
@@ -403,7 +417,7 @@ retain their own effects.
 
 ## Repository milestones
 
-`milestone init`, `draft`, `list`, `show`, `handoff-context`, `handoff`, and `db-recover` are CLI-only. The MCP interface
+`milestone init`, `draft`, `list`, `show`, `handoff-context`, `handoff`, `clear`, and `db-recover` are CLI-only. The MCP interface
 provides task operations and has no milestone lifecycle tools.
 
 ```sh
@@ -414,6 +428,7 @@ contextunity-forge-mcp milestone run <id-or-number> --target-base <git-selector>
 contextunity-forge-mcp milestone draft [--num 011] [--slug short-name] [--title "Title"] [--plan docs/plans/proposal.md] [--dir docs/milestones] [--desc "Purpose"] [--depends-on m-prior] [--active]
 contextunity-forge-mcp milestone handoff-context <id-or-number> --target-base <git-selector>
 contextunity-forge-mcp milestone handoff <id-or-number> [--commit <git-selector>] --evidence-file <external-review.json>
+contextunity-forge-mcp milestone clear <id-or-number>
 contextunity-forge-mcp milestone db-recover
 ```
 
@@ -533,6 +548,21 @@ healthy SQL authority, incomplete cohorts and missing legacy checkpoints fail cl
 [active recovery](tasks.md#active-task-checkpoints-and-database-recovery) for
 acknowledgment fencing, healthy-first enrollment and recovery limits.
 
+`milestone clear <id-or-number>` acquires an exclusive physical database fence (`tasks.receipt.lock`), checks that no active checkpoints are pending publication (`TASK_CHECKPOINT_PENDING`), resolves the milestone (failing closed with `MILESTONE_AMBIGUOUS` on multiple candidates), deletes SQLite tasks strictly scoped to the milestone prefix (`substr(task_id, 1, length(?1)) = ?1`), purges blackboard entries, provenance records (`command_execution_proofs`, `gate_execution_attempts`, `gate_execution_runs`), gate execution traces, and gate transitions, and prunes scoped Git state references (`refs/forge/state/<namespace>/<id>/*`) via atomic `git update-ref --stdin`.
+
+## Universal clear dispatch
+
+```sh
+contextunity-forge-mcp --root PATH clear milestone <id-or-number>
+contextunity-forge-mcp --root PATH clear plan <selector> [--archive]
+contextunity-forge-mcp --root PATH clear workflow <selector>
+```
+
+`clear` routes lifecycle cleanup across milestones, plans, and workflows under a unified top-level command.
+- `clear milestone <id-or-number>`: Invokes milestone clear to purge tasks, blackboard messages, gate execution traces, provenance records, and Git state refs.
+- `clear plan <selector> [--archive]`: Clears working snapshots and traces; pass `--archive` to also relocate the manifest to `docs/plans/archive/`.
+- `clear workflow <selector>`: Invokes workflow clear to purge run logs and traces.
+
 ## Server, guide, and checkpoints
 
 ```sh
@@ -570,3 +600,17 @@ creates `forge-mcp.yaml`, requires `--force` to replace it, and can bootstrap a
 workspace with an invalid existing adapter. `guide validate` scans using the
 selected adapter. Checkpoints accept valid JSON state addressed by the full gate
 breadcrumb and persist in the selected task-store project's SQLite database.
+
+## Validation and migration
+
+```sh
+contextunity-forge-mcp validate [PATH]
+contextunity-forge-mcp migrate preview [MILESTONE_REF]
+contextunity-forge-mcp migrate apply [MILESTONE_REF]
+contextunity-forge-mcp migrate verify [MILESTONE_REF]
+```
+
+- `validate [PATH]`: Validates an explicit ACDD profile or milestone manifest document against schema and topological constraints. When `PATH` is omitted, scans and validates the active profile (`.forge/acdd/profile.yaml`) and all open milestone manifests across configured milestone directories.
+- `migrate preview [MILESTONE_REF]`: Inspects milestone contract structure and reports required schema migrations without mutating files. When `MILESTONE_REF` is omitted, previews all discovered milestones.
+- `migrate apply [MILESTONE_REF]`: Reconciles and upgrades milestone Markdown manifests to the current contract schema.
+- `migrate verify [MILESTONE_REF]`: Verifies that milestone manifests conform strictly to current ACDD contract requirements.

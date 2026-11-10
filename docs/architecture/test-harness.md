@@ -9,7 +9,7 @@ Integration and contract tests drive real production seams. Shared setup lives i
 helpers; the `#[test]` owns the scenario mutation and every assertion.
 
 Active hardening order and branch reality live in
-`docs/plans/test-suite-diet-and-fixture-hardening.md`. Placement rules live in
+`docs/plans/archive/test-suite-diet-and-fixture-hardening.md`. Placement rules live in
 `tests/AGENTS.md`. This page states only durable boundaries.
 
 ## Mental model

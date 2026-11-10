@@ -639,8 +639,37 @@ impl From<CliOutputFormat> for OutputFormat {
     }
 }
 #[derive(Subcommand, Debug)]
+/// Unified clear operations across milestones, plans, and workflows.
+pub enum ClearCommand {
+    /// Clear milestone tasks, blackboard messages, gate execution traces, metadata, and Git state refs.
+    Milestone {
+        /// Milestone identifier or selector.
+        id: String,
+    },
+    /// Clear working snapshots and traces for a plan without moving its manifest.
+    Plan {
+        /// Plan name or discovered root-relative path.
+        selector: String,
+        /// Relocate the plan manifest to docs/plans/archive/ instead of clearing in place.
+        #[arg(long)]
+        archive: bool,
+    },
+    /// Clear standalone workflow execution run logs in .forge/runs/ and traces.
+    Workflow {
+        /// Workflow name or discovered root-relative path.
+        selector: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
 /// Enumerates the supported command values.
 pub enum Command {
+    /// Purge runtime artifacts, snapshots, logs, or state for milestones, plans, or workflows.
+    Clear {
+        #[command(subcommand)]
+        /// The target subject to clear.
+        command: ClearCommand,
+    },
     /// Discover or execute a structured documentation plan.
     Plan {
         #[command(subcommand)]
@@ -1024,6 +1053,7 @@ fn command_presentation(command: &Command) -> (OperationKind, &'static str, Opti
         Command::Milestone { .. } => (OperationKind::Task, "task result", None),
         Command::Workflow { .. } => (OperationKind::Task, "workflow result", None),
         Command::Plan { .. } => (OperationKind::Task, "plan result", None),
+        Command::Clear { .. } => (OperationKind::Task, "clear result", None),
         Command::Guide { .. } => (OperationKind::Guide, "forge_guide", None),
         Command::Checkpoint { .. } => (OperationKind::Checkpoint, "session_checkpoint", None),
         Command::Ast { .. } => (OperationKind::Navigation, "ast_grep_search", None),
@@ -1409,6 +1439,21 @@ impl Cli {
             Command::Milestone { command } => milestone::run(&root, command)?,
             Command::Workflow { command } => workflow::run(&root, command)?,
             Command::Plan { command } => plan::run(&root, command, &settings)?,
+            Command::Clear { command } => match command {
+                ClearCommand::Milestone { id } => {
+                    milestone::run(&root, milestone::MilestoneCommand::Clear { id })?
+                }
+                ClearCommand::Plan { selector, archive } => {
+                    if archive {
+                        plan::run(&root, plan::PlanCommand::Archive { selector }, &settings)?
+                    } else {
+                        plan::run(&root, plan::PlanCommand::Clear { selector }, &settings)?
+                    }
+                }
+                ClearCommand::Workflow { selector } => {
+                    workflow::run(&root, workflow::WorkflowCommand::Clear { selector })?
+                }
+            },
             Command::Serve => {
                 writer::validate_code_map_target(&root, &db)?;
                 let invocation = forge_tasks::tasks::configuration::current(&root)

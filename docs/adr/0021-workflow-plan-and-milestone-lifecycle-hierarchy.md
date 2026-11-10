@@ -31,7 +31,7 @@ A Plan uses only a `tasks:` container and executes its steps in the active worki
 
 ### Milestone
 
-A Milestone combines root contract synthesis, a task DAG, engine verification, independent integration review, a delivery commit, and handoff context binding and archival. The headless runner executes the root `gates:` graph and its declared transitions, and the existing handoff validator checks content-bound verification and review. The [audit plan](../plans/gate-engine-bugs-and-coverage-audit.md) tracks additional identified boundaries.
+A Milestone combines root contract synthesis, a task DAG, engine verification, independent integration review, a delivery commit, and handoff context binding and archival. The headless runner executes the root `gates:` graph and its declared transitions, and the existing handoff validator checks content-bound verification and review.
 
 ```yaml
 gates:
@@ -71,4 +71,4 @@ The architectural persistence levels are `none`, `log`, `snapshot`, and `commit`
 
 ## Consequences and verification
 
-Profiles distinguish the models by graph shape. Root milestone gates execute once at the milestone boundary; task gates execute for each admitted task. Verification must consume observed, content-bound engine evidence and independent review before handoff. Round 4 findings R4-01–R4-09, R4-15, R4-19, and R4-20 identify incomplete enforcement; the [audit plan](../plans/gate-engine-bugs-and-coverage-audit.md) tracks the reopened boundaries. End-to-end tests after AC-003 must exercise each model, persistence choice, failure route, recovery, and Git effects.
+Profiles distinguish the models by graph shape. Root milestone gates execute once at the milestone boundary; task gates execute for each admitted task. Verification must consume observed, content-bound engine evidence and independent review before handoff. Round 4 findings R4-01–R4-09, R4-15, R4-19, and R4-20 identify historical incomplete enforcement. End-to-end tests after AC-003 must exercise each model, persistence choice, failure route, recovery, and Git effects.

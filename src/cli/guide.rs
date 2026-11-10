@@ -123,7 +123,9 @@ fn topic_value(root: &Path, topic: &str, adapter: &scanner::Adapter) -> Result<V
                 "TASK_ALREADY_CLAIMED":"Inspect the active owner and worktree. Resume the owning worker or coordinate release/recovery before claiming; preserve its work and proofs.",
                 "TASK_STALE_CLAIM":"Inspect current task and claim revision, obtain a fresh applicable claim, then rerun claim-bound verification; do not reuse stale evidence.",
                 "TASK_AUTO_PROOF_UNAVAILABLE":"Run task verify for the admitted seam under the active claim and registered command, inspect the actual observation, then submit again.",
-                "TASK_CANDIDATE_MISMATCH":"Preserve both work and accepted snapshot. Inspect drift and follow rejection back to the admitted build/contract owner before editing or regenerating candidate proof."
+                "TASK_CANDIDATE_MISMATCH":"Preserve both work and accepted snapshot. Inspect drift and follow rejection back to the admitted build/contract owner before editing or regenerating candidate proof.",
+                "TASK_GIT_WORKTREE_MISSING":"Worktree directory was removed from disk. Run task cleanup to prune orphaned state checkpoints and metadata, or recreate the worktree.",
+                "TASK_RECOVERY_CHECKPOINT_INVALID":"Checkpoint references a missing or desynchronized worktree. Run task cleanup or milestone db-recover to auto-heal orphaned state refs."
             },
             "example":{"mcp":{"name":"task_list","arguments":{"status":"ready"}},"cli":"contextunity-forge-mcp task list --status ready"},
             "references":["AGENTS.md","docs/reference/tasks.md","docs/reference/cli.md"]

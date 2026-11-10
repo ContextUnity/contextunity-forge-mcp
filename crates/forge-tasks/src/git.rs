@@ -258,10 +258,23 @@ pub fn git_checkpoint(
 
 /// Run a Git command in the given worktree and capture its output.
 pub fn git_command(worktree: &Path, args: &[&str]) -> Result<Output> {
-    Ok(Command::new("git")
+    if !worktree.exists() {
+        bail!(
+            "TASK_GIT_WORKTREE_MISSING: worktree '{}' does not exist on disk",
+            worktree.display()
+        );
+    }
+    Command::new("git")
         .args(args)
         .current_dir(worktree)
-        .output()?)
+        .output()
+        .with_context(|| {
+            format!(
+                "failed to execute git {:?} in '{}'",
+                args,
+                worktree.display()
+            )
+        })
 }
 
 /// Read non-empty UTF-8-lossy standard output from a successful Git command.

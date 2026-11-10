@@ -1409,7 +1409,13 @@ impl Registry {
         };
 
         let full_path = confined_path(&resolved_ws.root, &path)?;
-        let text = std::fs::read_to_string(full_path)?;
+        let text = std::fs::read_to_string(&full_path).with_context(|| {
+            format!(
+                "unable to read milestone manifest '{}' at '{}'",
+                path,
+                full_path.display()
+            )
+        })?;
         let parsed = self
             .parse_milestone_manifest(resolved_ws, &path, &text)
             .with_context(|| format!("invalid milestone manifest '{path}'"))?;

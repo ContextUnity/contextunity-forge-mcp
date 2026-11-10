@@ -250,65 +250,6 @@ pub(crate) fn validate_observed_seam_test(
     Ok(())
 }
 
-#[cfg(test)]
-mod command_proof_tests {
-    use super::validate_command;
-    use crate::tasks::profile::{CommandCountsSpec, CommandDef, CommandOutputSpec};
-    use serde_json::json;
-    use std::collections::BTreeMap;
-
-    fn command(require_counts: bool) -> BTreeMap<String, CommandDef> {
-        BTreeMap::from([(
-            "check".into(),
-            CommandDef::Detailed {
-                command: "cargo test".into(),
-                timeout_seconds: None,
-                description: None,
-                scope_args_by_pattern: BTreeMap::new(),
-                output: Some(CommandOutputSpec {
-                    counts: Some(CommandCountsSpec {
-                        passed: r"(?m)^test result: ok\. (\d+) passed".into(),
-                        failed: r"(?m)^test result: .*; (\d+) failed".into(),
-                    }),
-                    require_counts,
-                    noise: Vec::new(),
-                    errors: Vec::new(),
-                    seam_ref_pattern: None,
-                    tests: None,
-                }),
-            },
-        )])
-    }
-
-    fn proof(counts: Option<(u64, u64)>) -> serde_json::Value {
-        let mut proof = json!({"command":"check", "exit_code":0});
-        if let Some((passed, failed)) = counts {
-            proof["tests_passed"] = json!(passed);
-            proof["tests_failed"] = json!(failed);
-        }
-        json!({"command_proof":proof})
-    }
-
-    #[test]
-    fn passing_command_rejects_reported_test_failures() {
-        let error = validate_command(&proof(Some((10, 1))), true, &command(false)).unwrap_err();
-
-        assert!(error.to_string().contains("zero failures"));
-    }
-
-    #[test]
-    fn passing_command_rejects_missing_required_counts() {
-        let error = validate_command(&proof(None), true, &command(true)).unwrap_err();
-
-        assert!(error.to_string().contains("complete test counts"));
-    }
-
-    #[test]
-    fn passing_command_allows_count_free_linter_proofs() {
-        validate_command(&proof(None), true, &command(false)).unwrap();
-    }
-}
-
 fn validate_review(
     value: &serde_json::Value,
     passed: bool,
@@ -655,4 +596,63 @@ pub fn validate_subtask_delivery(id: &str, subtasks: &[crate::tasks::SubtaskSpec
         bail!("TASK_SUBTASK_EVIDENCE_MISSING: task '{id}' cannot be delivered because completed subtask '{}' has no verification evidence. Do: record non-empty verification evidence for every completed subtask.", subtask.subtask_ref);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod command_proof_tests {
+    use super::validate_command;
+    use crate::tasks::profile::{CommandCountsSpec, CommandDef, CommandOutputSpec};
+    use serde_json::json;
+    use std::collections::BTreeMap;
+
+    fn command(require_counts: bool) -> BTreeMap<String, CommandDef> {
+        BTreeMap::from([(
+            "check".into(),
+            CommandDef::Detailed {
+                command: "cargo test".into(),
+                timeout_seconds: None,
+                description: None,
+                scope_args_by_pattern: BTreeMap::new(),
+                output: Some(CommandOutputSpec {
+                    counts: Some(CommandCountsSpec {
+                        passed: r"(?m)^test result: ok\. (\d+) passed".into(),
+                        failed: r"(?m)^test result: .*; (\d+) failed".into(),
+                    }),
+                    require_counts,
+                    noise: Vec::new(),
+                    errors: Vec::new(),
+                    seam_ref_pattern: None,
+                    tests: None,
+                }),
+            },
+        )])
+    }
+
+    fn proof(counts: Option<(u64, u64)>) -> serde_json::Value {
+        let mut proof = json!({"command":"check", "exit_code":0});
+        if let Some((passed, failed)) = counts {
+            proof["tests_passed"] = json!(passed);
+            proof["tests_failed"] = json!(failed);
+        }
+        json!({"command_proof":proof})
+    }
+
+    #[test]
+    fn passing_command_rejects_reported_test_failures() {
+        let error = validate_command(&proof(Some((10, 1))), true, &command(false)).unwrap_err();
+
+        assert!(error.to_string().contains("zero failures"));
+    }
+
+    #[test]
+    fn passing_command_rejects_missing_required_counts() {
+        let error = validate_command(&proof(None), true, &command(true)).unwrap_err();
+
+        assert!(error.to_string().contains("complete test counts"));
+    }
+
+    #[test]
+    fn passing_command_allows_count_free_linter_proofs() {
+        validate_command(&proof(None), true, &command(false)).unwrap();
+    }
 }

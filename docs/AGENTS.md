@@ -1,9 +1,9 @@
 ---
-title: "Documentation and planning governance"
+title: "Documentation governance"
 doc_type: guide
 ---
 
-# Documentation and planning governance
+# Documentation governance
 
 ## Authority and style
 
@@ -21,8 +21,7 @@ Keep each contract on one page and link its consumers. Record accepted decisions
 approval; delivery agents escalate decision changes to that process.
 
 Use `roadmap.md` for one or two paragraphs of strategic context. Read admitted
-commitments, ordering, and dependencies from `milestones/`. Keep research,
-proposals, and source plans in `plans/`; milestone admission creates an admitted commitment.
+commitments, ordering, and dependencies from `milestones/`.
 
 ## MCP client surface
 
@@ -101,16 +100,11 @@ to code symbols in the SQLite code map. Follow these structural standards:
    add a heading fragment when the link is meant to identify one specific
    indexed section. Check configured roots before treating an existing but
    unadmitted file as a broken filesystem link.
-   In historical plans and audits, write file paths as inline code relative to
+   In historical audits, write file paths as inline code relative to
    the repository root, for example `docs/reference/tasks.md`, instead of links.
    After archiving a document, verify its links and links to its former path.
 
-## Planning and documentation alignment
-
-Preserve plan content and relationships during transfer. Admit approved
-execution commitments into `milestones/` and link plans and milestones both ways.
-Plan 1-5 coherent feature-slice tasks initially. Add related discoveries to the
-active milestone while its goal, ownership, and invariants apply.
+## Milestone documentation alignment
 
 Rely on `workflow_guidance` returned by `task claim` for current gates, operational rules, and review criteria; use the [task reference](reference/tasks.md) for schema definitions and offline operations.
 
@@ -119,7 +113,6 @@ When designing milestone tasks or authoring contracts that modify public interfa
 Include stale architecture or runbook pages in the authorized write scope and
 align them with verified source. Apply clear accepted rules autonomously;
 escalate direct decision conflicts and irreversible database or data-loss choices.
-Preserve source-plan requirements until reconciliation proves their destination.
 Validate metadata, relative links, scan admission, and documentation retrieval.
 Follow root `AGENTS.md` ACDD permissions for task/archive commits and their
 branch merges. Obtain explicit approval for publication.

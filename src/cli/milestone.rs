@@ -83,6 +83,11 @@ pub enum MilestoneCommand {
     },
     /// Creates a numbered milestone contract draft.
     Draft(DraftArgs),
+    /// Purge milestone tasks, execution traces, blackboard messages, and Git checkpoints.
+    Clear {
+        /// Milestone ID, slug, or numeric prefix.
+        id: String,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -200,6 +205,7 @@ pub fn run(root: &Path, command: MilestoneCommand) -> Result<Value> {
             run_draft(root, draft, false)
         }
         MilestoneCommand::Draft(draft) => run_draft(root, draft, true),
+        MilestoneCommand::Clear { id } => milestones::clear_milestone(root, &id),
     }
 }
 

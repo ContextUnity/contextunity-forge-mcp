@@ -460,8 +460,14 @@ pub fn run_plan_workflow(
         let evidence = json!({"profile_digest":profile_digest,"outcomes":outcomes});
         let updated = plan.complete_source(&step, &evidence)?;
         crate::fs::atomic_replace(&path, updated.as_bytes())?;
+        let plan_rel = plan.path.strip_prefix(root).unwrap_or(&plan.path);
+        let plan_tag = format!(
+            "{:x}",
+            Sha256::digest(plan_rel.to_string_lossy().as_bytes())
+        );
         let name = format!(
-            "plan-{:x}",
+            "plan-{}-{:x}",
+            &plan_tag[..16],
             Sha256::digest(format!(
                 "{}\n{}\n{}",
                 plan.path.display(),
@@ -488,8 +494,14 @@ pub fn run_plan_workflow(
 }
 
 fn gate_snapshot(root: &Path, path: &Path, step: &str, gate: &str, phase: &str) -> Result<()> {
+    let plan_rel = path.strip_prefix(root).unwrap_or(path);
+    let plan_tag = format!(
+        "{:x}",
+        Sha256::digest(plan_rel.to_string_lossy().as_bytes())
+    );
     let name = format!(
-        "plan-gate-{:x}",
+        "plan-gate-{}-{:x}",
+        &plan_tag[..16],
         Sha256::digest(format!(
             "{}\n{step}\n{gate}\n{phase}\n{}",
             path.display(),

@@ -14,7 +14,7 @@
 - Architecture and modularity: [src/AGENTS.md](src/AGENTS.md), [architecture](docs/architecture/README.md), and [decisions](docs/adr/README.md).
 - Interfaces: [configuration and tools](docs/reference/README.md), [task operations](docs/reference/tasks.md), [ACDD navigation](docs/reference/acdd.md), and [CLI commands](docs/reference/cli.md).
 - Operations: [runbooks](docs/runbooks/README.md).
-- Planning: [roadmap](docs/roadmap.md), [milestones](docs/milestones/README.md), and [plans](docs/plans/README.md).
+- Planning: [roadmap](docs/roadmap.md) and [milestones](docs/milestones/README.md).
 - Verification: [required gates](TESTS.md) and [test invariants](tests/AGENTS.md).
 - Forge tool discovery and task operations: load the shared `contextunity-forge` skill.
 - Follow the [Blackboard procedure](skills/contextunity-forge/SKILL.md#blackboard) for claim context, progress reports, and gate or agent handoffs.

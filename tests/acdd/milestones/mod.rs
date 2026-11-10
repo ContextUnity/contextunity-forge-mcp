@@ -6,6 +6,7 @@ use contextunity_forge_mcp::db::tasks_store::{
 use contextunity_forge_mcp::engine::milestones as milestone_engine;
 use contextunity_forge_mcp::engine::tasks::list_workspaces;
 
+mod clear;
 mod delivery;
 mod discovery;
 mod handoff;

@@ -1,4 +1,4 @@
-use anyhow::{ensure, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use forge_tasks::tasks::profile::{self, GateProfile};
 use std::{
     fs,
@@ -102,4 +102,58 @@ pub(super) fn confined_file(root: &Path, path: &Path) -> Result<PathBuf> {
         "CLI_PATH_INVALID: expected a file confined to the selected root"
     );
     Ok(selected)
+}
+
+/// Verifies that a relative path does not escape `root` and that none of its ancestor
+/// directories or destination components traverse a symlink (ADR 0005).
+pub(super) fn verify_no_symlink_traversal(
+    root: &Path,
+    relative: &Path,
+    error_prefix: &str,
+) -> Result<PathBuf> {
+    ensure!(
+        !relative.is_absolute(),
+        "{error_prefix}: path must be relative: {}",
+        relative.display()
+    );
+    let canonical_root = root.canonicalize().with_context(|| {
+        format!(
+            "{error_prefix}: cannot canonicalize workspace root: {}",
+            root.display()
+        )
+    })?;
+    let mut cursor = root.to_path_buf();
+    for comp in relative.components() {
+        match comp {
+            std::path::Component::CurDir => continue,
+            std::path::Component::Normal(name) => cursor.push(name),
+            _ => bail!(
+                "{error_prefix}: path contains invalid component: {}",
+                relative.display()
+            ),
+        }
+        match fs::symlink_metadata(&cursor) {
+            Ok(meta) => {
+                ensure!(
+                    !meta.file_type().is_symlink(),
+                    "{error_prefix}: symlink in path: {}",
+                    cursor.display()
+                );
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                break;
+            }
+            Err(err) => return Err(err.into()),
+        }
+    }
+    let target = root.join(relative);
+    if target.exists() {
+        let canonical_target = target.canonicalize()?;
+        ensure!(
+            canonical_target.starts_with(&canonical_root),
+            "{error_prefix}: path escapes workspace root: {}",
+            target.display()
+        );
+    }
+    Ok(target)
 }

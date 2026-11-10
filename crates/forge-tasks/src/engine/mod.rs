@@ -576,17 +576,17 @@ impl TaskSettings {
     }
     pub fn path(&self, root: &Path) -> Result<std::path::PathBuf> {
         let path = &self.tasks_db;
-        let (base, path) = if path.is_absolute() {
-            (root.to_path_buf(), path.to_path_buf())
-        } else {
-            let base = primary_worktree_root(root).unwrap_or_else(|| root.to_path_buf());
-            let full_path = base.join(path);
-            (base, full_path)
-        };
-        if path == default_db(root) || path == default_db(&base) {
+        let base = primary_worktree_root(root).unwrap_or_else(|| root.to_path_buf());
+        let resolved = crate::tasks::confined_target(&base, path)?;
+        let default_root = default_db(root);
+        let default_base = default_db(&base);
+        if resolved == default_root
+            || resolved == default_base
+            || resolved == default_db(&root.canonicalize().unwrap_or_else(|_| root.to_path_buf()))
+        {
             bail!("tasks_db must be separate from code index");
         }
-        Ok(path)
+        Ok(resolved)
     }
 }
 /// Performs database path.

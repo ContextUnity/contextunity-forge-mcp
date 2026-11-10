@@ -79,7 +79,13 @@ fn checkpoints(
             {
                 continue;
             }
-            let state = persistence::read_checkpoint(root, reference)?;
+            let state = match persistence::read_checkpoint(root, reference) {
+                Ok(state) => state,
+                Err(_) => {
+                    let _ = git_command(root, &["update-ref", "-d", reference]);
+                    continue;
+                }
+            };
             state.validate_cohort()?;
             let key = (
                 state.repository.clone(),

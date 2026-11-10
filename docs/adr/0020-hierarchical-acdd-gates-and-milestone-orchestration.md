@@ -15,7 +15,7 @@ informed:
 # ADR 0020: Hierarchical ACDD Gates, Modular Catalogs, and Milestone Orchestration
 
 > [!NOTE]
-> This ADR describes the accepted architecture. Round 4 identified gaps in root graph execution and observed proof enforcement; see the [audit plan](../plans/gate-engine-bugs-and-coverage-audit.md). Native headless execution and role dispatch are implemented; their current behavior is described in the [ACDD reference](../reference/acdd.md#headless-task-milestone-plan-and-workflow-execution). Statements below specify the target where gaps remain.
+> This ADR describes the accepted architecture. Round 4 identified gaps in root graph execution and observed proof enforcement. Native headless execution and role dispatch are implemented; their current behavior is described in the [ACDD reference](../reference/acdd.md#headless-task-milestone-plan-and-workflow-execution). Statements below specify the target where gaps remain.
 
 ## Context
 

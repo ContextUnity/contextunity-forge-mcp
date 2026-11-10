@@ -8,7 +8,7 @@
 
 version: 2
 
-# Milestones execute in isolated worktrees and use `persistence: commit` (commits + receipts + snapshots + logs):
+# Milestones execute in isolated worktrees and use `save: commit` (commits + receipts + snapshots + logs):
 save: commit
 
 roles:
@@ -36,19 +36,47 @@ roles:
     models:
       - 'gpt-6.1-sol:xhigh'
 
+  doc_writer:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:high'
+
+scope_args_by_pattern:
+  "src/main.rs": "--bin contextunity-forge-mcp"
+  "src/**/*.rs": "--lib"
+  "crates/forge-core/**/*.rs": "--package forge-core --lib"
+  "crates/forge-index/**/*.rs": "--package forge-index --lib"
+  "crates/forge-tasks/**/*.rs": "--package forge-tasks --lib"
+  "tests/*.rs": "--test {file_stem}"
+  "tests/acdd/**/*.rs": "--test acdd"
+
 commands:
   rust-check-and-test:
-    command: "cargo clippy --all-targets --all-features -- -D warnings && cargo test"
-    timeout_seconds: 120
+    command: "cargo clippy {scope_target} --all-features -- -D warnings && cargo test {scope_target}"
+    output:
+      counts:
+        passed: '(?m)\b(\d+) passed\b'
+        failed: '(?m)\b(\d+) failed\b'
+      require_counts: true
+      noise: ['^\s*(Compiling|Downloading|Finished|Checking)\b', '^✔']
+      errors: ['^error(\[E\d+\])?:', 'panicked at', '^FAIL ']
+      tests:
+        target: '(?m)(?:^\s*Running\s+(?:unittests\s+)?|"kind":\s*\[[^\]]*"test"[^\]]*\].*?"src_path":\s*"|--test\s+)([^\s"\\)]+)'
+        passed: '(?m)^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+ok\b'
+        failed: '(?m)^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+FAILED\b'
+        ignored: '(?m)^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+ignored\b'
+    timeout_seconds: 300
 
   check_full_repo:
     command: "cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets"
-    timeout_seconds: 600
+    timeout_seconds: 1800
 
 policies:
   default_review:
     independent_worker: true
     require_all_contours: true
+    audit_extended_scope: true
 
 gates:
   # ---------------------------------------------------------------------------
@@ -112,6 +140,9 @@ gates:
               policy: default_review
               independent_from: integrate
               fail: integrate
+              loop:
+                scope: integrate
+                symbols: contract
               save:
                 immutable: true
 
@@ -125,6 +156,7 @@ gates:
           save:
             immutable: true
             post: commit
+            git_commit_note: telemetry
 
   # ---------------------------------------------------------------------------
   # Milestone Verification & Closure Pipeline (LangGraph Transitions: pass, fail)

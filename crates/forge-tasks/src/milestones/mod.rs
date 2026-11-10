@@ -6,7 +6,7 @@ use crate::{
     db::tasks_store::{GateExecutionTrace, Task, TasksStore},
     engine::tasks,
 };
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use chrono::{TimeZone, Utc};
 use serde_json::{json, Value};
 use std::{
@@ -835,4 +835,105 @@ pub(crate) fn clear_task_receipt(text: &str, task_ref: &str) -> Result<String> {
         cursor += line.len();
     }
     bail!("TASK_RECEIPT_INVALID: task block not found")
+}
+
+/// Purge all tasks, traces, blackboard notes, checkpoint_home metadata, and Git state refs for a milestone.
+pub fn clear_milestone(root: &Path, selector: &str) -> Result<Value> {
+    let mut found = snapshots(root, true, Some(selector))?;
+    let (id, repo, project, relative): (String, String, String, Option<String>) = match found.len()
+    {
+        1 => {
+            let item = found.pop().unwrap();
+            let relative = item
+                .path
+                .strip_prefix(root)
+                .ok()
+                .map(|p| p.to_string_lossy().into_owned());
+            (item.id, item.repository, item.project, relative)
+        }
+        0 => {
+            crate::core::tasks::valid_identity(selector)?;
+            let settings = tasks::TaskSettings::load(root)?;
+            let project = settings.task_project.unwrap_or_else(|| "forge-mcp".into());
+            (selector.to_owned(), settings.task_repository, project, None)
+        }
+        _ => {
+            let candidates = found
+                .iter()
+                .map(|s| format!("{} ({})", s.id, s.path.display()))
+                .collect::<Vec<_>>()
+                .join(", ");
+            bail!("MILESTONE_AMBIGUOUS: '{selector}' matches multiple milestones: {candidates}");
+        }
+    };
+
+    let db = tasks::database_path(root)?;
+    let _fence = crate::store::recovery::lock_database(&db)?;
+    let mut store = TasksStore::open_project(&db, &repo, &project)?;
+    store.set_workspace_root(root);
+
+    let prefix = format!("{project}/{id}:");
+    let result = store.clear_milestone(&prefix, &id, relative.as_deref())?;
+
+    let exact_state_prefix = format!("refs/forge/state/{repo}/{project}/{id}/");
+    let exact_state_ref = format!("refs/forge/state/{repo}/{project}/{id}");
+    let exact_snapshots_prefix = format!("refs/forge/snapshots/{project}/{id}/");
+    let exact_snapshots_ref = format!("refs/forge/snapshots/{project}/{id}");
+
+    let state_pattern = format!("refs/forge/state/{repo}/{project}/{id}");
+    let state_pattern_wild = format!("refs/forge/state/{repo}/{project}/{id}/*");
+    let snapshots_pattern = format!("refs/forge/snapshots/{project}/{id}");
+    let snapshots_pattern_wild = format!("refs/forge/snapshots/{project}/{id}/*");
+
+    let mut refs_pruned = 0;
+    let output = crate::core::git::git_command(
+        root,
+        &[
+            "for-each-ref",
+            "--format=%(refname)",
+            &state_pattern,
+            &state_pattern_wild,
+            &snapshots_pattern,
+            &snapshots_pattern_wild,
+        ],
+    )?;
+    ensure!(
+        output.status.success(),
+        "MILESTONE_CLEAR_FAILED: git for-each-ref failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mut refs_to_delete = Vec::new();
+    for reference in String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+    {
+        if reference.is_empty() {
+            continue;
+        }
+        let matches_milestone = reference == exact_state_ref
+            || reference.starts_with(&exact_state_prefix)
+            || reference == exact_snapshots_ref
+            || reference.starts_with(&exact_snapshots_prefix);
+        if matches_milestone {
+            refs_to_delete.push(reference.to_owned());
+        }
+    }
+    if !refs_to_delete.is_empty() {
+        let mut stdin_data = String::new();
+        for ref_name in &refs_to_delete {
+            stdin_data.push_str(&format!("delete {ref_name}\n"));
+        }
+        crate::core::git::git_input(root, &["update-ref", "--stdin"], stdin_data.as_bytes())?;
+        refs_pruned = refs_to_delete.len();
+    }
+
+    Ok(json!({
+        "id": id,
+        "cleared": true,
+        "tasks_deleted": result.tasks_deleted,
+        "traces_deleted": result.traces_deleted,
+        "blackboard_deleted": result.blackboard_deleted,
+        "metadata_deleted": result.metadata_deleted,
+        "refs_pruned": refs_pruned,
+    }))
 }

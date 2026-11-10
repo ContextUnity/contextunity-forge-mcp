@@ -315,7 +315,8 @@ pub enum TaskCommand {
         /// The task id value.
         task_id: String,
     },
-    /// Represents the cleanup case.
+    /// Clean up expired tasks and orphaned checkpoint refs.
+    #[command(alias = "clear", alias = "clean")]
     Cleanup,
 }
 
@@ -602,9 +603,13 @@ pub fn run(root: &Path, command: TaskCommand) -> Result<Value> {
             return tasks::manage(root, manage);
         }
         TaskCommand::Cleanup => {
-            return Ok(
-                serde_json::json!({"deleted":tasks::store(root)?.cleanup(crate::db::tasks_store::now())?}),
-            );
+            let mut store = tasks::store(root)?;
+            let deleted_tasks = store.cleanup(crate::db::tasks_store::now())?;
+            let pruned_checkpoints = store.cleanup_orphaned_checkpoints(root)?;
+            return Ok(serde_json::json!({
+                "deleted_tasks": deleted_tasks,
+                "pruned_checkpoints": pruned_checkpoints,
+            }));
         }
         TaskCommand::Subtask { command } => match command {
             SubtaskCommand::Add {

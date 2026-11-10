@@ -55,6 +55,9 @@ The codebase operates on a 5-layer hierarchy:
 > [!IMPORTANT]
 > Invariant: Proven duplicates (identical logic repeated across files or passes) must be extracted into focused shared helpers. Domain algorithms representing distinct rules (e.g. language-specific AST profiles, linker passes, snapshot verification) must not be prematurely compressed.
 
+> [!IMPORTANT]
+> Invariant: **Holistic Root-Cause Analysis Over Test-Patching**: Never apply narrow heuristics, single-case string checks, arbitrary UTF-8 byte slices, or localized workarounds just to satisfy a failing test case or review finding. Always investigate the problem comprehensively: define the complete domain grammar, verify Unicode safety, ensure fail-closed disambiguation (ADR 0007), and respect filesystem confinement boundaries (ADR 0005). Deduplication is mandatory: before authoring traversal, validation, or path resolution logic, search for existing abstractions in `src/core` or `crates/forge-tasks` and extend or reuse them.
+
 ### When to Keep Together (DO NOT Split)
 - **High Domain Cohesion**: Closely related data structures, types, and their direct transformation logic belonging to the same semantic unit.
 - **Tightly Coupled Pipelines**: Complex static analysis algorithms (`src/engine/linker/value_flow.rs`, `src/engine/linker/semantic_context.rs`, and the core reference linking loop in `src/engine/linker.rs`) where splitting would require exposing private internal state, inventing synthetic glue DTOs, or creating circular imports.

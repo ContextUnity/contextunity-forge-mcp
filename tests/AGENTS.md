@@ -105,7 +105,7 @@ When moving, renaming, splitting, or removing a suite file, update this file and
 ## 4. Authoring patterns
 
 Read [test harness architecture](../docs/architecture/test-harness.md). Active
-refactor sequencing: [reality-reset plan](../docs/plans/test-suite-diet-and-fixture-hardening.md).
+refactor sequencing: [reality-reset plan](../docs/plans/archive/test-suite-diet-and-fixture-hardening.md).
 
 1. **Extend a capability** — add a table row or a single harness mutation; do not
    copy a 100-line test to flip one field.

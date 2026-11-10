@@ -104,6 +104,16 @@ accept exactly one of `selector` or `changes="staged"|"unstaged"|"head"`; check
 may occur inside a path but are not coverage roots. `possible_calls`, lexical
 suggestions, and an absent indexed test call do not prove runtime coverage.
 
+### Code clone and duplicate detection
+
+Use `code_map_query(operation="duplicates", level="symbol", min_lines=10, target="crates")` to identify duplicated code across the workspace:
+- `level="symbol"`: Finds function and method clones. Exact matches use SHA-256 hashes of literal symbol source slices; near-clones use normalized line similarity clustering among symbols with matching names.
+- `level="file"`: Finds byte-identical duplicate files by SHA-256 content digest.
+- `min_lines`: Filters candidates by minimum lines of code (default: 10).
+- `target` or `path`: Restricts detection scope to a specific directory or file.
+- Results provide grouped locations, line counts, duplicate counts, and actionable architectural `suggestion` strings indicating how and where to centralize or deduplicate code.
+- CLI equivalent: `contextunity-forge-mcp query run duplicates --level symbol --min-lines 10`.
+
 ## Documentation and graph provenance
 
 Triage with `search_docs(query="...", include_excerpt=true)`, inspect an outline
