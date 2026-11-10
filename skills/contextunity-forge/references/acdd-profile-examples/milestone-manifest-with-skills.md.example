@@ -17,9 +17,8 @@ invariants:
 # =============================================================================
 # EXPLICIT REQUIRED SKILLS DECLARATION
 #
-# Validated upfront during `workflow init` / `milestone admit`:
-# 1. Forge checks that all named skills are installed on the host before any agent launches.
-# 2. `workflow_guidance.active_skills` returns the whitelist of admitted skill names.
+# `milestone init <manifest.md>` checks required skills before preparing worktrees.
+# Declare only skills installed for the consuming repository's workflow.
 # =============================================================================
 required_skills:
   - contextunity-forge       # Core symbol discovery, AST grep, impact analysis, and ACDD lifecycle
@@ -30,19 +29,16 @@ required_skills:
 # =============================================================================
 # MULTI-REPOSITORY METADATA DECLARATION
 #
-# Declares participant repositories. `workflow init` verifies their paths,
-# validates base branches, and automatically scaffolds base worktrees upfront.
+# Declares participant repositories. `milestone init <manifest.md>` validates
+# their paths and prepares worktrees unless --in-place is selected.
 # =============================================================================
 repositories:
   - name: backend
     path: backend
-    role: "Core Django API & ORM"
   - name: frontend
     path: frontend
-    role: "HTMX & Alpine UI Components"
   - name: e2e
     path: tests/e2e
-    role: "Playwright Integration Tests"
 ---
 
 # Commerce Checkout Redesign & Multi-Service Integration
@@ -69,8 +65,11 @@ scope:
 status: ready
 subtasks:
   - subtask_ref: stock-reservation-seam-test
+    title: "Prove stock reservation through the checkout seam"
   - subtask_ref: idempotent-order-creation
+    title: "Create orders idempotently"
   - subtask_ref: tax-calculation-service
+    title: "Calculate checkout tax"
 ```
 
 ### task: frontend-htmx-checkout-island
@@ -87,6 +86,9 @@ scope:
 status: ready
 subtasks:
   - subtask_ref: payment-form-swap-markup
+    title: "Render payment form swaps"
   - subtask_ref: client-side-field-validation
+    title: "Validate checkout form fields"
   - subtask_ref: playwright-e2e-checkout-proof
+    title: "Prove checkout behavior through the browser seam"
 ```

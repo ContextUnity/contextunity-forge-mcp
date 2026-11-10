@@ -4,6 +4,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use contextunity_forge_mcp::engine::docs;
 use pulldown_cmark::{Event, Parser, Tag};
 
 fn read_skill_files(root: &Path) -> io::Result<BTreeMap<PathBuf, Vec<u8>>> {
@@ -107,6 +108,54 @@ fn test_skill_markdown_links_resolve_from_supported_install_layouts() {
         unresolved_layouts.is_empty(),
         "Markdown links do not resolve in supported installed skill layouts: {unresolved_layouts:?}"
     );
+}
+
+#[test]
+fn onboarding_reference_is_reachable_with_canonical_configuration_assets() {
+    let skill_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("skills/contextunity-forge");
+    let files = read_skill_files(&skill_root).expect("read companion skill assets");
+    let entrypoint = std::str::from_utf8(&files[Path::new("SKILL.md")]).unwrap();
+    let entry_sections = docs::extract_with_details("SKILL.md", entrypoint, 0.0).unwrap();
+    let onboarding_path = Path::new("references/onboarding.md");
+    let routed = entry_sections.iter().any(|(_, details)| {
+        details["citations"].as_array().unwrap().iter().any(|link| {
+            link["target"]
+                .as_str()
+                .is_some_and(|target| target.split('#').next() == onboarding_path.to_str())
+        })
+    });
+    assert!(
+        routed,
+        "assertion failed: the companion skill must route agents to its onboarding guide"
+    );
+    assert!(
+        files.contains_key(onboarding_path),
+        "assertion failed: the routed onboarding guide must ship with the skill"
+    );
+
+    let onboarding = std::str::from_utf8(&files[onboarding_path]).unwrap();
+    let sections = docs::extract_with_details("references/onboarding.md", onboarding, 0.0).unwrap();
+    let references = sections
+        .iter()
+        .flat_map(|(_, details)| details["citations"].as_array().unwrap())
+        .filter_map(|link| link["target"].as_str())
+        .filter_map(|target| target.split('#').next())
+        .collect::<BTreeSet<_>>();
+    for resource in [
+        "adapters.md",
+        "forge-mcp.yaml.example",
+        "acdd_profile.yaml.example",
+        "agents.md.example",
+    ] {
+        assert!(
+            references.contains(resource),
+            "assertion failed: onboarding must reuse canonical resource {resource}"
+        );
+        assert!(
+            files.contains_key(&Path::new("references").join(resource)),
+            "assertion failed: canonical resource {resource} must ship with the skill"
+        );
+    }
 }
 
 fn write_skill_files(root: &Path, files: &BTreeMap<PathBuf, Vec<u8>>) -> io::Result<()> {

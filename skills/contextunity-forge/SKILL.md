@@ -1,6 +1,6 @@
 ---
 name: contextunity-forge
-description: Load before repository code discovery, symbol lookup, dependency tracing, impact analysis, architectural verification, or ACDD task operations. Routes structural search and task coordination through Forge MCP.
+description: Load for repository onboarding to Forge/ACDD, code discovery, symbol lookup, dependency tracing, impact analysis, architectural verification, or ACDD task operations. Routes setup, structural search, and task coordination through Forge MCP.
 ---
 
 # ContextUnity Forge MCP
@@ -10,6 +10,10 @@ Prefer registered MCP tools; use the CLI for operations it owns. Fall back to
 local search only when Forge is unavailable. The active registry and schemas are
 the authority; see the [tool catalog](references/tool-catalog.md) for signatures
 and [routing examples](references/agents.md.example) for repository integration.
+
+For a request to onboard or configure a repository for Forge/ACDD, follow the
+[repository onboarding guide](references/onboarding.md). It adapts the companion
+examples to the repository's actual tooling, instructions, and delivery goals.
 
 ## Orient and select the workspace
 
