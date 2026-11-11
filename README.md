@@ -172,19 +172,18 @@ For step-by-step setup, configuration options, and platform integrations, see th
 - [Authoring Indexed Documentation and Architectural Invariants](INSTALL.md#6-authoring-documentation-for-indexing)
 - [Milestones, Plans, and Workflow Execution](INSTALL.md#7-working-with-milestones-plans-and-workflows)
 
-### Quick One-Liner Setup
+### Quick Setup
 
-```bash
-# 1. Install binary
-cargo install --path . --locked
+From the project directory, install a verified release, its companion skills,
+and the project's MCP client configuration:
 
-# 2. Sync bundled companion skills globally to detected agents
-./skills/install.sh
-
-# 3. Initialize starter configuration in your project
-cd /path/to/my-project
-contextunity-forge-mcp guide init
+```sh
+curl -fsSL https://raw.githubusercontent.com/ContextUnity/contextunity-forge-mcp/main/install.sh | sh
 ```
+
+See [MCP setup](docs/reference/mcp-setup.md) for supported platforms, release
+selection, updates, and client configuration. To build from source instead, use
+the [installation guide](INSTALL.md#building-from-source).
 
 ---
 

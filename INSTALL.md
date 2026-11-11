@@ -7,7 +7,7 @@ doc_type: guide
 
 ContextUnity Forge MCP is a local-first, zero-daemon Rust engine for AI coding agents. It provides deep code graph navigation, documentation indexing, and an Augmented Context-Driven Delivery (ACDD) task lifecycle state machine — a system that injects tailored context into verified gates. The same binary serves both as a standard stdio [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server (20 tools) and as a command-line interface (CLI).
 
-This guide walks you through building and installing Forge MCP, configuring your workspace, selecting profiles, installing companion skills globally, establishing repository rules, authoring indexed documentation, and running milestones, plans, and workflows.
+This guide walks you through installing Forge MCP, configuring your workspace, selecting profiles, installing companion skills globally, establishing repository rules, authoring indexed documentation, and running milestones, plans, and workflows.
 
 ---
 
@@ -15,9 +15,21 @@ This guide walks you through building and installing Forge MCP, configuring your
 
 ### System Requirements
 
-- **Rust toolchain**: Stable Rust 2021 edition (`rustc` and `cargo` 1.88+). Required by dependencies including `rmcp`. Install via [rustup.rs](https://rustup.rs).
-- **C compiler**: `gcc` or `clang` (required for compiling bundled SQLite and native Tree-sitter parsers).
 - **Git**: Git 2.30+ for worktree management and snapshot-bound lifecycle operations.
+- **Release installation**: POSIX `sh`, ordinary shell utilities, `tar` with gzip support, `curl` or `wget`, and `sha256sum` or `shasum`. No Rust toolchain or C compiler is required.
+- **Building from source**: Stable Rust 2021 edition (`rustc` and `cargo` 1.88+) and a C compiler (`gcc` or `clang`) for bundled SQLite and native Tree-sitter parsers. Install Rust via [rustup.rs](https://rustup.rs).
+
+### Installing a Release
+
+Run the installer from the project directory to install the binary and companion
+skills and configure its `.mcp.json`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ContextUnity/contextunity-forge-mcp/main/install.sh | sh
+```
+
+The [MCP setup guide](docs/reference/mcp-setup.md#install-the-binary) lists
+supported platforms, release selection, update behavior, and client setup.
 
 ### Building from Source
 
@@ -347,7 +359,7 @@ The repository includes a zero-config installer script (`./skills/install.sh`):
 ### What `install.sh` Does
 
 1. Establishes `~/.agents/skills/` as the canonical global skill repository.
-2. Automatically detects installed AI agent environments and creates symlinks:
+2. Detects installed AI agent environments and links skills into their directories; existing regular skill directories receive copies:
    - **Antigravity / Gemini CLI**: `~/.gemini/config/skills/`
    - **OpenAI Codex**: `~/.codex/skills/`
    - **Anthropic Claude**: `~/.claude/skills/`
