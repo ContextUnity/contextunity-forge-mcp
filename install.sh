@@ -2,11 +2,59 @@
 # Install verified release companions without a compiler or language runtime.
 set -eu
 fail() { printf 'Forge installer: %s\n' "$*" >&2; exit 1; }
-[ "$#" -eq 0 ] || fail 'Use FORGE_RELEASE_BASE_URL to select a release asset directory.'
+
+LATEST_URL="https://github.com/ContextUnity/contextunity-forge-mcp/releases/latest/download"
+NIGHTLY_URL="https://github.com/ContextUnity/contextunity-forge-mcp/releases/download/nightly"
+
+channel=
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --nightly|-n)
+            channel=nightly
+            shift
+            ;;
+        --latest|-l)
+            channel=latest
+            shift
+            ;;
+        --help|-h)
+            printf 'Usage: %s [--latest | --nightly]\n\n' "$0"
+            printf 'Install ContextUnity Forge MCP binary and companion skills.\n\n'
+            printf 'Options:\n'
+            printf '  --latest, -l   Install latest stable release (default)\n'
+            printf '  --nightly, -n  Install latest nightly pre-release\n'
+            printf '  --help, -h     Show this help message\n'
+            exit 0
+            ;;
+        *)
+            fail "Unknown option: $1. Use --latest or --nightly."
+            ;;
+    esac
+done
+
+if [ -n "${FORGE_RELEASE_BASE_URL:-}" ]; then
+    base="${FORGE_RELEASE_BASE_URL%/}"
+elif [ "$channel" = "nightly" ] || [ "${FORGE_RELEASE_CHANNEL:-}" = "nightly" ]; then
+    base="$NIGHTLY_URL"
+elif [ "$channel" = "latest" ] || [ "${FORGE_RELEASE_CHANNEL:-}" = "latest" ]; then
+    base="$LATEST_URL"
+elif [ -t 0 ]; then
+    printf 'Select ContextUnity Forge MCP release channel:\n'
+    printf '  1) latest (default)\n'
+    printf '  2) nightly\n'
+    printf 'Choice [1]: '
+    read -r choice || choice=""
+    case "$choice" in
+        2|nightly|n) base="$NIGHTLY_URL" ;;
+        *) base="$LATEST_URL" ;;
+    esac
+else
+    base="$LATEST_URL"
+fi
+
 case $(uname -s) in Linux) os=unknown-linux-gnu ;; Darwin) os=apple-darwin ;; *) fail 'Unsupported operating system' ;; esac
 case $(uname -m) in x86_64) arch=x86_64 ;; aarch64|arm64) arch=aarch64 ;; *) fail 'Unsupported architecture' ;; esac
 asset=contextunity-forge-mcp-$arch-$os.tar.gz
-base=${FORGE_RELEASE_BASE_URL:-https://github.com/ContextUnity/contextunity-forge-mcp/releases/latest/download}
 case $HOME in /*) ;; *) fail 'HOME must be an absolute path' ;; esac
 bin_dir=$HOME/.local/bin
 binary=$bin_dir/contextunity-forge-mcp

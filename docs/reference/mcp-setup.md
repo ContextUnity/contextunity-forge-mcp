@@ -23,12 +23,21 @@ default and verifies the exact archive entry in `SHA256SUMS` before extracting
 or changing the installation. Unsupported platforms and missing or mismatched
 checksums stop installation.
 
-Select a tagged release or nightly through its asset directory:
+Select release channel via flags, interactive prompt, or custom asset directory:
 
 ```sh
+# Stable release (default)
+curl -fsSL https://raw.githubusercontent.com/ContextUnity/contextunity-forge-mcp/main/install.sh | sh
+
+# Nightly pre-release
+curl -fsSL https://raw.githubusercontent.com/ContextUnity/contextunity-forge-mcp/main/install.sh | sh -s -- --nightly
+
+# When run directly in an interactive terminal, install.sh prompts to choose between latest and nightly:
+sh install.sh
+
+# Or select a custom tagged release via FORGE_RELEASE_BASE_URL:
 curl -fsSL https://raw.githubusercontent.com/ContextUnity/contextunity-forge-mcp/main/install.sh -o /tmp/forge-install.sh
 FORGE_RELEASE_BASE_URL="https://github.com/ContextUnity/contextunity-forge-mcp/releases/download/<tag>" sh /tmp/forge-install.sh
-# Or use .../releases/download/nightly for nightly assets.
 ```
 
 `FORGE_RELEASE_BASE_URL` is an absolute release asset directory, containing

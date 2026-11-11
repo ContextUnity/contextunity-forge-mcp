@@ -28,6 +28,14 @@ skills and configure its `.mcp.json`:
 curl -fsSL https://raw.githubusercontent.com/ContextUnity/contextunity-forge-mcp/main/install.sh | sh
 ```
 
+To install the latest nightly pre-release instead, pass `--nightly`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ContextUnity/contextunity-forge-mcp/main/install.sh | sh -s -- --nightly
+```
+
+When run interactively in a terminal, `install.sh` prompts to choose between `latest` (default) and `nightly`.
+
 The [MCP setup guide](docs/reference/mcp-setup.md#install-the-binary) lists
 supported platforms, release selection, update behavior, and client setup.
 

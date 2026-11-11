@@ -1387,3 +1387,49 @@ fn macos_update_executes_default_and_explicit_servers_with_confined_discovery() 
         "reload signaled non-server command"
     );
 }
+
+#[test]
+fn installer_flags_support_nightly_latest_and_help_options() {
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("install.sh");
+
+    // --help prints usage and exits 0
+    let help = Command::new("/bin/sh")
+        .arg(&script)
+        .arg("--help")
+        .output()
+        .unwrap();
+    assert!(help.status.success());
+    let help_stdout = String::from_utf8_lossy(&help.stdout);
+    assert!(help_stdout.contains("Usage:"));
+    assert!(help_stdout.contains("--latest"));
+    assert!(help_stdout.contains("--nightly"));
+
+    // Unknown options fail fast with exit code 1
+    let unknown = Command::new("/bin/sh")
+        .arg(&script)
+        .arg("--unknown-flag")
+        .output()
+        .unwrap();
+    assert_eq!(unknown.status.code(), Some(1));
+    let unknown_stderr = String::from_utf8_lossy(&unknown.stderr);
+    assert!(unknown_stderr.contains("Unknown option: --unknown-flag"));
+
+    // --nightly and --latest run successfully when base URL is provided
+    let installer = InstallerHarness::new(ReleaseIntegrity::Verified);
+    let nightly_run = Command::new("/bin/sh")
+        .arg(&script)
+        .arg("--nightly")
+        .current_dir(&installer.project)
+        .env_clear()
+        .env("HOME", &installer.home)
+        .env("TMPDIR", installer.workspace.path("tmp"))
+        .env("PATH", &installer.tools)
+        .env("FORGE_RELEASE_BASE_URL", &installer.origin)
+        .output()
+        .unwrap();
+    assert!(
+        nightly_run.status.success(),
+        "install.sh --nightly failed: {}",
+        String::from_utf8_lossy(&nightly_run.stderr)
+    );
+}
