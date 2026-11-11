@@ -61,7 +61,6 @@ gates:
     proof: contract
     expected_failure:
       exit_codes: [1, 101, 134]
-      stderr_contains: "assertion failed"
     persistence:
       pre: snapshot
       post: snapshot
@@ -76,7 +75,6 @@ gates:
           proof: contract
           expected_failure:
             exit_codes: [1, 101, 134]
-            stderr_contains: "assertion failed"
           persistence:
             post: snapshot
 

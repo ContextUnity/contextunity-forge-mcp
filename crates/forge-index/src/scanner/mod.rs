@@ -472,7 +472,8 @@ fn walk_candidate_paths(
             .hidden(false)
             .follow_links(false)
             .same_file_system(true)
-            .git_ignore(true);
+            .git_ignore(true)
+            .require_git(false);
         let ignored_names = adapter.ignored_names.clone();
         builder.filter_entry(move |item| {
             !item.path_is_symlink()
@@ -540,7 +541,8 @@ fn walk_candidate_paths(
                 .hidden(false)
                 .follow_links(false)
                 .same_file_system(true)
-                .git_ignore(true);
+                .git_ignore(true)
+                .require_git(false);
             let ignored_names = workspace.ignored_names.clone();
             builder.filter_entry(move |item| {
                 !item.path_is_symlink()
@@ -651,7 +653,8 @@ fn collect_documentation_paths(
         .hidden(false)
         .follow_links(false)
         .same_file_system(true)
-        .git_ignore(true);
+        .git_ignore(true)
+        .require_git(false);
     let ignored = ignored_names.clone();
     builder.filter_entry(move |item| {
         !item.path_is_symlink()

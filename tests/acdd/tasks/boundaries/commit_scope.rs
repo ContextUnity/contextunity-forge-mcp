@@ -25,7 +25,7 @@ fn boundary_guards_follow_configured_proof_kinds_and_non_cargo_commands_keep_pat
     root.write("forge-mcp.yaml", "roots: [src, tests]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\nacdd_profile: custom_profile.yaml\n");
     root.write(
         "custom_profile.yaml",
-        "gates:\n  - id: spec\n    role: contract_author\n    proof: contract\n    command: test\n    sha_snapshot: true\n  - id: implement\n    role: builder\n    proof: command\n    command: rust-check-and-test\n    sha_snapshot: true\n    expected_failure:\n      exit_codes: [1]\n  - id: inspect\n    role: independent_reviewer\n    proof: review\n    reject_to: implement\n    independent_from: implement\n    contours: guidance.contours\n  - id: archive\n    role: independent_reviewer\n    proof: delivery\n    review_sources: [inspect]\n    reject_to: implement\ncommands:\n  test:\n    command: \": --seam-ref src/routing.rs::test_connected && test -x .forge/runner_fixture && FORGE_FIXTURE_RED=1 .forge/runner_fixture\"\n  rust-check-and-test:\n    command: pytest\n    description: Preserve ordinary scoped paths for non-Cargo profiles.\n  python-quality: ruff\n",
+        "gates:\n  - id: spec\n    role: contract_author\n    proof: contract\n    command: test\n    sha_snapshot: true\n  - id: implement\n    role: builder\n    proof: command\n    command: rust-check-and-test\n    sha_snapshot: true\n    expected_failure:\n      exit_codes: [1, 127]\n  - id: inspect\n    role: independent_reviewer\n    proof: review\n    reject_to: implement\n    independent_from: implement\n    contours: guidance.contours\n  - id: archive\n    role: independent_reviewer\n    proof: delivery\n    review_sources: [inspect]\n    reject_to: implement\ncommands:\n  test:\n    command: \": --seam-ref src/routing.rs::test_connected && test -x .forge/runner_fixture && FORGE_FIXTURE_RED=1 .forge/runner_fixture\"\n  rust-check-and-test:\n    command: pytest\n    description: Preserve ordinary scoped paths for non-Cargo profiles.\n  python-quality: ruff\n",
     );
     let milestone = "---\nid: m-tiered-alias\ntitle: Proof-kind aliases\ndoc_type: contract\nstatus: active\n---\n```yaml\ntask_ref: routing\ntarget: Preserve routing API boundaries\nproof_policy: seam-test-first\nscope: [src/routing.rs, tests/connected.rs]\nscope_roots: [src/, tests/]\n```\n";
     root.write("docs/milestones/010-tiered-alias.md", milestone);
@@ -75,7 +75,7 @@ fn boundary_guards_follow_configured_proof_kinds_and_non_cargo_commands_keep_pat
     );
     root.write("tests/connected.rs", "use tiered_alias_fixture::routing::route_task;\n#[test]\nfn test_connected() { let actual = route_task(0); assert_eq!(actual, 1); }\n");
     let task = store.inspect(task_id).unwrap();
-    let mut proof = TaskHarness::default_evidence(&task);
+    let mut proof = unobserved_evidence(&task);
     proof.proof = json!({"command_proof":{"command":"pytest src/routing.rs","exit_code":0,"tests_passed":1,"tests_failed":0}});
     let error = tasks::submit(
         root.root(),

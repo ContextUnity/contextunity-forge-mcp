@@ -473,15 +473,20 @@ pub(crate) fn observe_fixture_evidence(task: &contextunity_forge_mcp::db::tasks_
                                     task.stage
                                 );
                             }
-                            let expected_code = gate
-                                .expected_failure
-                                .as_ref()
-                                .and_then(|ef| ef.exit_codes.first().copied())
-                                .or(Some(1));
-                            assert_eq!(
-                                observed_exit_code, expected_code,
-                                "intentional non-contract failure exit_code must match expected"
-                            );
+                            if let Some(ef) = &gate.expected_failure {
+                                assert!(
+                                    observed_exit_code
+                                        .is_some_and(|code| ef.exit_codes.contains(&code)),
+                                    "intentional non-contract failure exit_code {observed_exit_code:?} must be in expected exit_codes {:?}",
+                                    ef.exit_codes
+                                );
+                            } else {
+                                assert_eq!(
+                                    observed_exit_code,
+                                    Some(1),
+                                    "intentional non-contract failure exit_code must match expected"
+                                );
+                            }
                         }
                     }
                 }

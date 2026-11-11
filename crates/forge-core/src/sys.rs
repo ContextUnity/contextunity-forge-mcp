@@ -1,3 +1,4 @@
+#[cfg(target_os = "linux")]
 use std::{
     fs,
     path::{Component, Path},

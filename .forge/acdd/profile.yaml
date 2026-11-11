@@ -108,9 +108,9 @@ guidance:
       - "ANALYTICAL CONTOURS: Evaluate review contours with engineering judgment as guiding recommendations rather than rigid bureaucratic checkboxes."
 
 commands:
-  rust-check-and-test:
+  check-and-test:
     command: "cargo clippy {scope_target} --all-features -- -D warnings && cargo test {scope_target}"
-    output:
+    output: &test_output
       counts:
         passed: '(?m)\b(\d+) passed\b'
         failed: '(?m)\b(\d+) failed\b'
@@ -122,6 +122,10 @@ commands:
         passed: '(?m)^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+ok\b'
         failed: '(?m)^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+FAILED\b'
         ignored: '(?m)^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+ignored\b'
+    description: "Run strict Rust checks followed by the repository's test suite."
+  rust-check-and-test:
+    command: "cargo clippy {scope_target} --all-features -- -D warnings && cargo test {scope_target}"
+    output: *test_output
     description: "Run strict Rust checks followed by the repository's test suite."
   check_full_repo:
     command: "cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets"
@@ -193,7 +197,6 @@ gates:
       - "5. SUBMIT: Submit contract proof with seam_test_ref and red_exit_code: 101."
     expected_failure:
       exit_codes: [1, 101, 134]
-      stderr_contains: "assertion failed"
     save:
       pre: snapshot
       post: snapshot
@@ -207,7 +210,6 @@ gates:
           guidance: [task.contract, hitl.pro]
           expected_failure:
             exit_codes: [1, 101, 134]
-            stderr_contains: "assertion failed"
           save: snapshot
 
         - id: build

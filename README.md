@@ -157,33 +157,52 @@ Every core operation is available both to AI agents over MCP and to developers/s
 
 ---
 
-## Getting Started
+## Installation
 
-### Installation & Setup
+Install ContextUnity Forge MCP binary, companion skills, and project client configuration in one command:
 
-For step-by-step setup, configuration options, and platform integrations, see the dedicated [Installation and Setup Guide](INSTALL.md):
+### Quick Install (`install.sh`)
 
-- [Prerequisites and Building from Source](INSTALL.md#1-prerequisites-and-installation)
-- [Connecting MCP to Antigravity, Codex, Claude, and Cursor](INSTALL.md#connecting-to-ai-agent-clients-mcp-stdio)
-- [Creating `forge-mcp.yaml` and `.gitignore`](INSTALL.md#2-workspace-initialization-and-forge-mcpyaml)
-- [Selecting Built-in vs Universal Profiles](INSTALL.md#3-profiles-built-in-vs-custom-universal-profile)
-- [Installing Companion Skills Globally (`skills/install.sh`)](INSTALL.md#4-global-skill-installation)
-- [Setting Repository Rules (`AGENTS.md`)](INSTALL.md#5-repository-rules-setup)
-- [Authoring Indexed Documentation and Architectural Invariants](INSTALL.md#6-authoring-documentation-for-indexing)
-- [Milestones, Plans, and Workflow Execution](INSTALL.md#7-working-with-milestones-plans-and-workflows)
-
-### Quick Setup
-
-From the project directory, install a verified release, its companion skills,
-and the project's MCP client configuration:
-
-```sh
+```bash
+# Latest stable release (recommended)
 curl -fsSL https://raw.githubusercontent.com/ContextUnity/contextunity-forge-mcp/main/install.sh | sh
+
+# Nightly pre-release (active development & latest milestone features)
+curl -fsSL https://raw.githubusercontent.com/ContextUnity/contextunity-forge-mcp/main/install.sh | sh -s -- --nightly
 ```
 
-See [MCP setup](docs/reference/mcp-setup.md) for supported platforms, release
-selection, updates, and client configuration. To build from source instead, use
-the [installation guide](INSTALL.md#building-from-source).
+If you cloned the repository locally:
+```bash
+./install.sh             # Interactive prompt: choose between latest and nightly
+./install.sh --latest    # Force latest stable release
+./install.sh --nightly   # Force nightly pre-release
+```
+
+### What `install.sh` Does Automatically
+1. **Auto-Detects Platform**: Identifies OS and architecture (Linux `x86_64`/`aarch64`, macOS `x86_64`/`arm64`). No Rust toolchain, Python, Node, or C compiler required.
+2. **Cryptographic Verification**: Downloads pre-built stripped binaries and verifies SHA-256 integrity against `SHA256SUMS`.
+3. **Atomic Binary Placement**: Installs the binary into `~/.local/bin/contextunity-forge-mcp`.
+4. **Agent Skills Hub**: Syncs companion skills to `~/.agents/skills/` and symlinks them to detected agent directories (Antigravity/Gemini CLI, OpenAI Codex, Anthropic Claude, Cursor).
+5. **Project MCP Configuration**: Atomically creates or updates `.mcp.json` in the current working directory.
+6. **Live Reload**: If upgrading an existing installation, gracefully signals running MCP instances.
+
+### Recommendations
+- **Add to `PATH`**: Ensure `~/.local/bin` is in your shell `PATH`:
+  ```bash
+  export PATH="$HOME/.local/bin:$PATH"
+  ```
+- **Verify Installation**: Confirm by checking the version:
+  ```bash
+  contextunity-forge-mcp --version
+  ```
+- **Channel Selection**:
+  - Use **`latest`** (default) for stable, production coding workflows.
+  - Use **`--nightly`** when you need unreleased milestones, latest prompt optimizations, or recently merged bug fixes.
+
+---
+
+> [!TIP] Comprehensive Installation & Configuration Guide
+> For detailed instructions, building from source (`cargo install`), multi-agent IDE configurations (Antigravity, Codex, Claude, Cursor), air-gapped/enterprise installations, and workspace initialization, see the dedicated [**Installation and Operational Guide (`INSTALL.md`)**](INSTALL.md).
 
 ---
 

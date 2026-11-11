@@ -87,7 +87,6 @@ gates:
     proof: contract
     expected_failure:
       exit_codes: [1, 101, 134]
-      stderr_contains: "assertion failed"
     save:
       pre: snapshot
       post: snapshot
@@ -103,7 +102,6 @@ gates:
           command: test
           expected_failure:
             exit_codes: [1, 101, 134]
-            stderr_contains: "assertion failed"
           save:
             post: snapshot
 

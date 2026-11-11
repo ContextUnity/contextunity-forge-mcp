@@ -1028,8 +1028,8 @@ impl CommandDef {
             Self::Detailed { command, .. } => command,
             Self::Pattern(patterns) => patterns
                 .by_pattern
-                .values()
-                .next()
+                .get("**/*.rs")
+                .or_else(|| patterns.by_pattern.values().next())
                 .map(String::as_str)
                 .unwrap_or_default(),
         }

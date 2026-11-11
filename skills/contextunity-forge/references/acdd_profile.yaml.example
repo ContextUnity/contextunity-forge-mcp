@@ -207,35 +207,65 @@ scope_args_by_pattern:
 
 # Registered commands
 commands:
-  rust-check-and-test:
-    command: "cargo clippy {scope_target} --all-features -- -D warnings && cargo test {scope_target}"
-    description: "Run strict Rust checks followed by the repository's test suite."
-    timeout_seconds: 300
-    output:
+  check-and-test:
+    output: &test_output
       counts:
         passed: '(?m)\b(\d+) passed\b'
         failed: '(?m)\b(\d+) failed\b'
       require_counts: true
       noise: ['^\s*(Compiling|Downloading|Finished|Checking)\b', '^✔']
-      errors: ['^error(\[E\d+\])?:', 'panicked at', '^FAIL ']
+      errors: ['^error(\[E\d+\])?:', 'panicked at', '^FAIL ', '^AssertionError:', '^\s*AssertionError']
       tests:
-        target: '(?m)(?:^\s*Running\s+(?:unittests\s+)?|"kind":\s*\[[^\]]*"test"[^\]]*\].*?"src_path":\s*"|--test\s+)([^\s"\\)]+)'
-        passed: '(?m)^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+ok\b'
-        failed: '(?m)^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+FAILED\b'
-        ignored: '(?m)^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+ignored\b'
+        target: '(?m)(?:^\s*Running\s+(?:unittests\s+)?|"kind":\s*\[[^\]]*"test"[^\]]*\].*?"src_path":\s*"|--test\s+|^===\s+RUN\s+|^PASS\s+|^FAIL\s+)([^\s"\\)]+)'
+        passed: '(?m)(?:^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+ok\b|(?:\b|\s)([A-Za-z0-9_:]+)\s+PASSED\b|^\s*✓\s+([^\n]+)|---\s+PASS:\s+([A-Za-z0-9_:]+))'
+        failed: '(?m)(?:^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+FAILED\b|(?:\b|\s)([A-Za-z0-9_:]+)\s+FAILED\b|^\s*✕\s+([^\n]+)|---\s+FAIL:\s+([A-Za-z0-9_:]+))'
+        ignored: '(?m)(?:^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+ignored\b|(?:\b|\s)([A-Za-z0-9_:]+)\s+SKIPPED\b|^\s*○\s+([^\n]+)|---\s+SKIP:\s+([A-Za-z0-9_:]+))'
+    by_pattern:
+      "**/*.py": "pytest"
+      "**/*.{ts,tsx,js,jsx,vue}": "npm test"
+      "**/*.go": "go test ./..."
+      "**/*.rs": "cargo clippy --all-targets --all-features -- -D warnings && cargo test"
+    description: "Run strict repository checks and lints followed by the test suite."
+
+  rust-check-and-test:
+    output: *test_output
+    by_pattern:
+      "**/*.py": "pytest"
+      "**/*.{ts,tsx,js,jsx,vue}": "npm test"
+      "**/*.go": "go test ./..."
+      "**/*.rs": "cargo clippy --all-targets --all-features -- -D warnings && cargo test"
+    description: "Compatibility alias for check-and-test across supported languages."
+
   check_full_repo:
-    command: "cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets"
-    description: "Run the milestone handoff verification commands from TESTS.md."
+    output: *test_output
+    by_pattern:
+      "**/*.py": "pytest"
+      "**/*.{ts,tsx,js,jsx,vue}": "npm test"
+      "**/*.go": "go test ./..."
+      "**/*.rs": "cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets"
+    description: "Run the full repository verification commands."
     timeout_seconds: 1800
+
   lint:
-    command: "cargo clippy --all-targets --all-features -- -D warnings"
     output:
       require_counts: false
       noise: ['^\s*(Checking|Compiling|Finished)\b']
       errors: ['^error(\[E\d+\])?:']
+    by_pattern:
+      "**/*.py": "ruff check ."
+      "**/*.{ts,tsx,js,jsx,vue}": "npm run lint"
+      "**/*.go": "go vet ./..."
+      "**/*.rs": "cargo clippy --all-targets --all-features -- -D warnings"
+    description: "Run language-specific linter without running tests."
+
   test:
-    command: "cargo test"
-    description: "Compatibility command for legacy task evidence; workflow guidance selects rust-check-and-test."
+    output: *test_output
+    by_pattern:
+      "**/*.py": "pytest"
+      "**/*.{ts,tsx,js,jsx,vue}": "npm test"
+      "**/*.go": "go test ./..."
+      "**/*.rs": "cargo test"
+    description: "Run test suite across supported languages."
 
 # Central guidance catalog
 guidance:
@@ -415,7 +445,6 @@ gates:
     proof: "contract"
     expected_failure:
       exit_codes: [1, 101, 134]
-      stderr_contains: "assertion failed"
     persistence:
       pre: snapshot
       post: snapshot
@@ -429,14 +458,13 @@ gates:
           proof: "contract"
           expected_failure:
             exit_codes: [1, 101, 134]
-            stderr_contains: "assertion failed"
           persistence:
             post: snapshot
 
         - id: "build"
           role: "builder"
           guidance: [task.code, hitl.pro]
-          command: "rust-check-and-test"
+          command: "check-and-test"
           proof: "command"
           persistence:
             pre: snapshot
@@ -461,7 +489,7 @@ gates:
           gates:
             - id: "integrate"
               role: "builder"
-              command: "rust-check-and-test"
+              command: "check-and-test"
               proof: "seam_test"
               persistence:
                 pre: snapshot

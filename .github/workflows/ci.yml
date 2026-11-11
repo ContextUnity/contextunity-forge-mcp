@@ -1,15 +1,35 @@
-name: CI
+name: CI/CD
 
 on:
   pull_request:
+    branches: [main]
   push:
     branches: [main]
+    tags: ['v*']
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      publish_nightly:
+        description: 'Publish rolling nightly release'
+        type: boolean
+        default: true
 
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
 jobs:
-  check:
+  test:
+    name: test (${{ matrix.os }})
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -27,3 +47,119 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: Test workspace
         run: cargo test --workspace --all-targets
+
+  build-release:
+    name: build (${{ matrix.target }})
+    needs: test
+    timeout-minutes: 30
+    if: |
+      startsWith(github.ref, 'refs/tags/v') ||
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && inputs.publish_nightly)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: macos-15
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    env:
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+          rustup target add "$TARGET"
+      - name: Build stripped release
+        run: cargo build --release --locked --target "$TARGET"
+      - name: Package executable and companion skills
+        id: package
+        run: |
+          set -euo pipefail
+          staging=$(mktemp -d)
+          trap 'rm -rf "$staging"' EXIT
+          cp "target/$TARGET/release/contextunity-forge-mcp" "$staging/"
+          cp -R skills "$staging/skills"
+          test -f "$staging/skills/install.sh"
+          mkdir -p dist
+          archive="contextunity-forge-mcp-$TARGET.tar.gz"
+          tar -czf "dist/$archive" -C "$staging" contextunity-forge-mcp skills
+          cd dist
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$archive" > SHA256SUMS
+          else
+            shasum -a 256 "$archive" > SHA256SUMS
+          fi
+      - name: Upload target package
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: publish
+    needs: build-release
+    timeout-minutes: 15
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Download target packages separately
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: artifacts
+      - name: Assemble and verify release assets
+        run: |
+          set -euo pipefail
+          mkdir dist
+          for package in artifacts/release-*; do
+            cp "$package"/*.tar.gz dist/
+            cat "$package/SHA256SUMS" >> dist/SHA256SUMS
+          done
+          test "$(find dist -name '*.tar.gz' | wc -l)" -eq 4
+          test "$(wc -l < dist/SHA256SUMS)" -eq 4
+          cd dist
+          sort -o SHA256SUMS SHA256SUMS
+          sha256sum --check --strict SHA256SUMS
+      - name: Publish tag or rolling nightly
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "$REF_TYPE" = tag ]; then
+            tag="$REF_NAME"
+            if ! gh release view "$tag" >/dev/null 2>&1; then
+              gh release create "$tag" --verify-tag --title "$tag" --generate-notes
+            fi
+          else
+            tag=nightly
+            # A queued older main build must not replace a newer nightly.
+            current=$(gh api "repos/$GH_REPO/git/ref/heads/main" --jq '.object.sha')
+            if [ "$current" != "$GITHUB_SHA" ]; then
+              echo "Skipping superseded nightly build $GITHUB_SHA"
+              exit 0
+            fi
+            if ! gh release view nightly >/dev/null 2>&1; then
+              gh release create nightly --target "$GITHUB_SHA" --title Nightly \
+                --notes "Rolling build from main at $GITHUB_SHA" --prerelease --latest=false
+            fi
+            gh api --method PATCH "repos/$GH_REPO/git/refs/tags/nightly" \
+              -f sha="$GITHUB_SHA" -F force=true
+            gh release edit nightly --target "$GITHUB_SHA" --title Nightly \
+              --notes "Rolling build from main at $GITHUB_SHA" --prerelease --latest=false
+          fi
+          gh release upload "$tag" dist/*.tar.gz dist/SHA256SUMS --clobber

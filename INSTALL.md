@@ -19,25 +19,80 @@ This guide walks you through installing Forge MCP, configuring your workspace, s
 - **Release installation**: POSIX `sh`, ordinary shell utilities, `tar` with gzip support, `curl` or `wget`, and `sha256sum` or `shasum`. No Rust toolchain or C compiler is required.
 - **Building from source**: Stable Rust 2021 edition (`rustc` and `cargo` 1.88+) and a C compiler (`gcc` or `clang`) for bundled SQLite and native Tree-sitter parsers. Install Rust via [rustup.rs](https://rustup.rs).
 
-### Installing a Release
+### Installing a Release (`install.sh`)
 
-Run the installer from the project directory to install the binary and companion
-skills and configure its `.mcp.json`:
+The recommended installation method uses the zero-dependency installer script [`install.sh`](install.sh). It runs in standard POSIX `sh` without requiring Rust, Python, Node, or C compilers:
 
 ```sh
+# Latest stable release (recommended)
 curl -fsSL https://raw.githubusercontent.com/ContextUnity/contextunity-forge-mcp/main/install.sh | sh
-```
 
-To install the latest nightly pre-release instead, pass `--nightly`:
-
-```sh
+# Nightly pre-release (active development & latest fixes)
 curl -fsSL https://raw.githubusercontent.com/ContextUnity/contextunity-forge-mcp/main/install.sh | sh -s -- --nightly
 ```
 
-When run interactively in a terminal, `install.sh` prompts to choose between `latest` (default) and `nightly`.
+If you have already cloned the repository:
 
-The [MCP setup guide](docs/reference/mcp-setup.md#install-the-binary) lists
-supported platforms, release selection, update behavior, and client setup.
+```sh
+./install.sh             # Interactive prompt: choose between latest (default) and nightly
+./install.sh --latest    # Non-interactive: install latest stable release
+./install.sh --nightly   # Non-interactive: install nightly pre-release
+```
+
+#### Command-Line Flags & Options
+
+| Option | Shorthand | Description |
+|---|---|---|
+| `--latest` | `-l` | Install the latest stable release (default) |
+| `--nightly` | `-n` | Install the rolling nightly pre-release |
+| `--help` | `-h` | Display usage syntax and available options |
+
+#### Environment Variables
+
+| Variable | Description | Default |
+|---|---|---|
+| `FORGE_RELEASE_CHANNEL` | Release channel to install (`latest` or `nightly`) | Prompted in TTY, else `latest` |
+| `FORGE_RELEASE_BASE_URL` | Custom base URL for downloading `SHA256SUMS` and archive tarball (useful for air-gapped mirrors or specific tags) | GitHub Releases |
+| `AGENTS_SKILLS_DIR` | Canonical global skills hub directory | `~/.agents/skills` |
+
+#### Automated Execution Lifecycle
+
+The installer performs the following operations atomically:
+
+1. **Platform Auto-Detection**: Determines host OS and architecture. Supported targets:
+   - `x86_64-unknown-linux-gnu` (Linux 64-bit x86)
+   - `aarch64-unknown-linux-gnu` (Linux 64-bit ARM)
+   - `x86_64-apple-darwin` (macOS Intel)
+   - `aarch64-apple-darwin` (macOS Apple Silicon M-series)
+2. **Cryptographic Checksum Verification**: Downloads `SHA256SUMS` alongside the target archive, computing the actual SHA-256 digest using `sha256sum` or `shasum -a 256`. If the checksum does not match or the archive entry is missing, the installer halts immediately (fails closed).
+3. **Atomic Binary Installation**: Extracts the pre-compiled, stripped binary into a temporary file in `~/.local/bin/` with `0755` permissions and atomically moves it to `~/.local/bin/contextunity-forge-mcp`.
+4. **Agent Skills Hub Sync**: Executes the companion `skills/install.sh` script, copying companion skills to `~/.agents/skills/` and symlinking them into detected agent directories (`.gemini`, `.codex`, `.claude`, `.cursor`).
+5. **Project MCP Configuration**: Updates or creates `$PWD/.mcp.json` using an embedded RFC 8259-compliant AWK parser, adding the `contextunity-forge` stdio server entry while preserving all other servers, formatting, and custom fields.
+6. **Live Process Reload**: If updating an existing installation, runs `contextunity-forge-mcp reload` to notify active MCP server sessions without requiring manual restarts.
+
+#### Installing a Specific Tag or Using a Mirror
+
+To install a specific version tag (e.g. `v0.5.1-alpha.2`) or download from an internal company mirror:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ContextUnity/contextunity-forge-mcp/main/install.sh -o /tmp/forge-install.sh
+FORGE_RELEASE_BASE_URL="https://github.com/ContextUnity/contextunity-forge-mcp/releases/download/v0.5.1-alpha.2" sh /tmp/forge-install.sh
+```
+
+#### Post-Installation & Verification
+
+1. Ensure `~/.local/bin` is in your shell `PATH`:
+   ```bash
+   export PATH="$HOME/.local/bin:$PATH"
+   ```
+2. Verify binary execution:
+   ```bash
+   contextunity-forge-mcp --version
+   ```
+3. Verify MCP server response:
+   ```bash
+   contextunity-forge-mcp query overview
+   ```
 
 ### Building from Source
 
@@ -287,9 +342,13 @@ version: 2
 
 # Scoped command mappings referenced by gates and verification contours
 commands:
-  rust-check-and-test:
-    command: "cargo clippy --all-targets --all-features -- -D warnings && cargo test"
-    description: "Run strict checks followed by the repository test suite."
+  check-and-test:
+    by_pattern:
+      "**/*.py": "pytest"
+      "**/*.{ts,tsx,js,jsx,vue}": "npm test"
+      "**/*.go": "go test ./..."
+      "**/*.rs": "cargo clippy --all-targets --all-features -- -D warnings && cargo test"
+    description: "Run strict checks and tests across project languages."
     timeout_seconds: 300
     output:
       counts: {passed: '(\d+) passed', failed: '(\d+) failed'}
@@ -300,7 +359,7 @@ roles:
   contract_author:
     mode: subagent
     reuse_on_reject: true
-    guidance: "Synthesize contracts and author compiling runtime-red seam tests (exit code 101)."
+    guidance: "Synthesize contracts and author compiling runtime-red seam tests (exit code 101/1)."
   builder:
     mode: subagent
     reuse_on_reject: true
@@ -321,7 +380,7 @@ gates:
           post: snapshot
       - id: build
         role: builder
-        command: rust-check-and-test
+        command: check-and-test
         proof: command
         persistence:
           pre: snapshot
@@ -364,7 +423,7 @@ The repository includes a zero-config installer script (`./skills/install.sh`):
 ./skills/install.sh contextunity-forge test-contract-seam close-review-findings
 ```
 
-### What `install.sh` Does
+### What `skills/install.sh` Does
 
 1. Establishes `~/.agents/skills/` as the canonical global skill repository.
 2. Detects installed AI agent environments and links skills into their directories; existing regular skill directories receive copies:

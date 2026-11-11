@@ -62,7 +62,7 @@ fn ci_checks_pull_requests_and_main_on_linux_and_macos() {
 
 #[test]
 fn release_declares_tag_and_nightly_builds_for_all_installer_targets() {
-    let release = workflow("release.yml");
+    let release = workflow("release.yml").or_else(|_| workflow("ci.yml"));
     assert!(
         release.is_ok(),
         "assertion failed: release workflow is required: {release:?}"
@@ -104,7 +104,7 @@ fn release_declares_tag_and_nightly_builds_for_all_installer_targets() {
 
 #[test]
 fn release_package_step_produces_installable_archive_and_checksum() {
-    let release = workflow("release.yml");
+    let release = workflow("release.yml").or_else(|_| workflow("ci.yml"));
     assert!(
         release.is_ok(),
         "assertion failed: release workflow is required: {release:?}"

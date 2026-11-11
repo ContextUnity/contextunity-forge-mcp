@@ -220,7 +220,7 @@ checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 
 [[package]]
 name = "contextunity-forge-mcp"
-version = "0.5.1-alpha.1"
+version = "0.5.1-alpha.2"
 dependencies = [
  "anyhow",
  "cc",
@@ -436,7 +436,7 @@ checksum = "0ce7134b9999ecaf8bcd65542e436736ef32ddca1b3e06094cb6ec5755203b80"
 
 [[package]]
 name = "forge-core"
-version = "0.5.1-alpha.1"
+version = "0.5.1-alpha.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -456,7 +456,7 @@ dependencies = [
 
 [[package]]
 name = "forge-index"
-version = "0.5.1-alpha.1"
+version = "0.5.1-alpha.2"
 dependencies = [
  "anyhow",
  "cc",
@@ -498,7 +498,7 @@ dependencies = [
 
 [[package]]
 name = "forge-tasks"
-version = "0.5.1-alpha.1"
+version = "0.5.1-alpha.2"
 dependencies = [
  "anyhow",
  "chrono",

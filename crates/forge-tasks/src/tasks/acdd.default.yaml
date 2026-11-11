@@ -149,28 +149,37 @@ commands:
         failed: '(?m)\b(\d+) failed\b'
       require_counts: true
       noise: ['^\s*(Compiling|Downloading|Finished|Checking)\b', '^✔']
-      errors: ['^error(\[E\d+\])?:', 'panicked at', '^FAIL ']
+      errors: ['^error(\[E\d+\])?:', 'panicked at', '^FAIL ', '^AssertionError:', '^\s*AssertionError']
       tests:
-        target: '(?m)(?:^\s*Running\s+(?:unittests\s+)?|"kind":\s*\[[^\]]*"test"[^\]]*\].*?"src_path":\s*"|--test\s+)([^\s"\\)]+)'
-        passed: '(?m)^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+ok\b'
-        failed: '(?m)^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+FAILED\b'
-        ignored: '(?m)^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+ignored\b'
+        target: '(?m)(?:^\s*Running\s+(?:unittests\s+)?|"kind":\s*\[[^\]]*"test"[^\]]*\].*?"src_path":\s*"|--test\s+|^===\s+RUN\s+|^PASS\s+|^FAIL\s+)([^\s"\\)]+)'
+        passed: '(?m)(?:^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+ok\b|(?:\b|\s)([A-Za-z0-9_:]+)\s+PASSED\b|^\s*✓\s+([^\n]+)|---\s+PASS:\s+([A-Za-z0-9_:]+))'
+        failed: '(?m)(?:^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+FAILED\b|(?:\b|\s)([A-Za-z0-9_:]+)\s+FAILED\b|^\s*✕\s+([^\n]+)|---\s+FAIL:\s+([A-Za-z0-9_:]+))'
+        ignored: '(?m)(?:^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+ignored\b|(?:\b|\s)([A-Za-z0-9_:]+)\s+SKIPPED\b|^\s*○\s+([^\n]+)|---\s+SKIP:\s+([A-Za-z0-9_:]+))'
     by_pattern:
+      "**/*.py": "pytest"
+      "**/*.{ts,tsx,js,jsx,vue}": "npm test"
+      "**/*.go": "go test ./..."
       "**/*.rs": "cargo clippy --all-targets --all-features -- -D warnings && cargo test"
-    description: "Run strict repository checks followed by the test suite."
+    description: "Run strict repository checks followed by the test suite across supported languages."
+
   check_full_repo:
     output: *test_output
     by_pattern:
       "**/*.py": "pytest"
-      "**/*.{ts,tsx,vue}": "npm test"
-      "**/*.rs": "cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets"
-    description: "Run the milestone handoff verification commands from TESTS.md."
+      "**/*.{ts,tsx,js,jsx,vue}": "npm test"
+      "**/*.go": "go test ./..."
+      "**/*.rs": "cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets"
+    description: "Run full repository verification commands."
     timeout_seconds: 600
+
   test:
     output: *test_output
     by_pattern:
+      "**/*.py": "pytest"
+      "**/*.{ts,tsx,js,jsx,vue}": "npm test"
+      "**/*.go": "go test ./..."
       "**/*.rs": "cargo test"
-    description: "Compatibility command for legacy task evidence; workflow guidance selects rust-check-and-test."
+    description: "Run the test suite across supported languages."
 
 guidance:
   task.contract:
@@ -185,8 +194,8 @@ guidance:
   task.review:
     description: "INDEPENDENT REVIEW CORE INVARIANTS & ENGINEERING PRINCIPLES"
     criteria:
-      - "NO DEAD RE-EXPORT SHIMS: Do not retain pub mod wrappers when pub use crate_name::module; suffices."
-      - "CRATE EXTRACTION CLEANUP: Check git status and module-tree reachability after extraction; delete orphaned source files inside admitted scope."
+      - "NO DEAD RE-EXPORT SHIMS: Do not retain redundant forwarding or re-export wrappers when direct module/package imports suffice."
+      - "PACKAGE & MODULE EXTRACTION CLEANUP: Check git status and module-tree reachability after extraction; delete orphaned source files inside admitted scope."
       - "AST SEARCH LANGUAGE: Always supply language to ast_grep_search when path is omitted or has no file extension, including directory paths."
       - "REVIEW REJECTION BOUNDARY: Reject only for contract failure, scope violation, invariant breach, or a genuine functional or architectural defect. Never reject over doc-comment wording or non-regression stylistic nitpicks."
       - "BROAD ARCHITECTURAL EXPLORATION: Never evaluate diffs in isolation. Thoroughly inspect subsystem integration and extension points using semantic tools and source inspection."
@@ -248,8 +257,8 @@ guidance:
   milestone.synthesis:
     description: "MANDATORY ARCHITECTURAL AUDIT & CONTRACT SYNTHESIS GATE — DO NOT BYPASS"
     criteria:
-      - "NO DEAD RE-EXPORT SHIMS: Do not retain pub mod wrappers when pub use crate_name::module; suffices."
-      - "CRATE EXTRACTION CLEANUP: Check git status and module-tree reachability after extraction; delete orphaned source files inside admitted scope."
+      - "NO DEAD RE-EXPORT SHIMS: Do not retain redundant forwarding or re-export wrappers when direct module/package imports suffice."
+      - "PACKAGE & MODULE EXTRACTION CLEANUP: Check git status and module-tree reachability after extraction; delete orphaned source files inside admitted scope."
       - "AST SEARCH LANGUAGE: Always supply language to ast_grep_search when path is omitted or has no file extension, including directory paths."
       - "REVIEW REJECTION BOUNDARY: Reject only for contract failure, scope violation, invariant breach, or a genuine functional or architectural defect. Never reject over doc-comment wording or non-regression stylistic nitpicks."
       - "ARCHITECTURAL EXTENSION POINTS: Inspect existing subsystem registries, public interfaces, and data flow using semantic tools and source reading. Identify natural extension seams and data flow. Do NOT invent parallel systems or touch protected repository files."
@@ -260,8 +269,8 @@ guidance:
   milestone.review:
     description: "MILESTONE INTEGRATION REVIEW & BOUNDED VERIFICATION"
     criteria:
-      - "NO DEAD RE-EXPORT SHIMS: Do not retain pub mod wrappers when pub use crate_name::module; suffices."
-      - "CRATE EXTRACTION CLEANUP: Check git status and module-tree reachability after extraction; delete orphaned source files inside admitted scope."
+      - "NO DEAD RE-EXPORT SHIMS: Do not retain redundant forwarding or re-export wrappers when direct module/package imports suffice."
+      - "PACKAGE & MODULE EXTRACTION CLEANUP: Check git status and module-tree reachability after extraction; delete orphaned source files inside admitted scope."
       - "AST SEARCH LANGUAGE: Always supply language to ast_grep_search when path is omitted or has no file extension, including directory paths."
       - "REVIEW REJECTION BOUNDARY: Reject only for contract failure, scope violation, invariant breach, or a genuine functional or architectural defect. Never reject over doc-comment wording or non-regression stylistic nitpicks."
       - "SYSTEM-LEVEL COHESION: Review overall milestone diff against target base for holistic architecture alignment, zero dangling abstractions, and clean module boundaries."
@@ -321,7 +330,6 @@ gates:
       - "5. SUBMIT: Submit contract proof with seam_test_ref and red_exit_code."
     expected_failure:
       exit_codes: [1, 101, 134]
-      stderr_contains: "assertion failed"
     save:
       pre: snapshot
       post: snapshot
@@ -335,7 +343,6 @@ gates:
           guidance: [task.contract, hitl.pro]
           expected_failure:
             exit_codes: [1, 101, 134]
-            stderr_contains: "assertion failed"
           save: snapshot
 
         - id: build

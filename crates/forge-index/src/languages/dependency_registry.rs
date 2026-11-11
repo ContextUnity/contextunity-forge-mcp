@@ -1419,6 +1419,7 @@ fn walked_manifest_paths(
     walk.hidden(false)
         .follow_links(false)
         .git_ignore(true)
+        .require_git(false)
         .filter_entry(move |entry| {
             !entry.path_is_symlink()
                 && !ignored_names.contains(entry.file_name())

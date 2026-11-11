@@ -141,7 +141,7 @@ fn stdio_transport_smoke() {
         command
             .args([
                 "-c",
-                "\"$1\" --root \"$2\" serve <&0 & echo $! >\"$3\"; wait",
+                "exec 9<&0; \"$1\" --root \"$2\" serve <&9 & echo $! >\"$3\"; wait",
                 "parent-fixture",
             ])
             .arg(&binary)
