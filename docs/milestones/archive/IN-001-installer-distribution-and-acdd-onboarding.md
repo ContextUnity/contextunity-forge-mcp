@@ -2,7 +2,7 @@
 id: m-installer-distribution-and-acdd-onboarding
 title: Seamless installer, multi-flavor distribution, and ACDD onboarding
 doc_type: contract
-status: active
+status: completed
 depends_on:
 - m-test-suite-architecture-and-domain-consolidation
 owners:
@@ -22,6 +22,150 @@ invariants:
 - 'INV-AGENTIC-ONBOARDING: Repository onboarding and scaffolding is driven by agent skills, leveraging LLM context to generate tailored forge-mcp.yaml (with linked_workspaces), ACDD profiles, AGENTS.md, documentation structures, and initial milestones without bloating the Rust binary.'
 related_plans: []
 started_at: 2026-11-10T15:51:41+00:00
+repository: forge-mcp
+project: forge-mcp
+handoff:
+  completed_at: 2026-11-11T04:06:22.420983290+00:00
+  duration: 12h 14m
+  commit: fc378e3209f218514cdd37c6b6d29b6c993e821b
+  target_base: 716c4fa15fd054917291d07ce5a22a98623ef00d
+  integration_evidence:
+    binding:
+      version: 1
+      repository: forge-mcp
+      project: forge-mcp
+      milestone: m-installer-distribution-and-acdd-onboarding
+      authority_digest: 9794ddf242cc901de0ec185dee02fde79b3654a183d31d9757bc18df3f362a86
+      implementation_digest: 1138ad12843e4d2956f7214b0c4a7a51f3c34c995946fd3aab95e82ec9eb9cf8
+      target_base_digest: daf6a4c93616f5082777a31b3f98e3db373bb7500ccc50479ddfa85fa8004ff8
+      builders:
+      - codex-in003-builder
+      - installer-builder
+      - release-builder
+    target_base: 716c4fa15fd054917291d07ce5a22a98623ef00d
+    review:
+      worker_id: codex-sol-reviewer
+      decision: pass
+      summary: 'All milestone invariants verified: install.sh POSIX compliance and zero-dependency packaging, CI/CD multi-flavor distribution, agentic onboarding skill, clean process environment isolation, and comprehensive test suite passing with zero failures.'
+      scope_findings: []
+      contract_findings: []
+    verification:
+      command: cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets
+      exit_code: 0
+      tests_passed: 1208
+      tests_failed: 0
+      project_command: check_full_repo
+  proof_shas:
+  - 0b2a9a053ea5f1af29132cef0f33f1ad04507186
+  - 1f473231c2b729dd5ae538b3573b1179f4ca4338
+  - 221146c046c63ad6188f8920842ddc9f810fd010
+  - 33566b90117ca08a3b5f22edd9d524f3a4be6a48
+  - 527ad39ffb4fee03b7ec75c5710f69ede6ceb9f8
+  - 5ea71c478b5a51a00dcc813ea53554f4bdaba69f
+  - 65d4cc00b7cebcf91256354578134b0d47a0b2a8
+  - 66c796f32b2ce67bc229b1eeb36d200cebadbfee
+  - 677b20365738115aa4dea901e614cf172fbd6fad
+  - 716c4fa15fd054917291d07ce5a22a98623ef00d
+  - 7684bfad0c6b326a3af1649c1a9b0e121553db94
+  - 84b069c988658995e54cd3a6996fd7e5b03cfa85
+  - 938e30b608b4a409eaf7c9f2033665b79815f110
+  - afe46cbca71068f8a250ca8566bfe0e5b18b6973
+  - e4d87741e3c26f9b0e96d28ca02b679d1cd275fb
+  - e98100e5c0ca3c3adcb171157cfd064b8eec647e
+  - ea31524cc86a97f658f69306a21d10c841854965
+  - fc378e3209f218514cdd37c6b6d29b6c993e821b
+  passport:
+    version: 1
+    identity: forge-mcp/forge-mcp/m-installer-distribution-and-acdd-onboarding
+    binding:
+      version: 1
+      repository: forge-mcp
+      project: forge-mcp
+      milestone: m-installer-distribution-and-acdd-onboarding
+      authority_digest: 9794ddf242cc901de0ec185dee02fde79b3654a183d31d9757bc18df3f362a86
+      implementation_digest: 1138ad12843e4d2956f7214b0c4a7a51f3c34c995946fd3aab95e82ec9eb9cf8
+      target_base_digest: daf6a4c93616f5082777a31b3f98e3db373bb7500ccc50479ddfa85fa8004ff8
+      builders:
+      - codex-in003-builder
+      - installer-builder
+      - release-builder
+    commit: fc378e3209f218514cdd37c6b6d29b6c993e821b
+    target_base: 716c4fa15fd054917291d07ce5a22a98623ef00d
+    active_authority_digest: 8dbb976090f4fff5c5ef3d7122088ed9888d9a06692fede06459489fa77558ee
+    started_at: 2026-11-10T15:51:41+00:00
+    completed_at: 2026-11-11T04:06:22.420983290+00:00
+    duration_seconds: 44081
+    tasks_count: 3
+    tasks:
+    - task_id: forge-mcp/m-installer-distribution-and-acdd-onboarding:acdd-onboarding-agent-skill
+      status: completed
+      first_claimed_at: 1794325901
+      completed_at: 1794331455
+      execution_wall_seconds: 5554
+      review_cycles: 2
+      rejected_reviews: 1
+    - task_id: forge-mcp/m-installer-distribution-and-acdd-onboarding:ci-cd-and-release-packaging
+      status: completed
+      first_claimed_at: 1794333455
+      completed_at: 1794335233
+      execution_wall_seconds: 1778
+      review_cycles: 1
+      rejected_reviews: 0
+    - task_id: forge-mcp/m-installer-distribution-and-acdd-onboarding:installer-script-and-client-setup
+      status: completed
+      first_claimed_at: 1794333436
+      completed_at: 1794338934
+      execution_wall_seconds: 5498
+      review_cycles: 4
+      rejected_reviews: 3
+    diff:
+      docs:
+        files: 3
+        added: 340
+        removed: 131
+      other:
+        files: 9
+        added: 603
+        removed: 137
+      src:
+        files: 2
+        added: 292
+        removed: 21
+      tests:
+        files: 4
+        added: 1650
+        removed: 0
+    ast_symbol_deltas:
+      added: 128
+      removed: 0
+      modified: 2
+    test_suite_results:
+      command: cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets
+      exit_code: 0
+      tests_passed: 1208
+      tests_failed: 0
+      project_command: check_full_repo
+    automatic_project_verification:
+      selection: check_full_repo
+      command: cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets
+      exit_code: 0
+      stdout_digest: df43559b60ac6306ea1b833c85245b7af058cd3f6c51ea6dfb01c4c383323dbb
+      reused_verification: true
+      implementation_digest: 1138ad12843e4d2956f7214b0c4a7a51f3c34c995946fd3aab95e82ec9eb9cf8
+    linter:
+      status: unobserved
+    topology:
+      upstream:
+      - forge-mcp/forge-mcp/m-test-suite-architecture-and-domain-consolidation
+      downstream:
+      - forge-mcp/forge-mcp/m-source-modularity-and-god-file-decomposition
+      unresolved_upstream: []
+    verified_handoff_proof: 6aa59fbd22a4289b7f44592a0f41c0335c21a3f4dd0ffd377e813fd87bc09aee
+  verification:
+    command: cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets
+    status: passed
+    tests_passed: 1208
+    tests_failed: 0
 ---
 
 # Seamless installer, multi-flavor distribution, and ACDD onboarding
@@ -79,6 +223,7 @@ subtasks:
 receipt:
   delivery_gate: deliver
   candidate_gate: build
+  commit: d988be7fda339ee0db6e4da666733793792e4c3e
   contract_revision: 2
   passed_at: 2026-11-10T18:27:13.975127542+00:00
   evidence:
@@ -174,6 +319,7 @@ subtasks:
 receipt:
   delivery_gate: deliver
   candidate_gate: build
+  commit: 98a4f73b9dbdbe3a0e2d1d79609777dffd0ca07c
   contract_revision: 4
   passed_at: 2026-11-10T19:28:54.567201553+00:00
   evidence:
