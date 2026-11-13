@@ -28,10 +28,12 @@ ignore:
   - vendor
   - .git
   - .forge
+limits:
+  max_metadata_bytes: 2048
 response:
   detail: compact
   page_size: 30
-  max_output_bytes: 65536
+  max_output_bytes: 98304
   source_context:
     enabled_by_default: false
     leading_lines: 5

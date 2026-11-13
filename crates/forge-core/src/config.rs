@@ -20,6 +20,10 @@ pub const DEFAULT_MAX_FILE_BYTES: u64 = 5 * 1024 * 1024;
 pub const DEFAULT_MAX_TOTAL_BYTES: u64 = 500 * 1024 * 1024;
 /// Alias for maximum allowed file bytes.
 pub const MAX_FILE_BYTES: u64 = DEFAULT_MAX_FILE_BYTES;
+/// Authoritative maximum size in bytes for metadata and notes.
+pub const MAX_METADATA_BYTES: usize = 2048;
+/// Default maximum size in bytes for metadata and notes.
+pub const DEFAULT_MAX_METADATA_BYTES: usize = MAX_METADATA_BYTES;
 
 /// Standard directory and file names ignored during scanning.
 pub const DEFAULT_IGNORED_NAMES: &[&str] = &[
@@ -63,6 +67,10 @@ fn default_max_total_bytes() -> u64 {
     DEFAULT_MAX_TOTAL_BYTES
 }
 
+fn default_max_metadata_bytes() -> usize {
+    DEFAULT_MAX_METADATA_BYTES
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 /// Represents scanner limits data.
 pub struct ScannerLimits {
@@ -75,6 +83,9 @@ pub struct ScannerLimits {
     #[serde(default = "default_max_total_bytes")]
     /// The max total bytes value.
     pub max_total_bytes: u64,
+    #[serde(default = "default_max_metadata_bytes")]
+    /// Authoritative maximum size in bytes for metadata and notes.
+    pub max_metadata_bytes: usize,
     #[serde(default)]
     /// Whether allow broad root applies.
     pub allow_broad_root: bool,
@@ -83,12 +94,24 @@ pub struct ScannerLimits {
     pub memory_budget_mb: Option<u64>,
 }
 
+impl ScannerLimits {
+    /// Validates scanner and metadata limits against authoritative ceilings.
+    pub fn validate(&self) -> Result<()> {
+        anyhow::ensure!(
+            (1..=MAX_METADATA_BYTES).contains(&self.max_metadata_bytes),
+            "limits.max_metadata_bytes must be 1..={MAX_METADATA_BYTES}"
+        );
+        Ok(())
+    }
+}
+
 impl Default for ScannerLimits {
     fn default() -> Self {
         Self {
             max_files: DEFAULT_MAX_FILES,
             max_file_bytes: DEFAULT_MAX_FILE_BYTES,
             max_total_bytes: DEFAULT_MAX_TOTAL_BYTES,
+            max_metadata_bytes: DEFAULT_MAX_METADATA_BYTES,
             allow_broad_root: false,
             memory_budget_mb: None,
         }
@@ -322,7 +345,8 @@ impl Default for Adapter {
 
 /// Loads and normalizes workspace adapter configuration.
 pub fn load_adapter(root: &Path, adapter_path: Option<&Path>) -> std::io::Result<Adapter> {
-    let default_path = root.join("forge-mcp.yaml");
+    let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let default_path = canonical_root.join("forge-mcp.yaml");
     let default_path = default_path.exists().then_some(default_path);
     let selected = adapter_path.or(default_path.as_deref());
     let mut explicit_adapter_path = None;
@@ -334,7 +358,7 @@ pub fn load_adapter(root: &Path, adapter_path: Option<&Path>) -> std::io::Result
                 return Err(error("adapter must not be a symlink"));
             }
             let canonical = path.canonicalize()?;
-            if !canonical.starts_with(root) {
+            if !canonical.starts_with(&canonical_root) {
                 return Err(error("adapter must be inside workspace root"));
             }
             if adapter_path.is_some() {
@@ -371,6 +395,9 @@ pub fn load_adapter(root: &Path, adapter_path: Option<&Path>) -> std::io::Result
         }
     };
     raw.response.validate().map_err(|e| error(e.to_string()))?;
+    if let Some(limits) = &raw.limits {
+        limits.validate().map_err(|e| error(e.to_string()))?;
+    }
     let mut modules = raw.modules.clone();
     if let Some(profile) = raw.profile {
         modules.profile = profile;
@@ -826,5 +853,23 @@ mod tests {
 
         std::fs::remove_file(&file_path).ok();
         std::fs::remove_dir(&temp_dir).ok();
+    }
+
+    #[test]
+    fn scanner_limits_validate_authoritative_metadata_bounds() {
+        let mut limits = ScannerLimits::default();
+        assert_eq!(limits.max_metadata_bytes, 2048);
+        assert!(limits.validate().is_ok());
+
+        limits.max_metadata_bytes = 256;
+        assert!(limits.validate().is_ok());
+
+        limits.max_metadata_bytes = 0;
+        let err_zero = limits.validate().unwrap_err();
+        assert!(err_zero.to_string().contains("must be 1..=2048"));
+
+        limits.max_metadata_bytes = 2049;
+        let err_large = limits.validate().unwrap_err();
+        assert!(err_large.to_string().contains("must be 1..=2048"));
     }
 }

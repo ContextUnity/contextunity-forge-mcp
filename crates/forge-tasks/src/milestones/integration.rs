@@ -667,9 +667,18 @@ fn write_note_entry(
                 note[collection][identity] = passport.clone();
             }
             let note_json = serde_json::to_string(&note)?;
-            if collection == "milestone_passports" && !passport.is_null() && note_json.len() >= 2048
+            let max_meta = crate::config::load_workspace_adapter(root)
+                .map_err(|error| anyhow::anyhow!("INVALID_WORKSPACE_CONFIG: {error}"))?
+                .limits
+                .max_metadata_bytes;
+            if collection == "milestone_passports"
+                && !passport.is_null()
+                && note_json.len() >= max_meta
             {
-                bail!("HANDOFF_PASSPORT_TOO_LARGE: Git note must be smaller than 2048 bytes");
+                bail!(
+                    "HANDOFF_PASSPORT_TOO_LARGE: Git note must be smaller than {} bytes",
+                    max_meta
+                );
             }
             let note_path = std::env::temp_dir()
                 .join(format!("forge-note-{}-{nonce}.json", std::process::id()));
@@ -954,4 +963,54 @@ pub(super) fn content_digest(root: &Path, commit: &str, milestone_path: &str) ->
         }
     }
     Ok(hex::encode(hash.finalize()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::write_passport;
+
+    #[test]
+    fn write_note_entry_respects_configured_metadata_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for args in [
+            ["init", "-b", "main"].as_slice(),
+            &["config", "user.email", "test@example.com"],
+            &["config", "user.name", "Test"],
+        ] {
+            assert!(std::process::Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .status()
+                .unwrap()
+                .success());
+        }
+        std::fs::write(
+            root.join("forge-mcp.yaml"),
+            "roots: [src]\ndocs: [docs]\nlimits:\n  max_metadata_bytes: 64\n",
+        )
+        .unwrap();
+        assert!(std::process::Command::new("git")
+            .args(["add", "forge-mcp.yaml"])
+            .current_dir(root)
+            .status()
+            .unwrap()
+            .success());
+        assert!(std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(root)
+            .status()
+            .unwrap()
+            .success());
+        let head = crate::core::git::git_stdout(root, &["rev-parse", "HEAD"], "TEST").unwrap();
+        let err = write_passport(
+            root,
+            &head,
+            "milestone",
+            &serde_json::json!({"summary": "x".repeat(80)}),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("HANDOFF_PASSPORT_TOO_LARGE"), "{err}");
+    }
 }

@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 pub use forge_core::config::{
     ScannerLimits, DEFAULT_IGNORED_NAMES, DEFAULT_MAX_FILES, DEFAULT_MAX_FILE_BYTES,
-    DEFAULT_MAX_TOTAL_BYTES, MAX_FILE_BYTES,
+    DEFAULT_MAX_METADATA_BYTES, DEFAULT_MAX_TOTAL_BYTES, MAX_FILE_BYTES, MAX_METADATA_BYTES,
 };
 
 fn error(message: impl Into<String>) -> std::io::Error {
@@ -216,9 +216,17 @@ pub struct Adapter {
     pub debug: bool,
 }
 
+/// Loads workspace adapter configuration, honoring any active invocation-local `--config` selection.
+pub fn load_workspace_adapter(root: &Path) -> std::io::Result<Adapter> {
+    let selected =
+        crate::tasks::configuration::current(root).and_then(|settings| settings.config.clone());
+    load_adapter(root, selected.as_deref())
+}
+
 /// Loads and normalizes workspace adapter configuration.
 pub fn load_adapter(root: &Path, adapter_path: Option<&Path>) -> std::io::Result<Adapter> {
-    let default_path = root.join("forge-mcp.yaml");
+    let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let default_path = canonical_root.join("forge-mcp.yaml");
     let default_path = default_path.exists().then_some(default_path);
     let selected = adapter_path.or(default_path.as_deref());
     let mut explicit_adapter_path = None;
@@ -230,7 +238,7 @@ pub fn load_adapter(root: &Path, adapter_path: Option<&Path>) -> std::io::Result
                 return Err(error("adapter must not be a symlink"));
             }
             let canonical = path.canonicalize()?;
-            if !canonical.starts_with(root) {
+            if !canonical.starts_with(&canonical_root) {
                 return Err(error("adapter must be inside workspace root"));
             }
             if adapter_path.is_some() {
@@ -267,6 +275,9 @@ pub fn load_adapter(root: &Path, adapter_path: Option<&Path>) -> std::io::Result
         }
     };
     raw.response.validate().map_err(|e| error(e.to_string()))?;
+    if let Some(limits) = &raw.limits {
+        limits.validate().map_err(|e| error(e.to_string()))?;
+    }
     let mut modules = raw.modules.clone();
     if let Some(profile) = raw.profile {
         modules.profile = profile;
