@@ -11,31 +11,22 @@ pub(super) fn ensure_command_output_schema(connection: &Connection) -> Result<()
         [],
         |row| row.get(0),
     )?;
-    let schema: String = connection.query_row(
-        "SELECT sql FROM sqlite_schema WHERE name='gate_execution_traces'",
-        [],
-        |row| row.get(0),
-    )?;
-    if proof_exists && !schema.contains("<= 2048") {
-        return Ok(());
+    let schema: Option<String> = connection
+        .query_row(
+            "SELECT sql FROM sqlite_schema WHERE name='gate_execution_traces'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let expected = format!("<= {MAX_OUTPUT_SNIPPET_BYTES}");
+    if !proof_exists || !schema.as_ref().is_some_and(|s| s.contains(&expected)) {
+        bail!("unsupported tasks schema; use recovery tooling");
     }
-    connection.execute_batch("SAVEPOINT command_output_upgrade")?;
-    match migrate(connection) {
-        Ok(()) => {
-            connection.execute_batch("RELEASE command_output_upgrade")?;
-            Ok(())
-        }
-        Err(error) => {
-            connection.execute_batch(
-                "ROLLBACK TO command_output_upgrade; RELEASE command_output_upgrade",
-            )?;
-            Err(error)
-        }
-    }
+    Ok(())
 }
 
 /// Maximum number of UTF-8 bytes stored in a command trace output snippet.
-pub const MAX_OUTPUT_SNIPPET_BYTES: usize = 64 * 1024;
+pub const MAX_OUTPUT_SNIPPET_BYTES: usize = forge_core::response::MAX_OUTPUT_BYTES;
 
 /// Proof-critical facts extracted from complete command output before presentation.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -122,9 +113,23 @@ pub struct GateCheckpoint {
     pub state_payload: serde_json::Value,
 }
 
-/// Create or upgrade the gate transition, command trace, and checkpoint tables.
+/// Create the gate transition, command trace, and checkpoint tables.
 pub(super) fn migrate(connection: &Connection) -> Result<()> {
-    connection.execute_batch(
+    let expected = format!("<= {MAX_OUTPUT_SNIPPET_BYTES}");
+    let schema: Option<String> = connection
+        .query_row(
+            "SELECT sql FROM sqlite_schema WHERE name='gate_execution_traces'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if let Some(existing) = schema {
+        if !existing.contains(&expected) {
+            bail!("unsupported tasks schema; use recovery tooling");
+        }
+    }
+
+    connection.execute_batch(&format!(
         "CREATE TABLE IF NOT EXISTS gate_transitions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             milestone_id TEXT NOT NULL,
@@ -156,7 +161,7 @@ pub(super) fn migrate(connection: &Connection) -> Result<()> {
             UNIQUE(milestone_id, subject, gate_path, attempt_id, command_id),
             CHECK (
                 output_snippet IS NULL
-                OR length(CAST(output_snippet AS BLOB)) <= 65536
+                OR length(CAST(output_snippet AS BLOB)) <= {MAX_OUTPUT_SNIPPET_BYTES}
             )
         );
 
@@ -170,43 +175,16 @@ pub(super) fn migrate(connection: &Connection) -> Result<()> {
             state_payload JSON NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );",
-    )?;
-    let schema: String = connection.query_row(
-        "SELECT sql FROM sqlite_master WHERE name='gate_execution_traces'",
-        [],
-        |row| row.get(0),
-    )?;
-    if schema.contains("<= 2048") {
-        connection.execute_batch(
-            "SAVEPOINT trace_snippet_upgrade;
-            ALTER TABLE gate_execution_traces RENAME TO gate_execution_traces_old;",
-        )?;
-        let result = (|| -> Result<()> {
-            connection.execute_batch(&schema.replace("<= 2048", "<= 65536"))?;
-            connection.execute_batch(
-                "INSERT INTO gate_execution_traces SELECT * FROM gate_execution_traces_old;
-                DROP TABLE gate_execution_traces_old;
-                RELEASE trace_snippet_upgrade;",
-            )?;
-            Ok(())
-        })();
-        if let Err(error) = result {
-            connection.execute_batch(
-                "ROLLBACK TO trace_snippet_upgrade; RELEASE trace_snippet_upgrade;",
-            )?;
-            return Err(error);
-        }
-    }
-    connection.execute_batch(
-        "CREATE TABLE IF NOT EXISTS command_execution_proofs (
+        );
+
+        CREATE TABLE IF NOT EXISTS command_execution_proofs (
             run_id INTEGER NOT NULL REFERENCES gate_execution_runs(id) ON DELETE CASCADE,
             command_id TEXT NOT NULL,
             attempt_id INTEGER NOT NULL,
             payload TEXT NOT NULL,
             PRIMARY KEY(run_id, command_id, attempt_id)
-        );",
-    )?;
+        );"
+    ))?;
     Ok(())
 }
 
@@ -291,6 +269,123 @@ pub(super) fn prune_milestone_gate_records(
 }
 
 impl TasksStore {
+    /// Record accepted root-gate proof slices for their individual milestone tasks.
+    pub fn record_task_proof_advances(
+        &self,
+        source: &GateTransition,
+        task_slices: &[(String, serde_json::Value)],
+    ) -> Result<usize> {
+        if source.subject != "milestone" || source.action != "pass" {
+            bail!("TASK_PROOF_FANOUT_INVALID: source must be a passed milestone transition");
+        }
+        if !source.milestone_id.starts_with(&self.namespace) {
+            bail!("TASK_PROOF_FANOUT_SCOPE: milestone is outside this project namespace");
+        }
+        for (field, value) in [
+            ("milestone_id", source.milestone_id.as_str()),
+            ("gate_path", source.gate_path.as_str()),
+            ("proof_kind", source.proof_kind.as_str()),
+            ("git_tree_sha", source.git_tree_sha.as_str()),
+            ("worker_id", source.worker_id.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                bail!("TASK_PROOF_FANOUT_INVALID: {field} must not be empty");
+            }
+        }
+
+        let transaction = self.connection.unchecked_transaction()?;
+        let mut inserted = 0;
+        for (subject, payload) in task_slices {
+            if subject.trim().is_empty() || !subject.starts_with(&self.id_prefix) {
+                bail!("TASK_PROOF_FANOUT_SCOPE: task subject is outside this project namespace");
+            }
+            let proof_payload = serde_json::to_string(payload)?;
+            let latest: Option<(String, String, String, String)> = transaction
+                .query_row(
+                    "SELECT action, proof_kind, proof_payload, git_tree_sha
+                 FROM gate_transitions
+                 WHERE milestone_id=?1 AND subject=?2 AND gate_path=?3
+                 ORDER BY id DESC LIMIT 1",
+                    params![source.milestone_id, subject, source.gate_path,],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .optional()?;
+            if latest.is_some_and(|(action, proof_kind, previous_payload, git_tree_sha)| {
+                action == "advance"
+                    && proof_kind == source.proof_kind
+                    && previous_payload == proof_payload
+                    && git_tree_sha == source.git_tree_sha
+            }) {
+                continue;
+            }
+            transaction.execute(
+                "INSERT INTO gate_transitions (
+                    milestone_id, subject, gate_path, action, proof_kind, proof_payload,
+                    git_tree_sha, worker_id
+                 ) VALUES (?1, ?2, ?3, 'advance', ?4, ?5, ?6, ?7)",
+                params![
+                    source.milestone_id,
+                    subject,
+                    source.gate_path,
+                    source.proof_kind,
+                    proof_payload,
+                    source.git_tree_sha,
+                    source.worker_id,
+                ],
+            )?;
+            inserted += 1;
+        }
+        transaction.commit()?;
+        Ok(inserted)
+    }
+
+    /// List the latest accepted task-proof advance for each requested root gate path.
+    pub fn latest_task_proof_advances(
+        &self,
+        milestone_identity: &str,
+        task_id: &str,
+        gate_paths: &[String],
+    ) -> Result<Vec<GateTransition>> {
+        if gate_paths.is_empty() {
+            return Ok(Vec::new());
+        }
+        if !milestone_identity.starts_with(&self.namespace) || !task_id.starts_with(&self.id_prefix)
+        {
+            bail!("TASK_PROOF_CONTEXT_SCOPE: task proof lookup is outside this project namespace");
+        }
+        let placeholders = std::iter::repeat_n("?", gate_paths.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT milestone_id, subject, gate_path, action, proof_kind,
+                    proof_payload, git_tree_sha, worker_id
+             FROM gate_transitions
+             WHERE milestone_id=? AND subject=? AND action='advance'
+               AND gate_path IN ({placeholders})
+             ORDER BY id DESC"
+        );
+        let mut values = Vec::with_capacity(gate_paths.len() + 2);
+        values.push(rusqlite::types::Value::Text(milestone_identity.to_owned()));
+        values.push(rusqlite::types::Value::Text(task_id.to_owned()));
+        values.extend(gate_paths.iter().cloned().map(rusqlite::types::Value::Text));
+        let mut statement = self.connection.prepare(&sql)?;
+        let rows = statement.query_map(
+            rusqlite::params_from_iter(values.iter()),
+            transition_from_row,
+        )?;
+        let mut latest_by_path = std::collections::BTreeMap::new();
+        for transition in rows {
+            let transition = transition?;
+            latest_by_path
+                .entry(transition.gate_path.clone())
+                .or_insert(transition);
+        }
+        Ok(gate_paths
+            .iter()
+            .filter_map(|path| latest_by_path.remove(path))
+            .collect())
+    }
+
     /// Persist a command execution trace and return its SQLite row identifier.
     pub fn record_execution_trace(&self, trace: &GateExecutionTrace) -> Result<i64> {
         record_trace(&self.connection, trace)
@@ -339,9 +434,9 @@ impl TasksStore {
                AND json_extract(gate_checkpoints.state_payload, '$.task_id') IS NULL",
             params![
                 breadcrumb,
-                milestone_id,
-                subject,
-                gate_path,
+                &milestone_id,
+                &subject,
+                &gate_path,
                 git_tree_sha,
                 state_payload_str,
             ],
@@ -376,6 +471,18 @@ impl TasksStore {
 
     /// Insert or replace the checkpoint associated with one turn breadcrumb.
     pub fn save_checkpoint(&self, checkpoint: &GateCheckpoint) -> Result<()> {
+        self.save_checkpoint_validated(checkpoint, false)
+    }
+
+    pub(crate) fn save_engine_checkpoint(&self, checkpoint: &GateCheckpoint) -> Result<()> {
+        self.save_checkpoint_validated(checkpoint, true)
+    }
+
+    fn save_checkpoint_validated(
+        &self,
+        checkpoint: &GateCheckpoint,
+        allow_engine_owned: bool,
+    ) -> Result<()> {
         let (milestone_id, gate_path, subject) =
             checkpoint_identity(&self.namespace, &checkpoint.breadcrumb)?;
         if checkpoint.milestone_id != milestone_id
@@ -386,7 +493,10 @@ impl TasksStore {
                 "TASK_CHECKPOINT_INVALID: breadcrumb identity does not match checkpoint metadata"
             );
         }
-        if checkpoint.transition_id.is_none() && is_engine_owned_checkpoint(&subject, &gate_path) {
+        if !allow_engine_owned
+            && checkpoint.transition_id.is_none()
+            && is_engine_owned_checkpoint(&subject, &gate_path)
+        {
             bail!("TASK_CHECKPOINT_OWNED: milestone checkpoints are engine-owned");
         }
         for (field, value) in [
@@ -531,8 +641,14 @@ impl TasksStore {
 }
 
 fn checkpoint_identity(namespace: &str, breadcrumb: &str) -> Result<(String, String, String)> {
-    if breadcrumb.is_empty() || breadcrumb.len() > 2048 || breadcrumb.contains('\0') {
-        bail!("TASK_CHECKPOINT_INVALID: breadcrumb must contain 1..=2048 bytes");
+    if breadcrumb.is_empty()
+        || breadcrumb.len() > forge_core::config::MAX_METADATA_BYTES
+        || breadcrumb.contains('\0')
+    {
+        bail!(
+            "TASK_CHECKPOINT_INVALID: breadcrumb must contain 1..={} bytes",
+            forge_core::config::MAX_METADATA_BYTES
+        );
     }
     let mut components = breadcrumb.rsplitn(4, '/');
     let stage = components.next().unwrap_or_default();
@@ -650,4 +766,65 @@ fn checkpoint_payload_from_ref(
         }
     }
     Ok(stored)
+}
+
+#[cfg(test)]
+mod task_proof_advance_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn accepted_task_proof_advances_are_idempotent_and_track_new_snapshots() -> Result<()> {
+        let store = TasksStore::open_in_memory("repository", "project")?;
+        let milestone_id = store.milestone_scope_ref("milestone")?;
+        let task_id = "project/milestone:contract";
+        let payload = json!({
+            "goal": "preserve the task scoped proof",
+            "cited_invariants": ["INV-TEST"],
+        });
+        let mut source = GateTransition {
+            milestone_id: milestone_id.clone(),
+            subject: "milestone".into(),
+            gate_path: "blueprint_synthesis.synthesize".into(),
+            action: "pass".into(),
+            proof_kind: "blueprint".into(),
+            proof_payload: json!({}),
+            git_tree_sha: "tree-one".into(),
+            worker_id: "architect".into(),
+        };
+
+        assert_eq!(
+            store.record_task_proof_advances(&source, &[(task_id.into(), payload.clone())])?,
+            1
+        );
+        assert_eq!(
+            store.record_task_proof_advances(&source, &[(task_id.into(), payload.clone())])?,
+            0
+        );
+
+        source.git_tree_sha = "tree-two".into();
+        assert_eq!(
+            store.record_task_proof_advances(&source, &[(task_id.into(), payload.clone())])?,
+            1
+        );
+        let replacement = json!({"goal": "temporary replacement"});
+        assert_eq!(
+            store.record_task_proof_advances(&source, &[(task_id.into(), replacement.clone())])?,
+            1
+        );
+        assert_eq!(
+            store.record_task_proof_advances(&source, &[(task_id.into(), payload.clone())])?,
+            1,
+            "A -> B -> A must append a new latest A row even when A exists historically"
+        );
+        let rows = store.latest_task_proof_advances(
+            &milestone_id,
+            task_id,
+            &[source.gate_path.clone()],
+        )?;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].git_tree_sha, "tree-two");
+        assert_eq!(rows[0].proof_payload, payload);
+        Ok(())
+    }
 }

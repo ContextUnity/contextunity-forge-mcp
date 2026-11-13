@@ -31,8 +31,8 @@ pub use handoff::{
 pub use integration::{
     HandoffBinding, IntegrationEvidence, IntegrationReview, IntegrationVerification,
 };
-pub use recovery::{db_recover, db_recover_milestone};
 pub(crate) use recovery::obsolete_checkpoint_owners;
+pub use recovery::{db_recover, db_recover_milestone};
 
 /// Execute registered gate commands in order and persist a trace for each process.
 pub fn execute_command_gate(

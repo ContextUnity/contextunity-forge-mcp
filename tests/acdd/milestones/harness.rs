@@ -178,7 +178,7 @@ impl MilestoneHarness {
 "#)).unwrap();
         root.write(
             ".forge/acdd/profile.yaml",
-            &serde_yaml::to_string(&profile).unwrap(),
+            &crate::acdd::support::standalone_profile_yaml(&profile),
         );
         // Both callers vary src/ candidates; their runner and profile stay fixed
         // through every gate, whose real red/green executions remain enabled.
@@ -387,8 +387,24 @@ impl MilestoneHarness {
         }
     }
     pub(super) fn workspace(seam: &str, profile: &str) -> Self {
+        let root = Workspace::new();
+        root.write(seam, crate::acdd::support::TASK_SEAM_FIXTURE);
+        let mut profile = crate::acdd::support::runner_profile(seam, profile);
+        profile
+            .find_gate_mut("verify")
+            .expect("runner profile declares a verification gate")
+            .on_success = Some("handoff".into());
+        if !profile.gates.iter().any(|g| g.id == "handoff") {
+            let handoff_gate = serde_yaml::from_str(
+                "id: handoff\nproof: delivery\nreceipt: true\nabsorb: true\nsave: commit\n",
+            )
+            .unwrap();
+            profile.gates.push(handoff_gate);
+        }
+        profile.validate().unwrap();
+        crate::acdd::support::initialize_runner_fixture_with_profile(&root, &profile);
         Self {
-            root: acdd_workspace(seam, profile),
+            root,
             milestone_id: String::new(),
             active_path: String::new(),
         }

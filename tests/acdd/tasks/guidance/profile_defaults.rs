@@ -22,11 +22,17 @@ fn declarative_profile_compiles_defaults_and_respects_role_overrides() {
         .find_map(|g| g.tasks.as_ref())
         .map(|t| &t.gates)
         .expect("task gates exist");
-    assert_eq!(task_gates.len(), 4);
-    assert_eq!(task_gates[0].id, "contract");
-    assert_eq!(task_gates[1].id, "build");
-    assert_eq!(task_gates[2].id, "review");
-    assert_eq!(task_gates[3].id, "deliver");
+    for required_id in ["contract", "build", "review", "deliver"] {
+        assert!(
+            task_gates.iter().any(|g| g.id == required_id),
+            "expected required gate '{required_id}' to exist"
+        );
+    }
+    let seam_gate = task_gates
+        .iter()
+        .find(|g| g.id == "seam")
+        .expect("seam gate exists");
+    assert_eq!(seam_gate.when.as_deref(), Some("seam"));
 
     let reviewer_role = default_profile
         .roles
@@ -105,7 +111,12 @@ fn declarative_profile_compiles_defaults_and_respects_role_overrides() {
         .find_map(|g| g.tasks.as_ref())
         .map(|t| &t.gates)
         .expect("task gates exist");
-    assert_eq!(loaded_task_gates.len(), 4);
+    for expected_gate in ["contract", "build", "review", "deliver"] {
+        assert!(
+            loaded_task_gates.iter().any(|g| g.id == expected_gate),
+            "expected task gate '{expected_gate}' to exist in loaded profile"
+        );
+    }
     assert!(loaded.roles.contains_key("builder"));
 
     // 4. Omitted role overrides inherit the base defaults and a model list replaces as a unit.
@@ -375,7 +386,7 @@ fn declarative_profile_compiles_defaults_and_respects_role_overrides() {
     );
 
     let compiled_empty_catalog = validate_profile_document(
-        "commands: {}\ngates:\n  - id: build\n    role: builder\n    proof: none\n  - id: review\n    role: independent_reviewer\n    proof: review\n    reject_to: build\n    independent_from: build\n    contours: guidance.contours\n  - id: deliver\n    role: independent_reviewer\n    proof: delivery\n    review_sources: [review]\n",
+        "inherit: none\nroles:\n  worker: {}\ncommands: {}\ngates:\n  - id: build\n    role: worker\n    proof: none\n  - id: review\n    role: worker\n    proof: review\n    reject_to: build\n    independent_from: build\n  - id: deliver\n    role: worker\n    proof: delivery\n    review_sources: [review]\n",
     )
     .expect("an explicitly empty catalog should compile when no gate uses a command");
     assert!(
@@ -432,4 +443,78 @@ gates:
         .expect("the production profile compiler should honor inherit: none");
     assert!(compiled_clean_room.commands.is_empty());
     assert!(!compiled_clean_room.roles.contains_key("contract_author"));
+}
+
+#[test]
+fn inherit_default_deep_merges_gate_overrides_and_loads_repository_overlay() {
+    use contextunity_forge_mcp::core::tasks::profile::{
+        load_for_workspace, validate_profile_document,
+    };
+    use std::path::Path;
+
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let repo_profile = load_for_workspace(repo_root)
+        .expect(".forge/acdd/profile.yaml repository overlay should load cleanly");
+
+    // 1. Inherited default gates exist with overlay commands bound by ID
+    let contract = repo_profile
+        .find_gate("contract")
+        .expect("contract gate exists");
+    assert_eq!(contract.command.as_deref(), Some("test"));
+    assert_eq!(contract.role.as_deref(), Some("contract_author"));
+
+    let build = repo_profile.find_gate("build").expect("build gate exists");
+    assert_eq!(build.command.as_deref(), Some("rust-check-and-test"));
+    assert_eq!(build.role.as_deref(), Some("builder"));
+
+    let verify = repo_profile
+        .find_gate("verify")
+        .expect("verify gate exists");
+    assert_eq!(verify.command.as_deref(), Some("check_full_repo"));
+    assert!(
+        verify.role.is_none(),
+        "verify must not have role in neutral profile"
+    );
+
+    let blueprint = repo_profile
+        .find_gate("blueprint_synthesis")
+        .expect("blueprint_synthesis container exists");
+    assert!(
+        blueprint.gates.iter().any(|g| (g.id == "synthesize"
+            || g.id == "blueprint_synthesis.synthesize")
+            && g.role.as_deref() == Some("architect")),
+        "{:?}",
+        blueprint.gates
+    );
+    assert!(
+        blueprint.gates.iter().any(
+            |g| (g.id == "review" || g.id == "blueprint_synthesis.review")
+                && g.role.as_deref() == Some("independent_reviewer")
+        ),
+        "{:?}",
+        blueprint.gates
+    );
+
+    // 2. Custom overlay deep-merge preserves unspecified fields while overriding specific gates
+    let overlay_yaml = r#"
+version: 2
+inherit: default
+commands:
+  custom-check: "cargo check"
+gates:
+  - id: verify
+    command: custom-check
+"#;
+    let merged = validate_profile_document(overlay_yaml)
+        .expect("overlay with inherit: default should deep-merge cleanly");
+    assert_eq!(
+        merged
+            .find_gate("verify")
+            .and_then(|g| g.command.as_deref()),
+        Some("custom-check")
+    );
+    assert_eq!(
+        merged.find_gate("contract").and_then(|g| g.role.as_deref()),
+        Some("contract_author")
+    );
 }

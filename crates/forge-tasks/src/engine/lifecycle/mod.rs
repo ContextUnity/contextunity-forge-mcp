@@ -1,8 +1,13 @@
 use super::*;
+use crate::tasks::profile::ProofKind;
+use anyhow::ensure;
+use rusqlite::OptionalExtension;
 
-// JSON is embedded in an MCP text block and escaped a second time. Keeping
-// task JSON below 24 KiB leaves room for that expansion and protocol metadata.
-const TASK_RESPONSE_BYTES: usize = 24 * 1024;
+fn task_response_budget(root: &Path) -> Result<usize> {
+    let adapter = crate::config::load_workspace_adapter(root)
+        .map_err(|error| anyhow::anyhow!("INVALID_WORKSPACE_CONFIG: {error}"))?;
+    Ok((adapter.response.max_output_bytes * 5) / 8)
+}
 
 fn task_response_bytes(value: &Value) -> usize {
     value.to_string().len()
@@ -46,18 +51,62 @@ fn render_scope_extension_manifest(
     bail!("TASK_SCOPE_MANIFEST_INVALID: task block '{task_ref}' not found")
 }
 
-fn bound_task_response(mut value: Value) -> Value {
-    if task_response_bytes(&value) <= TASK_RESPONSE_BYTES {
+#[cfg(test)]
+pub fn bound_task_response(value: Value) -> Value {
+    bound_task_response_with_budget(value, (forge_core::response::MAX_OUTPUT_BYTES * 5) / 8)
+}
+
+fn bound_task_response_for_root(root: &Path, value: Value) -> Result<Value> {
+    let budget = task_response_budget(root)?;
+    let bounded = bound_task_response_with_budget(value, budget);
+    let actual_bytes = task_response_bytes(&bounded);
+    ensure!(
+        actual_bytes <= budget,
+        "TASK_RESPONSE_OVERFLOW: protected task response fields ({actual_bytes} bytes) exceed configured response budget ({budget} bytes)"
+    );
+    Ok(bounded)
+}
+
+fn bound_task_response_with_budget(mut value: Value, budget: usize) -> Value {
+    if task_response_bytes(&value) <= budget {
         return value;
     }
-    // Remove whole fields, never partial authority text. Preserve claim identity
-    // and proof templates ahead of optional context, including duplicate copies.
+    // Remove whole fields, never partial authority text. Preserve claim identity,
+    // proof templates, and inherited proof/seam context ahead of optional context.
     fn largest_field(value: &Value, prefix: &str) -> Option<(u8, usize, String)> {
         value
             .as_object()?
             .iter()
             .filter_map(|(key, child)| {
                 let path = format!("{prefix}/{}", key.replace('~', "~0").replace('/', "~1"));
+                let is_protected = (prefix.is_empty()
+                    && matches!(
+                        key.as_str(),
+                        "task_id"
+                            | "stage"
+                            | "status"
+                            | "claim_revision"
+                            | "contract_revision"
+                            | "worker_id"
+                            | "worktree"
+                            | "expected_evidence_template"
+                            | "contract_seam_test"
+                            | "candidate_snapshot"
+                            | "latest_snapshot"
+                            | "proof_schema"
+                            | "breadcrumb"
+                            | "byte_limited"
+                            | "omitted_fields"
+                            | "omitted_field_count"
+                            | "retrieval_hint"
+                    ))
+                    || matches!(
+                        path.as_str(),
+                        "/context_bundle/inherited_proofs" | "/context_bundle/seam_partners"
+                    );
+                if is_protected {
+                    return None;
+                }
                 if matches!(
                     key.as_str(),
                     "context_bundle" | "contract" | "guidance" | "workflow_guidance"
@@ -65,21 +114,6 @@ fn bound_task_response(mut value: Value) -> Value {
                 {
                     return largest_field(child, &path);
                 }
-                let optional = !matches!(
-                    key.as_str(),
-                    "task_id"
-                        | "stage"
-                        | "status"
-                        | "claim_revision"
-                        | "contract_revision"
-                        | "worker_id"
-                        | "worktree"
-                        | "expected_evidence_template"
-                        | "contract_seam_test"
-                        | "candidate_snapshot"
-                        | "latest_snapshot"
-                        | "proof_schema"
-                );
                 let priority_tier = if path.starts_with("/context_bundle/guidance/")
                     || matches!(
                         path.as_str(),
@@ -99,7 +133,7 @@ fn bound_task_response(mut value: Value) -> Value {
                 ) {
                     2
                 } else {
-                    u8::from(optional)
+                    1
                 };
                 Some((priority_tier, task_response_bytes(child) + key.len(), path))
             })
@@ -107,7 +141,8 @@ fn bound_task_response(mut value: Value) -> Value {
     }
     let mut omitted = Vec::new();
     let mut omitted_count = 0;
-    while task_response_bytes(&value) > TASK_RESPONSE_BYTES - 4096 {
+    let target = budget.saturating_sub((budget / 6).clamp(256, 4096));
+    while task_response_bytes(&value) > target {
         let Some((_, _, path)) = largest_field(&value, "") else {
             break;
         };
@@ -126,7 +161,11 @@ fn bound_task_response(mut value: Value) -> Value {
     value["byte_limited"] = json!(true);
     value["omitted_fields"] = json!(omitted);
     value["omitted_field_count"] = json!(omitted_count);
-    value["retrieval_hint"] = json!("Context is incomplete. Read the milestone file for full authority and use CLI task inspect <task_id> for full stored details; use task_blackboard inspect for message payloads. Do not infer missing authority from this summary.");
+    value["retrieval_hint"] = json!(if budget < 2048 {
+        "Context is incomplete. Read the milestone file or inspect the task for full details."
+    } else {
+        "Context is incomplete. Read the milestone file for full authority and use CLI task inspect <task_id> for full stored details; use task_blackboard inspect for message payloads. Do not infer missing authority from this summary."
+    });
     value
 }
 
@@ -137,6 +176,9 @@ pub fn claim(root: &Path, p: Claim) -> Result<Value> {
 }
 
 fn claim_inner(root: &Path, p: Claim) -> Result<Value> {
+    if !p.task_id.contains(':') {
+        return claim_root_gate(root, p).and_then(|resp| bound_task_response_for_root(root, resp));
+    }
     let worktree = crate::tasks::claim_worktree(&p.worktree)?;
     let registry = Registry::load(root)?;
     let workspace = registry.owner(&p.task_id)?;
@@ -148,7 +190,9 @@ fn claim_inner(root: &Path, p: Claim) -> Result<Value> {
     registry.check_scope(workspace, &task.spec.scope, Some(&worktree))?;
     context::validate_claim_gate_requirements(workspace, &task)?;
     let profile = store.profile_for_task(&task)?;
+    let root_profile = root_gates::resolve_milestone_profile_for_task(&store, workspace, &task)?;
     task.worktree = Some(worktree.to_string_lossy().into_owned());
+    ensure_pre_task_root_gates_passed(&store, workspace, &task, &root_profile)?;
     let cursor = super::claim::claim_nested_gate_for_task(&profile, &task.stage, &p.stage, &task)?;
     let claimed = store.claim(
         &p.task_id,
@@ -159,6 +203,23 @@ fn claim_inner(root: &Path, p: Claim) -> Result<Value> {
     )?;
     finish_claim(root, workspace, &mut store, claimed, cursor, p.bundle)
 }
+
+mod proof_fanout;
+mod root_gates;
+#[cfg(test)]
+mod tests;
+
+pub(super) use proof_fanout::{
+    fan_out_pre_task_proofs_if_ready, milestone_identity_for_task, pre_task_root_gate_paths,
+    validate_pre_task_root_proof,
+};
+pub(in crate::engine) use root_gates::resolve_milestone_profile_for_task;
+pub(super) use root_gates::submit_root_gate;
+use root_gates::{
+    claim_root_gate, ensure_pre_task_root_gates_passed, pending_post_task_root_gate,
+    pre_task_root_gates_for_dispatch, root_gate_action_value, verify_root_gate_with_options,
+    PendingRootGateDispatch,
+};
 
 fn finish_claim(
     root: &Path,
@@ -281,7 +342,7 @@ fn finish_claim(
             }
             Ok(minimal)
         };
-        let output = result?;
+        let output = bound_task_response_for_root(root, result?)?;
         if worktree.join(".git").exists() {
             let git_tree_sha = crate::git::git_stdout(
                 worktree,
@@ -334,7 +395,7 @@ fn finish_claim(
     } else {
         store.finish_resume(id, claimed.claim_revision)?;
     }
-    response.map(bound_task_response)
+    response
 }
 /// Resets or reopens a task back to ready state at contract gate, clearing terminal receipt and updating milestone text if needed.
 pub fn reset(root: &Path, id: &str) -> Result<Task> {
@@ -433,10 +494,24 @@ fn selector_invalid_fields(p: &Manage) -> Vec<&'static str> {
         }
     }
     if p.action != ManageAction::Next {
-        if p.worker_id.is_some() {
+        let is_root_verify = p.action == ManageAction::Verify
+            && p.task_id
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty() && !value.contains(':'));
+        if p.worker_id.is_some()
+            && (!is_root_verify
+                || p.worker_id
+                    .as_deref()
+                    .is_some_and(|value| value.trim().is_empty()))
+        {
             invalid("worker_id");
         }
-        if p.worktree.is_some() {
+        if p.worktree.is_some()
+            && (!is_root_verify
+                || p.worktree
+                    .as_deref()
+                    .is_some_and(|value| value.trim().is_empty()))
+        {
             invalid("worktree");
         }
     }
@@ -694,6 +769,18 @@ fn manage_inner(root: &Path, p: &mut Manage) -> Result<Value> {
         let action = manage_action_name(&p.action);
         bail!("TASK_SELECTOR_INVALID: action '{action}'. missing or invalid fields: [{}]. Do: pass required fields for '{action}'.", invalid_fields.join(", "));
     }
+    if p.action == ManageAction::Verify {
+        let target = id.context("task_id required")?;
+        if !target.contains(':') {
+            return verify_root_gate_with_options(
+                root,
+                target,
+                p.worktree.as_deref(),
+                p.worker_id.as_deref(),
+                p.timeout_seconds,
+            );
+        }
+    }
     let _observation = if matches!(
         p.action,
         ManageAction::Inspect | ManageAction::Context | ManageAction::SubtaskList
@@ -717,28 +804,63 @@ fn manage_inner(root: &Path, p: &mut Manage) -> Result<Value> {
     let milestone = p.milestone_ref.as_deref();
     let mut store = workspace.open(&registry.database)?;
     match p.action {
-        ManageAction::Verify => super::verify_task_with_options(
-            root,
-            id.context("task_id required")?,
-            p.test.as_deref(),
-            p.seam.as_deref(),
-            p.timeout_seconds,
-        ),
+        ManageAction::Verify => {
+            let target = id.context("task_id required")?;
+            super::verify_task_with_options(
+                root,
+                target,
+                p.test.as_deref(),
+                p.seam.as_deref(),
+                p.timeout_seconds,
+            )
+        }
         ManageAction::Next => {
             store.lock_checkpoint()?;
             let worker = p.worker_id.as_deref().context("worker_id required")?;
             let worktree = p.worktree.as_deref().context("worktree required")?;
-            let claimed = store.next(
+            let selected_worktree = crate::tasks::claim_worktree(worktree)?;
+            registry.check_worktree(workspace, &selected_worktree)?;
+            let all_tasks = store.list(None, "all", None)?;
+            let pre_task_roots = pre_task_root_gates_for_dispatch(
+                &store,
+                workspace,
+                &all_tasks,
+                &selected_worktree,
+            )?;
+            let next = store.next(
                 worker,
                 worktree,
                 p.session_fingerprint.as_deref(),
-                |task, selected| {
+                |connection, task, selected| {
                     registry.check_worktree(workspace, selected)?;
                     validate_authority(task, selected, workspace, &registry)?;
                     registry.check_scope(workspace, &task.spec.scope, Some(selected))?;
-                    context::validate_claim_gate_requirements(workspace, task)
+                    context::validate_claim_gate_requirements(workspace, task)?;
+                    if let Some(root_state) = pre_task_roots.get(&task.task_id) {
+                        if let Some(action) = &root_state.pending {
+                            return Err(anyhow::Error::new(PendingRootGateDispatch(
+                                action.clone(),
+                            )));
+                        }
+                        gate_graph::ensure_root_gate_transitions_passed(
+                            connection,
+                            &root_state.milestone_identity,
+                            &root_state.cursors,
+                        )?;
+                    }
+                    Ok(())
                 },
-            )?;
+            );
+            let claimed = match next {
+                Ok(claimed) => claimed,
+                Err(error) => {
+                    let pending = error.downcast::<PendingRootGateDispatch>()?;
+                    return bound_task_response_for_root(
+                        root,
+                        root_gate_action_value(workspace, pending.0, worker)?,
+                    );
+                }
+            };
             match claimed {
                 Some(claimed) => {
                     let profile = store.profile_for_task(&claimed)?;
@@ -750,7 +872,17 @@ fn manage_inner(root: &Path, p: &mut Manage) -> Result<Value> {
                     )?;
                     finish_claim(root, workspace, &mut store, claimed, cursor, Some(true))
                 }
-                None => workspace.envelope(json!({"status":"idle","worker_id":worker})),
+                None => {
+                    if let Some(action) =
+                        pending_post_task_root_gate(&store, workspace, &all_tasks, root)?
+                    {
+                        return bound_task_response_for_root(
+                            root,
+                            root_gate_action_value(workspace, action, worker)?,
+                        );
+                    }
+                    workspace.envelope(json!({"status":"idle","worker_id":worker}))
+                }
             }
         }
         ManageAction::Create | ManageAction::Sync => {
@@ -828,6 +960,7 @@ fn manage_inner(root: &Path, p: &mut Manage) -> Result<Value> {
                     }
                     result => result?,
                 };
+                let budget = task_response_budget(root)?;
                 for task in tasks {
                     total += 1;
                     let summary = workspace.envelope(json!({
@@ -841,8 +974,9 @@ fn manage_inner(root: &Path, p: &mut Manage) -> Result<Value> {
                         "wave_index": task.wave_index,
                     }))?;
                     let bytes = task_response_bytes(&summary) + 1;
+                    let sync_reserve = (budget / 8).clamp(64, 1024);
                     if result.len() == total - 1
-                        && returned_bytes + bytes <= TASK_RESPONSE_BYTES - 1024
+                        && returned_bytes + bytes <= budget.saturating_sub(sync_reserve)
                     {
                         returned_bytes += bytes;
                         result.push(summary);
@@ -865,7 +999,8 @@ fn manage_inner(root: &Path, p: &mut Manage) -> Result<Value> {
             let task_id = id.context("task_id required")?;
             let details = workspace
                 .guidance_envelope_with_store(&store, checkpoint_details(&store, task_id)?)?;
-            context_bundle(root, workspace, task_id, details).map(bound_task_response)
+            let resp = context_bundle(root, workspace, task_id, details)?;
+            bound_task_response_for_root(root, resp)
         }
         ManageAction::Delete => Ok(serde_json::to_value(store.delete(
             id,

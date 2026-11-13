@@ -367,7 +367,9 @@ impl TasksStore {
                 let configured_source = review_gate.canonical_stage_id.clone();
                 let mut review = accepted_evidence_for_cursor(&tx, id, &profile, &review_gate)?;
                 if review.as_ref().is_some_and(|r| r.commit != build.commit) {
-                    if let Some((branch_prefix, _)) = _snapshot_gate.gate.id.rsplit_once('.') {
+                    if let Some((branch_prefix, _)) =
+                        _snapshot_gate.canonical_stage_id.rsplit_once('.')
+                    {
                         let branch_review_name = format!("{branch_prefix}.{review_name}");
                         if let Ok(branch_gate) =
                             super::super::claim::cursor_for_stage(&profile, &branch_review_name)
@@ -813,7 +815,7 @@ impl TasksStore {
     }
 }
 
-pub(super) fn validate_observed_proof_fields(
+pub(in crate::engine) fn validate_observed_proof_fields(
     key: &str,
     supplied: &serde_json::Value,
     actual: &serde_json::Value,

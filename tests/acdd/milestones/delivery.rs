@@ -104,7 +104,7 @@ fn manual_delivery_handoff_rewrites_markdown_receipt_to_landed_commit() {
     profile.find_gate_mut("deliver").unwrap().auto_commit = false;
     root.write(
         "custom/manual.yaml",
-        &serde_yaml::to_string(&profile).unwrap(),
+        &crate::acdd::support::standalone_profile_yaml(&profile),
     );
     let source = MilestoneFixtureBuilder::new("m-manual")
         .title("Manual delivery")

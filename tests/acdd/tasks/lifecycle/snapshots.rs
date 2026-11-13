@@ -12,7 +12,21 @@ fn delivery_rejects_commit_that_differs_from_candidate_when_auto_commit_is_disab
     TaskHarness::commit_handoff_fixture_inputs(&root, &[".forge/acdd/profile.yaml"]);
     root.write(
         "custom_profile.yaml",
-        r#"commands:
+        r#"inherit: none
+roles:
+  contract_author:
+    mode: inline
+  builder:
+    mode: inline
+  independent_reviewer:
+    mode: inline
+guidance:
+  contour.paths: "Verify path boundaries."
+  contour.claims: "Verify contract claims."
+  contour.concurrency: "Verify concurrency invariants."
+  contour.project_isolation: "Verify project isolation."
+  contour.administration: "Verify governance."
+commands:
   test:
     command: ": --seam-ref tests/acdd/tasks.rs {scope_target} && test -x .forge/runner_fixture && if test -f .forge/runner_fixture_green; then .forge/runner_fixture; else FORGE_FIXTURE_RED=1 .forge/runner_fixture --nocapture; fi"
     output:
@@ -147,7 +161,8 @@ fn concurrent_pre_snapshot_immutable_gate_rejects_on_demand_checkpoint_races() {
     );
     root.write(
         ".forge/acdd/profile.yaml",
-        r#"version: 2
+        r#"inherit: none
+version: 2
 roles:
   worker:
     mode: inline

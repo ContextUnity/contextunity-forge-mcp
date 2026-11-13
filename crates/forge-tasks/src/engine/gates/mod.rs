@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 mod proof;
 mod scope;
 mod seam;
-mod submit;
+pub(in crate::engine) mod submit;
 #[cfg(test)]
 mod tests;
 

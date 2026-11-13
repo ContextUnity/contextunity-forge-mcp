@@ -174,6 +174,60 @@ impl TasksStore {
         Ok(run)
     }
 
+    /// Begin one root milestone command execution run bound to the current Git candidate.
+    pub fn start_root_execution_run(
+        &mut self,
+        milestone_identity: &str,
+        gate_path: &str,
+        worker_id: &str,
+        worktree: &Path,
+        candidate_fingerprint: &str,
+    ) -> Result<ClaimBoundExecutionRun> {
+        let expected_prefix = format!("{}/{}/", self.repository, self.project);
+        if !milestone_identity.starts_with(&expected_prefix) {
+            bail!("TASK_PROJECT_MISMATCH");
+        }
+        if gate_path.trim().is_empty() || worker_id.trim().is_empty() {
+            bail!("TASK_TRACE_INVALID: root execution gate_path and worker_id must be non-empty");
+        }
+        if candidate_fingerprint.trim().is_empty() {
+            bail!("TASK_TRACE_INVALID: candidate fingerprint must not be empty");
+        }
+        let worktree = worktree
+            .canonicalize()
+            .context("TASK_STALE_CLAIM: root worktree is unavailable")?;
+        let tx = self
+            .connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        tx.execute(
+            "INSERT INTO gate_execution_runs (
+                milestone_id, subject, gate_path, claim_revision, contract_revision,
+                worker_id, worktree, candidate_fingerprint, status
+             ) VALUES (?1, 'milestone', ?2, 0, 0, ?3, ?4, ?5, 'running')",
+            params![
+                milestone_identity,
+                gate_path,
+                worker_id,
+                worktree.to_string_lossy(),
+                candidate_fingerprint,
+            ],
+        )?;
+        let run = ClaimBoundExecutionRun {
+            run_id: tx.last_insert_rowid(),
+            milestone_id: milestone_identity.to_owned(),
+            subject: "milestone".to_owned(),
+            gate_path: gate_path.to_owned(),
+            claim_revision: 0,
+            contract_revision: 0,
+            worker_id: worker_id.to_owned(),
+            worktree: worktree.to_string_lossy().into_owned(),
+            candidate_fingerprint: candidate_fingerprint.to_owned(),
+            status: "running".into(),
+        };
+        tx.commit()?;
+        Ok(run)
+    }
+
     /// Atomically reserve the next attempt number for a command in an execution run.
     pub fn reserve_execution_attempt(&mut self, run_id: i64, command_id: &str) -> Result<i64> {
         if command_id.trim().is_empty() {
@@ -341,6 +395,31 @@ impl TasksStore {
             )
             .optional()
             .context("TASK_TRACE_READ_FAILED: latest claim-bound execution could not be read")
+    }
+
+    /// Return the newest root milestone execution run for one gate path and worktree.
+    pub fn latest_root_execution_run(
+        &self,
+        milestone_identity: &str,
+        gate_path: &str,
+        worktree: &str,
+    ) -> Result<Option<ClaimBoundExecutionRun>> {
+        let expected_prefix = format!("{}/{}/", self.repository, self.project);
+        if !milestone_identity.starts_with(&expected_prefix) {
+            bail!("TASK_PROJECT_MISMATCH");
+        }
+        self.connection
+            .query_row(
+                "SELECT id, milestone_id, subject, gate_path, claim_revision,
+                        contract_revision, worker_id, worktree, candidate_fingerprint, status
+                 FROM gate_execution_runs
+                 WHERE milestone_id=?1 AND subject='milestone' AND gate_path=?2 AND worktree=?3
+                 ORDER BY id DESC LIMIT 1",
+                params![milestone_identity, gate_path, worktree],
+                execution_run_from_row,
+            )
+            .optional()
+            .context("TASK_TRACE_READ_FAILED: latest root execution could not be read")
     }
 
     /// Read all persisted traces belonging to one claim-bound execution run.
@@ -535,7 +614,7 @@ impl TasksStore {
         worker: &str,
         worktree: &str,
         session_fingerprint: Option<&str>,
-        mut validate: impl FnMut(&Task, &Path) -> Result<()>,
+        mut validate: impl FnMut(&rusqlite::Connection, &Task, &Path) -> Result<()>,
     ) -> Result<Option<Task>> {
         if worker.trim().is_empty() {
             bail!(
@@ -627,8 +706,8 @@ impl TasksStore {
         let cursor =
             crate::engine::claim::claim_nested_gate_for_task(&profile, &task.stage, "", &task)?;
         let stage_to_claim = cursor.canonical_stage_id;
+        validate(&tx, &task, &selected_worktree)?;
         tx.enroll(std::slice::from_ref(&task.task_id), false)?;
-        validate(&task, &selected_worktree)?;
         let claimed = context.claim(
             &tx,
             &task.task_id,
@@ -1179,7 +1258,13 @@ fn execution_run_row(
             execution_run_from_row,
         )
         .context("TASK_TRACE_INVALID: execution run does not exist")?;
-    if !super::task_belongs_to(repository, project, &run.subject) {
+    let in_namespace = if run.subject == "milestone" {
+        run.milestone_id
+            .starts_with(&format!("{repository}/{project}/"))
+    } else {
+        super::task_belongs_to(repository, project, &run.subject)
+    };
+    if !in_namespace {
         bail!("TASK_PROJECT_MISMATCH");
     }
     Ok(run)

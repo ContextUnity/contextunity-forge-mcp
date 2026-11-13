@@ -9,6 +9,29 @@ with (root / ".forge/wave-roles.jsonl").open("a") as log:
     log.write(json.dumps(context) + "\n")
 if (root / ".forge/no-wave-decision").exists():
     sys.exit(0)
+if context["gate"] == "preflight":
+    task_slice = {
+        "layer": "fixture seam",
+        "summary": "Exercise the pre-task proof boundary.",
+        "exported_interfaces": [],
+        "negative_boundaries": [],
+        "incoming_seams": [],
+        "outgoing_seams": [],
+    }
+    tasks = {} if (root / ".forge/invalid-task-proof-map").exists() else {"first": task_slice}
+    print(json.dumps({
+        "gate": context["gate"],
+        "session_id": context["session_id"],
+        "decision": "pass",
+        "proof": {"scheme_proof": {
+            "cited_invariants": [],
+            "cited_symbols": [],
+            "global_negative_boundaries": [],
+            "blackboard_decision_id": "wave-blueprint",
+            "tasks": tasks,
+        }},
+    }))
+    sys.exit(0)
 if context["gate"] == "milestone_review" and (root / ".forge/stop-wave-review").exists():
     sys.exit(17)
 proof = {"none_proof": {}}

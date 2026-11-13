@@ -59,10 +59,25 @@ pub fn load_pinned_over(
     reference: &str,
     base_profile: &GateProfile,
 ) -> Result<Arc<GateProfile>> {
+    let config_path = if let Some(settings) = crate::tasks::configuration::current(root) {
+        if let Some(ref config) = settings.config {
+            if !config.is_file() {
+                bail!(
+                    "ACDD_PROFILE_SCHEMA_INVALID: selected workspace config {} does not exist",
+                    config.display()
+                );
+            }
+            Some(config.clone())
+        } else {
+            None
+        }
+    } else {
+        Some(crate::tasks::configuration::config_path(root)).filter(|path| path.is_file())
+    };
     let mut base = base_profile.clone();
     merge_profile_document(&mut base, load_profile_path(root, reference, true)?);
-    base.validate()?;
-    if !base.gates.iter().any(|g| {
+    let profile = super::apply_config_metadata_limit(config_path.as_deref(), base)?;
+    if !profile.gates.iter().any(|g| {
         gate_is_delivery(g)
             || g.gates.iter().any(gate_is_delivery)
             || g.tasks
@@ -71,7 +86,7 @@ pub fn load_pinned_over(
     }) {
         bail!("ACDD_PROFILE_INVALID: a merged workspace profile must contain a terminal delivery gate");
     }
-    Ok(Arc::new(base))
+    Ok(profile)
 }
 
 /// Load a task profile override, then milestone override, then workspace profile.

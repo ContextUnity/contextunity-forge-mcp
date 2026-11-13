@@ -432,7 +432,7 @@ fn milestone_handoff_accepts_integration_evidence_for_cancelled_tasks_and_prunes
     root.write(manifest, &text);
     root.write(
         ".forge/acdd/profile.yaml",
-        "commands:\n  check_full_repo:\n    command: exit 0\n    output: {require_counts: false}\n",
+        include_str!("../fixtures/milestones/verification_profile.yaml"),
     );
     MilestoneHarness::git_at(root.root(), &["add", "-A"]).unwrap();
     root.commit_staged("admit cancelled milestone");

@@ -157,13 +157,21 @@ fn command_matches(proof_cmd: &str, expected_cmd: &str) -> bool {
 fn validate_command(
     value: &serde_json::Value,
     passed: bool,
+    gate: &crate::tasks::profile::GateDef,
     commands: &std::collections::BTreeMap<String, CommandDef>,
+    max_log_bytes: usize,
 ) -> Result<()> {
     let proof: CommandProof =
         serde_json::from_value(proof_payload(value, "command_proof")?.clone())
             .context("TASK_EVIDENCE_INVALID: typed command proof required")?;
-    let registered = commands.iter().find(|(name, definition)| {
-        proof.command == **name
+    let registered = if let Some(bound) = gate.command.as_deref() {
+        let definition = commands.get(bound).with_context(|| {
+            format!(
+                "TASK_EVIDENCE_INVALID: command '{bound}' configured for gate '{}' is not registered",
+                gate.id
+            )
+        })?;
+        let matches_bound = proof.command == bound
             || command_matches(&proof.command, definition.command())
             || matches!(
                 definition,
@@ -172,8 +180,32 @@ fn validate_command(
                         .by_pattern
                         .values()
                         .any(|cmd| command_matches(&proof.command, cmd))
-            )
-    });
+            );
+        if !matches_bound {
+            bail!(
+                "TASK_EVIDENCE_INVALID: command '{}' does not match gate '{}' command '{bound}'",
+                proof.command,
+                gate.id
+            );
+        }
+        Some((bound, definition))
+    } else {
+        commands
+            .iter()
+            .find(|(name, definition)| {
+                proof.command == **name
+                    || command_matches(&proof.command, definition.command())
+                    || matches!(
+                        definition,
+                        CommandDef::Pattern(patterns)
+                            if patterns
+                                .by_pattern
+                                .values()
+                                .any(|cmd| command_matches(&proof.command, cmd))
+                    )
+            })
+            .map(|(name, definition)| (name.as_str(), definition))
+    };
     let Some((_, definition)) = registered else {
         bail!(
             "TASK_EVIDENCE_INVALID: command '{}' is not registered in the active profile",
@@ -202,8 +234,15 @@ fn validate_command(
             );
         }
     }
-    if proof.log.as_ref().is_some_and(|log| log.len() > 64 * 1024) {
-        bail!("TASK_EVIDENCE_INVALID: test log exceeds 64 KiB");
+    if proof
+        .log
+        .as_ref()
+        .is_some_and(|log| log.len() > max_log_bytes)
+    {
+        bail!(
+            "TASK_EVIDENCE_INVALID: test log exceeds {} bytes",
+            max_log_bytes
+        );
     }
     Ok(())
 }
@@ -345,7 +384,13 @@ pub(crate) fn validate_gate_proof(
             passed,
             &profile.contract_zero_exit_policies(),
         ),
-        ProofDef::Kind(ProofKind::Command) => validate_command(evidence, passed, &profile.commands),
+        ProofDef::Kind(ProofKind::Command) => validate_command(
+            evidence,
+            passed,
+            gate,
+            &profile.commands,
+            profile.max_log_bytes(),
+        ),
         ProofDef::Kind(ProofKind::SeamTest) => validate_seam_test(evidence, passed),
         ProofDef::Kind(ProofKind::Review) => {
             let contour_set = profile
@@ -360,7 +405,13 @@ pub(crate) fn validate_gate_proof(
         ProofDef::Kind(ProofKind::Delivery) => {
             proof_payload(evidence, "delivery_proof").map(|_| ())
         }
-        ProofDef::Kind(ProofKind::None) | ProofDef::Unspecified => {
+        ProofDef::Kind(ProofKind::None) => {
+            if !catalog_schema_validated {
+                validate_none(evidence)?;
+            }
+            Ok(())
+        }
+        ProofDef::Unspecified => {
             if !catalog_schema_validated {
                 validate_none(evidence)?;
             }
@@ -369,6 +420,23 @@ pub(crate) fn validate_gate_proof(
         ProofDef::Scheme { scheme } => {
             let value = proof_payload(evidence, "scheme_proof")?;
             scheme.validate_value(value, "$.scheme_proof")
+        }
+        ProofDef::Named(name) => {
+            let schema = gate.proof.resolve_schema(&profile.proofs).with_context(|| {
+                format!("ACDD_PROFILE_SCHEMA_INVALID: gate '{}' references undefined proof catalog entry '{name}'", gate.id)
+            })?;
+            let value = proof_payload(evidence, "scheme_proof")?;
+            schema.validate_value(value, "$.scheme_proof")
+        }
+        ProofDef::ResolvedNamed { name, schema } => {
+            let value = proof_payload(evidence, "scheme_proof")?;
+            schema
+                .validate_value(value, "$.scheme_proof")
+                .with_context(|| {
+                    format!(
+                        "TASK_EVIDENCE_INVALID: proof catalog schema '{name}' rejected the payload"
+                    )
+                })
         }
     }
 }
@@ -639,20 +707,111 @@ mod command_proof_tests {
 
     #[test]
     fn passing_command_rejects_reported_test_failures() {
-        let error = validate_command(&proof(Some((10, 1))), true, &command(false)).unwrap_err();
+        let gate = crate::tasks::profile::GateDef::default();
+        let error = validate_command(
+            &proof(Some((10, 1))),
+            true,
+            &gate,
+            &command(false),
+            forge_core::response::MAX_OUTPUT_BYTES,
+        )
+        .unwrap_err();
 
         assert!(error.to_string().contains("zero failures"));
     }
 
     #[test]
     fn passing_command_rejects_missing_required_counts() {
-        let error = validate_command(&proof(None), true, &command(true)).unwrap_err();
+        let gate = crate::tasks::profile::GateDef::default();
+        let error = validate_command(
+            &proof(None),
+            true,
+            &gate,
+            &command(true),
+            forge_core::response::MAX_OUTPUT_BYTES,
+        )
+        .unwrap_err();
 
         assert!(error.to_string().contains("complete test counts"));
     }
 
     #[test]
     fn passing_command_allows_count_free_linter_proofs() {
-        validate_command(&proof(None), true, &command(false)).unwrap();
+        let gate = crate::tasks::profile::GateDef::default();
+        validate_command(
+            &proof(None),
+            true,
+            &gate,
+            &command(false),
+            forge_core::response::MAX_OUTPUT_BYTES,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn passing_command_rejects_proof_for_a_different_bound_command() {
+        let gate = crate::tasks::profile::GateDef {
+            command: Some("other_command".into()),
+            ..Default::default()
+        };
+        let error = validate_command(
+            &proof(Some((3, 0))),
+            true,
+            &gate,
+            &command(true),
+            forge_core::response::MAX_OUTPUT_BYTES,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("other_command"), "{error}");
+    }
+}
+
+#[cfg(test)]
+mod profile_proof_boundary_tests {
+    use super::validate_gate_proof;
+    use crate::tasks::profile::parse_profile;
+    use serde_json::json;
+
+    #[test]
+    fn omitted_proof_rejects_an_unrelated_evidence_envelope() {
+        let profile = parse_profile("inherit: none\ngates:\n  - id: informational\n").unwrap();
+        let gate = profile.find_gate("informational").unwrap();
+
+        let error = validate_gate_proof(
+            &json!({"command_proof":{"exit_code":1}}),
+            gate,
+            &profile,
+            true,
+            "",
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("expected none_proof"));
+    }
+
+    #[test]
+    fn named_catalog_schema_is_consumed_at_the_gate_proof_boundary() {
+        let profile = parse_profile(
+            "version: 2\nproofs:\n  blueprint:\n    schema:\n      type: object\n      required: [title]\n      properties:\n        title: { type: string }\ngates:\n  - id: synthesize\n    proof: blueprint\n",
+        )
+        .unwrap();
+        let gate = profile.find_gate("synthesize").unwrap();
+
+        validate_gate_proof(
+            &json!({"scheme_proof":{"title":"architecture"}}),
+            gate,
+            &profile,
+            true,
+            "",
+        )
+        .unwrap();
+        assert!(validate_gate_proof(
+            &json!({"scheme_proof":{"title":1}}),
+            gate,
+            &profile,
+            true,
+            "",
+        )
+        .is_err());
     }
 }

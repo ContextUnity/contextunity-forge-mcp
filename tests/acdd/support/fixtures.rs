@@ -55,6 +55,59 @@ pub(crate) const FIXTURE_COMMANDS: &str = r#"commands:
     output:
       require_counts: true
       counts: {passed: '(\d+) passed', failed: '(\d+) failed'}
+gates:
+  - tasks:
+      gates:
+        - id: "contract"
+          role: contract_author
+          command: test
+          proof: contract
+          expected_failure:
+            exit_codes: [1, 101, 134]
+          tools: []
+          guidance: [task.contract, hitl.pro]
+          save: snapshot
+        - id: build
+          role: builder
+          tools: []
+          guidance: [task.code, hitl.pro]
+          command: rust-check-and-test
+          save:
+            pre: snapshot
+            post: snapshot
+        - id: review
+          role: independent_reviewer
+          tools: []
+          guidance: [task.review, hitl.pro]
+          policy: default_review
+          contours: guidance.contours
+          independent_from: build
+          fail: build
+          loop:
+            scope: build
+            symbols: "contract"
+          save:
+            immutable: true
+        - id: deliver
+          role: independent_reviewer
+          guidance: [hitl.pro]
+          receipt: true
+          need:
+            - review
+          independent_from: build
+          fail: build
+          save:
+            immutable: true
+            post: commit
+            git_commit_note: telemetry
+  - id: verify
+    command: check_full_repo
+    max_attempts: 2
+    pass: handoff
+  - id: handoff
+    receipt: true
+    absorb: true
+    save: commit
 "#;
 
 pub(crate) fn fixture_profile() -> contextunity_forge_mcp::core::tasks::profile::GateProfile {
@@ -75,7 +128,30 @@ pub(crate) fn runner_profile(
     handoff.auto_commit = false;
     handoff.persistence.post =
         Some(contextunity_forge_mcp::core::tasks::profile::PersistenceAction::Snapshot);
+    // Task lifecycle fixtures omit the pre-task synthesis barrier, but retain
+    // the registered post-task verification command used by handoff fixtures.
     profile
+        .gates
+        .retain(|gate| gate.tasks.is_some() || gate.id == "verify" || gate.id == "handoff");
+    let verify = profile
+        .find_gate_mut("verify")
+        .expect("fixture profile declares a verification gate");
+    verify.on_success = Some("handoff".into());
+    verify.on_fail = None;
+    profile.validate().unwrap();
+    profile
+}
+
+pub(crate) fn standalone_profile_yaml(profile: &impl serde::Serialize) -> String {
+    let yaml = serde_yaml::to_string(profile).unwrap();
+    if yaml
+        .lines()
+        .any(|line| line.trim_start().starts_with("inherit:"))
+    {
+        yaml
+    } else {
+        format!("inherit: none\n{yaml}")
+    }
 }
 
 pub(crate) fn fixture_integration_evidence(
@@ -298,10 +374,10 @@ pub(crate) fn initialize_runner_fixture_with_profile(
 ) {
     workspace.write("tests/runner_fixture.rs", RUNNER_FIXTURE);
     init_git(workspace.root());
-    workspace.write(
-        ".forge/acdd/profile.yaml",
-        &serde_yaml::to_string(profile).unwrap(),
-    );
+    let profile_yaml = standalone_profile_yaml(profile);
+    contextunity_forge_mcp::core::tasks::profile::validate_profile_document(&profile_yaml)
+        .unwrap_or_else(|error| panic!("serialized task fixture profile is invalid: {error:#}"));
+    workspace.write(".forge/acdd/profile.yaml", &profile_yaml);
     crate::acdd::snapshot::precompile_runner(workspace);
 }
 
@@ -516,6 +592,12 @@ pub(crate) fn unobserved_evidence(
             "build" => {
                 json!({"command_proof":{"command":"rust-check-and-test","exit_code":0,"tests_passed":1,"tests_failed":0}})
             }
+            "seam.integrate" => json!({"seam_test_proof":{
+                "exit_code":0,
+                "seam_test_refs":["tests/acdd/tasks.rs"],
+                "tests_passed":1,
+                "tests_failed":0
+            }}),
             "review" => passing_review_proof(),
             "deliver" => json!({"delivery_proof":{}}),
             _ => json!({"none_proof":{}}),

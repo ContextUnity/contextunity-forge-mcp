@@ -168,19 +168,25 @@ fn tiered_task_context_enforces_indexed_seams_and_signature_boundaries() {
         let task_id = "forge-mcp/m-tiered:routing";
         let profile =
             contextunity_forge_mcp::core::tasks::profile::load_for_workspace(root.root()).unwrap();
+        let repo_profile = contextunity_forge_mcp::core::tasks::profile::load_for_workspace(
+            std::path::Path::new("."),
+        )
+        .unwrap();
         let defaults = contextunity_forge_mcp::core::tasks::profile::compiled();
-        if !defaults.commands.values().any(|command| {
-            command.command()
-                == "cargo clippy --all-targets --all-features -- -D warnings && cargo test"
-        }) {
-            failures.push(format!("{stage}/{seam}: default Rust profile must register static checks before cargo test"));
+        if !defaults.commands.is_empty() {
+            failures.push(format!("{stage}/{seam}: default embedded profile must remain strictly language-agnostic with no hardcoded commands"));
         }
-        if !defaults
+        if !repo_profile.commands.values().any(|command| {
+            command.command().contains("cargo clippy") && command.command().contains("cargo test")
+        }) {
+            failures.push(format!("{stage}/{seam}: workspace Rust profile must register static checks before cargo test"));
+        }
+        if !repo_profile
             .commands
             .get("test")
             .is_some_and(|command| command.command() == "cargo test")
         {
-            failures.push(format!("{stage}/{seam}: default Rust profile must retain the registered cargo test compatibility command"));
+            failures.push(format!("{stage}/{seam}: workspace Rust profile must retain the registered cargo test compatibility command"));
         }
         for (path, expected) in [
             ("src/main.rs", "--bin contextunity-forge-mcp"),

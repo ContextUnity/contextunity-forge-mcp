@@ -196,7 +196,8 @@ fn task_run_routes_structured_rejection_to_retained_stage_session() {
         });
         assert!(
             result.is_ok(),
-            "{kind} rejection must repair and deliver: {result:?}"
+            "{kind} rejection must repair and deliver: {result:?}; role records: {:?}",
+            h.records()
         );
         let records = h.records();
         let target_runs: Vec<_> = records

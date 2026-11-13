@@ -53,23 +53,25 @@ impl ResolvedPaths {
             Some(reference) => {
                 let (relative, pin) = profile::parse_profile_reference(&reference, false)?;
                 let path = confined_file(root, &relative)?;
-                if pin.is_some() {
+                let profile = if pin.is_some() {
                     profile::load_pinned_over(root, &reference, &profile::compiled())?
                 } else {
                     Arc::new(profile::validate_profile_document(&fs::read_to_string(
                         path,
                     )?)?)
-                }
+                };
+                profile::apply_config_metadata_limit(config.as_deref(), (*profile).clone())?
             }
             None if explicit_config => {
                 let repository = root.join(".forge/acdd/profile.yaml");
-                if repository.exists() {
+                let profile = if repository.exists() {
                     Arc::new(profile::validate_profile_document(&fs::read_to_string(
                         confined_file(root, &repository)?,
                     )?)?)
                 } else {
                     profile::compiled()
-                }
+                };
+                profile::apply_config_metadata_limit(config.as_deref(), (*profile).clone())?
             }
             None => profile::load_for_workspace(root)?,
         };

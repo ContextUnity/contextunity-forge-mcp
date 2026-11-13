@@ -7,6 +7,10 @@ fn mcp_server_keeps_its_linked_worktree_and_resolves_registered_sibling_names() 
             "forge-mcp.yaml",
             "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
         ),
+        (
+            ".forge/acdd/profile.yaml",
+            "version: 2\ninherit: none\nroles:\n  worker: {mode: subagent}\ngates:\n  - tasks:\n      gates:\n        - id: contract\n          role: worker\n          proof: contract\n        - id: build\n          role: worker\n          proof: none\n        - id: review\n          role: worker\n          proof: none\n          independent_from: build\n        - id: deliver\n          role: worker\n          receipt: true\n          need: []\n          save: snapshot\n",
+        ),
         ("src/lib.rs", "pub fn primary_only() {}\n"),
     ]);
     primary.seed_git().expect("seed real Git baseline");

@@ -286,9 +286,7 @@ fn copy_non_target_rows_from_backup(
     let conn = rusqlite::Connection::open(staging_path)?;
     conn.execute(
         "ATTACH DATABASE ?1 AS original",
-        [backup_path
-            .to_str()
-            .context("backup path invalid UTF-8")?],
+        [backup_path.to_str().context("backup path invalid UTF-8")?],
     )?;
     let count: usize = if let Some(target_ref) = target_milestone_ref {
         conn.execute(
@@ -525,7 +523,10 @@ pub fn db_recover_milestone(root: &Path, milestone_filter: Option<&str>) -> Resu
         let ws = reg.select(Some(name))?;
         if let Ok(owner) = reg.parse_milestone_manifest(ws, reference, &identity_header(text)?) {
             if archives.contains_key(&identity(&owner)) {
-                bail!("MILESTONE_CONFLICT: milestone '{}' is present as both active and archived", owner.id);
+                bail!(
+                    "MILESTONE_CONFLICT: milestone '{}' is present as both active and archived",
+                    owner.id
+                );
             }
         }
     }
@@ -667,9 +668,18 @@ pub fn db_recover_milestone(root: &Path, milestone_filter: Option<&str>) -> Resu
                             conn.execute("DELETE FROM task_claims WHERE task_id = ?1", [&tid])?;
                             conn.execute("DELETE FROM task_gates WHERE task_id = ?1", [&tid])?;
                             conn.execute("DELETE FROM task_findings WHERE task_id = ?1", [&tid])?;
-                            conn.execute("DELETE FROM task_scope_paths WHERE task_id = ?1", [&tid])?;
-                            conn.execute("DELETE FROM task_dependencies WHERE task_id = ?1", [&tid])?;
-                            conn.execute("DELETE FROM task_submissions WHERE task_id = ?1", [&tid])?;
+                            conn.execute(
+                                "DELETE FROM task_scope_paths WHERE task_id = ?1",
+                                [&tid],
+                            )?;
+                            conn.execute(
+                                "DELETE FROM task_dependencies WHERE task_id = ?1",
+                                [&tid],
+                            )?;
+                            conn.execute(
+                                "DELETE FROM task_submissions WHERE task_id = ?1",
+                                [&tid],
+                            )?;
                             conn.execute("DELETE FROM task_subtasks WHERE task_id = ?1", [&tid])?;
                             drop(conn);
                             store.begin_recovery_stage()?;

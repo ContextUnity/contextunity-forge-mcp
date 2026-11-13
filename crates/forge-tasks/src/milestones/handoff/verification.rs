@@ -4,6 +4,7 @@ use rusqlite::OptionalExtension;
 /// Validate the externally reviewed proof for the current handoff candidate.
 pub(super) fn require_closed_verification(
     store: &TasksStore,
+    profile: &crate::core::tasks::profile::GateProfile,
     identity: &str,
     evidence: &IntegrationEvidence,
     binding: &HandoffBinding,
@@ -55,17 +56,14 @@ pub(super) fn require_closed_verification(
     let attempt_id = payload["attempt_id"]
         .as_i64()
         .context("HANDOFF_VERIFICATION_REQUIRED: attempt missing; rerun verification")?;
-    let command = store
-        .profile
+    let command = profile
         .commands
         .get(command_id)
         .context("HANDOFF_VERIFICATION_REQUIRED: command no longer registered")?;
     if payload["command_digest"].as_str() != Some(integration::digest(command)?.as_str()) {
         bail!("HANDOFF_VERIFICATION_REQUIRED: registered command changed; rerun verification");
     }
-    if payload["profile_digest"].as_str()
-        != Some(integration::digest(store.profile.as_ref())?.as_str())
-    {
+    if payload["profile_digest"].as_str() != Some(integration::digest(profile)?.as_str()) {
         bail!("HANDOFF_VERIFICATION_REQUIRED: verification profile changed; rerun verification");
     }
     let latest_trace: Option<(String, Option<i32>, String)> = store
@@ -346,15 +344,28 @@ mod tests {
         };
         store.record_execution_trace(&trace).unwrap();
         store.record_gate_transition(&crate::store::GateTransition { milestone_id:"r/p/m".into(), subject:"milestone".into(), gate_path:"verify".into(), action:"pass".into(), proof_kind:"command".into(), proof_payload:json!({"command_id":"check","attempt_id":1,"command_digest":integration::digest(&command).unwrap(),"profile_digest":integration::digest(store.profile.as_ref()).unwrap(),"command":"true","exit_code":0,"tests_passed":1,"tests_failed":0,"implementation_digest":"i","target_base_digest":"b"}), git_tree_sha:"commit".into(), worker_id:"verify".into() }).unwrap();
-        assert!(
-            require_closed_verification(&store, "r/p/m", &evidence, &binding, "commit").is_ok()
-        );
+        assert!(require_closed_verification(
+            &store,
+            store.profile.as_ref(),
+            "r/p/m",
+            &evidence,
+            &binding,
+            "commit"
+        )
+        .is_ok());
         trace.attempt_id = 2;
         trace.status = "failed".into();
         trace.exit_code = Some(1);
         store.record_execution_trace(&trace).unwrap();
-        let error = require_closed_verification(&store, "r/p/m", &evidence, &binding, "commit")
-            .unwrap_err();
+        let error = require_closed_verification(
+            &store,
+            store.profile.as_ref(),
+            "r/p/m",
+            &evidence,
+            &binding,
+            "commit",
+        )
+        .unwrap_err();
         assert!(
             error.to_string().contains("HANDOFF_VERIFICATION_REQUIRED"),
             "{error:#}"
@@ -392,13 +403,25 @@ mod tests {
             })
             .unwrap();
         store.record_gate_transition(&crate::store::GateTransition { milestone_id:"r/p/m".into(), subject:"milestone".into(), gate_path:"verify".into(), action:"pass".into(), proof_kind:"command".into(), proof_payload:json!({"command_id":"check","attempt_id":1,"command_digest":integration::digest(&command).unwrap(),"profile_digest":integration::digest(store.profile.as_ref()).unwrap(),"command":"true","exit_code":0,"tests_passed":1,"tests_failed":0,"implementation_digest":"i","target_base_digest":"b"}), git_tree_sha:"commit".into(), worker_id:"verify".into() }).unwrap();
-        assert!(
-            require_closed_verification(&store, "r/p/m", &evidence, &binding, "commit").is_ok()
-        );
+        assert!(require_closed_verification(
+            &store,
+            store.profile.as_ref(),
+            "r/p/m",
+            &evidence,
+            &binding,
+            "commit"
+        )
+        .is_ok());
         evidence.verification.command = "unverified".into();
-        assert!(
-            require_closed_verification(&store, "r/p/m", &evidence, &binding, "commit").is_err()
-        );
+        assert!(require_closed_verification(
+            &store,
+            store.profile.as_ref(),
+            "r/p/m",
+            &evidence,
+            &binding,
+            "commit"
+        )
+        .is_err());
         evidence.verification.command = "true".into();
         std::sync::Arc::make_mut(&mut store.profile)
             .commands
@@ -406,9 +429,15 @@ mod tests {
                 "check".into(),
                 crate::tasks::profile::CommandDef::Script("false".into()),
             );
-        assert!(
-            require_closed_verification(&store, "r/p/m", &evidence, &binding, "commit").is_err()
-        );
+        assert!(require_closed_verification(
+            &store,
+            store.profile.as_ref(),
+            "r/p/m",
+            &evidence,
+            &binding,
+            "commit"
+        )
+        .is_err());
         drop(store);
         let _ = fs::remove_file(path);
     }

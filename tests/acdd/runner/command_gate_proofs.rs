@@ -258,33 +258,18 @@ fn command_missing_registered_contract_command_fails_closed() {
     configured.find_gate_mut("contract").unwrap().command = None;
     harness.root.write(
         ".forge/acdd/profile.yaml",
-        &serde_yaml::to_string(&configured).unwrap(),
+        &super::support::standalone_profile_yaml(&configured),
     );
     let error = harness.verify().unwrap_err().to_string();
     assert!(error.contains("TASK_COMMAND_UNCONFIGURED"), "{error}");
 }
 
 #[test]
-fn command_trace_migration_preserves_inline_diagnostics_larger_than_two_kib() {
+fn command_trace_preserves_inline_diagnostics_larger_than_two_kib_and_rejects_legacy_schema() {
     let harness = CommandGateHarness::with_command(
         "head -c 3000 /dev/zero | tr '\\0' x; exit 2",
         Some(output_spec(false)),
     );
-    let connection =
-        rusqlite::Connection::open(harness.root.root().join(".forge/tasks.sqlite")).unwrap();
-    let schema: String = connection
-        .query_row(
-            "SELECT sql FROM sqlite_master WHERE name='gate_execution_traces'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    connection
-        .execute_batch("DROP TABLE gate_execution_traces")
-        .unwrap();
-    connection
-        .execute_batch(&schema.replace("<= 65536", "<= 2048"))
-        .unwrap();
     let result = harness.verify().unwrap();
     assert_eq!(result["verification"]["diagnostic_mode"], "inline");
     let store = harness.store();
@@ -302,6 +287,31 @@ fn command_trace_migration_preserves_inline_diagnostics_larger_than_two_kib() {
             > 2048
     );
     assert!(traces.last().unwrap().log_path.is_none());
+    drop(store);
+
+    let connection =
+        rusqlite::Connection::open(harness.root.root().join(".forge/tasks.sqlite")).unwrap();
+    let schema: String = connection
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE name='gate_execution_traces'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    connection
+        .execute_batch("DROP TABLE gate_execution_traces")
+        .unwrap();
+    let current_constraint = format!("<= {}", forge_tasks::store::MAX_OUTPUT_SNIPPET_BYTES);
+    connection
+        .execute_batch(&schema.replace(&current_constraint, "<= 2048"))
+        .unwrap();
+    drop(connection);
+
+    let err = harness.verify().unwrap_err().to_string();
+    assert!(
+        err.contains("unsupported tasks schema; use recovery tooling"),
+        "expected fail-closed schema rejection, got: {err}"
+    );
 }
 
 #[test]
@@ -326,7 +336,7 @@ fn command_subset_execution_cannot_prove_an_entire_admitted_scope_plan() {
     configured.commands.insert("check".into(), command.clone());
     harness.root.write(
         ".forge/acdd/profile.yaml",
-        &serde_yaml::to_string(&configured).unwrap(),
+        &super::support::standalone_profile_yaml(&configured),
     );
     execute_command_gate(
         harness.root.root(),
@@ -404,7 +414,7 @@ fn store_reopen_preserves_durable_facts_and_output_policy_invalidation() {
     }
     harness.root.write(
         ".forge/acdd/profile.yaml",
-        &serde_yaml::to_string(&profile_mut).unwrap(),
+        &super::support::standalone_profile_yaml(&profile_mut),
     );
     drop(reopened);
 
@@ -464,6 +474,8 @@ fn command_gate_cleans_orchestration_environment_variables() {
         session: original_session,
     };
 
-    let result = harness.verify().expect("verification should succeed when env is scrubbed");
+    let result = harness
+        .verify()
+        .expect("verification should succeed when env is scrubbed");
     assert_eq!(result["verification"]["exit_code"], 0, "{result}");
 }

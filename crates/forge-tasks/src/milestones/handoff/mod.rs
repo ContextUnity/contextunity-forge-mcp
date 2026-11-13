@@ -299,7 +299,15 @@ fn prepare_handoff_context(
     let (item, mut store, relevant) = ready_milestone(root, selector)?;
     store.adopt_checkpoint_lock(fence.clone());
     validated_authority(root, &item, &store, &relevant)?;
-    let handoff_profile = (*crate::tasks::profile::load_for_workspace(root)?).clone();
+    let handoff_profile = (*store.profile_for_milestone(
+        root,
+        item.frontmatter
+            .get("acdd_profile")
+            .and_then(|value| value.as_str()),
+        &store.profile,
+        &relevant,
+    )?)
+    .clone();
     let root_cursors = crate::engine::gate_graph::collect_root_cursors(&handoff_profile)?;
     let delivery_gate = root_cursors
         .iter()
@@ -673,7 +681,14 @@ pub fn handoff(
     )?;
     let sha = integration::resolve_commit(root, commit.unwrap_or("HEAD"))?;
     let target = integration::resolve_commit(root, &evidence.target_base)?;
-    let handoff_profile = crate::tasks::profile::load_for_workspace(root)?;
+    let handoff_profile = store.profile_for_milestone(
+        root,
+        item.frontmatter
+            .get("acdd_profile")
+            .and_then(|value| value.as_str()),
+        &store.profile,
+        &relevant,
+    )?;
     let _ = binding(
         root,
         &item,
@@ -766,6 +781,7 @@ pub fn handoff(
     proofs.extend(proof_shas(&item.text)?);
     require_closed_verification(
         &store,
+        handoff_profile.as_ref(),
         &identity,
         evidence,
         &binding(

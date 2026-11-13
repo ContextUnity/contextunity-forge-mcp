@@ -191,18 +191,11 @@ impl TaskHarness {
         self.store.profile_for_task(&task)
     }
 
-    /// Return the profile's executable leaves in their declared order.
+    /// Return applicable task leaves in their declared order.
     pub fn executable_gates(&self) -> anyhow::Result<Vec<GateDef>> {
-        Ok(self
-            .profile()?
-            .executable_gate_paths()
-            .into_iter()
-            .map(|(path, gate)| {
-                let mut gate = gate.clone();
-                gate.id = path;
-                gate
-            })
-            .collect())
+        let profile = self.profile()?;
+        let task = self.store.inspect(&self.id)?;
+        forge_tasks::engine::executable_task_gates(&profile, &task)
     }
 
     /// Choose a deterministic worker identity from the production-resolved gate definition.

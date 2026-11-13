@@ -58,7 +58,7 @@ fn transition_runner_compiles_proofs_and_covers_all_task3_subtasks() {
         "printf 'docs\\n' >> .forge/runner-order.log && PATH={fake_path}:$PATH TASK3_MODE=$(cat .forge/runner-mode) TASK3_LABEL=docs {cargo_seam} && printf '%s' '{}' && printf 'pid=%s\\n' \"$$\"",
         "x".repeat(4096)
     );
-    let mut profile_override = (*profile::compiled()).clone();
+    let mut profile_override = super::support::runner_profile(super::support::DEFAULT_SEAM, "");
     let mut test_output = profile_override.commands["rust-check-and-test"]
         .output()
         .cloned();
@@ -96,7 +96,7 @@ fn transition_runner_compiles_proofs_and_covers_all_task3_subtasks() {
     });
     profile_override.find_gate_mut("build").unwrap().command = Some("task3-check".into());
     fs::create_dir_all(root.root().join(".forge/acdd")).unwrap();
-    let profile_yaml = serde_yaml::to_string(&profile_override).unwrap();
+    let profile_yaml = crate::acdd::support::standalone_profile_yaml(&profile_override);
     fs::write(root.root().join(".forge/acdd/profile.yaml"), &profile_yaml).unwrap();
     fs::write(root.root().join(".forge/runner-mode"), "green\n").unwrap();
     let profile = profile::load_for_workspace(root.root()).unwrap();
@@ -250,7 +250,7 @@ fn transition_runner_compiles_proofs_and_covers_all_task3_subtasks() {
     }
     fs::write(
         root.root().join(".forge/acdd/profile.yaml"),
-        serde_yaml::to_string(&altered_profile).unwrap(),
+        crate::acdd::support::standalone_profile_yaml(&altered_profile),
     )
     .unwrap();
     let command_identity_rejected =

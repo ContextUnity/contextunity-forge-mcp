@@ -1,5 +1,6 @@
 use crate::tasks::profile::{GateDef, GateProfile};
 use anyhow::{bail, Context, Result};
+use rusqlite::OptionalExtension;
 use std::path::Path;
 
 #[derive(Debug, Clone)]
@@ -51,6 +52,25 @@ pub(crate) fn collect_task_cursors(
     collect_cursors_for_scope(profile, GateCollection::Task, task)
 }
 
+pub(crate) fn executable_task_gate_defs(
+    profile: &GateProfile,
+    task: &crate::store::Task,
+) -> Result<Vec<GateDef>> {
+    let task_position = task_container_position(profile, Some(task))?;
+    Ok(collect_task_cursors(profile, Some(task))?
+        .into_iter()
+        .filter(|cursor| {
+            task_position.is_none_or(|position| cursor.root_index == position)
+                && task_matches_gate_condition(cursor.when.as_deref(), task)
+        })
+        .map(|cursor| {
+            let mut gate = cursor.gate;
+            gate.id = cursor.canonical_stage_id;
+            gate
+        })
+        .collect())
+}
+
 pub(crate) fn collect_cursors_for_task(
     profile: &GateProfile,
     task: Option<&crate::store::Task>,
@@ -61,6 +81,81 @@ pub(crate) fn collect_cursors_for_task(
 /// Flatten all executable root gates, excluding every task lifecycle subtree.
 pub(crate) fn collect_root_cursors(profile: &GateProfile) -> Result<Vec<GateCursor>> {
     collect_cursors_for_scope(profile, GateCollection::Root, None)
+}
+
+/// Return the root index of the task container applicable to a task.
+pub(crate) fn task_container_position(
+    profile: &GateProfile,
+    task: Option<&crate::store::Task>,
+) -> Result<Option<usize>> {
+    let matches = profile
+        .gates
+        .iter()
+        .enumerate()
+        .filter_map(|(index, gate)| {
+            let tasks = gate.tasks.as_ref()?;
+            let condition = crate::tasks::profile::combine_gate_conditions(
+                gate.when.as_deref(),
+                tasks.when.as_deref(),
+            );
+            task.is_none_or(|task| task_matches_gate_condition(condition.as_deref(), task))
+                .then_some(index)
+        })
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [] => Ok(None),
+        [index] => Ok(Some(*index)),
+        _ => bail!("TASK_GATE_CONTAINER_AMBIGUOUS: more than one task lifecycle container applies"),
+    }
+}
+
+/// Return applicable root gates positioned before the task container.
+pub(crate) fn pre_task_root_cursors(
+    profile: &GateProfile,
+    task: &crate::store::Task,
+) -> Result<Vec<GateCursor>> {
+    let Some(task_position) = task_container_position(profile, Some(task))? else {
+        return Ok(Vec::new());
+    };
+    Ok(collect_root_cursors(profile)?
+        .into_iter()
+        .filter(|cursor| cursor.root_index < task_position)
+        .collect())
+}
+
+/// Check that each supplied root cursor has its latest accepted milestone transition.
+pub(crate) fn ensure_root_gate_transitions_passed(
+    connection: &rusqlite::Connection,
+    milestone_identity: &str,
+    cursors: &[GateCursor],
+) -> Result<()> {
+    if let Some(cursor) = first_unpassed_root_cursor(connection, milestone_identity, cursors)? {
+        bail!("MILESTONE_PRE_TASK_GATE_PENDING: milestone '{milestone_identity}' has not passed root gate '{}' (gate_path '{}', root_index {}).", cursor.canonical_stage_id, cursor.gate_path, cursor.root_index);
+    }
+    Ok(())
+}
+
+/// Return the first cursor without a latest milestone-scoped pass transition.
+pub(crate) fn first_unpassed_root_cursor(
+    connection: &rusqlite::Connection,
+    milestone_identity: &str,
+    cursors: &[GateCursor],
+) -> Result<Option<GateCursor>> {
+    for cursor in cursors {
+        let latest: Option<String> = connection
+            .query_row(
+                "SELECT action FROM gate_transitions
+                 WHERE milestone_id=?1 AND subject='milestone' AND gate_path=?2
+                 ORDER BY id DESC LIMIT 1",
+                rusqlite::params![milestone_identity, cursor.canonical_stage_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if latest.as_deref() != Some("pass") {
+            return Ok(Some(cursor.clone()));
+        }
+    }
+    Ok(None)
 }
 
 fn collect_cursors_for_scope(

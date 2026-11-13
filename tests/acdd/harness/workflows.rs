@@ -127,3 +127,121 @@ fn rejection_workflow_resolves_roles_and_failure_target_in_its_gate_profile() {
     assert_eq!(review.on_fail.as_deref(), Some("build"));
     assert_eq!(review.independent_from.as_deref(), Some("build"));
 }
+
+#[test]
+fn authoring_workflow_profiles_validate_cleanly_and_enforce_standalone_authoring_invariants() {
+    let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let expected_commands = [
+        (
+            "docs/workflows/author-milestone.workflow.yaml",
+            "skills/contextunity-forge/references/acdd-profile-examples/author-milestone.workflow.yaml",
+            "contextunity-forge-mcp milestone init {manifest_path} --in-place",
+        ),
+        (
+            "docs/workflows/author-plan.workflow.yaml",
+            "skills/contextunity-forge/references/acdd-profile-examples/author-plan.workflow.yaml",
+            "contextunity-forge-mcp plan show {plan_name}",
+        ),
+        (
+            "docs/workflows/author-workflow.workflow.yaml",
+            "skills/contextunity-forge/references/acdd-profile-examples/author-workflow.workflow.yaml",
+            "contextunity-forge-mcp workflow show {workflow_name}",
+        ),
+    ];
+
+    for (path, skill_path, expected_cmd) in expected_commands {
+        let full_path = repo_root.join(path);
+        let content = std::fs::read_to_string(&full_path)
+            .unwrap_or_else(|e| panic!("failed to read {path}: {e}"));
+        let skill_content = std::fs::read_to_string(repo_root.join(skill_path))
+            .unwrap_or_else(|e| panic!("failed to read {skill_path}: {e}"));
+        assert_eq!(
+            content, skill_content,
+            "skill example {skill_path} drifted from {path}"
+        );
+        let profile = profile::validate_profile_document(&content)
+            .unwrap_or_else(|e| panic!("profile in {path} failed validation: {e}"));
+
+        // Invariant 1: Standalone workflows require inherit: none and save: none
+        assert_eq!(
+            profile.persistence,
+            Some(profile::PersistenceAction::None),
+            "{path} must have save: none"
+        );
+
+        // Invariant 2: Pure root gate graph without tasks: container or receipts
+        assert!(
+            profile.gates.iter().all(|g| g.tasks.is_none()),
+            "{path} must not contain tasks"
+        );
+        assert!(
+            profile.gates.iter().all(|g| !g.receipt),
+            "{path} must not declare task receipts"
+        );
+
+        // Invariant 3: Three-stage sequence (synthesize -> review -> preflight)
+        let gate_ids: Vec<&str> = profile.gates.iter().map(|g| g.id.as_str()).collect();
+        assert_eq!(gate_ids, ["synthesize", "review", "preflight"], "{path}");
+
+        // Invariant 4: Roles architect and independent_reviewer configured with tools, models, and executable runners
+        let synthesize = profile.find_gate("synthesize").unwrap();
+        assert_eq!(synthesize.role.as_deref(), Some("architect"));
+        assert!(
+            !synthesize.tools.is_empty(),
+            "{path} synthesize needs tools"
+        );
+        assert!(
+            matches!(synthesize.proof, profile::ProofDef::Scheme { .. }),
+            "{path} synthesize needs inline proof.scheme"
+        );
+
+        let review = profile.find_gate("review").unwrap();
+        assert_eq!(review.role.as_deref(), Some("independent_reviewer"));
+        assert_eq!(review.independent_from.as_deref(), Some("synthesize"));
+        assert_eq!(review.on_fail.as_deref(), Some("synthesize"));
+        assert_eq!(review.on_success.as_deref(), Some("preflight"));
+        assert!(
+            matches!(review.proof, profile::ProofDef::Scheme { .. }),
+            "{path} review needs inline proof.scheme"
+        );
+
+        for gate in [synthesize, review] {
+            let role_id = gate.role.as_deref().unwrap();
+            let role = profile.roles.get(role_id).expect("gate role must exist");
+            assert_eq!(
+                role.reuse_on_reject,
+                Some(true),
+                "{path} role {role_id} must set reuse_on_reject"
+            );
+            assert!(
+                profile::RunnerConfig::from_role(role).is_some(),
+                "{path} role {role_id} must define an executable runner"
+            );
+        }
+
+        let workflow_stem = std::path::Path::new(path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_suffix(".workflow.yaml"))
+            .unwrap();
+        let resolved =
+            contextunity_forge_mcp::forge_tasks::engine::orchestrator::workflow::resolve_workflow(
+                repo_root,
+                workflow_stem,
+            )
+            .unwrap_or_else(|e| panic!("failed to resolve workflow {workflow_stem}: {e}"));
+        assert_eq!(resolved, std::path::Path::new(path));
+
+        let preflight = profile.find_gate("preflight").unwrap();
+        let command_name = preflight.command.as_ref().expect("preflight command name");
+        let command_def = profile
+            .commands
+            .get(command_name)
+            .expect("preflight command definition");
+        assert_eq!(
+            command_def.command_for_path(""),
+            Some(expected_cmd),
+            "{path}"
+        );
+    }
+}

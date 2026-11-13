@@ -14,7 +14,6 @@ mod blackboard;
 mod lifecycle;
 mod matrix;
 pub mod recovery;
-mod schema;
 mod subtasks;
 mod trace;
 
@@ -583,55 +582,267 @@ impl TasksStore {
                 [],
                 |r| r.get(0),
             )?;
-            if version == "5" {
-                connection.execute_batch(
-                    "BEGIN IMMEDIATE;
-                    CREATE TABLE IF NOT EXISTS milestone_tombstones (
-                        milestone_id TEXT PRIMARY KEY,
-                        archived_at INTEGER NOT NULL,
-                        all_tasks_terminal INTEGER NOT NULL,
-                        completed_task_ids TEXT NOT NULL
-                    );
-                    UPDATE task_store_metadata SET value='6' WHERE key='schema_version';
-                    COMMIT;",
-                )?;
-            } else if !matches!(version.as_str(), "6" | "7") {
+            if version != "7" {
                 bail!("unsupported tasks schema; use recovery tooling");
             }
-        } else {
-            let code_map_table_count: i64 = connection
-                .query_row(
-                    "SELECT COUNT(*) FROM sqlite_schema WHERE type='table' AND name IN ('nodes', 'edges', 'files')",
-                    [],
+            connection.execute_batch(
+                "PRAGMA synchronous=NORMAL; PRAGMA mmap_size=268435456; PRAGMA foreign_keys=ON;",
+            )?;
+            const REQUIRED_V7_SCHEMA: [(&str, &[&str]); 20] = [
+                ("meta", &["key", "value"]),
+                ("task_store_metadata", &["key", "value"]),
+                (
+                    "milestone_tombstones",
+                    &[
+                        "milestone_id",
+                        "archived_at",
+                        "all_tasks_terminal",
+                        "completed_task_ids",
+                    ],
+                ),
+                ("task_revisions", &["task_id", "revision"]),
+                ("tasks", &["task_id", "milestone_ref", "descriptor"]),
+                (
+                    "task_claims",
+                    &[
+                        "task_id",
+                        "revision",
+                        "worker_id",
+                        "worktree",
+                        "claimed_at",
+                        "ended",
+                        "session_fingerprint",
+                    ],
+                ),
+                (
+                    "task_gates",
+                    &["task_id", "gate", "revision", "state", "evidence"],
+                ),
+                ("task_findings", &["task_id", "revision", "findings"]),
+                (
+                    "task_scope_paths",
+                    &["task_id", "path", "base_root", "frozen"],
+                ),
+                (
+                    "task_dependencies",
+                    &["task_id", "dependency_id", "satisfied"],
+                ),
+                ("task_submissions", &["task_id", "revision", "result"]),
+                (
+                    "task_blackboard",
+                    &[
+                        "id",
+                        "milestone_ref",
+                        "task_id",
+                        "subtask_ref",
+                        "gate",
+                        "author",
+                        "topic",
+                        "payload",
+                        "created_at",
+                        "recipient_task_id",
+                        "status",
+                    ],
+                ),
+                (
+                    "task_subtasks",
+                    &[
+                        "task_id",
+                        "subtask_ref",
+                        "title",
+                        "status",
+                        "evidence",
+                        "updated_at",
+                    ],
+                ),
+                (
+                    "milestone_contract_matrix",
+                    &[
+                        "milestone_id",
+                        "source_task",
+                        "target_task",
+                        "contract_type",
+                        "contract_ref",
+                        "revision",
+                        "status",
+                        "created_at",
+                    ],
+                ),
+                (
+                    "gate_execution_runs",
+                    &[
+                        "id",
+                        "milestone_id",
+                        "subject",
+                        "gate_path",
+                        "claim_revision",
+                        "contract_revision",
+                        "worker_id",
+                        "worktree",
+                        "candidate_fingerprint",
+                        "status",
+                    ],
+                ),
+                (
+                    "gate_execution_attempts",
+                    &[
+                        "run_id",
+                        "milestone_id",
+                        "subject",
+                        "gate_path",
+                        "command_id",
+                        "attempt_id",
+                        "state",
+                        "trace_id",
+                        "trace_status",
+                        "exit_code",
+                    ],
+                ),
+                (
+                    "gate_transitions",
+                    &[
+                        "id",
+                        "milestone_id",
+                        "subject",
+                        "gate_path",
+                        "action",
+                        "proof_kind",
+                        "proof_payload",
+                        "git_tree_sha",
+                        "worker_id",
+                        "created_at",
+                    ],
+                ),
+                (
+                    "gate_execution_traces",
+                    &[
+                        "id",
+                        "milestone_id",
+                        "subject",
+                        "gate_path",
+                        "attempt_id",
+                        "command_id",
+                        "command_str",
+                        "status",
+                        "exit_code",
+                        "log_path",
+                        "output_snippet",
+                        "stdout_sha256",
+                        "duration_ms",
+                        "executed_at",
+                    ],
+                ),
+                (
+                    "gate_checkpoints",
+                    &[
+                        "breadcrumb",
+                        "milestone_id",
+                        "subject",
+                        "gate_path",
+                        "transition_id",
+                        "git_tree_sha",
+                        "state_payload",
+                        "created_at",
+                        "updated_at",
+                    ],
+                ),
+                (
+                    "command_execution_proofs",
+                    &["run_id", "command_id", "attempt_id", "payload"],
+                ),
+            ];
+            for (table, required_columns) in REQUIRED_V7_SCHEMA {
+                let exists: bool = connection.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?1)",
+                    [table],
                     |row| row.get(0),
-                )
-                ?;
-            if code_map_table_count >= 2 {
-                bail!(
-                    "TASK_DATABASE_COLLISION: Refusing to open code map database at '{}' as tasks database. The tasks database must be separate (default: '.forge/tasks.sqlite').",
-                    path.display()
-                );
+                )?;
+                if !exists {
+                    bail!("unsupported tasks schema; use recovery tooling");
+                }
+                let mut stmt = connection.prepare(&format!("PRAGMA table_info({table})"))?;
+                let actual_columns = stmt
+                    .query_map([], |row| row.get::<_, String>(1))?
+                    .collect::<rusqlite::Result<std::collections::HashSet<_>>>()?;
+                if required_columns
+                    .iter()
+                    .any(|column| !actual_columns.contains(*column))
+                {
+                    bail!("unsupported tasks schema; use recovery tooling");
+                }
             }
-            let populated: bool = connection.query_row(
-                "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%')",
+            let normalize_ddl = |ddl: &str| -> String {
+                ddl.trim()
+                    .trim_end_matches(';')
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .replace("IF NOT EXISTS ", "")
+            };
+            const REQUIRED_V7_TRIGGERS: [(&str, &str); 3] = [
+                (
+                    "task_insert_generation",
+                    "CREATE TRIGGER task_insert_generation AFTER INSERT ON tasks BEGIN UPDATE meta SET value=value+1 WHERE key='generation'; END",
+                ),
+                (
+                    "task_update_generation",
+                    "CREATE TRIGGER task_update_generation AFTER UPDATE ON tasks BEGIN UPDATE meta SET value=value+1 WHERE key='generation'; END",
+                ),
+                (
+                    "task_delete_generation",
+                    "CREATE TRIGGER task_delete_generation AFTER DELETE ON tasks BEGIN UPDATE meta SET value=value+1 WHERE key='generation'; END",
+                ),
+            ];
+            for (trigger_name, expected_sql) in REQUIRED_V7_TRIGGERS {
+                let actual_sql: Option<String> = connection
+                    .query_row(
+                        "SELECT sql FROM sqlite_schema WHERE type='trigger' AND name=?1",
+                        [trigger_name],
+                        |row| row.get(0),
+                    )
+                    .optional()?
+                    .flatten();
+                let Some(actual_sql) = actual_sql else {
+                    bail!("unsupported tasks schema; use recovery tooling");
+                };
+                if normalize_ddl(&actual_sql) != expected_sql {
+                    bail!("unsupported tasks schema; use recovery tooling");
+                }
+            }
+            trace::ensure_command_output_schema(connection)?;
+            return Ok(());
+        }
+
+        let code_map_table_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_schema WHERE type='table' AND name IN ('nodes', 'edges', 'files')",
                 [],
                 |row| row.get(0),
             )?;
-            if populated {
-                bail!("tasks_db must be a dedicated task store");
-            }
+        if code_map_table_count >= 2 {
+            bail!(
+                "TASK_DATABASE_COLLISION: Refusing to open code map database at '{}' as tasks database. The tasks database must be separate (default: '.forge/tasks.sqlite').",
+                path.display()
+            );
+        }
+        let populated: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%')",
+            [],
+            |row| row.get(0),
+        )?;
+        if populated {
+            bail!("tasks_db must be a dedicated task store");
         }
         connection.execute_batch(
-            "PRAGMA synchronous=NORMAL; PRAGMA mmap_size=268435456; PRAGMA foreign_keys=ON;",
+            "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA mmap_size=268435456; PRAGMA foreign_keys=ON;",
         )?;
-        // A supported initialized store needs only connection-local settings. Even
-        // INSERT OR IGNORE takes the writer lock, blocking otherwise independent readers.
-        if !known {
-            connection.execute_batch("PRAGMA journal_mode=WAL; BEGIN IMMEDIATE;
+        let transaction =
+            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        transaction.execute_batch("
             CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value INTEGER NOT NULL);
             INSERT OR IGNORE INTO meta VALUES('generation',0);
             CREATE TABLE IF NOT EXISTS task_store_metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
-            INSERT OR IGNORE INTO task_store_metadata VALUES('schema_version','6');
+            INSERT OR IGNORE INTO task_store_metadata VALUES('schema_version','7');
             CREATE TABLE IF NOT EXISTS milestone_tombstones(milestone_id TEXT PRIMARY KEY,archived_at INTEGER NOT NULL,all_tasks_terminal INTEGER NOT NULL,completed_task_ids TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS task_revisions(task_id TEXT PRIMARY KEY,revision INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS tasks(task_id TEXT PRIMARY KEY,milestone_ref TEXT NOT NULL,descriptor TEXT NOT NULL);
@@ -641,51 +852,22 @@ impl TasksStore {
             CREATE TABLE IF NOT EXISTS task_scope_paths(task_id TEXT NOT NULL REFERENCES tasks ON DELETE CASCADE,path TEXT NOT NULL,base_root TEXT NOT NULL,frozen INTEGER NOT NULL,PRIMARY KEY(task_id,path));
             CREATE TABLE IF NOT EXISTS task_dependencies(task_id TEXT NOT NULL REFERENCES tasks ON DELETE CASCADE,dependency_id TEXT NOT NULL,satisfied INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(task_id,dependency_id));
             CREATE TABLE IF NOT EXISTS task_submissions(task_id TEXT NOT NULL REFERENCES tasks ON DELETE CASCADE,revision INTEGER NOT NULL,result TEXT NOT NULL,PRIMARY KEY(task_id,revision));
-            CREATE TABLE IF NOT EXISTS task_blackboard(id INTEGER PRIMARY KEY AUTOINCREMENT,milestone_ref TEXT NOT NULL,task_id TEXT REFERENCES tasks ON DELETE CASCADE,subtask_ref TEXT,gate TEXT,author TEXT NOT NULL,topic TEXT NOT NULL,payload TEXT NOT NULL,created_at INTEGER NOT NULL,CHECK(task_id IS NOT NULL OR subtask_ref IS NULL));
+            CREATE TABLE IF NOT EXISTS task_blackboard(id INTEGER PRIMARY KEY AUTOINCREMENT,milestone_ref TEXT NOT NULL,task_id TEXT REFERENCES tasks ON DELETE CASCADE,subtask_ref TEXT,gate TEXT,author TEXT NOT NULL,topic TEXT NOT NULL,payload TEXT NOT NULL,created_at INTEGER NOT NULL,recipient_task_id TEXT,status TEXT DEFAULT 'active',CHECK(task_id IS NOT NULL OR subtask_ref IS NULL));
             CREATE INDEX IF NOT EXISTS idx_task_blackboard_scope_created ON task_blackboard(milestone_ref, task_id, subtask_ref, created_at DESC, id DESC);
             CREATE INDEX IF NOT EXISTS idx_task_blackboard_task_created ON task_blackboard(task_id, created_at DESC, id DESC);
             CREATE INDEX IF NOT EXISTS idx_task_blackboard_gate_scope_created ON task_blackboard(milestone_ref, gate, task_id, subtask_ref, created_at DESC, id DESC);
             CREATE INDEX IF NOT EXISTS idx_task_blackboard_task_gate_created ON task_blackboard(task_id, gate, created_at DESC, id DESC);
+            CREATE INDEX IF NOT EXISTS task_blackboard_recipient_idx ON task_blackboard(milestone_ref, recipient_task_id, status);
             CREATE TABLE IF NOT EXISTS task_subtasks(task_id TEXT NOT NULL REFERENCES tasks ON DELETE CASCADE,subtask_ref TEXT NOT NULL,title TEXT NOT NULL,status TEXT NOT NULL,evidence TEXT,updated_at INTEGER NOT NULL,PRIMARY KEY(task_id,subtask_ref));
             CREATE INDEX IF NOT EXISTS idx_task_subtasks_task ON task_subtasks(task_id);
             CREATE TRIGGER IF NOT EXISTS task_insert_generation AFTER INSERT ON tasks BEGIN UPDATE meta SET value=value+1 WHERE key='generation'; END;
             CREATE TRIGGER IF NOT EXISTS task_update_generation AFTER UPDATE ON tasks BEGIN UPDATE meta SET value=value+1 WHERE key='generation'; END;
-            CREATE TRIGGER IF NOT EXISTS task_delete_generation AFTER DELETE ON tasks BEGIN UPDATE meta SET value=value+1 WHERE key='generation'; END;
-            COMMIT;")?;
-        }
-        schema::migrate(connection)?;
-        if !connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('task_claims') WHERE name='session_fingerprint')",
-            [],
-            |row| row.get::<_, bool>(0),
-        )? {
-            connection.execute_batch("BEGIN IMMEDIATE;")?;
-            let migrate_res = (|| -> Result<()> {
-                if !connection.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM pragma_table_info('task_claims') WHERE name='session_fingerprint')",
-                    [],
-                    |row| row.get::<_, bool>(0),
-                )? {
-                    connection.execute("ALTER TABLE task_claims ADD COLUMN session_fingerprint TEXT", [])?;
-                }
-                connection.execute_batch("COMMIT;")?;
-                Ok(())
-            })();
-            if let Err(err) = migrate_res {
-                let _ = connection.execute_batch("ROLLBACK;");
-                return Err(err);
-            }
-        }
-        ensure_execution_provenance_schema(connection)?;
+            CREATE TRIGGER IF NOT EXISTS task_delete_generation AFTER DELETE ON tasks BEGIN UPDATE meta SET value=value+1 WHERE key='generation'; END;")?;
+        matrix::migrate(&transaction)?;
+        create_execution_provenance_schema(&transaction)?;
+        trace::migrate(&transaction)?;
+        transaction.commit()?;
         trace::ensure_command_output_schema(connection)?;
-        let version: String = connection.query_row(
-            "SELECT value FROM task_store_metadata WHERE key='schema_version'",
-            [],
-            |r| r.get(0),
-        )?;
-        if version != "7" {
-            bail!("unsupported tasks schema; use recovery tooling");
-        }
         Ok(())
     }
 
@@ -731,6 +913,19 @@ impl TasksStore {
         task: &Task,
     ) -> Result<std::sync::Arc<crate::tasks::profile::GateProfile>> {
         resolve_task_profile(self.workspace_root.as_deref(), &self.profile, task)
+    }
+    /// Resolve the effective milestone root profile from pinned milestone frontmatter or base profile.
+    pub fn profile_for_milestone(
+        &self,
+        root: &Path,
+        milestone_profile: Option<&str>,
+        base_profile: &crate::tasks::profile::GateProfile,
+        _tasks: &[Task],
+    ) -> Result<std::sync::Arc<crate::tasks::profile::GateProfile>> {
+        if let Some(reference) = milestone_profile {
+            return crate::tasks::profile::load_pinned_over(root, reference, base_profile);
+        }
+        Ok(std::sync::Arc::new(base_profile.clone()))
     }
     fn set_runtime_gate(
         &self,
@@ -884,7 +1079,8 @@ impl TasksStore {
             "SELECT gate,revision,state,evidence FROM task_gates WHERE task_id=?1 ORDER BY revision,gate",
         )?;
         let rows = stmt.query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
-        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Into::into)
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
     }
     /// Returns stored submission rows (revision, result) for a task.
     pub fn task_submissions(&self, id: &str) -> Result<Vec<(u64, String)>> {
@@ -892,7 +1088,8 @@ impl TasksStore {
             "SELECT revision,result FROM task_submissions WHERE task_id=?1 ORDER BY revision",
         )?;
         let rows = stmt.query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))?;
-        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Into::into)
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
     }
     /// Performs inspect details.
     pub fn inspect_details(&self, id: &str) -> Result<serde_json::Value> {
@@ -2006,18 +2203,9 @@ impl TasksStore {
     }
 }
 
-fn ensure_execution_provenance_schema(connection: &Connection) -> Result<()> {
-    let present: bool = connection.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='gate_execution_runs')",
-        [],
-        |row| row.get(0),
-    )?;
-    if present {
-        return Ok(());
-    }
+fn create_execution_provenance_schema(connection: &Connection) -> Result<()> {
     connection.execute_batch(
-        "BEGIN IMMEDIATE;
-        CREATE TABLE IF NOT EXISTS gate_execution_runs (
+        "CREATE TABLE IF NOT EXISTS gate_execution_runs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             milestone_id TEXT NOT NULL,
             subject TEXT NOT NULL,
@@ -2046,8 +2234,7 @@ fn ensure_execution_provenance_schema(connection: &Connection) -> Result<()> {
             UNIQUE(milestone_id, subject, gate_path, command_id, attempt_id)
         );
         CREATE INDEX IF NOT EXISTS idx_gate_execution_attempts_run
-            ON gate_execution_attempts(run_id, attempt_id);
-        COMMIT;",
+            ON gate_execution_attempts(run_id, attempt_id);",
     )?;
     Ok(())
 }
@@ -2566,5 +2753,65 @@ mod tests {
             failure.is_none(),
             "initialized store open requires no writer lock: {failure:?}"
         );
+    }
+
+    #[test]
+    fn fresh_store_initializes_v7_and_fails_closed_on_incomplete_schema() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("tasks.sqlite");
+        {
+            let store = TasksStore::open(&path)?;
+            let version: String = store.connection.query_row(
+                "SELECT value FROM task_store_metadata WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(version, "7");
+            for table in [
+                "tasks",
+                "milestone_contract_matrix",
+                "gate_transitions",
+                "gate_execution_runs",
+                "gate_execution_traces",
+                "command_execution_proofs",
+            ] {
+                let exists: i64 = store.connection.query_row(
+                    "SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                    [table],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(exists, 1, "expected v7 table '{table}'");
+            }
+        }
+        for (label, sql) in [
+            ("drop_gate_execution_attempts", "DROP TABLE gate_execution_attempts;"),
+            ("drop_gate_checkpoints", "DROP TABLE gate_checkpoints;"),
+            ("drop_gate_execution_runs", "DROP TABLE gate_execution_runs;"),
+            ("drop_tasks", "DROP TABLE tasks;"),
+            (
+                "drop_claim_session_fingerprint",
+                "ALTER TABLE task_claims DROP COLUMN session_fingerprint;",
+            ),
+            ("drop_insert_trigger", "DROP TRIGGER task_insert_generation;"),
+            (
+                "tamper_insert_trigger",
+                "DROP TRIGGER task_insert_generation; CREATE TRIGGER task_insert_generation AFTER INSERT ON tasks BEGIN SELECT 1; END;",
+            ),
+        ] {
+            let partial_path = dir.path().join(format!("partial-{label}.sqlite"));
+            drop(TasksStore::open(&partial_path)?);
+            let raw = Connection::open(&partial_path)?;
+            raw.execute_batch(sql)?;
+            drop(raw);
+            let err = TasksStore::open(&partial_path)
+                .err()
+                .context("partial schema must fail closed")?
+                .to_string();
+            assert!(
+                err.contains("schema") || err.contains("TASK_STORE"),
+                "{label}: {err}"
+            );
+        }
+        Ok(())
     }
 }

@@ -275,7 +275,7 @@ fn repacked_task_commits_sync_and_handoff_cleanly() {
     root.commit_fixture_inputs(&["tests/unrelated.rs", ".forge/acdd/profile.yaml"]);
     root.write(
         ".forge/acdd/profile.yaml",
-        &serde_yaml::to_string(&fixture_profile()).unwrap(),
+        &crate::acdd::support::standalone_profile_yaml(&fixture_profile()),
     );
     let handoff_commit = root.head();
 

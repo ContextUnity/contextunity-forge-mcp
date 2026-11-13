@@ -30,8 +30,10 @@ fn mcp_delivery_preserves_deferred_defects_across_shared_worktrees() {
         ),
     );
     let profile_path = builder.root().join(".forge/acdd/profile.yaml");
-    let mut profile: contextunity_forge_mcp::core::tasks::profile::GateProfile =
-        serde_yaml::from_str(&fs::read_to_string(&profile_path).unwrap()).unwrap();
+    let mut profile = contextunity_forge_mcp::core::tasks::profile::parse_profile(
+        &fs::read_to_string(&profile_path).unwrap(),
+    )
+    .unwrap();
     let delivery_stage = profile
         .executable_gates()
         .into_iter()
@@ -43,7 +45,11 @@ fn mcp_delivery_preserves_deferred_defects_across_shared_worktrees() {
         .find_gate_mut(&delivery_stage)
         .expect("delivery gate should remain addressable")
         .auto_commit = false;
-    fs::write(&profile_path, serde_yaml::to_string(&profile).unwrap()).unwrap();
+    fs::write(
+        &profile_path,
+        crate::acdd::support::standalone_profile_yaml(&profile),
+    )
+    .unwrap();
     let mut current_session = TaskHarness::session_for("builder");
     let mut client =
         McpTestHarness::with_session(&builder, &current_session).expect("MCP client should start");

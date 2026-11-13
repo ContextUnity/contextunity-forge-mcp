@@ -62,18 +62,16 @@ fn case_conditional_gate_successors_and_exhaustion_survive_recovery() {
     let manifest = "---\nid: m-replay\ntitle: Conditional replay\nstatus: active\n---\n```yaml\ntask_ref: first\ntarget: Replay conditional stages\nproof_policy: direct-proof\nscope: [src/]\n```\n";
     let mut harness: Option<GateAstHarness> = None;
     for (container, condition) in cases {
-        let skipped = if container == "tasks" {
+        let profile = if container == "tasks" {
             format!(
-                "  - tasks:\n      when: {condition}\n      gates:\n        - id: skipped\n          when: code\n          role: worker\n          proof: none\n"
+                "version: 2\nroles:\n  worker: {{mode: subagent}}\ngates:\n  - tasks:\n      when: code\n      gates:\n        - id: start\n          role: worker\n          proof: none\n        - id: retry\n          fail: start\n          max_attempts: 1\n          gates:\n            - id: attempt\n              role: worker\n              proof: none\n  - tasks:\n      when: {condition}\n      gates:\n        - id: skipped\n          when: code\n          role: worker\n          proof: none\n"
             )
         } else {
             format!(
-                "        - id: conditional\n          when: {condition}\n          gates:\n            - id: skipped\n              when: code\n              role: worker\n              proof: none\n"
+                "version: 2\nroles:\n  worker: {{mode: subagent}}\ngates:\n  - tasks:\n      gates:\n        - id: start\n          role: worker\n          proof: none\n        - id: conditional\n          when: {condition}\n          gates:\n            - id: skipped\n              when: code\n              role: worker\n              proof: none\n        - id: retry\n          fail: start\n          max_attempts: 1\n          gates:\n            - id: attempt\n              role: worker\n              proof: none\n"
             )
         };
-        let profile = format!(
-            "version: 2\nroles:\n  worker: {{mode: subagent}}\ngates:\n  - tasks:\n      gates:\n        - id: start\n          role: worker\n          proof: none\n{skipped}  - tasks:\n      gates:\n        - id: retry\n          fail: start\n          max_attempts: 1\n          gates:\n            - id: attempt\n              role: worker\n              proof: none\n        - id: deliver\n          role: worker\n          receipt: true\n          need: []\n          save: snapshot\n"
-        );
+        let profile = GateAstHarness::with_delivery(&profile);
         if let Some(harness) = harness.as_mut() {
             harness.restore_profile(&profile);
         } else {
@@ -158,7 +156,12 @@ impl GateAstHarness {
             crate::acdd::support::acdd_workspace(crate::acdd::support::DEFAULT_SEAM, "");
         workspace.write("AGENTS.md", "# Rules\n");
         workspace.write("forge-mcp.yaml", config);
-        workspace.write(".forge/acdd/profile.yaml", profile);
+        let profile = if profile.starts_with("inherit:") {
+            profile.to_owned()
+        } else {
+            format!("inherit: none\n{profile}")
+        };
+        workspace.write(".forge/acdd/profile.yaml", &profile);
         workspace.write(manifest_path, manifest);
         for (path, content) in files {
             workspace.write(path, content);
@@ -187,9 +190,37 @@ impl GateAstHarness {
     }
 
     fn with_delivery(profile: &str) -> String {
-        format!(
-            "{profile}  - tasks:\n      gates:\n        - id: deliver\n          role: worker\n          receipt: true\n          need: []\n          save: snapshot\n"
+        let mut document: serde_yaml::Value =
+            serde_yaml::from_str(profile).expect("gate fixture profile should be valid YAML");
+        let gates = document["gates"]
+            .as_sequence_mut()
+            .expect("gate fixture profile should declare a gates sequence");
+        let delivery: serde_yaml::Value = serde_yaml::from_str(
+            "id: deliver\nrole: worker\nreceipt: true\nneed: []\nsave: snapshot\n",
         )
+        .expect("delivery fixture should be valid YAML");
+        let mut found_tasks_container = false;
+        for (index, gate) in gates.iter_mut().enumerate() {
+            let Some(task_gates) = gate
+                .get_mut("tasks")
+                .and_then(|tasks| tasks.get_mut("gates"))
+                .and_then(serde_yaml::Value::as_sequence_mut)
+            else {
+                continue;
+            };
+            let mut track_delivery = delivery.clone();
+            if index > 0 {
+                track_delivery["id"] = serde_yaml::Value::String(format!("deliver_{index}"));
+            }
+            task_gates.push(track_delivery);
+            found_tasks_container = true;
+        }
+        if !found_tasks_container {
+            gates.push(serde_yaml::from_str(
+                "tasks:\n  gates:\n    - id: deliver\n      role: worker\n      receipt: true\n      need: []\n      save: snapshot\n",
+            ).expect("delivery task container should be valid YAML"));
+        }
+        serde_yaml::to_string(&document).expect("updated gate fixture profile should serialize")
     }
 
     fn task(&self) -> &TaskHarness {
@@ -207,7 +238,12 @@ impl GateAstHarness {
     fn restore_profile(&mut self, profile: &str) {
         drop(self.task.take());
         self.baseline.restore(&self.workspace);
-        self.workspace.write(".forge/acdd/profile.yaml", profile);
+        let profile = if profile.starts_with("inherit:") {
+            profile.to_owned()
+        } else {
+            format!("inherit: none\n{profile}")
+        };
+        self.workspace.write(".forge/acdd/profile.yaml", &profile);
         self.task = Some(TaskHarness::attach(&self.workspace, &self.id));
     }
 
@@ -318,7 +354,7 @@ fn case_specialized_dispatch_skips_reviews_owned_by_the_builder() {
     assert!(harness
         .task_mut()
         .store
-        .next("worker", &worktree, Some(&worker_session), |_, _| Ok(()))
+        .next("worker", &worktree, Some(&worker_session), |_, _, _| Ok(()))
         .unwrap()
         .is_none());
     let reviewer_session = TaskHarness::session_for("reviewer");
@@ -330,7 +366,7 @@ fn case_specialized_dispatch_skips_reviews_owned_by_the_builder() {
                 "reviewer",
                 &worktree,
                 Some(&reviewer_session),
-                |_, _| Ok(()),
+                |_, _, _| Ok(()),
             )
             .unwrap()
             .unwrap()
@@ -420,9 +456,14 @@ fn case_durable_template_receipt_selects_canonical_candidate_and_review_paths() 
 }
 
 fn case_specialized_delivery_receipt_retains_track_through_sync_and_recovery() {
-    let mut profile = "version: 2\nroles:\n  worker: {mode: subagent}\ngates:\n".to_owned();
+    let mut profile = "inherit: none\nversion: 2\nroles:\n  worker: {mode: subagent}\ncommands:\n  test:\n    command: 'true'\nguidance:\n  contour.paths: {description: Paths, criteria: [Review path changes]}\n  contour.claims: {description: Claims, criteria: [Review claim behavior]}\n  contour.concurrency: {description: Concurrency, criteria: [Review concurrent updates]}\n  contour.project_isolation: {description: Project isolation, criteria: [Review project boundaries]}\n  contour.administration: {description: Administration, criteria: [Review administrative behavior]}\ngates:\n".to_owned();
     for (track, condition, proof) in [("code", "code", "command"), ("docs", "doc", "none")] {
-        profile.push_str(&format!("  - id: {track}\n    tasks:\n      when: {condition}\n      gates:\n        - id: candidate\n          role: worker\n          proof: {proof}\n          save: snapshot\n        - id: review\n          role: worker\n          proof: review\n          contours: guidance.contours\n          independent_from: candidate\n          fail: candidate\n        - id: deliver\n          role: worker\n          receipt: true\n          need: [review]\n          auto_commit: false\n"));
+        let command = if proof == "command" {
+            "          command: test\n"
+        } else {
+            ""
+        };
+        profile.push_str(&format!("  - id: {track}\n    tasks:\n      when: {condition}\n      gates:\n        - id: candidate\n          role: worker\n          proof: {proof}\n{command}          save: snapshot\n        - id: review\n          role: worker\n          proof: review\n          contours: guidance.contours\n          independent_from: candidate\n          fail: candidate\n        - id: deliver\n          role: worker\n          proof: delivery\n          receipt: true\n          review_sources: [review]\n          auto_commit: false\n"));
     }
     let manifest = "---\nid: m-tracks\ntitle: Track receipts\nstatus: active\n---\n```yaml\ntask_ref: first\ntarget: Deliver documentation\nproof_policy: direct-proof\nscope: [docs/guide.md]\n```\n";
     let mut harness = GateAstHarness::fixture(
@@ -481,9 +522,16 @@ fn case_specialized_delivery_receipt_retains_track_through_sync_and_recovery() {
 }
 
 fn case_delivery_preserves_multiple_review_source_keys_after_candidate_substitution() {
-    let profile = r#"version: 2
+    let profile = r#"inherit: none
+version: 2
 roles:
   worker: {mode: subagent}
+guidance:
+  contour.paths: {description: Paths, criteria: [Review path changes]}
+  contour.claims: {description: Claims, criteria: [Review claim behavior]}
+  contour.concurrency: {description: Concurrency, criteria: [Review concurrent updates]}
+  contour.project_isolation: {description: Project isolation, criteria: [Review project boundaries]}
+  contour.administration: {description: Administration, criteria: [Review administrative behavior]}
 gates:
   - tasks:
       gates:
@@ -515,10 +563,12 @@ gates:
               contours: guidance.contours
         - id: deliver
           role: worker
+          proof: delivery
           receipt: true
           need: [review, security]
           auto_commit: false
  "#;
+    contextunity_forge_mcp::core::tasks::profile::validate_profile_document(profile).unwrap();
     let manifest = "---\nid: m-reviews\ntitle: Multiple reviews\nstatus: active\n---\n```yaml\ntask_ref: first\ntarget: Preserve review identities\nproof_policy: direct-proof\nscope: [src/]\n```\n";
     let mut harness = GateAstHarness::fixture(
         profile,
@@ -562,5 +612,9 @@ fn track_snapshot_gate_cases() {
 fn delivery_receipt_gate_cases() {
     case_durable_template_receipt_selects_canonical_candidate_and_review_paths();
     case_specialized_delivery_receipt_retains_track_through_sync_and_recovery();
+}
+
+#[test]
+fn nested_seam_delivery_preserves_review_sources_after_candidate_substitution() {
     case_delivery_preserves_multiple_review_source_keys_after_candidate_substitution();
 }

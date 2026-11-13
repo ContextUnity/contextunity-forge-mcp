@@ -630,8 +630,11 @@ fn active_profile_path(root: &Path) -> String {
     }
     if root.join(".forge/acdd/profile.yaml").is_file() {
         ".forge/acdd/profile.yaml".to_owned()
-    } else if root.join("src/core/tasks/acdd.default.yaml").is_file() {
-        "src/core/tasks/acdd.default.yaml".to_owned()
+    } else if root
+        .join("crates/forge-tasks/src/tasks/acdd.default.yaml")
+        .is_file()
+    {
+        "crates/forge-tasks/src/tasks/acdd.default.yaml".to_owned()
     } else {
         "<embedded:acdd.default.yaml>".to_owned()
     }

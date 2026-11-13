@@ -565,10 +565,9 @@ fn matches_failure_signature(
 ) -> bool {
     match facts {
         Some(facts) => facts.expected_signature.as_deref() == Some(expected),
-        None => trace
-            .output_snippet
-            .as_deref()
-            .is_some_and(|output| output.len() <= 2048 && output.contains(expected)),
+        None => trace.output_snippet.as_deref().is_some_and(|output| {
+            output.len() <= forge_core::config::MAX_METADATA_BYTES && output.contains(expected)
+        }),
     }
 }
 
@@ -643,7 +642,7 @@ pub(super) fn telemetry_passport_note(
             log
         ));
     }
-    truncate_utf8(&mut note, 2048);
+    truncate_utf8(&mut note, forge_core::config::MAX_METADATA_BYTES);
     Ok(note)
 }
 
@@ -713,7 +712,7 @@ fn contract_proof(
     }))
 }
 
-fn command_proof(
+pub(super) fn command_proof(
     run: &ClaimBoundExecutionRun,
     traces: &[ClaimBoundExecutionTrace],
     gate: &crate::tasks::profile::GateDef,
@@ -799,7 +798,7 @@ fn command_proof(
     let mut proof = json!({
         "command": registered_name,
         "exit_code": 0,
-        "log": bounded_string(&log, 64 * 1024),
+        "log": bounded_string(&log, profile.max_log_bytes()),
     });
     if let Some(passed) = passed {
         proof["tests_passed"] = json!(passed);
@@ -1071,7 +1070,7 @@ fn truncate_utf8(value: &mut String, max_bytes: usize) {
 
 #[cfg(test)]
 mod trace_log_tests {
-    use super::{read_trace_log, validate_contract_failure_signature};
+    use super::{read_trace_log, telemetry_passport_note, validate_contract_failure_signature};
     use crate::{
         store::{CommandExecutionProof, GateExecutionTrace},
         tasks::profile::ExpectedFailure,
@@ -1182,5 +1181,12 @@ mod trace_log_tests {
         let error = read_trace_log(root.path(), &trace(".forge/trace.log")).unwrap_err();
 
         assert!(error.to_string().contains("contains a symlink"));
+    }
+
+    #[test]
+    fn telemetry_passport_note_enforces_configured_limit() {
+        let traces = vec![trace("trace.log")];
+        let note_default = telemetry_passport_note("task-1", &traces, "1 file changed").unwrap();
+        assert!(note_default.len() <= forge_core::config::MAX_METADATA_BYTES);
     }
 }

@@ -41,12 +41,6 @@ guidance:
         );
     }
 
-    let v2 = validate_profile_document(include_str!(
-        "../../../docs/future/references/acdd_profile.v2.yaml.example"
-    ))
-    .expect("the v2 profile example should satisfy the production validators");
-    assert_eq!(v2.version, Some(2));
-
     let canonical_example = validate_profile_document(include_str!(
         "../../../skills/contextunity-forge/references/acdd_profile.yaml.example"
     ))
@@ -70,21 +64,75 @@ guidance:
     ))
     .expect("the workflow profile example should satisfy production validators");
     assert_eq!(workflow_example.version, Some(2));
+    for (name, yaml) in [
+        (
+            "documentation-graph-refactor.yaml",
+            include_str!(
+                "../../../skills/contextunity-forge/references/acdd-profile-examples/documentation-graph-refactor.yaml"
+            ),
+        ),
+        (
+            "fullstack-commerce-django-playwright.yaml",
+            include_str!(
+                "../../../skills/contextunity-forge/references/acdd-profile-examples/fullstack-commerce-django-playwright.yaml"
+            ),
+        ),
+        (
+            "infrastructure-deploy-database.yaml",
+            include_str!(
+                "../../../skills/contextunity-forge/references/acdd-profile-examples/infrastructure-deploy-database.yaml"
+            ),
+        ),
+        (
+            "legacy-plans-to-milestones-migration.yaml",
+            include_str!(
+                "../../../skills/contextunity-forge/references/acdd-profile-examples/legacy-plans-to-milestones-migration.yaml"
+            ),
+        ),
+        (
+            "multirepo-umbrella-cross-service.yaml",
+            include_str!(
+                "../../../skills/contextunity-forge/references/acdd-profile-examples/multirepo-umbrella-cross-service.yaml"
+            ),
+        ),
+        (
+            "seam-logger-and-event-telemetry.yaml",
+            include_str!(
+                "../../../skills/contextunity-forge/references/acdd-profile-examples/seam-logger-and-event-telemetry.yaml"
+            ),
+        ),
+        (
+            "test-suite-refactor.yaml",
+            include_str!(
+                "../../../skills/contextunity-forge/references/acdd-profile-examples/test-suite-refactor.yaml"
+            ),
+        ),
+    ] {
+        let parsed = validate_profile_document(yaml).unwrap_or_else(|error| {
+            panic!("domain profile example '{name}' failed validation: {error}")
+        });
+        assert_eq!(parsed.version, Some(2), "{name} should be v2");
+    }
     assert_eq!(
-        v2.commands["check_task"].command_for_path("src/lib.rs"),
-        Some(
-            "cargo clippy --lib --test {scope_target} && cargo test --test {scope_target} -- --nocapture"
-        )
+        canonical_example.commands["rust-check-and-test"].command_for_path("src/lib.rs"),
+        Some("cargo clippy --all-targets --all-features -- -D warnings && cargo test")
     );
     assert_eq!(
-        v2.commands["check_task"].command_for_path("web/pages/home.tsx"),
-        Some("npm run typecheck && npm test -- {scope_target}")
+        canonical_example.commands["rust-check-and-test"].command_for_path("web/pages/home.tsx"),
+        Some("npm test")
     );
     assert_eq!(
-        v2.commands["check_task"].command_for_path("README.md"),
+        canonical_example.commands["rust-check-and-test"].command_for_path("README.md"),
         None
     );
-    assert_eq!(v2.gates[0].driver(), Some(GateDriver::Agent));
+    assert_eq!(
+        canonical_example.gates[0].driver(),
+        Some(GateDriver::Container)
+    );
+    assert_eq!(
+        canonical_example.gates[0].gates[0].driver(),
+        Some(GateDriver::Agent)
+    );
     let valid_bindings = [
         (
             "fully qualified override",
@@ -109,7 +157,7 @@ guidance:
         ("empty overrides", Default::default()),
     ];
     for (case, bindings) in valid_bindings {
-        let issues = v2
+        let issues = canonical_example
             .validate_guidance_bindings(&bindings)
             .expect("guidance binding validation should succeed");
         assert!(issues.is_empty(), "{case}: {issues:?}");
@@ -139,16 +187,22 @@ guidance:
     ];
     for (case, bindings) in invalid_bindings {
         assert!(
-            v2.validate_guidance_bindings(&bindings).is_err(),
+            canonical_example
+                .validate_guidance_bindings(&bindings)
+                .is_err(),
             "{case} should be rejected"
         );
     }
-    let contract_gate = &v2.gates[1].tasks.as_ref().expect("tasks container").gates[0];
+    let contract_gate = &canonical_example.gates[1]
+        .tasks
+        .as_ref()
+        .expect("tasks container")
+        .gates[0];
     for bindings in [
         [("hitl.pro".to_owned(), "hitl.paranoic".to_owned())].into(),
         [("hitl".to_owned(), "paranoic".to_owned())].into(),
     ] {
-        let resolved = v2.resolve_gate_guidance(contract_gate, &bindings);
+        let resolved = canonical_example.resolve_gate_guidance(contract_gate, &bindings);
         assert!(
             resolved
                 .iter()
@@ -156,14 +210,16 @@ guidance:
             "resolved guidance should contain the case-insensitive override"
         );
     }
-    let standard_contours = v2.contour_set(None).expect("standard contour set exists");
+    let standard_contours = canonical_example
+        .contour_set(None)
+        .expect("standard contour set exists");
     assert_eq!(
         standard_contours["paths"].description,
-        v2.guidance["contour.paths"].text()
+        canonical_example.guidance["contour.paths"].text()
     );
     assert_eq!(
         standard_contours["paths"].criteria,
-        v2.guidance["contour.paths"].criteria()
+        canonical_example.guidance["contour.paths"].criteria()
     );
     assert!(validate_profile_document(
         "version: 2\nroles:\n  worker: {}\ngates:\n  - id: symbols\n    role: worker\n    proof: none\n    symbols: [not-a-symbol-coordinate]\n"
@@ -187,7 +243,7 @@ gates:
     role: worker
     proof: delivery
 "#;
-    assert!(validate_profile_document(alias_conditions).is_ok());
+    assert!(validate_profile_document(&format!("inherit: none\n{alias_conditions}")).is_ok());
 
     let invalid_profiles = [
         (
@@ -364,7 +420,7 @@ concurrency:
     let validated = contextunity_forge_mcp::cli::validate::run(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")),
         Some(std::path::Path::new(
-            "docs/future/references/acdd_profile.v2.yaml.example",
+            "docs/reference/acdd_profile.yaml.example",
         )),
     )
     .unwrap();

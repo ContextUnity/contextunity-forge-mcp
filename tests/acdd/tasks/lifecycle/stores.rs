@@ -166,7 +166,7 @@ fn dedicated_store_rejects_index_and_unknown_schema_without_ddl() {
 }
 
 #[test]
-fn task_store_schema_v5_migrates_and_allows_reader_during_write() {
+fn task_store_v7_schema_rejects_stale_versions_fail_closed_and_allows_reader_during_write() {
     let root = TaskHarness::recovery_workspace();
     let current = root.root().join("current.sqlite");
     drop(TasksStore::open(&current).expect("empty DB should initialize as schema v7"));
@@ -182,36 +182,72 @@ fn task_store_schema_v5_migrates_and_allows_reader_during_write() {
     assert_eq!(schema_version, "7");
     reopened
         .connection
-        .execute_batch(
-            "DROP TABLE milestone_tombstones;
-             UPDATE task_store_metadata SET value='5' WHERE key='schema_version';",
-        )
-        .unwrap();
-    drop(reopened);
-
-    let migrated = TasksStore::open(&current).unwrap();
-    let schema_version: String = migrated
-        .connection
-        .query_row(
-            "SELECT value FROM task_store_metadata WHERE key='schema_version'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(schema_version, "7");
-    let tombstones: i64 = migrated
-        .connection
-        .query_row("SELECT COUNT(*) FROM milestone_tombstones", [], |row| {
-            row.get(0)
-        })
-        .unwrap();
-    assert_eq!(tombstones, 0);
-    migrated
-        .connection
         .execute_batch("BEGIN IMMEDIATE")
         .unwrap();
-    drop(TasksStore::open(&current).expect("v6 open must not acquire the writer lock"));
-    migrated.connection.execute_batch("ROLLBACK").unwrap();
+    drop(TasksStore::open(&current).expect("v7 open must not acquire the writer lock"));
+    reopened.connection.execute_batch("ROLLBACK").unwrap();
+    drop(reopened);
+
+    for stale_version in ["5", "6"] {
+        let conn = rusqlite::Connection::open(&current).unwrap();
+        conn.execute(
+            "UPDATE task_store_metadata SET value=?1 WHERE key='schema_version'",
+            [stale_version],
+        )
+        .unwrap();
+        drop(conn);
+        let err = match TasksStore::open(&current) {
+            Err(err) => err.to_string(),
+            Ok(_) => panic!("stale schema version {stale_version} must fail closed"),
+        };
+        assert!(
+            err.contains("unsupported tasks schema; use recovery tooling"),
+            "unexpected error for version {stale_version}: {err}"
+        );
+    }
+}
+
+#[test]
+fn task_store_incompatible_trace_schema_fails_closed_without_dropping_tables() {
+    let root = TaskHarness::recovery_workspace();
+    let database = root.root().join("legacy-trace.sqlite");
+    drop(TasksStore::open(&database).expect("fresh DB initializes at schema v7"));
+
+    let connection = rusqlite::Connection::open(&database).unwrap();
+    connection
+        .execute_batch(
+            "DROP TABLE command_execution_proofs;
+             DROP TABLE gate_execution_traces;
+             CREATE TABLE gate_execution_traces (id INTEGER PRIMARY KEY);
+             CREATE TABLE command_execution_proofs (id INTEGER PRIMARY KEY);
+             UPDATE task_store_metadata SET value = '6' WHERE key = 'schema_version';",
+        )
+        .unwrap();
+    drop(connection);
+
+    let err = match TasksStore::open(&database) {
+        Err(err) => err.to_string(),
+        Ok(_) => panic!("expected fail-closed schema error"),
+    };
+    assert!(
+        err.contains("unsupported tasks schema; use recovery tooling"),
+        "expected fail-closed schema error, got: {err}"
+    );
+
+    let reopened = rusqlite::Connection::open(&database).unwrap();
+    for table in ["command_execution_proofs", "gate_execution_traces"] {
+        let exists: bool = reopened
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?1)",
+                [table],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            exists,
+            "{table} must not be dropped when schema migration fails"
+        );
+    }
 }
 
 #[test]

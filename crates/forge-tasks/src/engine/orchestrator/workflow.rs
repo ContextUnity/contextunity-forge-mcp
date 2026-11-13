@@ -3,7 +3,8 @@ use crate::{
     engine::gate_graph,
     milestones::command_gate::{observe_command, resolve_command_plan},
     tasks::profile::{
-        validate_profile_document, GateDef, GateDriver, GateProfile, PersistenceAction, ProofKind,
+        validate_profile_document, GateDef, GateDriver, GateProfile, PersistenceAction, ProofDef,
+        ProofKind,
     },
 };
 use anyhow::{bail, ensure, Context, Result};
@@ -53,7 +54,12 @@ pub fn resolve_workflow(root: &Path, selector: &str) -> Result<PathBuf> {
         .into_iter()
         .filter(|path| {
             path.to_str() == Some(selector)
-                || path.file_stem().and_then(|name| name.to_str()) == Some(selector)
+                || path
+                    .file_stem()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|stem| {
+                        stem == selector || stem.strip_suffix(".workflow") == Some(selector)
+                    })
         })
         .collect::<Vec<_>>();
     match matches.as_slice() {
@@ -125,18 +131,24 @@ pub fn run_standalone_workflow(root: &Path, path: &Path) -> Result<Value> {
             "WORKFLOW_SAVE_INVALID: gate cannot persist standalone workflow state"
         );
     }
-    let paths = vec![path.to_string_lossy().into_owned()];
+    let paths = standalone_workflow_scope(path, &profile);
     let mut roles = RoleObservations::default();
-    let outcomes = run_gate_graph(root, &paths, &cursors, |cursor, _| {
+    let mut artifact_tokens = BTreeMap::<String, String>::new();
+    let outcomes = run_gate_graph(root, &paths, &[], &cursors, |cursor, _| {
+        roles.note_executed(&cursor.canonical_stage_id);
         if cursor.gate.driver() == Some(GateDriver::Agent) {
-            return roles.execute(
+            let decision = roles.execute(
                 root,
                 &path.to_string_lossy(),
                 &format!("Execute standalone workflow {}", path.display()),
                 &paths,
                 cursor,
                 &profile,
-            );
+            )?;
+            if decision.passed {
+                collect_artifact_tokens(&decision.evidence, &mut artifact_tokens);
+            }
+            return Ok(decision);
         }
         let name = cursor
             .gate
@@ -155,6 +167,7 @@ pub fn run_standalone_workflow(root: &Path, path: &Path) -> Result<Value> {
         let mut passed = true;
         let mut observations = Vec::new();
         for (command_id, command, timeout) in plan {
+            let command = expand_workflow_placeholders(&command, &artifact_tokens)?;
             let observation = observe_command(root, &command, timeout, definition.output())?;
             passed &= observation["exit_code"] == 0 && observation["timed_out"] == false;
             observations.push(json!({"command_id": command_id, "observation": observation}));
@@ -177,15 +190,55 @@ pub(super) struct GateDecision {
     pub findings: Option<Value>,
 }
 
+fn standalone_workflow_scope(path: &Path, profile: &GateProfile) -> Vec<String> {
+    let mut scopes = Vec::new();
+    let mut push_unique = |entry: &str| {
+        if !scopes.iter().any(|existing| existing == entry) {
+            scopes.push(entry.to_owned());
+        }
+    };
+    let has_field_or_token = |tokens: &[&str]| {
+        profile.commands.values().any(|command| {
+            tokens
+                .iter()
+                .any(|token| command.command().contains(&format!("{{{token}}}")))
+        }) || profile.gates.iter().any(|gate| {
+            if let ProofDef::Scheme { scheme } = &gate.proof {
+                scheme
+                    .properties
+                    .keys()
+                    .any(|key| tokens.contains(&key.as_str()))
+            } else {
+                false
+            }
+        })
+    };
+    if has_field_or_token(&["plan_name", "plan_slug", "plan_path"]) {
+        push_unique("docs/plans/");
+    }
+    if has_field_or_token(&["manifest_path", "milestone_id"]) {
+        push_unique("docs/milestones/");
+    }
+    if has_field_or_token(&["workflow_name", "workflow_path"]) {
+        push_unique("docs/workflows/");
+    }
+    drop(push_unique);
+    if scopes.is_empty() {
+        scopes.push(path.to_string_lossy().into_owned());
+    }
+    scopes
+}
+
 /// Route subject-neutral observations through the canonical gate cursor graph.
 pub(super) fn run_gate_graph(
     root: &Path,
     paths: &[String],
+    tasks: &[crate::store::Task],
     cursors: &[gate_graph::GateCursor],
     mut execute: impl FnMut(&gate_graph::GateCursor, u32) -> Result<GateDecision>,
 ) -> Result<Vec<Value>> {
     let applicable = |cursor: &gate_graph::GateCursor| {
-        gate_graph::gate_condition_matches(cursor.when.as_deref(), paths, &[], None, Some(root))
+        gate_graph::gate_condition_matches(cursor.when.as_deref(), paths, tasks, None, Some(root))
     };
     let mut next = cursors.iter().position(applicable);
     let mut attempts = BTreeMap::<usize, u32>::new();
@@ -228,4 +281,191 @@ pub(super) fn run_gate_graph(
         };
     }
     Ok(outcomes)
+}
+
+fn collect_artifact_tokens(evidence: &Value, tokens: &mut BTreeMap<String, String>) {
+    let source = evidence
+        .pointer("/proof/scheme_proof")
+        .or_else(|| evidence.get("proof"))
+        .and_then(Value::as_object);
+    let Some(map) = source else {
+        return;
+    };
+    for (key, value) in map {
+        if let Some(text) = value.as_str() {
+            tokens.insert(key.clone(), text.to_owned());
+        }
+    }
+    if let Some(slug) = map.get("plan_slug").and_then(Value::as_str) {
+        if !map.contains_key("plan_name") {
+            tokens.insert("plan_name".to_owned(), slug.to_owned());
+        }
+    }
+    if let Some(name) = map.get("plan_name").and_then(Value::as_str) {
+        if !map.contains_key("plan_slug") {
+            tokens.insert("plan_slug".to_owned(), name.to_owned());
+        }
+    }
+}
+
+pub(crate) fn expand_workflow_placeholders(
+    command: &str,
+    tokens: &BTreeMap<String, String>,
+) -> Result<String> {
+    let mut output = String::with_capacity(command.len());
+    let mut rest = command;
+    while let Some(start) = rest.find('{') {
+        output.push_str(&rest[..start]);
+        let after_start = &rest[start + 1..];
+        let Some(end) = after_start.find('}') else {
+            output.push('{');
+            rest = after_start;
+            continue;
+        };
+        let key = &after_start[..end];
+        if key.is_empty()
+            || !key
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+        {
+            output.push_str(&rest[start..start + 1 + end + 1]);
+            rest = &after_start[end + 1..];
+            continue;
+        }
+        let value = tokens.get(key).with_context(|| {
+            format!(
+                "WORKFLOW_COMMAND_UNRESOLVED: placeholder '{{{key}}}' requires accepted prior gate field '{key}'"
+            )
+        })?;
+        ensure!(
+            !value.is_empty()
+                && !value.starts_with('-')
+                && !value.starts_with('/')
+                && !value.contains("..")
+                && value
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | '/')),
+            "WORKFLOW_COMMAND_INVALID: artifact placeholder '{key}' contains unsafe characters"
+        );
+        output.push_str(value);
+        rest = &after_start[end + 1..];
+    }
+    output.push_str(rest);
+    Ok(output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn workflow_placeholders_substitute_authoring_artifacts_and_reject_unsafe_values() {
+        let mut tokens = BTreeMap::new();
+        collect_artifact_tokens(
+            &json!({
+                "proof": {
+                    "scheme_proof": {
+                        "manifest_path": "docs/milestones/001-demo.md",
+                        "plan_slug": "step-plan",
+                        "workflow_name": "author-milestone"
+                    }
+                }
+            }),
+            &mut tokens,
+        );
+
+        assert_eq!(
+            expand_workflow_placeholders(
+                "contextunity-forge-mcp milestone init {manifest_path} --in-place",
+                &tokens
+            )
+            .unwrap(),
+            "contextunity-forge-mcp milestone init docs/milestones/001-demo.md --in-place"
+        );
+        assert_eq!(
+            expand_workflow_placeholders("contextunity-forge-mcp plan show {plan_name}", &tokens)
+                .unwrap(),
+            "contextunity-forge-mcp plan show step-plan"
+        );
+        assert_eq!(
+            expand_workflow_placeholders(
+                "contextunity-forge-mcp workflow show {workflow_name}",
+                &tokens
+            )
+            .unwrap(),
+            "contextunity-forge-mcp workflow show author-milestone"
+        );
+
+        // Re-synthesizing plan_slug refreshes derived plan_name alias cleanly.
+        collect_artifact_tokens(
+            &json!({
+                "proof": {
+                    "scheme_proof": {
+                        "plan_slug": "updated-plan"
+                    }
+                }
+            }),
+            &mut tokens,
+        );
+        assert_eq!(
+            expand_workflow_placeholders("contextunity-forge-mcp plan show {plan_name}", &tokens)
+                .unwrap(),
+            "contextunity-forge-mcp plan show updated-plan"
+        );
+
+        let missing = expand_workflow_placeholders(
+            "contextunity-forge-mcp plan show {missing_field}",
+            &tokens,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(missing.contains("WORKFLOW_COMMAND_UNRESOLVED"), "{missing}");
+
+        for bad_value in [
+            "docs/milestones/bad.md;rm -rf /",
+            "--help",
+            "-h",
+            "/etc/passwd",
+            "../secret",
+        ] {
+            tokens.insert("plan_name".into(), bad_value.into());
+            let unsafe_err = expand_workflow_placeholders(
+                "contextunity-forge-mcp plan show {plan_name}",
+                &tokens,
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(
+                unsafe_err.contains("WORKFLOW_COMMAND_INVALID"),
+                "expected rejection for {bad_value}, got: {unsafe_err}"
+            );
+        }
+
+        // Actual workflow resolver matches stem without `.workflow` cleanly.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("docs/workflows")).unwrap();
+        std::fs::write(
+            dir.path()
+                .join("docs/workflows/author-milestone.workflow.yaml"),
+            "version: 2\n",
+        )
+        .unwrap();
+        assert_eq!(
+            resolve_workflow(dir.path(), "author-milestone").unwrap(),
+            PathBuf::from("docs/workflows/author-milestone.workflow.yaml")
+        );
+
+        let plan_wf_path = Path::new("docs/workflows/author-plan.workflow.yaml");
+        let plan_wf_yaml = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../..")
+                .join(plan_wf_path),
+        )
+        .unwrap();
+        let plan_profile = crate::tasks::profile::validate_profile_document(&plan_wf_yaml).unwrap();
+        assert_eq!(
+            standalone_workflow_scope(plan_wf_path, &plan_profile),
+            vec!["docs/plans/".to_owned()]
+        );
+    }
 }

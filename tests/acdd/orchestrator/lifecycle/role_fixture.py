@@ -37,13 +37,29 @@ if mode == "sleep":
 
 
 def forge(*args):
+    clean_env = dict(os.environ)
+    for var in (
+        "FORGE_CONFIG",
+        "FORGE_PROFILE",
+        "FORGE_DB",
+        "FORGE_WORKSPACE_ROOT",
+        "FORGE_AGENT_SESSION_ID",
+    ):
+        clean_env.pop(var, None)
     result = subprocess.run(
         [executable, "--root", str(root), "--format", "json", "task", *args],
         cwd=root,
+        env=clean_env,
         capture_output=True,
         text=True,
-        check=True,
     )
+    if result.returncode != 0:
+        sys.stderr.write(
+            f"forge {' '.join(args)} FAILED (code {result.returncode}):\n"
+            f"STDOUT:\n{result.stdout}\n"
+            f"STDERR:\n{result.stderr}\n"
+        )
+        sys.exit(result.returncode)
     return json.loads(result.stdout)
 
 

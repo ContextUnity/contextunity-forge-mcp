@@ -132,8 +132,21 @@ fn configured_output_observations_do_not_determine_process_success() {
         );
     }
 
-    let embedded = profile::compiled();
-    let registered = &embedded.commands["check_full_repo"];
+    let pattern_command: profile::CommandDef = serde_yaml::from_str(
+        r#"
+by_pattern:
+  "**/*.rs": "cargo test"
+  "**/*.py": "pytest"
+  "**/*.ts": "npm test"
+output:
+  counts:
+    passed: '(?m)\b(\d+) passed\b'
+    failed: '(?m)\b(\d+) failed\b'
+  require_counts: true
+"#,
+    )
+    .unwrap();
+    let registered = &pattern_command;
     for (path, summary) in [
         ("src/lib.rs", "test result: ok. 3 passed; 0 failed"),
         ("tests/test_api.py", "=== 3 passed in 0.1s ==="),
@@ -350,7 +363,7 @@ fn shipped_seam_command_reports_identities_without_authorizing_submission() {
     );
     root.write(
         ".forge/acdd/profile.yaml",
-        &serde_yaml::to_string(&fixture_profile).unwrap(),
+        &crate::acdd::support::standalone_profile_yaml(&fixture_profile),
     );
     super::support::commit_fixture_baseline(&root);
     super::support::tasks::manage(

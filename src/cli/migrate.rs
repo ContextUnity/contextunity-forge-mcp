@@ -81,15 +81,18 @@ fn reconcile(root: &Path, reference: &str, mode: &str) -> Result<Value> {
     if milestone.repository != repository || milestone.project != project {
         bail!("TASK_PROJECT_MISMATCH");
     }
+    let profile = crate::core::tasks::profile::load_for_workspace(root)
+        .unwrap_or_else(|_| crate::core::tasks::profile::compiled());
     for spec in &milestone.tasks {
         if spec.status.as_deref() == Some("completed")
             && !reference.split('/').any(|part| part == "archive")
         {
-            crate::core::tasks::gates::validate_durable_receipt(
+            crate::core::tasks::gates::validate_durable_receipt_with_profile(
                 spec.receipt
                     .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("TASK_RECEIPT_INVALID"))?,
                 spec.contract_revision,
+                &profile,
             )?;
         }
     }

@@ -27,9 +27,9 @@ receipt:
   contract_revision: 1
   passed_at: 2026-10-01T10:00:00Z
   evidence:
-    command_proof:
-      command: rust-check-and-test
+    seam_test_proof:
       exit_code: 0
+      seam_test_refs: [tests/acdd/tasks.rs]
       tests_passed: 1
       tests_failed: 0
   review:

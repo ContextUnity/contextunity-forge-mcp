@@ -928,6 +928,10 @@ fn forge_read_acdd_badges_and_hints_follow_the_unique_claimed_worktree() {
         {
             let profile = forge_tasks::tasks::profile::load_for_workspace(w.root()).unwrap();
             let mut profile = serde_json::to_value(profile.as_ref()).unwrap();
+            profile["inherit"] = json!("none");
+            if let Some(gates) = profile["gates"].as_array_mut() {
+                gates.retain(|g| g.get("tasks").is_some_and(|t| !t.is_null()));
+            }
             if let Some(gate) = profile["gates"]
                 .as_array_mut()
                 .and_then(|arr| arr.iter_mut().find(|g| g["id"] == "contract"))

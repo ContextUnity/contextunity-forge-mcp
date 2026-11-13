@@ -56,7 +56,7 @@ impl ForeignHandoffFixture {
         .unwrap();
         foreign_parent.write(
             "linked/.forge/acdd/profile.yaml",
-            &serde_yaml::to_string(&fixture_profile()).unwrap(),
+            &crate::acdd::support::standalone_profile_yaml(&fixture_profile()),
         );
         let selected_target = MilestoneHarness::git_text_at(&foreign, &["rev-parse", "HEAD"]);
         let documents: std::collections::BTreeMap<String, String> = serde_json::from_str(

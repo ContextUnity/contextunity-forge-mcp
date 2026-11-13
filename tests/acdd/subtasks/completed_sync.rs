@@ -23,7 +23,7 @@ fn completed_tasks_sync_and_inspect_without_panic() {
 
     // Deliver through the active profile so the final gate records its commit.
     let mut harness = TaskHarness::attach(&root, t1_id);
-    let expected_final_gate = harness.executable_gates().unwrap().len() - 1;
+    let expected_final_gate = harness.profile().unwrap().index_of("deliver").unwrap();
     let completed = harness.advance_to_completion().unwrap();
     assert_eq!(completed.status, "completed");
     assert_eq!(completed.gate, expected_final_gate);

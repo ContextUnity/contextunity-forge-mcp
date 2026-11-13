@@ -180,7 +180,9 @@ fn scope_extension_rejects_paths_owned_by_sibling_tasks_and_admits_unowned_tests
         commit: None,
         contract_revision: 1,
         passed_at: "2026-10-10T00:00:00Z".into(),
-        evidence: json!({"command_proof":{"command":"rust-check-and-test","exit_code":0,"tests_passed":1,"tests_failed":0}}),
+        evidence: json!({
+            "seam_test_proof":{"exit_code":0,"seam_test_refs":["tests/acdd/tasks.rs"],"tests_passed":1,"tests_failed":0}
+        }),
         review: passing_review_proof(),
         decision: "pass".into(),
         rollup: None,
@@ -214,11 +216,13 @@ fn scope_extension_rejects_paths_owned_by_sibling_tasks_and_admits_unowned_tests
     .unwrap();
     assert_eq!(extended["status"], "in_progress");
 
+    let standalone_profile = "inherit: none\nroles:\n  contract_author: { mode: inline }\n  builder: { mode: inline }\n  independent_reviewer: { mode: inline }\nguidance:\n  contour.paths: \"Paths\"\n  contour.claims: \"Claims\"\n  contour.concurrency: \"Concurrency\"\n  contour.project_isolation: \"Project isolation\"\n  contour.administration: \"Administration\"\ngates:\n  - id: contract\n    role: contract_author\n    proof: none\n  - id: build\n    role: builder\n    proof: none\n  - id: review\n    role: independent_reviewer\n    proof: review\n    contours: guidance.contours\n  - id: deliver\n    role: independent_reviewer\n    proof: delivery\n    need: [review]\n    receipt: true\n";
+
     for tracked in [false, true] {
         let root = acdd_workspace(DEFAULT_SEAM, "");
         root.write("src/lib.rs", "pub fn protected() {}\n");
         root.write(".git/info/exclude", "");
-        root.write(".forge/acdd/profile.yaml", "\n");
+        root.write(".forge/acdd/profile.yaml", standalone_profile);
         root.write(
             "forge-mcp.yaml",
             "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
@@ -243,7 +247,10 @@ fn scope_extension_rejects_paths_owned_by_sibling_tasks_and_admits_unowned_tests
                 "{}",
                 String::from_utf8_lossy(&committed.stderr)
             );
-            root.write(".forge/acdd/profile.yaml", "# changed after commit\n");
+            root.write(
+                ".forge/acdd/profile.yaml",
+                &format!("{standalone_profile}# changed after commit\n"),
+            );
         }
 
         let before = store.inspect(&task_id).unwrap();
@@ -267,7 +274,7 @@ fn scope_extension_rejects_paths_owned_by_sibling_tasks_and_admits_unowned_tests
     }
 
     let admitted_root = acdd_workspace(DEFAULT_SEAM, "");
-    admitted_root.write(".forge/acdd/profile.yaml", "\n");
+    admitted_root.write(".forge/acdd/profile.yaml", standalone_profile);
     admitted_root.write(
         "forge-mcp.yaml",
         "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",

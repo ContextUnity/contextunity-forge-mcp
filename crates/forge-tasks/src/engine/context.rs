@@ -27,6 +27,43 @@ fn empty_governing_invariants() -> Value {
     })
 }
 
+fn accepted_task_snapshot_sha(
+    store: &crate::store::TasksStore,
+    task_id: &str,
+    receipt_commit: Option<&str>,
+    snapshot_stages: &BTreeSet<String>,
+) -> Result<Option<String>> {
+    if let Some(commit) = receipt_commit {
+        return Ok(Some(commit.to_owned()));
+    }
+    if snapshot_stages.is_empty() {
+        return Ok(None);
+    }
+
+    let task_gates = store.task_gates(task_id)?;
+    let mut latest_by_stage = BTreeMap::new();
+    for (stage, revision, state, evidence) in task_gates.into_iter().rev() {
+        if snapshot_stages.contains(&stage) {
+            latest_by_stage
+                .entry(stage)
+                .or_insert((revision, state, evidence));
+        }
+    }
+    let Some((_, _, Some(payload))) = latest_by_stage
+        .into_values()
+        .filter(|(_, state, _)| state == "passed")
+        .max_by_key(|(revision, _, _)| *revision)
+    else {
+        return Ok(None);
+    };
+    let evidence: Value = serde_json::from_str(&payload)
+        .context("TASK_TRANSITION_INVALID: accepted snapshot evidence is malformed")?;
+    Ok(evidence
+        .get("commit")
+        .and_then(Value::as_str)
+        .map(str::to_owned))
+}
+
 fn open_code_map(workspace_root: &Path, root: &Path) -> Option<rusqlite::Connection> {
     let db_path = [
         workspace_root.join(".forge/code-map.sqlite"),
@@ -604,7 +641,7 @@ fn linked_milestone_context(
     Ok(linked)
 }
 
-fn validate_gate_requirements(
+pub(super) fn validate_gate_requirements(
     profile: &crate::tasks::profile::GateProfile,
     active_gate: Option<&crate::tasks::profile::GateDef>,
     modules: &crate::tasks::catalog::SubsystemRegistry,
@@ -638,7 +675,7 @@ fn validate_gate_requirements(
 pub(super) fn validate_claim_gate_requirements(workspace: &Workspace, task: &Task) -> Result<()> {
     let details = serde_json::to_value(task)?;
     let profile = workspace.profile_for_details(&details)?;
-    let adapter = crate::config::load_adapter(&workspace.root, None)
+    let adapter = crate::config::load_workspace_adapter(&workspace.root)
         .context("failed to resolve workspace subsystem configuration")?;
     let stage = if task.status == "completed" {
         "completed"
@@ -677,7 +714,7 @@ fn prune_blackboard_guidance(guidance: &mut Value) {
 
 /// Remove blackboard instructions from task details when the owning workspace disables it.
 pub(super) fn adapt_workspace_guidance(workspace: &Workspace, mut details: Value) -> Result<Value> {
-    let adapter = crate::config::load_adapter(&workspace.root, None)
+    let adapter = crate::config::load_workspace_adapter(&workspace.root)
         .context("failed to resolve workspace subsystem configuration")?;
     if !adapter.modules.is_enabled("blackboard") {
         if let Some(guidance) = details.get_mut("workflow_guidance") {
@@ -694,7 +731,35 @@ pub(super) fn context_bundle(
     mut details: Value,
 ) -> Result<Value> {
     let profile = workspace.profile_for_details(&details)?;
-    let adapter = crate::config::load_adapter(&workspace.root, None)
+    let registry = super::workspaces::Registry::load(root)?;
+    let proof_store = workspace.open(&registry.database)?;
+    let task = proof_store.inspect(task_id)?;
+    let root_profile =
+        super::lifecycle::resolve_milestone_profile_for_task(&proof_store, workspace, &task)?;
+    let inherited_gate_paths = super::lifecycle::pre_task_root_gate_paths(
+        &proof_store,
+        workspace,
+        &task,
+        &root_profile,
+        root,
+    )?;
+    let milestone_identity = super::lifecycle::milestone_identity_for_task(workspace, &task)?;
+    let inherited_transitions = proof_store.latest_task_proof_advances(
+        &milestone_identity,
+        task_id,
+        &inherited_gate_paths,
+    )?;
+    let inherited_proofs = inherited_transitions
+        .iter()
+        .map(|transition| {
+            json!({
+                "gate_path": transition.gate_path,
+                "proof_kind": transition.proof_kind,
+                "proof": transition.proof_payload,
+            })
+        })
+        .collect::<Vec<_>>();
+    let adapter = crate::config::load_workspace_adapter(&workspace.root)
         .context("failed to resolve workspace subsystem configuration")?;
     let modules = adapter.modules;
     let stage = if details.get("status").and_then(Value::as_str) == Some("completed") {
@@ -720,6 +785,15 @@ pub(super) fn context_bundle(
     let codemap_enabled = modules.is_enabled("codemap");
     let blackboard_enabled = modules.is_enabled("blackboard");
     let proof_kind = active_gate.and_then(|gate| gate.proof.kind());
+    let proof_schema = active_gate.and_then(|gate| gate.proof.resolve_schema(&profile.proofs));
+    let proof_kind_name = active_gate.map(|gate| {
+        proof_kind
+            .map(|kind| kind.as_str().to_owned())
+            .or_else(|| {
+                proof_schema.map(|_| gate.proof.catalog_name().unwrap_or("scheme").to_owned())
+            })
+            .unwrap_or_else(|| "none".to_owned())
+    });
     let gate_history = details
         .get("gates")
         .and_then(Value::as_array)
@@ -875,11 +949,78 @@ pub(super) fn context_bundle(
     let linked_milestones = linked_milestone_context(root, &details, &dependency_refs)?;
     let receipt = details.get("receipt").cloned();
 
+    let seam_partners = if active_cursor.as_ref().is_some_and(|cursor| {
+        cursor.gate.proof.kind() == Some(crate::tasks::profile::ProofKind::SeamTest)
+    }) {
+        let mut partner_refs = BTreeSet::new();
+        for transition in &inherited_transitions {
+            for (field, task_key) in [
+                ("incoming_seams", "source_task"),
+                ("outgoing_seams", "target_task"),
+            ] {
+                if let Some(edges) = transition
+                    .proof_payload
+                    .get(field)
+                    .and_then(Value::as_array)
+                {
+                    partner_refs.extend(edges.iter().filter_map(|edge| {
+                        edge.get(task_key)
+                            .and_then(Value::as_str)
+                            .map(str::to_owned)
+                    }));
+                }
+            }
+        }
+        let milestone_tasks = proof_store.list(Some(&task.milestone_ref), "all", None)?;
+        let tasks_by_ref = milestone_tasks
+            .iter()
+            .map(|partner| (partner.spec.task_ref.as_str(), partner))
+            .collect::<BTreeMap<_, _>>();
+        partner_refs
+            .into_iter()
+            .filter(|task_ref| task_ref != &task.spec.task_ref)
+            .map(|task_ref| {
+                let partner = tasks_by_ref.get(task_ref.as_str()).with_context(|| {
+                    format!("MILESTONE_TASK_PROOF_INVALID: unknown seam partner '{task_ref}'")
+                })?;
+                let partner_profile = proof_store.profile_for_task(partner)?;
+                let task_position =
+                    super::gate_graph::task_container_position(&partner_profile, Some(partner))?;
+                let snapshot_stages =
+                    super::gate_graph::collect_task_cursors(&partner_profile, Some(partner))?
+                        .into_iter()
+                        .filter(|cursor| {
+                            Some(cursor.root_index) == task_position && cursor.gate.sha_snapshot
+                        })
+                        .map(|cursor| cursor.stage_id)
+                        .collect::<BTreeSet<_>>();
+                let receipt_commit = partner
+                    .receipt
+                    .as_ref()
+                    .and_then(|receipt| receipt.commit.as_deref());
+                let snapshot_sha = accepted_task_snapshot_sha(
+                    &proof_store,
+                    &partner.task_id,
+                    receipt_commit,
+                    &snapshot_stages,
+                )?;
+                Ok(json!({
+                    "task_ref": task_ref,
+                    "task_id": partner.task_id,
+                    "stage": partner.stage,
+                    "status": partner.status,
+                    "snapshot_sha": snapshot_sha,
+                }))
+            })
+            .collect::<Result<Vec<_>>>()?
+    } else {
+        Vec::new()
+    };
+
     // 4. Active blackboard messages (bounded to 15 recent messages, with max 500-char payload and source tags)
     let blackboard_messages: Option<Vec<Value>> = if blackboard_enabled {
         Some({
-            let registry = super::workspaces::Registry::load(root)?;
-            let store = workspace.open(&registry.database)?;
+            let store = &proof_store;
             let task_namespace = task_id
                 .rsplit_once(':')
                 .map(|(namespace, _)| format!("{namespace}:"));
@@ -1000,6 +1141,7 @@ pub(super) fn context_bundle(
             .cloned()
             .unwrap_or_else(|| json!([]));
         guidance_map.insert("stage".into(), json!(stage));
+        guidance_map.insert("proof_kind".into(), json!(proof_kind_name));
         if let Some((role_id, role)) = active_gate
             .and_then(|gate| gate.role.as_deref())
             .and_then(|id| profile.roles.get(id).map(|role| (id, role)))
@@ -1115,28 +1257,32 @@ pub(super) fn context_bundle(
             json!(guidance_slot_warnings),
         );
         guidance_map.insert("linked_milestones".into(), json!(linked_milestones));
-        let proof_template = match proof_kind {
-            Some(crate::tasks::profile::ProofKind::Contract) => json!({
-                "contract_proof": {
-                    "seam_test_ref": "<indexed test file or symbol>",
-                    "red_exit_code": 101,
+        let proof_template = if proof_schema.is_some() {
+            json!({"scheme_proof": {}})
+        } else {
+            match proof_kind {
+                Some(crate::tasks::profile::ProofKind::Contract) => json!({
+                    "contract_proof": {
+                        "seam_test_ref": "<indexed test file or symbol>",
+                        "red_exit_code": 101,
+                    }
+                }),
+                Some(crate::tasks::profile::ProofKind::Command) => json!({
+                    "command_proof": {
+                        "command": "<registered command with scoped test target>",
+                        "exit_code": 0,
+                        "tests_passed": 1,
+                        "tests_failed": 0,
+                    }
+                }),
+                Some(crate::tasks::profile::ProofKind::Review) => json!({
+                    "review_proof": {"decision": "pass", "contours": "<one result per configured contour>"}
+                }),
+                Some(crate::tasks::profile::ProofKind::Delivery) => {
+                    json!({"delivery_proof": {"delivered": true}})
                 }
-            }),
-            Some(crate::tasks::profile::ProofKind::Command) => json!({
-                "command_proof": {
-                    "command": "<registered command with scoped test target>",
-                    "exit_code": 0,
-                    "tests_passed": 1,
-                    "tests_failed": 0,
-                }
-            }),
-            Some(crate::tasks::profile::ProofKind::Review) => json!({
-                "review_proof": {"decision": "pass", "contours": "<one result per configured contour>"}
-            }),
-            Some(crate::tasks::profile::ProofKind::Delivery) => {
-                json!({"delivery_proof": {"delivered": true}})
+                _ => json!({}),
             }
-            _ => json!({}),
         };
         guidance_map.insert(
             "expected_evidence_template".into(),
@@ -1195,11 +1341,13 @@ pub(super) fn context_bundle(
         }),
     );
     bundle_map.insert("guidance".into(), guidance.clone());
+    bundle_map.insert("inherited_proofs".into(), json!(inherited_proofs));
+    if !seam_partners.is_empty() {
+        bundle_map.insert("seam_partners".into(), json!(seam_partners));
+    }
 
-    if let Some(crate::tasks::profile::ProofDef::Scheme { scheme }) =
-        active_gate.map(|gate| &gate.proof)
-    {
-        bundle_map.insert("proof_schema".into(), serde_json::to_value(scheme)?);
+    if let Some(schema) = proof_schema {
+        bundle_map.insert("proof_schema".into(), serde_json::to_value(schema)?);
     }
 
     if codemap_enabled
@@ -1292,4 +1440,56 @@ pub(super) fn context_bundle(
     obj.insert("context_bundle".into(), bundle);
 
     Ok(details)
+}
+
+#[cfg(test)]
+mod accepted_task_snapshot_tests {
+    use super::*;
+
+    #[test]
+    fn partner_snapshot_uses_accepted_task_snapshot_evidence_not_root_fanout() -> Result<()> {
+        let store = crate::store::TasksStore::open_in_memory("repository", "project")?;
+        let milestone_id = "repository/project/milestone";
+        let task_id = "project/milestone:partner";
+        store.connection.execute(
+            "INSERT INTO tasks (task_id, milestone_ref, descriptor) VALUES (?1, ?2, ?3)",
+            rusqlite::params![task_id, "docs/milestones/milestone.md", "{}"],
+        )?;
+        let evidence = json!({"stage": "tasks.build", "commit": "candidate-commit"});
+        store.connection.execute(
+            "INSERT INTO task_gates (task_id, gate, revision, state, evidence)
+             VALUES (?1, ?2, 1, 'passed', ?3)",
+            rusqlite::params![task_id, "tasks.build", evidence.to_string()],
+        )?;
+        store.record_gate_transition(&crate::store::GateTransition {
+            milestone_id: milestone_id.into(),
+            subject: task_id.into(),
+            gate_path: "blueprint_synthesis.synthesize".into(),
+            action: "advance".into(),
+            proof_kind: "blueprint".into(),
+            proof_payload: json!({"goal": "inherited root slice"}),
+            git_tree_sha: "architect-tree-sha".into(),
+            worker_id: "architect".into(),
+        })?;
+
+        let snapshot_stages = BTreeSet::from(["tasks.build".to_owned()]);
+        let snapshot = accepted_task_snapshot_sha(&store, task_id, None, &snapshot_stages)?;
+
+        assert_eq!(snapshot.as_deref(), Some("candidate-commit"));
+        Ok(())
+    }
+
+    #[test]
+    fn completed_partner_snapshot_uses_its_receipt_commit() -> Result<()> {
+        let store = crate::store::TasksStore::open_in_memory("repository", "project")?;
+        let snapshot = accepted_task_snapshot_sha(
+            &store,
+            "project/milestone:partner",
+            Some("receipt-commit"),
+            &BTreeSet::new(),
+        )?;
+
+        assert_eq!(snapshot.as_deref(), Some("receipt-commit"));
+        Ok(())
+    }
 }

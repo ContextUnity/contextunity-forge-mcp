@@ -13,7 +13,12 @@ use crate::{
 use anyhow::{ensure, Context, Result};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::{collections::BTreeMap, io::Write, path::Path, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io::Write,
+    path::Path,
+    time::Duration,
+};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -33,13 +38,19 @@ struct RoleDecision {
 #[derive(Default)]
 pub(super) struct RoleObservations {
     sessions: BTreeMap<String, String>,
+    executed_gates: BTreeSet<String>,
     findings: Option<Value>,
     subject_context: Value,
     forbidden_sessions: Vec<String>,
 }
 
 impl RoleObservations {
+    pub(super) fn note_executed(&mut self, stage: &str) {
+        self.executed_gates.insert(stage.to_owned());
+    }
+
     pub(super) fn restore(&mut self, stage: &str, decision: &GateDecision) {
+        self.note_executed(stage);
         if let Some(session) = decision.evidence["session_id"].as_str() {
             self.sessions.insert(stage.to_owned(), session.to_owned());
         }
@@ -85,26 +96,33 @@ impl RoleObservations {
             !self.forbidden_sessions.contains(&session),
             "TASK_REVIEW_NOT_INDEPENDENT: role session matches an accepted milestone builder"
         );
-        if let Some(prior) = &cursor.gate.independent_from {
-            let prior = self
-                .sessions
-                .get(prior)
-                .or_else(|| {
-                    self.sessions.iter().find_map(|(stage, session)| {
-                        stage
-                            .rsplit('.')
-                            .next()
-                            .filter(|leaf| *leaf == prior)
-                            .map(|_| session)
-                    })
+        if let Some(prior_ref) = &cursor.gate.independent_from {
+            let prior_session = self.sessions.get(prior_ref).or_else(|| {
+                self.sessions.iter().find_map(|(stage, session)| {
+                    stage
+                        .rsplit('.')
+                        .next()
+                        .filter(|leaf| *leaf == prior_ref)
+                        .map(|_| session)
                 })
-                .context(
-                    "WORKFLOW_INDEPENDENCE_UNKNOWN: prior gate has no observed role session",
-                )?;
-            ensure!(
-                &session != prior,
-                "TASK_REVIEW_NOT_INDEPENDENT: role gate reused its predecessor session"
-            );
+            });
+            let prior_executed = self.executed_gates.contains(prior_ref)
+                || self.executed_gates.iter().any(|stage| {
+                    stage
+                        .rsplit('.')
+                        .next()
+                        .is_some_and(|leaf| leaf == prior_ref)
+                });
+            if let Some(prior) = prior_session {
+                ensure!(
+                    &session != prior,
+                    "TASK_REVIEW_NOT_INDEPENDENT: role gate reused its predecessor session"
+                );
+            } else if prior_executed {
+                anyhow::bail!(
+                    "WORKFLOW_INDEPENDENCE_UNKNOWN: prior gate has no observed role session"
+                );
+            }
         }
         let model = role.models.first();
         let context = json!({

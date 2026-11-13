@@ -49,26 +49,32 @@ pub fn run_milestone_waves(
     let text = fs::read_to_string(root.join(&reference))?;
     let milestone = registry.parse_milestone_manifest(workspace, &reference, &text)?;
     let waves = milestones::validate_wave_dag(&milestone)?;
-    let profile = workspace.gates.clone();
-    let task_containers = profile
-        .gates
-        .iter()
-        .enumerate()
-        .filter(|(_, gate)| gate.tasks.is_some())
-        .map(|(index, _)| index)
-        .collect::<Vec<_>>();
-    ensure!(
-        task_containers.len() == 1,
-        "MILESTONE_TASK_CONTAINER_INVALID: expected one task lifecycle container"
-    );
-    let task_position = task_containers[0];
-    let cursors = gate_graph::collect_root_cursors(&profile)?;
     let mut sync = engine::Manage {
         action: engine::ManageAction::Sync,
         ..Default::default()
     };
     sync.milestone_ref = Some(reference.clone());
     engine::manage(&root, sync)?;
+    let store = registry.open(workspace)?;
+    let synchronized_tasks = store.list(Some(&reference), "all", None)?;
+    let active_tasks = synchronized_tasks
+        .iter()
+        .filter(|task| task.status != "cancelled")
+        .cloned()
+        .collect::<Vec<_>>();
+    let task = active_tasks
+        .first()
+        .or_else(|| synchronized_tasks.first())
+        .context("MILESTONE_TASK_CONTAINER_INVALID: milestone has no tasks")?;
+    let profile = store.profile_for_milestone(
+        &root,
+        milestone.acdd_profile.as_deref(),
+        &workspace.gates,
+        &synchronized_tasks,
+    )?;
+    let cursors = gate_graph::collect_root_cursors(&profile)?;
+    let task_position = gate_graph::task_container_position(&profile, Some(task))?
+        .context("MILESTONE_TASK_CONTAINER_INVALID: no task lifecycle container applies")?;
     if !options.in_place {
         ensure!(clean_worktree(&root)?, "MILESTONE_ISOLATION_DIRTY: isolated dispatch requires a clean integrated milestone checkout");
     }
@@ -80,6 +86,20 @@ pub fn run_milestone_waves(
         .tasks
         .iter()
         .flat_map(|task| task.scope.iter().cloned())
+        .collect::<Vec<_>>();
+    let pre_task_required = cursors
+        .iter()
+        .filter(|cursor| {
+            cursor.root_index < task_position
+                && gate_graph::gate_condition_matches(
+                    cursor.when.as_deref(),
+                    &scope,
+                    &active_tasks,
+                    None,
+                    Some(&root),
+                )
+        })
+        .cloned()
         .collect::<Vec<_>>();
     let mut tasks_done = false;
     let mut verification: Option<Value> = None;
@@ -133,8 +153,14 @@ pub fn run_milestone_waves(
         route
     };
     let mut previous_observation = None;
-    let outcomes = run_gate_graph(&root, &scope, &cursors, |cursor, _| {
+    let outcomes = run_gate_graph(&root, &scope, &active_tasks, &cursors, |cursor, attempt| {
+        roles.note_executed(&cursor.canonical_stage_id);
         if !tasks_done && cursor.root_index > task_position {
+            gate_graph::ensure_root_gate_transitions_passed(
+                &registry.open(workspace)?.connection,
+                &identity,
+                &pre_task_required,
+            )?;
             dispatch_waves(&root, &milestone, &waves, options, observer)?;
             tasks_done = true;
         }
@@ -210,8 +236,8 @@ pub fn run_milestone_waves(
                 findings: None,
             });
         }
-        let replayed = cached.is_some();
-        let decision = if let Some((id, _, saved)) = cached {
+        let mut replayed = cached.is_some();
+        let mut decision = if let Some((id, _, saved)) = cached {
             previous_observation = Some(id);
             let decision = GateDecision {
                 passed: saved["passed"]
@@ -279,6 +305,11 @@ pub fn run_milestone_waves(
                 findings: None,
             }
         } else {
+            ensure!(
+                cursor.gate.role.is_some() || cursor.gate.command.is_some(),
+                "MILESTONE_COMMAND_MISSING: gate '{}' has no bound command",
+                cursor.canonical_stage_id
+            );
             if tasks_done {
                 let context = milestones::handoff_context(&root, selector, &options.target_base)?;
                 let binding: milestones::HandoffBinding =
@@ -311,6 +342,30 @@ pub fn run_milestone_waves(
                 &profile,
             )?
         };
+        if decision.passed && !tasks_done && cursor.root_index < task_position {
+            let proof_validation = registry.open(workspace).and_then(|store| {
+                super::super::lifecycle::validate_pre_task_root_proof(
+                    &store,
+                    workspace,
+                    task,
+                    &decision.evidence,
+                )
+            });
+            if let Err(error) = proof_validation {
+                decision = GateDecision {
+                    passed: false,
+                    evidence: decision.evidence,
+                    findings: Some(json!({
+                        "code": "MILESTONE_TASK_PROOF_INVALID",
+                        "message": format!("{error:#}"),
+                    })),
+                };
+                roles.restore(&cursor.canonical_stage_id, &decision);
+                // A replayed pass with invalid task coverage must be superseded
+                // by a durable failure so the configured repair route can run.
+                replayed = false;
+            }
+        }
         if decision.passed && !decision.evidence["integration_review"].is_null() {
             ensure!(cursor.gate.independent_from.is_some(), "HANDOFF_REVIEW_NOT_INDEPENDENT: integration review needs a declared independent gate");
             review = Some((
@@ -327,14 +382,24 @@ pub fn run_milestone_waves(
         let id = store.record_gate_transition(&crate::store::GateTransition {
             milestone_id:identity.clone(), subject:"milestone".into(), gate_path:cursor.canonical_stage_id.clone(),
             action:if decision.passed { "pass" } else { "fail" }.into(), proof_kind:"orchestrator".into(),
-            proof_payload:json!({"previous_observation":previous_observation,"profile_digest":profile_digest,"authority_digest":authority_digest,"binding":if tasks_done { milestones::handoff_context(&root, selector, &options.target_base)?["binding"].clone() } else {json!({"candidate_fingerprint":engine::candidate_fingerprint(&root)?})},"passed":decision.passed,"evidence":decision.evidence,"findings":decision.findings}),
+            proof_payload:json!({"previous_observation":previous_observation,"profile_digest":profile_digest,"authority_digest":authority_digest,"binding":if tasks_done { milestones::handoff_context(&root, selector, &options.target_base)?["binding"].clone() } else {json!({"candidate_fingerprint":engine::candidate_fingerprint(&root)?})},"passed":decision.passed,"attempt":attempt,"evidence":decision.evidence,"findings":decision.findings}),
             git_tree_sha:crate::git::git_stdout(&root, &["rev-parse", "HEAD"], "MILESTONE_HEAD_REQUIRED")?,
             worker_id:decision.evidence["session_id"].as_str().unwrap_or(&options.task.worker_id).to_owned(),
         })?;
+        if decision.passed && !tasks_done && cursor.root_index < task_position {
+            super::super::lifecycle::fan_out_pre_task_proofs_if_ready(
+                &store, workspace, task, &profile, &root,
+            )?;
+        }
         previous_observation = Some(id);
         Ok(decision)
     })?;
     if !tasks_done {
+        gate_graph::ensure_root_gate_transitions_passed(
+            &registry.open(workspace)?.connection,
+            &identity,
+            &pre_task_required,
+        )?;
         dispatch_waves(&root, &milestone, &waves, options, observer)?;
     }
     let result: Value = handoff

@@ -269,9 +269,15 @@ fn blackboard_milestone_profile_pin_routes_gates_and_fails_closed_on_tampering()
     );
 
     let with_first_gate = |gate_id: &str| {
-        include_str!("../../crates/forge-tasks/src/tasks/acdd.default.yaml")
-            .replace("id: \"contract\"", &format!("id: \"{gate_id}\""))
-            .replace("symbols: \"contract\"", &format!("symbols: \"{gate_id}\""))
+        format!(
+            "inherit: none\n{}",
+            include_str!("../../crates/forge-tasks/src/tasks/acdd.default.yaml")
+                .replace("- id: contract", &format!("- id: \"{gate_id}\""))
+                .replace("symbols: contract", &format!("symbols: \"{gate_id}\""))
+                .replace("id: \"contract\"", &format!("id: \"{gate_id}\""))
+                .replace("symbols: \"contract\"", &format!("symbols: \"{gate_id}\""))
+                .replace("commands: {}", "commands:\n  test:\n    command: \"true\"",)
+        )
     };
     let milestone_profile = with_first_gate("plan");
     let task_profile = with_first_gate("task_plan");
@@ -562,7 +568,15 @@ fn blackboard_accepts_nested_task_gates_read_aliases_and_unique_in_progress_task
     root.write("forge-mcp.yaml", "tasks_db: .forge/tasks.sqlite\n");
     root.write(
         ".forge/acdd/profile.yaml",
-        r#"gates:
+        r#"inherit: none
+roles:
+  architect: {mode: subagent}
+  contract_author: {mode: subagent}
+  builder: {mode: subagent}
+  independent_reviewer: {mode: subagent}
+commands:
+  test: "cargo test"
+gates:
   - { id: "contract_synthesis", role: "architect", proof: "contract" }
   - tasks:
       gates:
@@ -570,7 +584,7 @@ fn blackboard_accepts_nested_task_gates_read_aliases_and_unique_in_progress_task
         - { id: "build", role: "builder", command: "test", proof: "command" }
         - { id: "review", role: "independent_reviewer", proof: "review" }
         - { id: "deliver", role: "independent_reviewer", proof: "delivery", receipt: true }
- "#,
+"#,
     );
     let manifest = "---\nid: m-nested-bb\ntitle: Nested blackboard\ndoc_type: contract\nstatus: active\n---\n# Nested blackboard\n```yaml\ntask_ref: first\ntarget: First task\nproof_policy: seam-test-first\nscope: [src/]\n```\n```yaml\ntask_ref: second\ntarget: Second task\nproof_policy: seam-test-first\nscope: [docs/]\n```\n";
     root.write("docs/milestones/010-nested-bb.md", manifest);

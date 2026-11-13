@@ -514,7 +514,11 @@ pub(crate) fn precompile_runner(root: &Workspace) {
         };
         profile["commands"][name]["command"] = serde_yaml::Value::String(updated);
     }
-    fs::write(profile_path, serde_yaml::to_string(&profile).unwrap()).unwrap();
+    fs::write(
+        profile_path,
+        super::support::standalone_profile_yaml(&profile),
+    )
+    .unwrap();
 }
 
 fn runner_rustc_command(root: &Path, environment: &[(OsString, OsString)]) -> Command {

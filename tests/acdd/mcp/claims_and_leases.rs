@@ -220,7 +220,40 @@ fn mcp_task_claim_guidance_includes_rules_without_schema_bloat() {
         "forge-mcp.yaml",
         "profile: minimal\nmodules:\n  acdd: true\nroots: []\ndocs: []\nmilestones: [docs/milestones]\ntasks_db: .forge/tasks.sqlite\n",
     );
-    let tool_profile = "version: 2\nmodules:\n  required: [codemap]\ngates:\n  - id: contract\n    role: contract_author\n    proof: contract\n  - id: build\n    role: builder\n    proof: command\n  - id: review\n    role: independent_reviewer\n    proof: review\n    reject_to: build\n    contours: guidance.contours\n  - id: deliver\n    role: independent_reviewer\n    proof: delivery\n    review_sources: [review]\n";
+    let tool_profile = r#"inherit: none
+version: 2
+modules:
+  required: [codemap]
+roles:
+  contract_author: {}
+  builder: {}
+  independent_reviewer: {}
+policies:
+  default_review:
+    independent_worker: true
+guidance:
+  contour.paths:
+    description: "paths"
+    criteria: ["check paths"]
+gates:
+  - tasks:
+      gates:
+        - id: contract
+          role: contract_author
+          proof: contract
+        - id: build
+          role: builder
+          proof: command
+        - id: review
+          role: independent_reviewer
+          proof: review
+          reject_to: build
+          contours: guidance.contours
+        - id: deliver
+          role: independent_reviewer
+          proof: delivery
+          review_sources: [review]
+"#;
     preflight.write(".forge/acdd/profile.yaml", tool_profile);
     let mut preflight_client = McpTestHarness::new(&preflight).expect("MCP new should succeed");
     let planned_tasks = [

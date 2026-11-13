@@ -40,6 +40,14 @@ pub fn default_db(root: &std::path::Path) -> std::path::PathBuf {
     root.join(".forge/code-map.sqlite")
 }
 
+/// Return the executable task gates selected by a profile and task conditions.
+pub fn executable_task_gates(
+    profile: &crate::tasks::profile::GateProfile,
+    task: &Task,
+) -> Result<Vec<crate::tasks::profile::GateDef>> {
+    gate_graph::executable_task_gate_defs(profile, task)
+}
+
 /// Compile an automated gate proof from its persisted traces and current Git state.
 pub fn compile_evidence_envelope(root: &Path, task_id: &str, stage: &str) -> Result<Value> {
     evidence_compiler::compile_evidence_envelope(root, task_id, stage)
@@ -1089,6 +1097,9 @@ fn lifecycle_error(id: &str, error: anyhow::Error) -> anyhow::Error {
 }
 
 fn submit_inner(root: &Path, p: Submit) -> Result<Value> {
+    if !p.task_id.contains(':') {
+        return lifecycle::submit_root_gate(root, p);
+    }
     let registry = Registry::load(root)?;
     let workspace = registry.owner(&p.task_id)?;
     let mut store = registry.open(workspace)?;

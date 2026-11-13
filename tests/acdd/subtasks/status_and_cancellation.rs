@@ -115,7 +115,7 @@ fn cancelled_tasks_retain_history_and_do_not_unblock_dependencies() {
             "worker",
             root.to_str().unwrap(),
             Some("test-session-worker"),
-            |_, _| Ok(())
+            |_, _, _| Ok(())
         )
         .unwrap()
         .is_none());
@@ -162,7 +162,7 @@ fn cancelled_tasks_retain_history_and_do_not_unblock_dependencies() {
             "worker",
             root.to_str().unwrap(),
             Some("test-session-worker"),
-            |_, _| Ok(())
+            |_, _, _| Ok(())
         )
         .unwrap()
         .is_none());
@@ -285,7 +285,7 @@ fn completed_cancellations_re_admit_and_restore_dependency_blockers() {
                 "worker",
                 workspace_root.to_str().unwrap(),
                 Some("test-session-worker"),
-                |_, _| Ok(()),
+                |_, _, _| Ok(()),
             )
             .unwrap()
             .is_none());

@@ -29,24 +29,6 @@ fn cancelled_milestone_blackboard_pruning_is_project_scoped() {
     let database_path = root.root().join(".forge/tasks.sqlite");
     let initialized = TasksStore::open_project(&database_path, "primary", "app").unwrap();
     drop(initialized);
-    let db = rusqlite::Connection::open(&database_path).unwrap();
-    db.execute_batch(
-        "ALTER TABLE task_blackboard RENAME TO task_blackboard_tasks;
-         CREATE TABLE task_blackboard(
-             id INTEGER PRIMARY KEY AUTOINCREMENT,
-             milestone_ref TEXT NOT NULL,
-             task_id TEXT REFERENCES tasks ON DELETE CASCADE,
-             subtask_ref TEXT,
-             gate TEXT,
-             author TEXT NOT NULL,
-             topic TEXT NOT NULL,
-             payload TEXT NOT NULL,
-             created_at INTEGER NOT NULL
-         );
-         DROP TABLE task_blackboard_tasks;",
-    )
-    .unwrap();
-    drop(db);
 
     let path = "docs/milestones/040-cancelled.md";
     let primary = TasksStore::open_project(&database_path, "primary", "app").unwrap();

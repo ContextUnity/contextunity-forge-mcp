@@ -550,12 +550,16 @@ pub fn run(root: &Path, command: TaskCommand) -> Result<Value> {
             seam,
             timeout_seconds,
         } => {
-            return tasks::verify_task_with_options(
+            return tasks::manage(
                 root,
-                &task_id,
-                test.as_deref(),
-                seam.as_deref(),
-                timeout_seconds,
+                Manage {
+                    action: ManageAction::Verify,
+                    task_id: Some(task_id),
+                    test,
+                    seam,
+                    timeout_seconds,
+                    ..Default::default()
+                },
             );
         }
         TaskCommand::Submit {

@@ -52,7 +52,7 @@ fn handoff_retains_opt_out_history_and_records_polish_verification() {
     );
     root.write(
         ".forge/acdd/profile.yaml",
-        &serde_yaml::to_string(&profile).unwrap(),
+        &crate::acdd::support::standalone_profile_yaml(&profile),
     );
     let before_polish = root.head();
     root.write(

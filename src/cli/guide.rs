@@ -183,7 +183,7 @@ fn topic_value(root: &Path, topic: &str, adapter: &scanner::Adapter) -> Result<V
             },
             "example":{"mcp":{"name":"task_list","arguments":{}},"cli":"contextunity-forge-mcp task list"},
             "references":["docs/adr/0021-workflow-plan-and-milestone-lifecycle-hierarchy.md","docs/reference/cli.md","docs/reference/tasks.md"],
-            "gates": ["contract_synthesis", "contract", "build", "review", "deliver"],
+            "gates": ["blueprint_synthesis", "contract", "build", "review", "deliver", "verify", "polish", "milestone_review", "handoff"],
             "proof_policies": {
                 "seam-test-first": "Greenfield: a compiling runtime-red seam at contract and passing green at build. Follow the selected profile's exact expected failure and count policy.",
                 "direct-proof": "Pre-existing code: validate existing seam directly, exit code 0 accepted at contract.",

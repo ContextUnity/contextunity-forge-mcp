@@ -1,9 +1,9 @@
 use super::catalog::SubsystemRegistry;
 use anyhow::{bail, Context, Result};
 use indexmap::IndexMap;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::Path,
     sync::{Arc, OnceLock},
 };
@@ -225,6 +225,28 @@ impl ProofKind {
             Self::None => "none",
         }
     }
+
+    fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "contract" => Some(Self::Contract),
+            "command" => Some(Self::Command),
+            "review" => Some(Self::Review),
+            "seam_test" => Some(Self::SeamTest),
+            "delivery" => Some(Self::Delivery),
+            "none" => Some(Self::None),
+            _ => None,
+        }
+    }
+}
+
+/// Policy for object properties not explicitly described by a schema.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum AdditionalPropertiesDef {
+    /// Accept or reject properties without an explicit schema.
+    Boolean(bool),
+    /// Validate each property not declared in `properties` against this schema.
+    Schema(Box<SchemaDef>),
 }
 
 /// Recursive data schema for `proof: { scheme: ... }` evidence.
@@ -240,9 +262,9 @@ pub struct SchemaDef {
     /// Object properties that must be present.
     #[serde(default)]
     pub required: Vec<String>,
-    /// Whether object properties absent from `properties` are accepted.
+    /// Policy or schema for object properties absent from `properties`.
     #[serde(default, rename = "additionalProperties")]
-    pub additional_properties: Option<bool>,
+    pub additional_properties: Option<AdditionalPropertiesDef>,
     /// Schema applied to every array element.
     #[serde(default)]
     pub items: Option<Box<SchemaDef>>,
@@ -255,11 +277,16 @@ pub struct SchemaDef {
 }
 
 impl SchemaDef {
-    fn validate_definition(&self, path: &str) -> Result<()> {
+    pub(super) fn validate_definition(&self, path: &str) -> Result<()> {
         match self.schema_type.as_str() {
             "object" => {
                 if self.items.is_some() {
                     bail!("ACDD_PROFILE_SCHEMA_INVALID: {path}.items is only valid for arrays");
+                }
+                if let Some(AdditionalPropertiesDef::Schema(schema)) =
+                    self.additional_properties.as_ref()
+                {
+                    schema.validate_definition(&format!("{path}.additionalProperties"))?;
                 }
                 for required in &self.required {
                     if !self.properties.contains_key(required) {
@@ -271,7 +298,10 @@ impl SchemaDef {
                 }
             }
             "array" => {
-                if !self.properties.is_empty() || !self.required.is_empty() {
+                if !self.properties.is_empty()
+                    || !self.required.is_empty()
+                    || self.additional_properties.is_some()
+                {
                     bail!("ACDD_PROFILE_SCHEMA_INVALID: {path} array cannot declare object properties");
                 }
                 self.items
@@ -282,7 +312,10 @@ impl SchemaDef {
                     .validate_definition(&format!("{path}.items"))?;
             }
             "string" | "integer" | "number" | "boolean" | "null" => {
-                if !self.properties.is_empty() || !self.required.is_empty() || self.items.is_some()
+                if !self.properties.is_empty()
+                    || !self.required.is_empty()
+                    || self.items.is_some()
+                    || self.additional_properties.is_some()
                 {
                     bail!("ACDD_PROFILE_SCHEMA_INVALID: {path} scalar schema has container fields");
                 }
@@ -326,8 +359,16 @@ impl SchemaDef {
             for (name, item) in object {
                 if let Some(schema) = self.properties.get(name) {
                     schema.validate_value(item, &format!("{path}.{name}"))?;
-                } else if self.additional_properties == Some(false) {
-                    bail!("TASK_EVIDENCE_INVALID: {path}.{name} is not allowed");
+                } else {
+                    match &self.additional_properties {
+                        Some(AdditionalPropertiesDef::Boolean(false)) => {
+                            bail!("TASK_EVIDENCE_INVALID: {path}.{name} is not allowed");
+                        }
+                        Some(AdditionalPropertiesDef::Schema(schema)) => {
+                            schema.validate_value(item, &format!("{path}.{name}"))?;
+                        }
+                        Some(AdditionalPropertiesDef::Boolean(true)) | None => {}
+                    }
                 }
             }
         }
@@ -341,8 +382,7 @@ impl SchemaDef {
 }
 
 /// A proof is either a built-in closed behavior or a recursively validated schema.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(untagged)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum ProofDef {
     /// One of the built-in proof behaviors.
     Kind(ProofKind),
@@ -351,10 +391,68 @@ pub enum ProofDef {
         /// Schema used to validate evidence at this gate.
         scheme: Box<SchemaDef>,
     },
+    /// Reference to a schema in the profile-level `proofs` catalog.
+    Named(String),
+    /// Named catalog proof with the schema resolved during profile normalization.
+    ResolvedNamed {
+        /// Catalog entry name retained for profile serialization.
+        name: String,
+        /// Resolved schema consumed by gate proof validation.
+        schema: Box<SchemaDef>,
+    },
     /// Proof was omitted in YAML and awaits automatic inference.
-    #[serde(skip)]
     #[default]
     Unspecified,
+}
+
+impl<'de> Deserialize<'de> for ProofDef {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Repr {
+            Null,
+            Name(String),
+            Scheme { scheme: Box<SchemaDef> },
+        }
+
+        match Repr::deserialize(deserializer)? {
+            Repr::Null => Ok(Self::Unspecified),
+            Repr::Name(name) => {
+                let name = name.trim();
+                if name.is_empty() {
+                    return Err(serde::de::Error::custom(
+                        "proof catalog name cannot be empty",
+                    ));
+                }
+                Ok(ProofKind::from_name(name)
+                    .map(Self::Kind)
+                    .unwrap_or_else(|| Self::Named(name.to_owned())))
+            }
+            Repr::Scheme { scheme } => Ok(Self::Scheme { scheme }),
+        }
+    }
+}
+
+impl Serialize for ProofDef {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Self::Kind(kind) => serializer.serialize_str(kind.as_str()),
+            Self::Named(name) | Self::ResolvedNamed { name, .. } => serializer.serialize_str(name),
+            Self::Scheme { scheme } => {
+                use serde::ser::SerializeMap;
+                let mut map = serializer.serialize_map(Some(1))?;
+                map.serialize_entry("scheme", scheme)?;
+                map.end()
+            }
+            Self::Unspecified => serializer.serialize_none(),
+        }
+    }
 }
 
 impl ProofDef {
@@ -363,6 +461,8 @@ impl ProofDef {
         match self {
             Self::Kind(kind) => Some(*kind),
             Self::Scheme { .. } => None,
+            Self::Named(_) => None,
+            Self::ResolvedNamed { .. } => None,
             Self::Unspecified => Some(ProofKind::None),
         }
     }
@@ -372,6 +472,26 @@ impl ProofDef {
             scheme.validate_definition("proof.scheme")?;
         }
         Ok(())
+    }
+
+    /// Resolve a named proof against the profile catalog, retaining inline schemas.
+    pub fn resolve_schema<'a>(
+        &'a self,
+        proofs: &'a BTreeMap<String, ProofCatalogDef>,
+    ) -> Option<&'a SchemaDef> {
+        normalize::resolve_proof_schema(self, proofs)
+    }
+
+    /// Return the catalog name when this proof references a reusable schema.
+    pub fn catalog_name(&self) -> Option<&str> {
+        match self {
+            Self::Named(name) | Self::ResolvedNamed { name, .. } => Some(name),
+            _ => None,
+        }
+    }
+
+    fn is_unspecified(&self) -> bool {
+        matches!(self, Self::Unspecified)
     }
 }
 
@@ -481,7 +601,10 @@ fn validate_policy_setting(name: &str, value: &serde_yaml::Value, path: &str) ->
         let limit = value.as_u64().context(format!(
             "ACDD_PROFILE_SCHEMA_INVALID: {path} must be a positive integer"
         ))?;
-        if limit == 0 || limit > 2048 && name != "max_log_bytes" {
+        if limit == 0
+            || (limit > forge_core::config::MAX_METADATA_BYTES as u64 && name != "max_log_bytes")
+            || (name == "max_log_bytes" && limit > forge_core::response::MAX_OUTPUT_BYTES as u64)
+        {
             bail!("ACDD_PROFILE_SCHEMA_INVALID: {path} must be within its supported byte limit");
         }
     }
@@ -623,8 +746,8 @@ impl Default for ResourceLimits {
         Self {
             diagnostic_inline_bytes: 4096,
             max_command_timeout_seconds: 1800,
-            max_metadata_bytes: 2048,
-            max_trace_summary_bytes: 2048,
+            max_metadata_bytes: forge_core::config::MAX_METADATA_BYTES,
+            max_trace_summary_bytes: forge_core::config::MAX_METADATA_BYTES,
         }
     }
 }
@@ -663,7 +786,9 @@ pub struct GitCommitNoteLimits {
 
 impl Default for GitCommitNoteLimits {
     fn default() -> Self {
-        Self { max_bytes: 2048 }
+        Self {
+            max_bytes: forge_core::config::MAX_METADATA_BYTES,
+        }
     }
 }
 
@@ -897,8 +1022,12 @@ pub struct GateDef {
     /// Optional predicate used to select a conditional gate.
     #[serde(default)]
     pub when: Option<String>,
+    /// Original gate predicate before a task track predicate is composed into it.
+    #[doc(hidden)]
+    #[serde(skip)]
+    pub declared_when: Option<String>,
     /// Closed proof behavior accepted at this gate.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "ProofDef::is_unspecified")]
     pub proof: ProofDef,
     /// Tools available or recommended for this gate.
     #[serde(default)]
@@ -960,6 +1089,10 @@ pub struct GateDef {
     /// Whether delivery creates a commit from the candidate snapshot.
     #[serde(default = "default_auto_commit")]
     pub auto_commit: bool,
+    /// YAML fields explicitly supplied for this gate, used while composing profile layers.
+    #[doc(hidden)]
+    #[serde(skip)]
+    pub explicit_fields: BTreeSet<String>,
 }
 
 /// Runtime driver selected by the polymorphic gate field matrix.
@@ -974,7 +1107,7 @@ pub enum GateDriver {
 }
 
 impl GateDef {
-    /// Resolve a gate's driver with role taking precedence over command.
+    /// Resolve a gate's driver with command taking precedence over role when bound.
     pub fn driver(&self) -> Option<GateDriver> {
         if self.role.is_some() {
             Some(GateDriver::Agent)
@@ -1073,6 +1206,24 @@ pub struct GateProfile {
     pub polish_scope: Vec<String>,
 }
 
+impl GateProfile {
+    /// Authoritative maximum log bytes for command evidence in this profile.
+    pub fn max_log_bytes(&self) -> usize {
+        self.policies
+            .get("proof")
+            .and_then(|p| p.settings.get("command"))
+            .and_then(|cmd| cmd.get("max_log_bytes"))
+            .and_then(|val| val.as_u64())
+            .map(|val| val as usize)
+            .unwrap_or(forge_core::response::MAX_OUTPUT_BYTES)
+    }
+
+    /// Authoritative maximum metadata bytes for custom task/gate metadata and notes in this profile.
+    pub fn max_metadata_bytes(&self) -> usize {
+        self.limits.max_metadata_bytes
+    }
+}
+
 struct ParsedProfile {
     profile: GateProfile,
     inherit_defaults: bool,
@@ -1102,8 +1253,9 @@ static COMPILED_PROFILE: OnceLock<Arc<GateProfile>> = OnceLock::new();
 pub fn compiled() -> Arc<GateProfile> {
     COMPILED_PROFILE
         .get_or_init(|| {
-            let profile = parse_profile(DEFAULT_PROFILE_YAML)
+            let mut profile = parse_profile(DEFAULT_PROFILE_YAML)
                 .expect("embedded acdd.default.yaml must be valid");
+            normalize_profile(&mut profile);
             profile
                 .validate()
                 .expect("embedded acdd.default.yaml must compile");
@@ -1115,24 +1267,88 @@ pub fn compiled() -> Arc<GateProfile> {
         .clone()
 }
 
+/// Parse a workspace configuration file and return its YAML value and optional `limits.max_metadata_bytes`.
+pub fn parse_config_metadata_limit(
+    config_path: &Path,
+) -> Result<(serde_yaml::Value, Option<usize>)> {
+    let text = std::fs::read_to_string(config_path)
+        .with_context(|| format!("failed to read {}", config_path.display()))?;
+    let value: serde_yaml::Value = serde_yaml::from_str(&text)
+        .with_context(|| format!("invalid YAML in {}", config_path.display()))?;
+    let limit = if let Some(limits) = value.get("limits") {
+        let limits_map = limits.as_mapping().with_context(|| {
+            format!(
+                "ACDD_PROFILE_SCHEMA_INVALID: limits in {} must be a mapping",
+                config_path.display()
+            )
+        })?;
+        limits_map
+            .get(serde_yaml::Value::String("max_metadata_bytes".into()))
+            .map(|raw_meta| {
+                let meta = raw_meta.as_u64().with_context(|| {
+                    format!(
+                        "ACDD_PROFILE_SCHEMA_INVALID: limits.max_metadata_bytes in {} must be a positive integer",
+                        config_path.display()
+                    )
+                })?;
+                usize::try_from(meta).with_context(|| {
+                    format!(
+                        "ACDD_PROFILE_SCHEMA_INVALID: limits.max_metadata_bytes in {} exceeds usize",
+                        config_path.display()
+                    )
+                })
+            })
+            .transpose()?
+    } else {
+        None
+    };
+    Ok((value, limit))
+}
+
+/// Apply workspace configuration `limits.max_metadata_bytes` onto a profile and validate it.
+pub fn apply_config_metadata_limit(
+    config_path: Option<&Path>,
+    mut profile: GateProfile,
+) -> Result<Arc<GateProfile>> {
+    if let Some(path) = config_path.filter(|path| path.is_file()) {
+        let (_, limit) = parse_config_metadata_limit(path)?;
+        if let Some(meta) = limit {
+            profile.limits.max_metadata_bytes = meta;
+        }
+    }
+    profile.validate()?;
+    Ok(Arc::new(profile))
+}
+
 /// Split a pinned profile reference into a relative path and optional SHA prefix.
 /// Resolve workspace profile links and repository defaults, then validate the merged profile.
 pub fn load_for_workspace(root: &Path) -> Result<Arc<GateProfile>> {
     if let Some(settings) = crate::tasks::configuration::current(root) {
+        if let Some(config) = settings.config.as_deref() {
+            if !config.is_file() {
+                bail!(
+                    "ACDD_PROFILE_SCHEMA_INVALID: selected workspace config {} does not exist",
+                    config.display()
+                );
+            }
+            return apply_config_metadata_limit(Some(config), (*settings.profile).clone());
+        }
         return Ok(settings.profile.clone());
     }
     let mut base = (*compiled()).clone();
-    let forge_config = root.join("forge-mcp.yaml");
+    let mut forge_max_metadata_bytes = None;
+    let forge_config = crate::tasks::configuration::config_path(root);
     if forge_config.is_file() {
-        let text = std::fs::read_to_string(&forge_config)
-            .with_context(|| format!("failed to read {}", forge_config.display()))?;
-        let value: serde_yaml::Value = serde_yaml::from_str(&text)
-            .with_context(|| format!("invalid YAML in {}", forge_config.display()))?;
+        let (value, limit) = parse_config_metadata_limit(&forge_config)?;
+        forge_max_metadata_bytes = limit;
         if let Some(reference) = value.get("acdd_profile") {
             let reference = reference
                 .as_str()
                 .context("acdd_profile in forge-mcp.yaml must be a relative file path string")?;
             merge_profile_document(&mut base, load_profile_path(root, reference, false)?);
+            if let Some(meta) = forge_max_metadata_bytes {
+                base.limits.max_metadata_bytes = meta;
+            }
             base.validate()?;
             return Ok(Arc::new(base));
         }
@@ -1144,6 +1360,9 @@ pub fn load_for_workspace(root: &Path) -> Result<Arc<GateProfile>> {
         let document = parse_profile_document(&text)
             .with_context(|| format!("invalid profile in {}", repository_profile.display()))?;
         merge_profile_document(&mut base, document);
+    }
+    if let Some(meta) = forge_max_metadata_bytes {
+        base.limits.max_metadata_bytes = meta;
     }
     base.validate()?;
     if !base.gates.iter().any(|g| {

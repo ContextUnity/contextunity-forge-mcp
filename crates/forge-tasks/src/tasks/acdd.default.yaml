@@ -22,6 +22,82 @@ git_commit_note:
       - topology: true
 
 proofs:
+  blueprint:
+    description: "Architectural blueprint with grounded citations and per-task slices"
+    schema:
+      type: object
+      required:
+        - cited_invariants
+        - cited_symbols
+        - global_negative_boundaries
+        - blackboard_decision_id
+        - tasks
+      properties:
+        cited_invariants:
+          type: array
+          items:
+            type: string
+        cited_symbols:
+          type: array
+          items:
+            type: string
+        global_negative_boundaries:
+          type: array
+          items:
+            type: string
+        blackboard_decision_id:
+          type: string
+        tasks:
+          type: object
+          additionalProperties:
+            type: object
+            required:
+              - layer
+              - summary
+              - exported_interfaces
+              - negative_boundaries
+              - incoming_seams
+              - outgoing_seams
+            properties:
+              layer:
+                type: string
+              summary:
+                type: string
+              exported_interfaces:
+                type: array
+                items:
+                  type: string
+              negative_boundaries:
+                type: array
+                items:
+                  type: string
+              verification_seam:
+                type: string
+              incoming_seams:
+                type: array
+                items:
+                  type: object
+                  required: [source_task, contract_type, contract_ref, specification]
+                  properties:
+                    source_task: { type: string }
+                    contract_type:
+                      type: string
+                      enum: ["seam_dependency", "shared_type", "shared_helper"]
+                    contract_ref: { type: string }
+                    specification: { type: string }
+              outgoing_seams:
+                type: array
+                items:
+                  type: object
+                  required: [target_task, contract_type, contract_ref, specification]
+                  properties:
+                    target_task: { type: string }
+                    contract_type:
+                      type: string
+                      enum: ["seam_dependency", "shared_type", "shared_helper"]
+                    contract_ref: { type: string }
+                    specification: { type: string }
+
   contract:
     description: "Proof of runtime assertion failure (exit 101/1/134) proving red seam baseline"
     schema:
@@ -117,18 +193,12 @@ roles:
     models:
       - 'sol-6.1:xhigh'
     guidance: "Use a reviewer worker independent from the builder. Conduct a broad architectural audit and verify performance and quality invariants. Reject superficial workarounds, ad-hoc string heuristics (e.g. magic substring/path checks), parallel hardcoded lists, or patches designed merely to appease a test. Reject implementations that dump tests into monolithic functions instead of domain-decomposed tests. If an implementation requires repeated duct-tape fixes across review rounds, reject the architecture and require root-cause redesign. Submit review proof across contours, then claim and submit deliver in the same reviewer session."
-  doc_writer:
-    mode: subagent
-    reuse_on_reject: true
-    models:
-      - 'gpt-6.1-sol:high'
-    guidance: "Reconcile documentation with live code and tests across admitted scope."
   architect:
     mode: subagent
     reuse_on_reject: true
     models:
       - 'sol-6.1:high'
-    guidance: "As Architect, lead architectural contract synthesis and arbitration. Conduct a comprehensive architectural audit of codebase extension points and subsystem data flows before coding. Ensure task contracts define durable architectural blueprints, invariant specifications, and implementation steps, where tests serve as verification seams. Verify scope integrity without touching protected repository files. Establish compiling red tests and record explicit architectural decisions for the implementation plan."
+    guidance: "As Architect, lead architectural synthesis and arbitration. Ground decisions in repository symbols, invariants, and existing extension seams. Define Clean Architecture layer boundaries, per-task implementation slices, exported interfaces, negative boundaries, and cross-task seams. Record the decision on task_blackboard. Leave implementation and test authoring to their task gates."
 
 polish_scope:
   - ".forge/**"
@@ -141,46 +211,7 @@ polish_scope:
 
 scope_args_by_pattern: {}
 
-commands:
-  rust-check-and-test:
-    output: &test_output
-      counts:
-        passed: '(?m)\b(\d+) passed\b'
-        failed: '(?m)\b(\d+) failed\b'
-      require_counts: true
-      noise: ['^\s*(Compiling|Downloading|Finished|Checking)\b', '^✔']
-      errors: ['^error(\[E\d+\])?:', 'panicked at', '^FAIL ', '^AssertionError:', '^\s*AssertionError']
-      tests:
-        target: '(?m)(?:^\s*Running\s+(?:unittests\s+)?|"kind":\s*\[[^\]]*"test"[^\]]*\].*?"src_path":\s*"|--test\s+|^===\s+RUN\s+|^PASS\s+|^FAIL\s+)([^\s"\\)]+)'
-        passed: '(?m)(?:^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+ok\b|(?:\b|\s)([A-Za-z0-9_:]+)\s+PASSED\b|^\s*✓\s+([^\n]+)|---\s+PASS:\s+([A-Za-z0-9_:]+))'
-        failed: '(?m)(?:^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+FAILED\b|(?:\b|\s)([A-Za-z0-9_:]+)\s+FAILED\b|^\s*✕\s+([^\n]+)|---\s+FAIL:\s+([A-Za-z0-9_:]+))'
-        ignored: '(?m)(?:^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+ignored\b|(?:\b|\s)([A-Za-z0-9_:]+)\s+SKIPPED\b|^\s*○\s+([^\n]+)|---\s+SKIP:\s+([A-Za-z0-9_:]+))'
-    by_pattern:
-      "**/*.py": "pytest"
-      "**/*.{ts,tsx,js,jsx,vue}": "npm test"
-      "**/*.go": "go test ./..."
-      "**/*.rs": "cargo clippy --all-targets --all-features -- -D warnings && cargo test"
-    description: "Run strict repository checks followed by the test suite across supported languages."
-
-  check_full_repo:
-    output: *test_output
-    by_pattern:
-      "**/*.py": "pytest"
-      "**/*.{ts,tsx,js,jsx,vue}": "npm test"
-      "**/*.go": "go test ./..."
-      "**/*.rs": "cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets"
-    description: "Run full repository verification commands."
-    timeout_seconds: 600
-
-  test:
-    output: *test_output
-    by_pattern:
-      "**/*.py": "pytest"
-      "**/*.{ts,tsx,js,jsx,vue}": "npm test"
-      "**/*.go": "go test ./..."
-      "**/*.rs": "cargo test"
-    description: "Run the test suite across supported languages."
-
+commands: {}
 guidance:
   task.contract:
     description: "PRODUCTION-SEAM CONTRACT AUTHORING & RUNTIME-RED PROOF"
@@ -255,37 +286,41 @@ guidance:
       - "Verify profile hashes and compiled gate references fail closed on tampering or unresolved names."
       - "Confirm Git hooks run, candidate commits retain the validated parent, and receipts record the landed task SHA."
   milestone.synthesis:
-    description: "MANDATORY ARCHITECTURAL AUDIT & CONTRACT SYNTHESIS GATE — DO NOT BYPASS"
+    description: "MANDATORY GROUNDED ARCHITECTURAL BLUEPRINT SYNTHESIS"
     criteria:
-      - "NO DEAD RE-EXPORT SHIMS: Do not retain redundant forwarding or re-export wrappers when direct module/package imports suffice."
-      - "PACKAGE & MODULE EXTRACTION CLEANUP: Check git status and module-tree reachability after extraction; delete orphaned source files inside admitted scope."
-      - "AST SEARCH LANGUAGE: Always supply language to ast_grep_search when path is omitted or has no file extension, including directory paths."
-      - "REVIEW REJECTION BOUNDARY: Reject only for contract failure, scope violation, invariant breach, or a genuine functional or architectural defect. Never reject over doc-comment wording or non-regression stylistic nitpicks."
-      - "ARCHITECTURAL EXTENSION POINTS: Inspect existing subsystem registries, public interfaces, and data flow using semantic tools and source reading. Identify natural extension seams and data flow. Do NOT invent parallel systems or touch protected repository files."
-      - "FORMAL ARCHITECTURAL BLUEPRINT: Synthesize an architectural decision covering type invariants, data flow, error states, and impact perimeters."
-      - "DOMAIN SEAM TEST: Author a compiling runtime-red seam test in the appropriate domain test module proving the unfulfilled contract. Use dedicated test functions with descriptive names."
-      - "RECORD ARCHITECTURAL DECISION: Before submitting this gate, record an explicit synthesis decision detailing the chosen implementation path."
-      - "ANTI-AUTOPILOT INVARIANT: Do NOT blindly submit a failing test without completing the architectural audit and posting the decision to the blackboard."
+      - "GROUND THE BLUEPRINT: Inspect relevant repository symbols, invariants, and extension seams; cite the sources used for architectural claims."
+      - "CLEAN ARCHITECTURE LAYER ISOLATION: Assign each task to the narrowest valid layer and preserve dependency direction across layers."
+      - "PER-TASK CONTRACTS: Give each task a layer, summary, exported interfaces, negative boundaries, and explicit incoming and outgoing seam contracts."
+      - "GLOBAL NEGATIVE BOUNDARIES: Record protected paths, forbidden dependencies, and other constraints that apply across the milestone."
+      - "BLACKBOARD DECISION: Record the selected architectural direction through task_blackboard and include its decision identifier in the blueprint."
+      - "NO TEST AUTHORING: Synthesize architecture and task contracts here; executable test authoring belongs to the task contract gate."
+  milestone.blueprint_review:
+    description: "INDEPENDENT REVIEW OF THE ARCHITECTURAL BLUEPRINT"
+    criteria:
+      - "SOURCE GROUNDING: Verify cited symbols and invariants exist and support the claims in the blueprint."
+      - "LAYER ISOLATION: Check Clean Architecture placement, dependency direction, and the negative boundaries for each task."
+      - "TASK COMPLETENESS: Verify every task has the required layer, summary, exported interfaces, negative boundaries, and seam declarations."
+      - "SEAM CONSISTENCY: Check that incoming and outgoing seam contracts agree across the referenced tasks."
+      - "DECISION RECORD: Verify the blackboard decision identifier refers to the recorded architectural choice."
   milestone.review:
     description: "MILESTONE INTEGRATION REVIEW & BOUNDED VERIFICATION"
     criteria:
       - "NO DEAD RE-EXPORT SHIMS: Do not retain redundant forwarding or re-export wrappers when direct module/package imports suffice."
       - "PACKAGE & MODULE EXTRACTION CLEANUP: Check git status and module-tree reachability after extraction; delete orphaned source files inside admitted scope."
-      - "AST SEARCH LANGUAGE: Always supply language to ast_grep_search when path is omitted or has no file extension, including directory paths."
+      - "SEARCH PRECISION: Always supply language or file pattern when searching code structures across directory paths."
       - "REVIEW REJECTION BOUNDARY: Reject only for contract failure, scope violation, invariant breach, or a genuine functional or architectural defect. Never reject over doc-comment wording or non-regression stylistic nitpicks."
       - "SYSTEM-LEVEL COHESION: Review overall milestone diff against target base for holistic architecture alignment, zero dangling abstractions, and clean module boundaries."
-      - "PERFORMANCE INVARIANTS: Verify full alignment with docs/architecture/performance.md with authentic benchmark proof and no memory or latency regressions."
+      - "PERFORMANCE INVARIANTS: Verify full alignment with project performance requirements with authentic benchmark proof and no memory or latency regressions."
       - "CONSTRUCTIVE & DURABLE: Enforce authentic root-cause fixes; reject superficial workarounds or duplicate mechanisms without blocking beneficial improvements."
       - "ANALYTICAL CONTOURS: Evaluate review contours with engineering judgment as guiding recommendations rather than rigid bureaucratic checkboxes."
   milestone.polish: "Resolve integration failures or reviewer findings on the integrated milestone branch."
-  milestone.doc: "Audit all milestone changes against documentation scope and reconcile documentation with live code and tests."
   milestone.handoff: "Terminal milestone delivery, capturing telemetry passport and archiving milestone."
 
 policies:
   proof:
     command:
       require_zero_exit: true
-      max_log_bytes: 65536
+      max_log_bytes: 98304
   review:
     independent_worker: true
     require_all_contours: true
@@ -296,50 +331,46 @@ policies:
     require_all_contours: true
     audit_extended_scope: true
 
-gate_templates:
-  build_review_cycle:
-    gates:
-      - id: "build"
-        role: "builder"
-        command: "check_full_repo"
-        proof: "command"
-      - id: "review"
-        role: "independent_reviewer"
-        policy: "default_review"
-        proof: "review"
-        contours: "guidance.contours"
-        independent_from: "build"
-
 gates:
-  - id: contract_synthesis
-    role: architect
-    guidance: [milestone.synthesis, hitl]
-    tools:
-      - code_map_inspect
-      - code_map_impact
-      - code_map_overview
-      - code_map_search
-      - ast_grep_search
-      - forge_read
-      - task_blackboard
-    steps:
-      - "1. ARCHITECTURAL AUDIT: Inspect existing codebase extension points using code_map_* and forge_read. Do NOT assume build manifest or parser changes are needed."
-      - "2. SCOPE VERIFICATION: Verify all implementation files are inside allowed_write_scope. Protected repository files must NOT be edited."
-      - "3. SEAM TEST: Strengthen existing domain seam tests additively in tests/ with a cleanly compiling test that triggers runtime assertion failure (e.g. exit 101/1/134)."
-      - "4. BLACKBOARD RECORD: Post architectural synthesis decision to task_blackboard (topic: decisions) detailing the chosen implementation path."
-      - "5. SUBMIT: Submit contract proof with seam_test_ref and red_exit_code."
-    expected_failure:
-      exit_codes: [1, 101, 134]
-    save:
-      pre: snapshot
-      post: snapshot
+  - id: blueprint_synthesis
+    gates:
+      - id: synthesize
+        role: architect
+        guidance: [milestone.synthesis, hitl.pro]
+        tools:
+          - code_map_inspect
+          - code_map_impact
+          - code_map_overview
+          - code_map_search
+          - ast_grep_search
+          - forge_read
+          - task_blackboard
+        proof: blueprint
+        save:
+          pre: snapshot
+          post: snapshot
+      - id: review
+        role: independent_reviewer
+        guidance: [milestone.blueprint_review, hitl.pro]
+        policy: default_review
+        contours: guidance.contours
+        independent_from: synthesize
+        fail: synthesize
+        tools:
+          - code_map_inspect
+          - code_map_impact
+          - code_map_search
+          - ast_grep_search
+          - forge_read
+          - task_blackboard
+        save:
+          immutable: true
 
   - tasks:
       gates:
-        - id: "contract"
+        - id: contract
           role: contract_author
-          command: test
-          tools: []
+          tools: [forge_read]
           guidance: [task.contract, hitl.pro]
           expected_failure:
             exit_codes: [1, 101, 134]
@@ -347,16 +378,13 @@ gates:
 
         - id: build
           role: builder
-          tools: []
           guidance: [task.code, hitl.pro]
-          command: rust-check-and-test
           save:
             pre: snapshot
             post: snapshot
 
         - id: review
           role: independent_reviewer
-          tools: []
           guidance: [task.review, hitl.pro]
           policy: default_review
           contours: guidance.contours
@@ -364,16 +392,38 @@ gates:
           fail: build
           loop:
             scope: build
-            symbols: "contract"
+            symbols: contract
           save:
             immutable: true
+
+        - id: seam
+          when: seam
+          gates:
+            - id: integrate
+              proof: seam_test
+              role: builder
+              guidance: [task.deferred_final_test, hitl.pro]
+              save:
+                pre: snapshot
+                post: snapshot
+            - id: review
+              role: independent_reviewer
+              guidance: [task.seam_review, hitl.pro]
+              policy: default_review
+              contours: guidance.contours
+              independent_from: integrate
+              fail: integrate
+              loop:
+                scope: integrate
+                symbols: contract
+              save:
+                immutable: true
 
         - id: deliver
           role: independent_reviewer
           guidance: [hitl.pro]
           receipt: true
-          need:
-            - review
+          need: [review]
           independent_from: build
           fail: build
           save:
@@ -382,37 +432,32 @@ gates:
             git_commit_note: telemetry
 
   - id: verify
-    command: check_full_repo
+    proof: command
     max_attempts: 2
-    pass: documentation
+    pass: milestone_review
     fail: polish
 
   - id: polish
     role: architect
+    max_attempts: 2
     guidance: [milestone.polish, hitl]
     tools: [forge_read, search_docs, get_doc, task_blackboard]
-    pass: milestone_review
+    pass: verify
     save:
       pre: snapshot
       post: snapshot
 
   - id: milestone_review
     role: independent_reviewer
+    max_attempts: 2
     policy: default_review
     guidance: [milestone.review]
     contours: guidance.contours
     independent_from: polish
-    pass: verify
+    pass: handoff
     fail: polish
     save:
       immutable: true
-
-  - id: documentation
-    role: doc_writer
-    when: doc
-    guidance: [milestone.doc]
-    tools: [forge_read, search_docs, get_doc]
-    pass: handoff
 
   - id: handoff
     receipt: true

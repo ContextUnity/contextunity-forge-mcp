@@ -205,8 +205,8 @@ fn assert_task_mutation_payloads_for_actions(actions: &[&str]) {
     use contextunity_forge_mcp::{core::response::ResponsePolicy, mcp::response};
 
     let (root, mut store, _) = fixture(DEFAULT_SEAM);
-    let large = "\\\"λ\n".repeat(1_200);
-    const SYNC_MANY_TASK_TOTAL: usize = 63;
+    let large = "\\\"λ\n".repeat(12_000);
+    const SYNC_MANY_TASK_TOTAL: usize = 180;
     let large_spec = actions
         .iter()
         .any(|&action| action != "sync_many")
@@ -309,8 +309,14 @@ fn assert_task_mutation_payloads_for_actions(actions: &[&str]) {
             Some(true),
             "{action}: mutation must return usable success: {wire:?}"
         );
-        assert!(response::serialized_bytes(&wire) < 65536, "{action}");
-        assert!(value.to_string().len() <= 24 * 1024, "{action}");
+        assert!(
+            response::serialized_bytes(&wire) < forge_core::response::MAX_OUTPUT_BYTES,
+            "{action}"
+        );
+        assert!(
+            value.to_string().len() <= (forge_core::response::MAX_OUTPUT_BYTES * 5) / 8,
+            "{action}"
+        );
         if action == "sync_many" {
             assert_eq!(value["total"], SYNC_MANY_TASK_TOTAL);
             assert_eq!(value["byte_limited"], true);
@@ -345,4 +351,489 @@ fn assert_task_mutation_payloads_for_actions(actions: &[&str]) {
             assert!(value["workflow_guidance"].is_object());
         }
     }
+}
+
+#[test]
+fn nested_when_seam_candidate_snapshot_resolves_cleanly_at_delivery() {
+    let profile_yaml = r#"inherit: none
+version: 2
+roles:
+  worker: {mode: subagent}
+guidance:
+  contour.paths: {description: Paths, criteria: [Review path changes]}
+  contour.claims: {description: Claims, criteria: [Review claim behavior]}
+  contour.concurrency: {description: Concurrency, criteria: [Review concurrent updates]}
+  contour.project_isolation: {description: Project isolation, criteria: [Review project boundaries]}
+  contour.administration: {description: Administration, criteria: [Review administrative behavior]}
+gates:
+  - tasks:
+      gates:
+        - id: build
+          role: worker
+          proof: none
+          save: snapshot
+        - id: review
+          role: worker
+          proof: review
+          contours: guidance.contours
+        - id: seam
+          when: seam
+          gates:
+            - id: integrate
+              role: worker
+              proof: none
+              save: snapshot
+            - id: review
+              role: worker
+              proof: review
+              contours: guidance.contours
+        - id: deliver
+          role: worker
+          proof: delivery
+          receipt: true
+          need: [review]
+          auto_commit: false
+"#;
+    let profile =
+        contextunity_forge_mcp::core::tasks::profile::validate_profile_document(profile_yaml)
+            .unwrap();
+    let manifest = MilestoneFixtureBuilder::new("m-nested-seam-delivery")
+        .title("Nested seam delivery")
+        .task("first", &["src/lib.rs"])
+        .task_target("Deliver candidate after seam integration")
+        .task_proof_policy("seam-test-first")
+        .task_concurrency_mode("parallel")
+        .build();
+    let mut h = TaskHarness::disk_with_profile(&manifest, "docs/010-nested-seam.md", profile);
+    h.advance_to("seam.integrate").unwrap();
+    std::fs::write(
+        h.root().join("src/lib.rs"),
+        "pub fn integrated_seam_logic() {}\n",
+    )
+    .unwrap();
+    let completed = h.advance_to("completed").unwrap();
+    assert_eq!(completed.status, "completed");
+    assert!(completed.receipt.is_some());
+}
+
+#[test]
+fn response_limit_from_config_bounds_context_while_preserving_inherited_proofs() {
+    use contextunity_forge_mcp::{core::response::ResponsePolicy, mcp::response};
+
+    let profile_yaml = r#"inherit: none
+version: 2
+roles:
+  architect: {mode: subagent}
+  worker: {mode: subagent}
+guidance:
+  contour.paths: {description: Paths, criteria: [Review path changes]}
+  contour.claims: {description: Claims, criteria: [Review claim behavior]}
+  contour.concurrency: {description: Concurrency, criteria: [Review concurrent updates]}
+  contour.project_isolation: {description: Project isolation, criteria: [Review project boundaries]}
+  contour.administration: {description: Administration, criteria: [Review administrative behavior]}
+gates:
+  - id: blueprint_synthesis
+    role: architect
+    proof: review
+    contours: guidance.contours
+  - tasks:
+      gates:
+        - id: contract
+          role: worker
+          proof: none
+        - id: review
+          role: worker
+          proof: review
+          contours: guidance.contours
+        - id: deliver
+          role: worker
+          proof: delivery
+          need: [review]
+          auto_commit: false
+"#;
+    let root = acdd_workspace(DEFAULT_SEAM, "");
+    root.write(".forge/acdd/profile.yaml", profile_yaml);
+    root.write(
+        "forge-mcp.yaml",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\nresponse:\n  max_output_bytes: 8192\n",
+    );
+    root.write(".gitignore", super::super::CANONICAL_FORGE_GITIGNORE);
+    TaskHarness::commit_handoff_fixture_inputs(&root, &[".forge/acdd/profile.yaml"]);
+    root.write("src/lib.rs", "pub fn delivered() -> bool { true }\n");
+
+    let manifest = MilestoneFixtureBuilder::new("m-bounded-proofs")
+        .title("Bounded context preserves inherited proofs")
+        .task("bounded-task", &["src/lib.rs"])
+        .task_target("Verify configured response limit preserves inherited proofs")
+        .task_proof_policy("seam-test-first")
+        .build();
+    let milestone_ref = "docs/milestones/010-bounded-proofs.md";
+    root.write(milestone_ref, &manifest);
+    let (repo, project) = tasks::project_identity(root.root()).unwrap();
+    let milestone = Milestone::parse(&manifest, &repo).unwrap();
+    let task_id = milestone.task_id(&milestone.tasks[0]);
+    let mut store =
+        TasksStore::open_project(&root.root().join(".forge/tasks.sqlite"), &repo, &project)
+            .unwrap();
+    store.sync(&milestone, milestone_ref, root.root()).unwrap();
+
+    let milestone_identity = format!("{repo}/{project}/{}", milestone.id);
+    let inherited_slice = serde_json::json!({"goal": "keep-me"});
+    let proof_payload = serde_json::json!({"tasks": {"bounded-task": inherited_slice.clone()}});
+    let head_sha = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(root.root())
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+        .unwrap();
+    store
+        .connection
+        .execute(
+            "INSERT INTO gate_transitions (
+                milestone_id, subject, gate_path, action, proof_kind, proof_payload,
+                git_tree_sha, worker_id
+            ) VALUES (?1, 'milestone', 'blueprint_synthesis', 'pass', 'blueprint', ?2, ?3, 'architect')",
+            rusqlite::params![milestone_identity, proof_payload.to_string(), head_sha],
+        )
+        .unwrap();
+    store
+        .blackboard_post(
+            &task_id,
+            "architect",
+            "notes",
+            &"context padding ".repeat(400),
+        )
+        .unwrap();
+    drop(store);
+
+    let claimed = tasks::claim(
+        root.root(),
+        tasks::Claim {
+            task_id: task_id.clone(),
+            stage: "contract".into(),
+            worker_id: "builder".into(),
+            worktree: root.root().to_string_lossy().into_owned(),
+            bundle: Some(true),
+            session_fingerprint: Some(TaskHarness::session_for("builder")),
+        },
+    )
+    .unwrap();
+    let transitions_before_context: i64 = {
+        let store =
+            TasksStore::open_project(&root.root().join(".forge/tasks.sqlite"), &repo, &project)
+                .unwrap();
+        store
+            .connection
+            .query_row("SELECT count(*) FROM gate_transitions", [], |row| {
+                row.get(0)
+            })
+            .unwrap()
+    };
+    let context = tasks::manage(
+        root.root(),
+        tasks::Manage {
+            action: tasks::ManageAction::Context,
+            task_id: Some(task_id.clone()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let transitions_after_context: i64 = {
+        let store =
+            TasksStore::open_project(&root.root().join(".forge/tasks.sqlite"), &repo, &project)
+                .unwrap();
+        store
+            .connection
+            .query_row("SELECT count(*) FROM gate_transitions", [], |row| {
+                row.get(0)
+            })
+            .unwrap()
+    };
+    assert_eq!(
+        transitions_before_context, transitions_after_context,
+        "task context must remain strictly read-only on gate_transitions"
+    );
+
+    let custom_config_path = root.root().join("configs/override.yaml");
+    root.write(
+        "configs/override.yaml",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\nresponse:\n  max_output_bytes: 16384\nlimits:\n  max_metadata_bytes: 512\n",
+    );
+    let selected_settings =
+        contextunity_forge_mcp::core::tasks::configuration::InvocationSettings::new(
+            root.root().canonicalize().unwrap(),
+            Some(custom_config_path),
+            std::sync::Arc::new(
+                contextunity_forge_mcp::core::tasks::profile::validate_profile_document(
+                    profile_yaml,
+                )
+                .unwrap(),
+            ),
+            None,
+            root.root().join(".forge/code.sqlite"),
+        );
+    let selected_context = selected_settings
+        .run(|| {
+            tasks::manage(
+                root.root(),
+                tasks::Manage {
+                    action: tasks::ManageAction::Context,
+                    task_id: Some(task_id),
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap();
+    assert!(selected_context.to_string().len() <= (16384 * 5) / 8);
+    assert!(selected_context.to_string().len() > (8192 * 5) / 8);
+
+    for (label, value) in [("claim", claimed), ("context", context)] {
+        assert_eq!(value["byte_limited"], true, "{label}");
+        assert!(value.to_string().len() <= (8192 * 5) / 8, "{label}");
+        let wire = response::result(
+            Ok(value.clone()),
+            &ResponsePolicy {
+                max_output_bytes: 8192,
+                ..Default::default()
+            },
+        );
+        assert_ne!(wire.is_error, Some(true), "{label}");
+        assert!(response::serialized_bytes(&wire) <= 8192, "{label}");
+        let proofs = value
+            .pointer("/context_bundle/inherited_proofs")
+            .and_then(|v| v.as_array())
+            .expect("inherited_proofs must survive bounding");
+        assert_eq!(proofs.len(), 1, "{label}");
+        assert_eq!(proofs[0]["proof"], inherited_slice, "{label}");
+    }
+}
+
+#[test]
+fn metadata_limit_from_config_validates_bounds_and_regulates_profile() {
+    use contextunity_forge_mcp::core::config::{load_adapter, MAX_METADATA_BYTES};
+    use contextunity_forge_mcp::core::tasks::{
+        configuration::InvocationSettings, profile::load_for_workspace,
+    };
+    use contextunity_forge_mcp::forge_tasks::config::load_workspace_adapter;
+
+    let root = acdd_workspace(DEFAULT_SEAM, "");
+
+    for invalid in ["0", &format!("{}", MAX_METADATA_BYTES + 1), "-1", "\"abc\""] {
+        root.write(
+            "forge-mcp.yaml",
+            &format!("roots: [src]\ndocs: [docs]\nlimits:\n  max_metadata_bytes: {invalid}\n"),
+        );
+        assert!(load_adapter(root.root(), None).is_err(), "{invalid}");
+        assert!(load_workspace_adapter(root.root()).is_err(), "{invalid}");
+        let profile_err = load_for_workspace(root.root()).unwrap_err().to_string();
+        assert!(
+            profile_err.contains("ACDD_PROFILE_SCHEMA_INVALID"),
+            "unexpected error for {invalid}: {profile_err}"
+        );
+    }
+
+    root.write(
+        "forge-mcp.yaml",
+        "roots: [src]\ndocs: [docs]\nlimits:\n  max_metadata_bytes: 256\n",
+    );
+    let adapter = load_adapter(root.root(), None).unwrap();
+    assert_eq!(adapter.limits.max_metadata_bytes, 256);
+    assert_eq!(
+        load_workspace_adapter(root.root())
+            .unwrap()
+            .limits
+            .max_metadata_bytes,
+        256
+    );
+    let profile = load_for_workspace(root.root()).unwrap();
+    assert_eq!(profile.max_metadata_bytes(), 256);
+
+    let alt_config = root.root().join("configs/alt-meta.yaml");
+    root.write(
+        "configs/alt-meta.yaml",
+        "roots: [src]\ndocs: [docs]\nlimits:\n  max_metadata_bytes: 512\n",
+    );
+    let selected = InvocationSettings::new(
+        root.root().canonicalize().unwrap(),
+        Some(alt_config),
+        profile,
+        None,
+        root.root().join(".forge/code.sqlite"),
+    );
+    selected.run(|| {
+        assert_eq!(
+            load_workspace_adapter(root.root())
+                .unwrap()
+                .limits
+                .max_metadata_bytes,
+            512
+        );
+        assert_eq!(
+            load_for_workspace(root.root())
+                .unwrap()
+                .max_metadata_bytes(),
+            512
+        );
+    });
+}
+
+#[test]
+fn renamed_seam_test_gate_exposes_seam_partners_without_hardcoded_stage_name() {
+    let profile_yaml = r#"inherit: none
+version: 2
+roles:
+  worker: {mode: subagent}
+commands:
+  check_seam:
+    command: "true"
+    output:
+      require_counts: false
+      seam_ref_pattern: '--seam-ref (\\S+)'
+gates:
+  - id: blueprint_synthesis
+    role: worker
+    proof: none
+  - tasks:
+      gates:
+        - id: build
+          role: worker
+          proof: none
+          save: snapshot
+        - id: custom_integration
+          when: seam
+          gates:
+            - id: verify_cross_seam
+              role: worker
+              proof: seam_test
+              command: check_seam
+              save: snapshot
+        - id: deliver
+          role: worker
+          proof: delivery
+          receipt: true
+          auto_commit: false
+"#;
+    let profile =
+        contextunity_forge_mcp::core::tasks::profile::validate_profile_document(profile_yaml)
+            .unwrap();
+    let manifest = r#"---
+id: m-renamed-seam
+title: Renamed seam_test gate context
+doc_type: contract
+status: active
+---
+```yaml
+task_ref: provider
+target: Provide shared seam symbol
+proof_policy: direct-proof
+scope: [src/provider.rs]
+symbols: [fn:shared_seam]
+```
+```yaml
+task_ref: consumer
+target: Integrate against provider seam
+proof_policy: seam-test-first
+scope: [src/consumer.rs]
+depends_on: [provider]
+concurrency:
+  mode: parallel
+```
+"#;
+    let root = acdd_workspace(DEFAULT_SEAM, "");
+    root.write(
+        "forge-mcp.yaml",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+    );
+    root.write(".gitignore", super::super::CANONICAL_FORGE_GITIGNORE);
+    root.write(
+        ".forge/acdd/profile.yaml",
+        &format!(
+            "inherit: none\n{}",
+            serde_yaml::to_string(&profile).unwrap()
+        ),
+    );
+    root.write("src/provider.rs", "pub fn shared_seam() -> bool { true }\n");
+    root.write("src/consumer.rs", "pub fn consumer() -> bool { true }\n");
+    let milestone_ref = "docs/milestones/010-renamed-seam.md";
+    root.write(milestone_ref, manifest);
+    TaskHarness::commit_handoff_fixture_inputs(
+        &root,
+        &[
+            ".gitignore",
+            "forge-mcp.yaml",
+            ".forge/acdd/profile.yaml",
+            "src/provider.rs",
+            "src/consumer.rs",
+            milestone_ref,
+        ],
+    );
+
+    let (repo, project) = tasks::project_identity(root.root()).unwrap();
+    let milestone = Milestone::parse(manifest, &repo).unwrap();
+    let provider_id = milestone.task_id(&milestone.tasks[0]);
+    let consumer_id = milestone.task_id(&milestone.tasks[1]);
+    let mut store = tasks::store_for_task(root.root(), &provider_id).unwrap();
+    store.sync(&milestone, milestone_ref, root.root()).unwrap();
+    let milestone_identity = format!("{repo}/{project}/{}", milestone.id);
+    store
+        .connection
+        .execute(
+            "INSERT INTO gate_transitions (
+                milestone_id, subject, gate_path, action, proof_kind, proof_payload,
+                git_tree_sha, worker_id
+            ) VALUES (?1, 'milestone', 'blueprint_synthesis', 'pass', 'none', '{}', 'architect-tree', 'architect')",
+            rusqlite::params![milestone_identity],
+        )
+        .unwrap();
+    store
+        .connection
+        .execute(
+            "INSERT INTO gate_transitions (
+                milestone_id, subject, gate_path, action, proof_kind, proof_payload,
+                git_tree_sha, worker_id
+            ) VALUES (?1, ?2, 'blueprint_synthesis', 'advance', 'blueprint', ?3, 'architect-tree', 'architect')",
+            rusqlite::params![
+                milestone_identity,
+                consumer_id,
+                serde_json::json!({
+                    "goal": "integrate provider seam",
+                    "incoming_seams": [{
+                        "source_task": "provider",
+                        "contract_type": "seam_dependency",
+                        "contract_ref": "public-api"
+                    }]
+                })
+                .to_string(),
+            ],
+        )
+        .unwrap();
+    drop(store);
+
+    let mut provider = TaskHarness::attach(&root, &provider_id);
+    provider.advance_to("completed").unwrap();
+
+    let mut consumer = TaskHarness::attach(&root, &consumer_id);
+    consumer
+        .advance_to("custom_integration.verify_cross_seam")
+        .unwrap();
+
+    let context = tasks::manage(
+        root.root(),
+        tasks::Manage {
+            action: tasks::ManageAction::Context,
+            task_id: Some(consumer_id),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let seam_partners = context
+        .pointer("/context_bundle/seam_partners")
+        .and_then(|v| v.as_array())
+        .expect("renamed seam_test gate must include seam_partners");
+    assert!(
+        seam_partners
+            .iter()
+            .any(|partner| partner.to_string().contains("provider")),
+        "expected provider in seam_partners, got {seam_partners:?}"
+    );
 }

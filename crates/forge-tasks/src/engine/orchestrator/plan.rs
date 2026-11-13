@@ -347,7 +347,7 @@ pub fn run_plan_workflow(
         );
         let mut roles = RoleObservations::default();
         let mut accepted_candidate = None;
-        let outcomes = run_gate_graph(root, &step.scope, &cursors, |cursor, _| {
+        let outcomes = run_gate_graph(root, &step.scope, &[], &cursors, |cursor, _| {
             ensure!(
                 fs::read_to_string(&path)? == plan.source,
                 "PLAN_SOURCE_DRIFT: runner changed source authority"

@@ -95,9 +95,12 @@ fn role_runner_templates_render_active_claim_context() {
         if let Some(prompt) = prompt {
             definition["prompt_template"] = json!(prompt);
         }
+        let mut profile = runner_profile(DEFAULT_SEAM, "");
+        let role = serde_json::from_value(definition).unwrap();
+        profile.roles.insert("contract_author".into(), role);
         root.write(
             "custom_profile.yaml",
-            &serde_yaml::to_string(&json!({"roles":{"contract_author":definition}})).unwrap(),
+            &crate::acdd::support::standalone_profile_yaml(&profile),
         );
         let profile =
             contextunity_forge_mcp::core::tasks::profile::load_for_workspace(root.root()).unwrap();

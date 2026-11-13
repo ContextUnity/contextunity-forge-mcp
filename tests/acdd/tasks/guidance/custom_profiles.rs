@@ -3,6 +3,10 @@ use super::*;
 #[test]
 fn claim_context_exposes_recursive_scheme_schema_from_custom_profile() {
     const PROFILE: &str = r#"
+inherit: none
+roles:
+  builder: {}
+  independent_reviewer: {}
 gates:
   - id: contract
     role: builder
@@ -35,7 +39,6 @@ gates:
     proof: review
     independent_from: schema_input
     reject_to: schema_input
-    contours: guidance.contours
   - id: deliver
     role: independent_reviewer
     proof: delivery
@@ -190,6 +193,83 @@ gates:
         "accepted"
     );
 }
+
+#[test]
+fn claim_context_exposes_named_schema_and_scheme_submission_envelope() {
+    const PROFILE: &str = r#"
+inherit: none
+proofs:
+  design:
+    schema:
+      type: object
+      required: [summary]
+      properties:
+        summary: {type: string}
+roles:
+  builder: {}
+  independent_reviewer: {}
+gates:
+  - id: contract
+    role: builder
+    proof: none
+  - id: design_input
+    role: builder
+    proof: design
+  - id: review
+    role: independent_reviewer
+    proof: review
+    independent_from: design_input
+    fail: design_input
+  - id: deliver
+    role: independent_reviewer
+    proof: delivery
+    receipt_review: review
+    review_sources: [review]
+    fail: design_input
+    auto_commit: false
+"#;
+    let workspace = TaskHarness::workspace();
+    workspace.write("src/lib.rs", "pub fn named_schema_gate() {}\n");
+    workspace.write(
+        "forge-mcp.yaml",
+        "tasks_db: .forge/tasks.sqlite\nacdd_profile: custom/profile.yaml\n",
+    );
+    workspace.write(".gitignore", CANONICAL_FORGE_GITIGNORE);
+    workspace.write("custom/profile.yaml", PROFILE);
+    let manifest = MilestoneFixtureBuilder::new("m-named-schema")
+        .status("active")
+        .task("schema", &["src/"])
+        .task_target("Provide the named schema evidence")
+        .build();
+    workspace.write("docs/010-named-schema.md", &manifest);
+    let mut store = tasks::store(workspace.root()).unwrap();
+    store
+        .sync(
+            &Milestone::parse(&manifest, "forge-mcp").unwrap(),
+            "docs/010-named-schema.md",
+            workspace.root(),
+        )
+        .unwrap();
+    let task_id = "forge-mcp/m-named-schema:schema";
+    drop(store);
+
+    let mut harness = TaskHarness::attach(&workspace, task_id);
+    harness.advance_to("design_input").unwrap();
+    let claim =
+        TaskHarness::claim_at(harness.root(), task_id, "design_input", "schema-author").unwrap();
+
+    assert_eq!(claim["context_bundle"]["proof_schema"]["type"], "object");
+    assert_eq!(
+        claim["context_bundle"]["proof_schema"]["required"],
+        json!(["summary"])
+    );
+    assert_eq!(claim["workflow_guidance"]["proof_kind"], "design");
+    assert_eq!(
+        claim["workflow_guidance"]["expected_evidence_template"]["proof"],
+        json!({"scheme_proof": {}})
+    );
+}
+
 #[test]
 fn inline_role_mode_adapts_guidance_text() {
     let root = acdd_workspace(DEFAULT_SEAM, "");
@@ -204,6 +284,14 @@ fn inline_role_mode_adapts_guidance_text() {
     root.write("src/lib.rs", "pub fn work() -> bool { true }\n");
 
     let profile_yaml = r#"
+inherit: none
+roles:
+  builder: {}
+  contract_author: {}
+  independent_reviewer:
+    mode: inline
+    reuse_on_reject: true
+    guidance: "Spawn a dedicated reviewer subagent to review candidate diff across contours."
 gates:
   - id: contract
     role: contract_author
@@ -216,17 +304,11 @@ gates:
     proof: review
     reject_to: build
     independent_from: build
-    contours: guidance.contours
   - id: deliver
     role: independent_reviewer
     proof: delivery
     review_sources: [review]
     reject_to: build
-roles:
-  independent_reviewer:
-    mode: inline
-    reuse_on_reject: true
-    guidance: "Spawn a dedicated reviewer subagent to review candidate diff across contours."
 "#;
     root.write("custom_profile.yaml", profile_yaml);
 

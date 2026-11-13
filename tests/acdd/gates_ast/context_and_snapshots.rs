@@ -95,6 +95,7 @@ task_depends_on: [m-upstream:producer]
         "../../../crates/forge-tasks/src/tasks/acdd.default.yaml"
     ))
     .expect("the embedded ACDD profile should deserialize for the context fixture");
+    tool_profile["inherit"] = serde_yaml::Value::String("none".to_owned());
     tool_profile["gates"][1]["tasks"]["gates"][0]["tools"] = serde_yaml::Value::Sequence(vec![
         serde_yaml::Value::String("code_map_overview".to_owned()),
         serde_yaml::Value::String("get_doc".to_owned()),

@@ -380,10 +380,13 @@ impl GateProfile {
     /// Validate the fully merged profile before it becomes active.
     pub fn validate(&self) -> Result<()> {
         if self.limits.diagnostic_inline_bytes == 0
-            || self.limits.diagnostic_inline_bytes > 65536
+            || self.limits.diagnostic_inline_bytes > forge_core::response::MAX_OUTPUT_BYTES
             || self.limits.max_command_timeout_seconds == 0
         {
-            bail!("ACDD_PROFILE_SCHEMA_INVALID: diagnostic_inline_bytes must be 1..=65536 and max_command_timeout_seconds must be positive");
+            bail!(
+                "ACDD_PROFILE_SCHEMA_INVALID: diagnostic_inline_bytes must be 1..={} and max_command_timeout_seconds must be positive",
+                forge_core::response::MAX_OUTPUT_BYTES
+            );
         }
         self.modules.validate()?;
         self.validate_catalogs()?;
@@ -435,7 +438,7 @@ impl GateProfile {
                     );
                 }
             }
-            gate.proof.validate_scheme()?;
+            validate_gate_proof_definition(gate, self)?;
             if gate.receipt && gate.proof.kind() != Some(ProofKind::Delivery) {
                 bail!("GATE_INVALID_CONFIGURATION: gate '{}' has receipt:true, which requires proof:delivery", gate.id);
             }
@@ -545,15 +548,30 @@ impl GateProfile {
                 .unwrap()
                 .validate_definition(&format!("proofs.{name}.schema"))?;
         }
-        if self.limits.max_metadata_bytes == 0 || self.limits.max_metadata_bytes > 2048 {
-            bail!("ACDD_PROFILE_SCHEMA_INVALID: limits.max_metadata_bytes must be 1..=2048");
+        if self.limits.max_metadata_bytes == 0
+            || self.limits.max_metadata_bytes > forge_core::config::MAX_METADATA_BYTES
+        {
+            bail!(
+                "ACDD_PROFILE_SCHEMA_INVALID: limits.max_metadata_bytes must be 1..={}",
+                forge_core::config::MAX_METADATA_BYTES
+            );
         }
-        if self.limits.max_trace_summary_bytes == 0 || self.limits.max_trace_summary_bytes > 2048 {
-            bail!("ACDD_PROFILE_SCHEMA_INVALID: limits.max_trace_summary_bytes must be 1..=2048");
+        if self.limits.max_trace_summary_bytes == 0
+            || self.limits.max_trace_summary_bytes > forge_core::config::MAX_METADATA_BYTES
+        {
+            bail!(
+                "ACDD_PROFILE_SCHEMA_INVALID: limits.max_trace_summary_bytes must be 1..={}",
+                forge_core::config::MAX_METADATA_BYTES
+            );
         }
         if let Some(policy) = &self.git_commit_note {
-            if policy.limits.max_bytes == 0 || policy.limits.max_bytes > 2048 {
-                bail!("ACDD_PROFILE_SCHEMA_INVALID: git_commit_note.limits.max_bytes must be 1..=2048");
+            if policy.limits.max_bytes == 0
+                || policy.limits.max_bytes > forge_core::config::MAX_METADATA_BYTES
+            {
+                bail!(
+                    "ACDD_PROFILE_SCHEMA_INVALID: git_commit_note.limits.max_bytes must be 1..={}",
+                    forge_core::config::MAX_METADATA_BYTES
+                );
             }
             if policy
                 .format
@@ -886,7 +904,18 @@ impl GateProfile {
                 gate.id
             );
         }
-        let Some(driver) = gate.driver() else {
+        // The language-neutral embedded profile leaves the milestone verifier
+        // unbound until a repository overlay supplies its registered command.
+        // Its explicit command proof keeps the placeholder distinct from an
+        // agent gate while allowing the default catalog to remain empty.
+        let unbound_command_placeholder = gate.role.is_none()
+            && gate.command.is_none()
+            && !has_container_fields
+            && gate.proof.kind() == Some(ProofKind::Command);
+        let Some(driver) = gate
+            .driver()
+            .or_else(|| unbound_command_placeholder.then_some(GateDriver::Command))
+        else {
             bail!("GATE_INVALID_CONFIGURATION: gate '{}' must declare role, command, gates, tasks, or use", gate.id);
         };
         if let Some(attempts) = gate.max_attempts {
@@ -956,7 +985,7 @@ impl GateProfile {
                 }
             }
         }
-        gate.proof.validate_scheme()?;
+        validate_gate_proof_definition(gate, self)?;
         if gate.receipt && gate.proof.kind() != Some(ProofKind::Delivery) {
             bail!("GATE_INVALID_CONFIGURATION: gate '{}' has receipt:true, which requires proof:delivery", gate.id);
         }
@@ -965,7 +994,7 @@ impl GateProfile {
                 bail!("ACDD_PROFILE_SCHEMA_INVALID: gate '{}' expected_failure.exit_codes must contain non-zero values", gate.id);
             }
         }
-        if driver == GateDriver::Command && gate.command.is_none() {
+        if driver == GateDriver::Command && gate.command.is_none() && !unbound_command_placeholder {
             bail!(
                 "GATE_INVALID_CONFIGURATION: command gate '{}' requires command",
                 gate.id
@@ -1018,6 +1047,20 @@ impl GateProfile {
         }
         Ok(())
     }
+}
+
+fn validate_gate_proof_definition(gate: &GateDef, profile: &GateProfile) -> Result<()> {
+    gate.proof.validate_scheme()?;
+    if let Some(name) = gate.proof.catalog_name() {
+        let catalog = profile.proofs.get(name).with_context(|| {
+            format!("ACDD_PROFILE_SCHEMA_INVALID: gate '{}' references undefined proof catalog entry '{name}'", gate.id)
+        })?;
+        let schema = catalog.schema.as_ref().with_context(|| {
+            format!("ACDD_PROFILE_SCHEMA_INVALID: proofs.{name} requires a schema")
+        })?;
+        schema.validate_definition(&format!("proofs.{name}.schema"))?;
+    }
+    Ok(())
 }
 
 impl CommandDef {

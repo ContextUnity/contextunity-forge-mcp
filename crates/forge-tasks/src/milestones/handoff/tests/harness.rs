@@ -7,7 +7,33 @@ pub(super) const ACTIVE: &str = "docs/milestones/010-native-shared.md";
 pub(super) const ARCHIVE: &str = "docs/milestones/archive/010-native-shared.md";
 const IDENTITY: &str = "forge-mcp/forge-mcp/m-native-shared";
 const SOURCE: &str = "---\nid: m-native-shared\ntitle: Reviewed shared handoff\ndoc_type: contract\nstatus: active\nstarted_at: 2026-10-01T10:00:00Z\n---\n# Reviewed shared handoff\n```yaml\ntask_ref: first\ntarget: First version\nproof_policy: direct-proof\nscope: [src/shared.rs]\n```\n```yaml\ntask_ref: second\ntarget: Reviewed next version\nproof_policy: direct-proof\nscope: [src/shared.rs]\ndepends_on: [first]\n```\n";
-const PROFILE: &str =         "commands:\n  test:\n    command: ': --seam-ref tests/acdd/tasks.rs::test_shared && rustc --test tests/acdd/tasks.rs -o .forge/native-tests && .forge/native-tests'\n    output:\n      seam_ref_pattern: '--seam-ref (\\S+)'\n  rust-check-and-test:\n    command: 'rustc --test tests/acdd/tasks.rs -o .forge/native-tests && .forge/native-tests'\n  check_full_repo:\n    command: 'rustc --test tests/acdd/tasks.rs -o .forge/native-tests && .forge/native-tests'\n    output:\n      counts: {passed: '(\\d+) passed', failed: '(\\d+) failed'}\n";
+const PROFILE: &str = r#"
+inherit: default
+commands:
+  test:
+    command: ': --seam-ref tests/acdd/tasks.rs::test_shared && rustc --test tests/acdd/tasks.rs -o .forge/native-tests && .forge/native-tests'
+    output:
+      seam_ref_pattern: '--seam-ref (\S+)'
+  rust-check-and-test:
+    command: 'rustc --test tests/acdd/tasks.rs -o .forge/native-tests && .forge/native-tests'
+  check_full_repo:
+    command: 'rustc --test tests/acdd/tasks.rs -o .forge/native-tests && .forge/native-tests'
+    output:
+      counts: {passed: '(\d+) passed', failed: '(\d+) failed'}
+gates:
+  - tasks:
+      gates:
+        - id: contract
+          command: test
+        - id: build
+          command: rust-check-and-test
+        - id: seam
+          gates:
+            - id: integrate
+              command: rust-check-and-test
+  - id: verify
+    command: check_full_repo
+"#;
 const SEAM: &str =         "#[path=\"../../src/shared.rs\"] mod shared;\n#[test]\nfn test_shared() {\n    assert!(shared::shared() > 0);\n}\n";
 
 pub(super) struct NativeHandoffHarness {
@@ -62,6 +88,25 @@ impl NativeHandoffHarness {
         let milestone = crate::core::tasks::Milestone::parse(SOURCE, "forge-mcp")?;
         let mut store = TasksStore::open(&root.join(".forge/tasks.sqlite"))?;
         store.sync(&milestone, ACTIVE, root)?;
+        let profile = crate::tasks::profile::load_for_workspace(root)?;
+        let first_task_id = milestone.task_id(&milestone.tasks[0]);
+        let first_task = store.inspect(&first_task_id)?;
+        let git_tree_sha = Self::git(root, &["rev-parse", "HEAD"])?;
+        for cursor in crate::engine::gate_graph::pre_task_root_cursors(&profile, &first_task)? {
+            store.record_gate_transition(&crate::store::GateTransition {
+                milestone_id: IDENTITY.into(),
+                subject: "milestone".into(),
+                gate_path: cursor.canonical_stage_id,
+                action: "pass".into(),
+                proof_kind: "orchestrator".into(),
+                proof_payload: serde_json::json!({
+                    "passed": true,
+                    "evidence": {"fixture": "pre-task root gate accepted"},
+                }),
+                git_tree_sha: git_tree_sha.clone(),
+                worker_id: "native-handoff-fixture".into(),
+            })?;
+        }
         drop(store);
         Ok(Self {
             directory,
@@ -116,7 +161,7 @@ impl NativeHandoffHarness {
             if before.status == "completed" {
                 return Ok(());
             }
-            let profile = store.profile_for_task(&before)?;
+            let profile = crate::tasks::profile::load_for_workspace(self.root())?;
             let gate = profile
                 .by_stage(&before.stage)
                 .context("active task gate absent from profile")?;

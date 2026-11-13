@@ -226,10 +226,11 @@ impl TaskHarness {
             "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
         );
         workspace.write(path, source);
-        workspace.write(
-            ".forge/acdd/profile.yaml",
-            &serde_yaml::to_string(&profile).unwrap(),
+        let profile_yaml = format!(
+            "inherit: none\n{}",
+            serde_yaml::to_string(&profile).unwrap()
         );
+        workspace.write(".forge/acdd/profile.yaml", &profile_yaml);
         Self::commit_handoff_fixture_inputs(
             &workspace,
             &[

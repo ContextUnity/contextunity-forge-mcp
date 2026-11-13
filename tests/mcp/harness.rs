@@ -58,7 +58,7 @@ pub fn session_workspace() -> anyhow::Result<Workspace> {
         ),
         (
             ".forge/acdd/profile.yaml",
-            "version: 2\nroles:\n  worker: {mode: subagent}\ncommands:\n  check: \"printf 'test result: ok. 1 passed; 0 failed;\\\\n'\"\ngates:\n  - tasks:\n      gates:\n        - id: build\n          role: worker\n          proof: none\n        - id: review\n          role: worker\n          proof: command\n          command: check\n          independent_from: build\n        - id: deliver\n          role: worker\n          receipt: true\n          need: []\n          save: snapshot\n",
+            "version: 2\ninherit: none\nroles:\n  worker: {mode: subagent}\ncommands:\n  check: \"printf 'test result: ok. 1 passed; 0 failed;\\\\n'\"\ngates:\n  - tasks:\n      gates:\n        - id: build\n          role: worker\n          proof: none\n        - id: review\n          role: worker\n          proof: command\n          command: check\n          independent_from: build\n        - id: deliver\n          role: worker\n          receipt: true\n          need: []\n          save: snapshot\n",
         ),
     ]);
     workspace.seed_git()?;

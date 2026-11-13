@@ -43,6 +43,11 @@ pub(crate) struct MilestoneFixtureClosure {
 }
 
 #[derive(serde::Serialize)]
+pub(crate) struct MilestoneFixtureConcurrency {
+    pub(crate) mode: String,
+}
+
+#[derive(serde::Serialize)]
 pub(crate) struct MilestoneFixtureTask {
     pub(crate) task_ref: String,
     pub(crate) target: String,
@@ -50,6 +55,8 @@ pub(crate) struct MilestoneFixtureTask {
     pub(crate) scope: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) contract_revision: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) concurrency: Option<MilestoneFixtureConcurrency>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub(crate) scope_roots: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -175,6 +182,7 @@ impl MilestoneFixtureBuilder {
             proof_policy: "seam-test-first".into(),
             scope: fixture_strings(scope),
             contract_revision: None,
+            concurrency: None,
             scope_roots: Vec::new(),
             depends_on: fixture_strings(dependencies),
             invariants: Vec::new(),
@@ -204,6 +212,11 @@ impl MilestoneFixtureBuilder {
 
     pub(crate) fn task_contract_revision(mut self, revision: u64) -> Self {
         self.last_task().contract_revision = Some(revision);
+        self
+    }
+
+    pub(crate) fn task_concurrency_mode(mut self, mode: &str) -> Self {
+        self.last_task().concurrency = Some(MilestoneFixtureConcurrency { mode: mode.into() });
         self
     }
 

@@ -376,7 +376,10 @@ fn milestone_passport_topology_records_resolved_and_unresolved_dependencies() {
             "check_full_repo".into(),
             serde_yaml::from_str("command: 'true'\noutput: {require_counts: false}\n").unwrap(),
         );
-        topology.write("profile.yaml", &serde_yaml::to_string(&profile).unwrap());
+        topology.write(
+            "profile.yaml",
+            &crate::acdd::support::standalone_profile_yaml(&profile),
+        );
         topology.write(
             "forge-mcp.yaml",
             &format!(
