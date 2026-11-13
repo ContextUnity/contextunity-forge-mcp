@@ -17,7 +17,7 @@ This release introduces reviewed pre-task `blueprint_synthesis` planning, recurs
 - **Conditional Seam & Post-Task Closure Pipeline**: Added the language-neutral `seam` container (`when: seam`: `seam.integrate` -> `seam.review`) inside `- tasks:` and aligned post-task milestone closure on `verify` -> `polish` <-> `milestone_review` -> `handoff`.
 - **Standalone Artifact Authoring Workflows**: Added taskless root-gate workflows (`author-milestone.workflow.yaml`, `author-plan.workflow.yaml`, `author-workflow.workflow.yaml`) under `docs/workflows/` (with portable copies in `skills/contextunity-forge/references/acdd-profile-examples/`).
 - **ACDD Architecture & Walkthrough Documentation**: Added full documentation in [ACDD reference](docs/reference/acdd.md) and symlinked [canonical profile template](docs/reference/acdd_profile.yaml.example) to the Forge skill reference.
-- **Release Notes Automation**: Added `CHANGELOG.md` and automated release-notes extraction in [`.github/workflows/ci.yml`](.github/workflows/ci.yml) for `v*` tag releases.
+- **Release Notes Automation**: Added `CHANGELOG.md` and automated release-notes extraction in [`.github/workflows/release.yml`](.github/workflows/release.yml) for `v*` tag releases.
 
 ### Changed
 

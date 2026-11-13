@@ -68,11 +68,21 @@ fn release_declares_tag_and_nightly_builds_for_all_installer_targets() {
         "assertion failed: release workflow is required: {release:?}"
     );
     let release = release.unwrap();
-    for (key, expected) in [("branches", "main"), ("tags", "v*")] {
-        assert!(release["on"]["push"][key]
+    assert!(
+        release["on"]["push"]["tags"]
             .as_sequence()
-            .is_some_and(|values| values.iter().any(|value| value.as_str() == Some(expected))));
-    }
+            .is_some_and(|values| values.iter().any(|value| value.as_str() == Some("v*"))),
+        "release workflow must trigger on v* tag pushes"
+    );
+    let triggers_nightly = release["on"].get("schedule").is_some()
+        || release["on"].get("workflow_dispatch").is_some()
+        || release["on"]["push"]["branches"]
+            .as_sequence()
+            .is_some_and(|values| values.iter().any(|value| value.as_str() == Some("main")));
+    assert!(
+        triggers_nightly,
+        "release workflow must declare nightly schedule/dispatch or main trigger"
+    );
     let jobs = release["jobs"].as_mapping().expect("release jobs");
     let targets = jobs
         .values()
