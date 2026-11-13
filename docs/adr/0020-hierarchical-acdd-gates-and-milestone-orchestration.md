@@ -21,7 +21,7 @@ informed:
 
 ACDD task and milestone workflows use one gate model. Task gates consume profile commands and proofs; milestone gates coordinate task dependency waves, checkpoints, verification, and handoff. The same lifecycle state must remain consistent across SQLite, milestone manifests, command evidence, and reviewer decisions.
 
-The architecture therefore needs declarative gate composition, claim-bound proof compilation, breadcrumb-addressed checkpoint persistence, atomic scope synchronization, and a bounded verification path that completes before documentation and handoff.
+The architecture therefore needs declarative gate composition, claim-bound proof compilation, breadcrumb-addressed checkpoint persistence, atomic scope synchronization, and a bounded verification path that completes with independent review before handoff.
 
 ---
 
@@ -32,7 +32,8 @@ We establish the **Universal Hierarchical Gate Architecture**: **Everything is a
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
 │                              MODULAR CATALOGS                                   │
-│  • roles:          [architect, builder, reviewer, doc_writer]                   │
+│  • roles:          [architect, contract_author, builder, independent_reviewer]  │
+│  • proofs:         [blueprint, ...]                                             │
 │  • guidance:       [milestone.*, task.*, contour.paths, contour.concurrency, ...]│
 │  • commands:       [check_task (60s), check_full_repo (10m)]                    │
 │  • policies:       [default_review, default_delivery, strict_audit, ...]        │
@@ -43,33 +44,29 @@ We establish the **Universal Hierarchical Gate Architecture**: **Everything is a
 ┌─────────────────────────────────────────────────────────────────────────────────┐
 │                           Hierarchical Gates Tree                               │
 │                                                                                 │
-│  [ gate: contract_synthesis ] ──────────────────► [ tasks: (per-task DAG) ]      │
-│   (role: architect :xhigh)                          (when: code / doc / ...)    │
-│   • Synthesizes cross-task seams & helpers                 │                    │
-│                                                            ▼                    │
-│                            ┌─────────────────────────────────────────────────┐  │
-│                            │ Task Gates (Executed Per-Task via DAG):         │  │
-│                            │  1. contract (role: architect)                  │  │
-│                            │  2. build (role: builder, command: check_task)   │  │
-│                            │  3. review (role: reviewer, contours,           │  │
-│                            │             loop: {scope: build,                │  │
-│                            │                    symbols: contract}           │  │
-│                            │  4. deliver (autonomous: save: commit, 0 tokens)          │  │
-│                            └────────────────────────┬────────────────────────┘  │
-│                                                     │                           │
-│                                                     ▼                           │
-│  [ gate: verify ] ◄─────────────────────────────────┘                           │
+│  [ gate: blueprint_synthesis ] ─────────────────► [ tasks: (per-task DAG) ]     │
+│   ├─ synthesize (role: architect, proof: blueprint)  (when: code / doc / ...)   │
+│   └─ review     (role: independent_reviewer)               │                    │
+│   • Slices proof.tasks[<task_ref>] into                    ▼                    │
+│     gate_transitions (subject = <full_task_id>)  ┌───────────────────────────┐  │
+│                                                  │ Task Gates (Per-Task DAG):│  │
+│                                                  │  1. contract              │  │
+│                                                  │  2. build                 │  │
+│                                                  │  3. review                │  │
+│                                                  │  4. seam (when: seam:     │  │
+│                                                  │     integrate -> review)  │  │
+│                                                  │  5. deliver (save: commit)│  │
+│                                                  └─────────────┬─────────────┘  │
+│                                                                │                │
+│                                                                ▼                │
+│  [ gate: verify ] ◄────────────────────────────────────────────┘                │
 │   (command: check_full_repo, max_attempts: 2)                                   │
-│   ├─ pass ──────────────────────────────► [ gate: documentation ] (when: doc)   │
-│   │                                                     │                       │
-│   │                                                     ▼ (pass)                │
-│   │                                             [ gate: handoff ]               │
-│   │                                              (post: commit, 0 tokens)       │
-│   ▼ (fail)                                                                      │
-│  [ gate: polish ] ───(pass)───► [ gate: review ] ───(pass)───► [ verify ]       │
-│   (role: architect)              (role: reviewer)                               │
-│         ▲                               │ (fail)                                │
-│         └───────────────────────────────┘                                       │
+│   ├─ pass ────────► [ gate: milestone_review ] ─(pass)─► [ gate: handoff ]      │
+│   │                  (role: independent_reviewer)         (post: commit, 0 tok) │
+│   │                        ▲        │                                           │
+│   ▼ (fail)                 │        │ (fail)                                    │
+│  [ gate: polish ] ◄────────┴────────┘                                           │
+│   (role: architect) ───(pass)──► [ verify ]                                     │
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -98,13 +95,20 @@ Every node in the lifecycle is a `GateDef`. Structural driver selection is disti
 #### Modular Catalogs: Reusable Templates (`gate_templates:`)
 Templates in `gate_templates:` define reusable subgraphs (e.g. `build_review_cycle`). Any container gate can instantiate a template using `use: <template_id>`, binding its entry and exit edges (`pass:`, `fail:`).
 
-#### First-Class Task Lifecycle Container (`tasks:`)
+#### First-Class Task Lifecycle Container (`tasks:`) and Topological Root-Gate Barriers
 Rather than relying on generic imperative loop annotations like `for_each: tasks`, task execution is represented by the first-class declarative block `- tasks:`:
 
 ```yaml
 gates:
-  - id: contract_synthesis
-    role: architect
+  - id: blueprint_synthesis
+    gates:
+      - id: synthesize
+        role: architect
+        proof: blueprint
+      - id: review
+        role: independent_reviewer
+        independent_from: synthesize
+        fail: synthesize
 
   # First-class task lifecycle container (executes per-task in DAG order)
   - tasks:
@@ -115,26 +119,30 @@ gates:
         - id: review
         - id: seam
           when: seam
+          gates:
+            - id: integrate
+            - id: review
         - id: deliver
 
   - id: verify
     command: check_full_repo
-    pass: documentation
+    pass: milestone_review
     fail: polish
 
   - id: polish
     role: architect
-    pass: milestone_review
+    pass: verify
+    save:
+      pre: snapshot
+      post: snapshot
 
   - id: milestone_review
     role: independent_reviewer
-    pass: verify
-    fail: polish
-
-  - id: documentation
-    role: doc_writer
-    when: doc
+    independent_from: polish
     pass: handoff
+    fail: polish
+    save:
+      immutable: true
 
   - id: handoff
     receipt: true
@@ -142,12 +150,13 @@ gates:
       post: commit
 ```
 
-**Benefits for Sub-Profiles and Modular Composition**:
-1. **Zero-Overhead Single-Task & In-Place Execution**: When a single task specifies a custom profile (`task.profile: <id>`) or runs in-place, the task engine extracts and executes strictly the `tasks:` block, effortlessly ignoring milestone-level preflight (`contract_synthesis`) and post-verification (`handoff`) gates.
-2. **Cardinality Flexibility (1 or Several `tasks:` Blocks)**:
-   - **Single Universal Track**: A profile can declare exactly one `tasks:` block containing multiple child gates (`contract`, `build`, `review`, `seam`, `deliver`), where child gates optionally use granular `when:` conditions (e.g., `when: code` or `when: doc`).
+**Universal Topological Root-Gate State Machine**:
+1. **Pre-Task Root-Gate Barrier (`cursor.root_index < task_position`)**: Any applicable (`when`) root gate or container positioned before `- tasks:` executes with `subject = "milestone"`. Until all pre-task root cursors have an accepted pass transition in `gate_transitions`, claiming any task inside `- tasks:` fails closed with `MILESTONE_PRE_TASK_GATE_PENDING` and reports the active root cursor (`canonical_stage_id` and `gate_path`), without hardcoding gate IDs.
+2. **Post-Task Root-Gate Barrier (`cursor.root_index > task_position`)**: Root gates positioned after `- tasks:` (`verify`, `polish`, `milestone_review`, `handoff`) unlock only after all non-cancelled tasks in the milestone reach `completed`.
+3. **Standalone Tasks vs. Milestone Tasks**: A task running outside a milestone with a standalone profile executes strictly its matching `tasks:` block. Tasks belonging to a milestone—whether executing in an isolated task worktree or in-place—enforce the admitted milestone profile's pre-task and post-task root-gate barriers.
+4. **Cardinality Flexibility (1 or Several `tasks:` Blocks)**:
+   - **Single Universal Track**: A profile can declare one `tasks:` block containing child gates (`contract`, `build`, `review`, `seam`, `deliver`), where child gates optionally use granular `when:` conditions (e.g., `when: code`, `when: doc`, or `when: seam`).
    - **Multiple Specialized Tracks**: A profile can declare multiple independent `tasks:` blocks partitioned by condition (e.g., `- tasks: { when: code, gates: [...] }` alongside `- tasks: { when: doc, gates: [...] }`). The engine matches each admitted task to its corresponding `tasks:` block by the applicable scope condition.
-3. **Multiple Gates Inside Each `tasks:`**: Inside any `tasks:` block, `gates:` defines the ordered progression for matching tasks, maintaining clear separation of concerns without deeply nested or synthetic wrapper structures.
 
 #### Command Gate Polymorphism & Multi-Language Dispatch (`by_pattern`)
 A command in the `commands:` catalog can either be a direct shell command or a multi-language pattern dispatcher:
@@ -165,76 +174,115 @@ commands:
 - **Task Manifest Override**: An individual task in the milestone manifest can explicitly specify `command: <catalog_id>` to override the gate default (e.g. for e2e tests or specialized linters).
 - **Zero Language Hardcoding Invariant (`INV-UNIVERSAL-PROFILE-ZERO-LANGUAGE-HARDCODE`)**: The embedded default profile (`acdd.default.yaml`) and compiled internal profile templates must remain strictly language-agnostic. Gate definitions, step instructions, and proof validators must never hardcode language-specific binaries (such as `cargo clippy`, `cargo test`, `pytest`, or `npm`). All verification commands must use either pattern-based multi-language dispatch (`by_pattern`) or project-level configuration. Guidance texts must not mention specific languages or compilers.
 
-#### Built-in Typed Proof Dispatch & Automated Evidence Envelope Compilation
-The Forge engine dispatches proofs via built-in typed proof kinds (`ProofKind` enum: `Contract`, `Command`, `Review`, `Delivery`, `SeamTest`, `None`) with JSON Schema validation and engine-level execution verification:
+#### Built-in Typed Proof Inference, Reusable `proofs:` Catalog, Inline Proof Schemas, and Per-Task Proof Slicing
+The Forge engine evaluates gate evidence using either an internal verification mode (`ProofKind` enum: `Contract`, `Command`, `Review`, `Delivery`, `SeamTest`, `None`) or a recursive JSON Schema resolved from the top-level `proofs:` catalog (`proof: <catalog_name>`) or declared inline on a gate (`proof: { scheme: { ... } }`):
 
 - **Automatic Proof Inference Invariant (`INV-PROOF-TYPED-INFERENCE`)**:
-  When `proof:` is omitted on a gate definition, the engine automatically infers the required proof kind during profile normalization strictly from typed structural fields:
-  1. `expected_failure` present $\implies$ `ProofKind::Contract`
-  2. `command` present $\implies$ `ProofKind::Command`
-  3. `policy` or `contours` present $\implies$ `ProofKind::Review`
-  4. `receipt: true` (with `role` or `need` or task-level delivery) $\implies$ `ProofKind::Delivery`
-  5. Otherwise $\implies$ `ProofKind::None` (freeform execution traces, blackboard notes, platform closure)
-  The engine strictly forbids string heuristics on gate IDs (`id == "contract"`, etc.); gates may be assigned arbitrary domain-specific tokens. Explicit `proof:` declarations always take precedence.
+  When `proof:` is omitted on a gate definition, [`infer_gate_proof`](../../crates/forge-tasks/src/tasks/profile/normalize.rs) automatically derives the internal verification mode during profile normalization strictly from the gate's structural attributes in this precedence order:
+  1. `receipt: true` $\implies$ `ProofKind::Delivery` (autonomous or supervised delivery commit and durable receipt)
+  2. `expected_failure` present $\implies$ `ProofKind::Contract` (runtime-red seam assertion baseline)
+  3. `command` present $\implies$ `ProofKind::Command` (registered command execution with exit code `0` and output count verification)
+  4. `policy` or `contours` present $\implies$ `ProofKind::Review` (independent cognitive review across configured focus lenses)
+  5. Otherwise $\implies$ `ProofKind::None` (informational step or container gate)
+  The engine strictly forbids string heuristics on gate IDs (`id == "contract"`, etc.); gates may be assigned arbitrary domain-specific identifiers. An explicit `proof:` declaration is needed only to select `proof: seam_test` (element-by-element verification of `seam_test_refs`), `proof: contract` (when a contract gate relies on task `proof_policy` without inline `expected_failure`), a reusable schema from `proofs:` (`proof: blueprint`), or an inline schema (`proof: { scheme: { ... } }`).
+
+- **Top-Level Reusable Proof Catalog (`proofs:`) and Inline Gate Schemas (`proof: { scheme: { ... } }`)**:
+  Reusable structured proof schemas are declared once in the top-level `proofs:` catalog (`ProofCatalogDef` in [`crates/forge-tasks/src/tasks/profile/mod.rs`](../../crates/forge-tasks/src/tasks/profile/mod.rs)) and referenced by name (`proof: <name>`) from any number of gates (and inherited across profiles via `inherit: default`). One-off schemas can also be written inline on a single gate via `proof: { scheme: { ... } }`. During profile normalization, named catalog references (`proof: blueprint`) resolve to their underlying `SchemaDef`:
 
 ```yaml
 proofs:
-  contract:
-    description: "Proof of runtime assertion failure (exit 101/1/134) proving red seam baseline"
+  blueprint:
+    description: "Architectural blueprint with grounded citations and per-task slices"
     schema:
       type: object
-      required: [exit_code, stderr]
+      required: [cited_invariants, cited_symbols, tasks, blackboard_decision_id]
       properties:
-        exit_code: { type: integer }
-        stderr: { type: string }
-        contract_test_ref: { type: string }
-
-  command:
-    description: "Autonomous command execution proof (exit code 0, passed linters/tests)"
-    schema:
-      type: object
-      required: [exit_code]
-      properties:
-        exit_code: { type: integer, const: 0 }
-        tests_passed: { type: integer }
-        tests_failed: { type: integer, const: 0 }
-
-  review:
-    description: "Independent cognitive review sign-off across focus lenses"
-    schema:
-      type: object
-      required: [decision, contours]
-      properties:
-        decision: { type: string, enum: ["pass", "reject"] }
-        contours:
+        cited_invariants:
+          type: array
+          items: { type: string }
+        cited_symbols:
+          type: array
+          items: { type: string }
+        global_negative_boundaries:
+          type: array
+          items: { type: string }
+        blackboard_decision_id:
+          type: string
+        tasks:
           type: object
           additionalProperties:
             type: object
-            required: [applicable, evidence]
+            required:
+              - layer
+              - summary
+              - exported_interfaces
+              - negative_boundaries
+              - incoming_seams
+              - outgoing_seams
             properties:
-              applicable: { type: boolean }
-              evidence: { type: string }
+              layer:
+                type: string
+              summary:
+                type: string
+              exported_interfaces:
+                type: array
+                items: { type: string }
+              negative_boundaries:
+                type: array
+                items: { type: string }
+              verification_seam:
+                type: string
+              incoming_seams:
+                type: array
+                items:
+                  type: object
+                  required: [source_task, contract_type, contract_ref, specification]
+                  properties:
+                    source_task: { type: string }
+                    contract_type:
+                      type: string
+                      enum: ["seam_dependency", "shared_type", "shared_helper"]
+                    contract_ref: { type: string }
+                    specification: { type: string }
+              outgoing_seams:
+                type: array
+                items:
+                  type: object
+                  required: [target_task, contract_type, contract_ref, specification]
+                  properties:
+                    target_task: { type: string }
+                    contract_type:
+                      type: string
+                      enum: ["seam_dependency", "shared_type", "shared_helper"]
+                    contract_ref: { type: string }
+                    specification: { type: string }
 
-  seam_test:
-    description: "Joint seam integration proof verifying all referenced cross-task tests passed"
-    schema:
-      type: object
-      required: [exit_code, seam_test_refs]
-      properties:
-        exit_code: { type: integer, const: 0 }
-        seam_test_refs: { type: array, items: { type: string } }
-        tests_passed: { type: integer }
-        tests_failed: { type: integer, const: 0 }
-
-  delivery:
-    description: "Autonomous delivery receipt and atomic Git commit proof"
-    schema:
-      type: object
-      required: [commit_sha, receipt_id]
-      properties:
-        commit_sha: { type: string }
-        receipt_id: { type: string }
+gates:
+  - id: blueprint_synthesis
+    gates:
+      - id: synthesize
+        role: architect
+        guidance: [milestone.synthesis, hitl]
+        proof: blueprint
+        save:
+          pre: snapshot
+          post: snapshot
+      - id: review
+        role: independent_reviewer
+        guidance: [milestone.blueprint_review, hitl]
+        policy: default_review
+        contours: guidance.contours
+        independent_from: synthesize
+        fail: synthesize
+        save:
+          immutable: true
 ```
+
+- **Universal Per-Task Proof Slicing via `gate_transitions` (`subject = <full_task_id>`)**:
+  When any pre-task root gate (`cursor.root_index < task_position`) passes and its validated `proof_payload` (`proof: blueprint` or `proof: { scheme: ... }`) contains a per-task dictionary `tasks: { "<task_ref>": { ... } }`:
+  1. The engine verifies that every non-cancelled milestone task is present in `tasks` and that declared `depends_on` / parallel seam edges match `incoming_seams` / `outgoing_seams`.
+  2. In addition to the milestone-level transition (`subject = "milestone"`), the engine automatically records a `gate_transitions` row for each task with `subject = <full_task_id>` (`<milestone_ref>:<task_ref>`), `gate_path = <root_gate_path>`, `action = "advance"`, `proof_kind = "scheme"`, and `proof_payload` containing strictly that task's slice (`tasks["<task_ref>"]` plus shared milestone citations).
+  3. On `task claim` and `task context`, the engine queries `gate_transitions` for `WHERE milestone_id = ?1 AND subject = ?2` (`subject == task_id`) and automatically injects only that task's inherited proof payloads into `context_bundle`, keeping each task's context lean and isolated from unrelated tasks without hardcoding gate or table names.
 
 **Automated Evidence Envelope Compilation**:
 During gate execution, the Forge engine automatically captures runtime evidence into SQLite (`gate_execution_traces` and session context) forming an **evidence envelope**:
@@ -424,25 +472,21 @@ modules:
 
 ---
 
-### Pillar 8: Upfront Contract Synthesis, DAG Optimization & Topological Priority Waves (Task 0 Pattern)
+### Pillar 8: Upfront Blueprint Synthesis, Per-Task Proof Slicing & Topological Priority Waves
 
-To avoid circular dependencies, type drift between parallel builder sessions, and overlapping scope edits, milestone orchestration enforces the **Upfront Contract Synthesis Pattern** driven by an active Architect agent:
+To avoid circular dependencies, type drift between parallel builder sessions, and overlapping scope edits, milestone orchestration enforces upfront **Architectural Blueprint Synthesis (`blueprint_synthesis`)** and **Deterministic Topological Waves** driven by an active Architect agent and verified by an independent Reviewer before any task enters `- tasks:`:
 
-1. **Task 0: Bootstrap, Impact Analysis & Dynamic DAG Optimization**:
-   - Every complex multi-task milestone begins with **Task 0: Upfront Contract Synthesis & DAG Prioritization**.
-   - Rather than executing tasks in an arbitrary or linear developer sequence, the Architect agent:
-     - Accepts raw task objectives and linked milestones (`linked_to`).
-     - Queries codebase impact radius via `code_map_impact` and Tree-sitter AST to identify potential file overlap across tasks.
-     - **Reshuffles and DAG-optimizes tasks into deterministic parallel waves (`Wave 0`, `Wave 1`, `Wave 2...`)**, setting fine-grained `task_depends_on` blockers across linked milestones.
-     - Synthesizes the global cross-task data contract matrix, standardizes shared error variants, and freezes disjoint file scopes upfront.
-     - **Safety Net**: Uses `save.pre: snapshot` to capture a pristine restore point of the manifest and repository before any rewrite, and `save.post: commit` once the optimized plan is proven.
+1. **Root `blueprint_synthesis` Container (`synthesize` $\to$ `review`) & Per-Task Proof Fan-Out**:
+   - Before any task in `- tasks:` can be claimed (`cursor.root_index < task_position`), the milestone executes the root `blueprint_synthesis` container (`subject = "milestone"`):
+     - **`synthesize` (`role: architect`, inline `proof: { scheme: ... }`)**: Grounds codebase impact radius via `code_map_inspect` / `code_map_impact` and governing invariants via `search_docs` / `get_doc`, posts the architectural decision to `task_blackboard` (`topic: "decisions"`), and submits a structured proof containing `tasks: { "<task_ref>": { implementation_steps, symbol_signatures, test_seam, incoming_seams, outgoing_seams, negative_boundaries } }`.
+     - **`review` (`role: independent_reviewer`, `independent_from: synthesize`, `fail: synthesize`)**: Independently audits symbol authenticity, wave disjointness, negative boundaries, and cross-task seam alignment before unlocking `- tasks:`.
+     - **Automatic Per-Task Proof Recording (`subject = <full_task_id>`)**: When `blueprint_synthesis` passes, the engine fans out each `proof.tasks["<task_ref>"]` entry into `gate_transitions` with `subject = <full_task_id>`. When a builder or contract author later runs `task claim`, the engine queries `gate_transitions` for `subject == task_id` and injects strictly that task's blueprint slice into `context_bundle`.
 
 2. **Deterministic Topological Execution Waves**:
    Tasks are grouped into strictly ordered execution waves:
-   - **Wave 0 (Bootstrap)**: Contract synthesis, interface contracts, error taxonomy, and scope boundary freezing (Task 0).
-   - **Wave 1 (Foundation & Disjoint Execution)**: Tasks with guaranteed mutually disjoint file scopes (`disjoint scopes`), enabling multiple builder subagents to execute concurrently in parallel worktrees without Git merge conflicts.
-   - **Wave 2 (Engine & Runner)**: Zero-argument transition runner, automated synthesis gate, and Seam Engine Red-to-Green verifier (`src/engine/`).
-   - **Wave 3 (Runtime, Consumers & Tooling)**: Downstream consumers, transition runner, in-place execution runner, atomic scope extension, and CLI commands (`src/cli/`).
+   - **Pre-Task Root Synthesis (`blueprint_synthesis`)**: Architectural blueprint synthesis, interface contracts, error taxonomy, and scope boundary verification before task claims unlock.
+   - **Wave 0 / Wave 1 (Foundation & Disjoint Execution)**: Tasks with guaranteed mutually disjoint file scopes (`disjoint scopes`), enabling multiple builder subagents to execute concurrently in parallel worktrees without Git merge conflicts.
+   - **Subsequent Waves**: Downstream tasks unlocked as their declared `depends_on` predecessors complete (or synced via speculative snapshots when `mode: speculative`).
 
 3. **Task 0 Contract Matrix, Deterministic Waves & Scope Freeze**:
    - Contract rows point from provider to consumer. A local task dependency from consumer to provider requires a seam_dependency matrix row with the reverse, provider-to-consumer direction.
@@ -708,15 +752,15 @@ To eliminate runtime crashes during `task claim` or `task sync` caused by malfor
 All tables follow strict plural naming matching repository invariants:
 
 ```sql
--- 1. Full audit history of gate advancements and rejections
+-- 1. Full audit history of gate advancements, rejections, and per-task root-gate proof slices
 CREATE TABLE gate_transitions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     milestone_id TEXT NOT NULL,
-    subject TEXT NOT NULL,            -- e.g. "task:core-formatter" or "milestone"
-    gate_path TEXT NOT NULL,          -- e.g. "tasks.build"
+    subject TEXT NOT NULL,            -- "milestone" for root gates, or "<milestone_ref>:<task_ref>" for task gates and per-task proof slices
+    gate_path TEXT NOT NULL,          -- e.g. "gates.blueprint_synthesis.synthesize" or "tasks.build"
     action TEXT NOT NULL,             -- "advance" | "reject" | "reopen"
-    proof_kind TEXT NOT NULL,         -- "none" | "contract" | "command" | "review" | "delivery" | "seam_test"
-    proof_payload JSON NOT NULL,      -- typed proof payload or failure metadata
+    proof_kind TEXT NOT NULL,         -- "none" | "contract" | "command" | "review" | "delivery" | "seam_test" | "scheme"
+    proof_payload JSON NOT NULL,      -- typed proof payload, task-scoped blueprint slice, or failure metadata
     git_tree_sha TEXT NOT NULL,
     worker_id TEXT NOT NULL,          -- "codex-sol-builder", "codex-sol-reviewer", "forge:command"
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP

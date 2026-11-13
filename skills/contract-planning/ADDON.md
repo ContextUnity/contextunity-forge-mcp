@@ -46,10 +46,10 @@ Use Forge MCP tools rather than unstructured grep/find during contract planning:
 
 ---
 
-## 4. Integration with ACDD `contract_synthesis` Gate
+## 4. Integration with ACDD `blueprint_synthesis` Gate and Authoring Workflows
 
-When executing the `contract_synthesis` gate (role: `architect`) in `.forge/acdd/profile.yaml`:
+When executing the root `blueprint_synthesis` container (`synthesize` $\to$ `review`) in the active ACDD profile or running standalone authoring workflows (`author-milestone.workflow.yaml`, `author-plan.workflow.yaml`, `author-workflow.workflow.yaml`):
 
-1. Apply the **Architectural Viability Audit** from `SKILL.md` to ensure the milestone design is minimal, clean, and robust.
+1. Apply the **Architectural Viability Audit** from `SKILL.md` to ensure the milestone, plan, or workflow design is minimal, clean, and robust.
 2. Post the synthesized architectural blueprint, data flow, and invariants to `task_blackboard` (topic: `decisions`) before gate submission.
-3. Establish proof via compiling runtime-red seam tests (`exit code 101`) asserting on authentic unfulfilled contracts.
+3. Submit the structured `proof` payload (`proof: blueprint` from `proofs:` or inline `proof.scheme`) including per-task `tasks[<task_ref>]` entries (`implementation_steps`, `symbol_signatures`, `test_seam`, `incoming_seams`, `outgoing_seams`, `negative_boundaries`), which the engine fans out into `gate_transitions` (`subject = <full_task_id>`) for automatic per-task context injection on `task claim`.

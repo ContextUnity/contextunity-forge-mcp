@@ -8,6 +8,7 @@ doc_type: api
 Git milestone frontmatter and fenced YAML task blocks own specifications.
 `src/engine/tasks/mod.rs` serves CLI and MCP through the independent SQLite store
 in `src/db/tasks_store/mod.rs`. Code-index rebuilds preserve operational task state.
+For standalone authoring of milestones, implementation plans, and workflows before execution, dedicated standalone workflows (`docs/workflows/author-milestone.workflow.yaml`, `author-plan.workflow.yaml`, `author-workflow.workflow.yaml`) provide pre-execution synthesis, review, and structural validation.
 For the lifecycle, load the `contextunity-forge` skill; for worktree and Git rules,
 follow root [AGENTS.md](../../AGENTS.md#worktrees-and-git-permissions).
 
@@ -108,7 +109,7 @@ and scope extension to their owning namespace. Inspect and claim include absolut
 and stage-specific `workflow_guidance`. The latter gives `active_stage`,
 `role`, `mode` (`subagent` or `inline`), `role_guide` (advisory role guidance and recommended models, adapted for inline execution when `mode: inline`), and `steps`. At review and
 delivery it also gives the independence rule and accepted builder identity.
-After a `reject_to` rewind, `rejection` gives
+After a `fail` rewind, `rejection` gives
 `rejected_from`, the prior builder `worker_id` when reuse is enabled, and the
 persisted findings; it is null on clean forward runs. Reuse guidance adds
 `Return task to builder '{worker_id}' with review rejection findings to repair defects.`
@@ -358,7 +359,7 @@ not accept session identity from tool JSON. Configured role runners still genera
 and transport real distinct session identities/fingerprints for process isolation
 and rejection resumption. Those runner controls remain separate from gate checks.
 Review/delivery
-rejection records findings and returns the task to remediation at `gate.reject_to`
+rejection records findings and returns the task to remediation at `gate.fail`
 (defaulting to `build` in standard profile).
 
 When the resulting next gate declares `independent_from`, submission returns
@@ -384,16 +385,21 @@ active task, stage, claim and contract revisions, worker, and worktree.
 
 ### Context bundle matrix by proof taxonomy
 
-When claiming a gate with `task_claim`, Forge returns tailored context bundles based on the gate's closed `proof` taxonomy:
+When `proof:` is omitted on a gate in the profile, [`infer_gate_proof`](../../crates/forge-tasks/src/tasks/profile/normalize.rs) automatically infers the internal verification mode (`ProofKind`) from the gate's structural attributes (`receipt: true` $\implies$ `delivery`, `expected_failure` $\implies$ `contract`, `command` $\implies$ `command`, `policy` or `contours` $\implies$ `review`, otherwise `none`). Explicit `proof:` declarations are used for `seam_test`, `contract` (without inline `expected_failure`), reusable schemas from the top-level `proofs:` catalog (`proof: <catalog_name>`, e.g. `proof: blueprint`), or inline recursive schemas (`proof: { scheme: { ... } }`).
+
+Before any milestone task inside `- tasks:` can be claimed, all applicable (`when`) pre-task root gates (`cursor.root_index < task_position`, such as `blueprint_synthesis`: `synthesize` $\to$ `review`) must have an accepted pass transition in `gate_transitions` (`subject = "milestone"`), or `task_claim` fails closed with `MILESTONE_PRE_TASK_GATE_PENDING`. When a pre-task root gate passes and its validated `scheme_proof` contains a per-task dictionary `tasks: { "<task_ref>": { ... } }`, Forge automatically records a `gate_transitions` row per task with `subject = <full_task_id>` (`<milestone_ref>:<task_ref>`) containing strictly that task's proof slice, and injects that task-scoped slice into `context_bundle` upon `task_claim` and `task_manage(action="context")`.
+
+When claiming a gate with `task_claim`, Forge returns tailored context bundles based on the gate's proof behavior:
 
 | Proof Kind | Claim Context Bundle Content | Primary Role Guidance |
 |---|---|---|
-| `contract` | Admitted target, invariants, declared scope paths, proof policy, seam test template/reference, indexed scope symbols, external callers, covering tests, and ADR summaries. | Contract Author: write red public-seam test, post a build-targeted draft, submit non-zero red exit code. |
-| `command` | Target, invariants, admitted scope paths, verified contract proof, indexed scope symbols, external callers, covering tests, ADR summaries, scoped commands, and evidence template. | Implementer: implement within scope, make seam test pass, and submit passing command proof. |
-| `review` | Target, invariants, scope paths, candidate snapshot SHA (from predecessor `sha_snapshot: true` gate), git diff against baseline HEAD, contour checklist with operational criteria from `gate.contours`. | Independent Reviewer: verify candidate diff against contour checklist, submit review proof with decision. |
-| `delivery` | Target, invariants, verified candidate snapshot SHA, all passing review proofs from `review_sources`, completed subtasks summary, receipt template. | Deliverer: verify rollup proofs and invariant checks, finalize receipt. |
+| `contract` | Admitted target, invariants, task-scoped inherited root-gate proof slice (`gate_transitions` where `subject = <full_task_id>`), declared scope paths, proof policy, seam test template/reference, indexed scope symbols, external callers, covering tests, and ADR summaries. | Contract Author: write red public-seam test, post a build-targeted draft, submit non-zero red exit code. |
+| `command` | Target, invariants, task-scoped inherited root-gate proof slice, admitted scope paths, verified contract proof, indexed scope symbols, external callers, covering tests, ADR summaries, scoped commands, and evidence template. | Implementer: implement within scope, make seam test pass, and submit passing command proof. |
+| `seam_test` | Target, invariants, task-scoped inherited root-gate proof slice (`incoming_seams` / `outgoing_seams` partner snapshot SHAs and stage status), admitted scope paths, covering tests, and registered command. | Builder (`when: seam`): reconcile parallel/speculative seam, execute cross-task seam tests, and submit passing `seam_test_refs`. |
+| `review` | Target, invariants, scope paths, candidate snapshot SHA (from predecessor snapshot gate), git diff against baseline HEAD, contour checklist with operational criteria from `gate.contours`. | Independent Reviewer: verify candidate diff against contour checklist, submit review proof with decision. |
+| `delivery` | Target, invariants, verified candidate snapshot SHA, all passing review proofs from `need`, completed subtasks summary, receipt template. | Independent Reviewer: verify rollup proofs and invariant checks, finalize receipt. |
 | `none` | Target, invariants, admitted scope paths, informational guidance. | Worker: perform non-verified informational step. |
-| `scheme` | Target, invariants, admitted scope paths, recursive JSON schema definition for expected proof payload. | Schema Worker: submit structured payload matching configured recursive schema. |
+| `scheme` | Target, invariants, admitted scope paths, recursive JSON schema definition (`proof.scheme`) for expected proof payload. | Schema Worker: submit structured `scheme_proof` payload matching the gate's recursive schema. |
 
 For contract and build proofs, the context bundle adds `scope_symbols`,
 `external_callers`, and `covering_tests`. External callers are indexed one-hop
@@ -404,7 +410,7 @@ lines. `workflow_guidance.scoped_commands` combines registered command prefixes
 with the contract seam or indexed covering-test targets, while
 `expected_evidence_template` supplies the claim-bound evidence shape.
 
-`evidence` is a direct JSON object bound to the active claim. The `commit` field can be omitted; Forge automatically captures the scoped candidate snapshot SHA on predecessor gates with `sha_snapshot: true` (e.g. `contract` and `build`), and inherits it on downstream gates (`review` and `deliver`). For example, a passing build submission contains:
+`evidence` is a direct JSON object bound to the active claim. The `commit` field can be omitted; Forge automatically captures the scoped candidate snapshot SHA on predecessor gates with snapshot persistence (`save: snapshot` / `save.post: snapshot`, e.g. `contract` and `build`), and inherits it on downstream gates (`review` and `deliver`). For example, a passing build submission contains:
 
 ```json
 {
@@ -491,12 +497,12 @@ At passing task delivery (`deliver`), Forge validates the current task
 specification and accepted build and review proof, then writes
 `status: completed` and a receipt into the
 milestone task block. When `auto_commit: true` (default in profile), Forge automatically
-creates an atomic Git commit directly from the candidate snapshot tree of the nearest predecessor gate with `sha_snapshot: true` (which is `build` in the default profile, whose candidate tree SHA is verified across all `review_sources`)
+creates an atomic Git commit directly from the candidate snapshot tree of the nearest predecessor gate with snapshot persistence (`save: snapshot` / `save.post: snapshot`, which is `build` in the default profile, whose candidate tree SHA is verified across all `need` review gates)
 plus the milestone receipt file, with parent `HEAD` (verifying `git rev-parse HEAD` matches `candidate_baseline_head`, the exact commit SHA of HEAD captured when the candidate snapshot was created).
 Standard commit message is derived from task target and completed subtasks, and hooks are enforced.
 If the commit fails (e.g. pre-commit hook failure), the SQLite transaction rolls back atomically,
-leaving the task uncompleted at `deliver` with an explicit error (`TASK_DELIVERY_COMMIT_FAILED`), allowing the deliverer to reject
-back to `reject_to` (e.g. `build`) or retry. The task receipt created at delivery records the created commit SHA from `auto_commit` (or the developer's delivery commit when `auto_commit: false`), contract revision,
+leaving the task uncompleted at `deliver` with an explicit error (`TASK_DELIVERY_COMMIT_FAILED`), allowing the independent reviewer to reject
+back to `fail` (e.g. `build`) or retry. The task receipt created at delivery records the created commit SHA from `auto_commit` (or the developer's delivery commit when `auto_commit: false`), contract revision,
 RFC3339 `passed_at`, command proof, review proof, and decision. Qualified
 `delivery_gate` and `candidate_gate` fields preserve the selected task track through
 sync, recovery, and handoff. Legacy receipts without those fields are accepted only
@@ -1058,7 +1064,7 @@ Per [ADR 0016](../adr/0016-lean-stage-tailored-task-context-bundles.md), the bun
 3. **`adrs`** (contract, command, and review proof gates): Scope-to-ADR mapping querying `docs/adr/` and `docs/architecture/`. Documents are included when their path or content matches scope tokens; unrelated documents are omitted.
 4. **`scope_symbols` and `covering_tests`** (contract and command proof gates): High-value symbol skeletons and test suites covering declared scope files or domain boundaries. Signatures are safely truncated along Unicode character boundaries at 200 characters.
 5. **`contract_seam_test` and `unresolved_review_findings`** (command proof gates): The prior accepted contract seam reference and, when a rejected review or delivery gate routes back to this gate, the structured findings for that rejection.
-6. **`candidate_snapshot`** (review proof gates): The nearest prior accepted `sha_snapshot` commit, its captured baseline parent, and `inspect_cmd` (`git show <commit>`) for review against the configured contours.
+6. **`candidate_snapshot`** (review proof gates): The nearest prior accepted `save: snapshot` / `save.post: snapshot` commit, its captured baseline parent, and `inspect_cmd` (`git show <commit>`) for review against the configured contours.
 7. **`proof_schema`** (schema proof gates): The recursive JSON schema the worker must satisfy under `scheme_proof`.
 8. **`latest_snapshot` and `milestone_ref`** (delivery proof gates and completed tasks), and **`receipt`** (completed tasks): The nearest accepted candidate snapshot, inspect command, milestone file path, and durable completion receipt.
 10. **`blackboard` and `blackboard_info`** (All stages): Up to 15 recent untagged messages and messages targeted to the active gate from the task, parent milestone, and sibling tasks. Each message includes origin metadata (`scope: "milestone" | "task" | "subtask" | "sibling"`), `task_id`, `subtask_ref`, and optional `gate`. `blackboard_info` summarizes the active gate, message ids, total count, targeted count, and topic counts. Gate-targeted messages also appear in `workflow_guidance.blackboard_messages`.

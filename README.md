@@ -75,32 +75,19 @@ Documentation in Forge is not an afterthought stored in disconnected wikis; it i
 
 ### 3. ACDD — Lifecycle State Machine and Orchestration
 
-**Augmented Context-Driven Delivery (ACDD)** is a system that injects tailored context into verified gates. Rather than relying on unstructured, open-ended coding loops, ACDD dynamically serves each agent the exact context it needs — admitted write scopes, governing architectural invariants, in-scope symbol skeletons, covering test seams, and reviewer rejection findings — bound to atomic, verifiable gates:
+**Augmented Context-Driven Delivery (ACDD)** replaces open-ended, unstructured coding loops with a deterministic verification state machine. It binds Git-tracked contracts (`docs/milestones/*.md`, `docs/plans/*.md`), persistent SQLite state (`.forge/tasks.sqlite`), and declarative YAML profiles so every worker receives only the context relevant to its active gate:
 
-- **Flexible, Composable Gates**: The task queue advances through distinct verification gates. The default lifecycle guides tasks through:
-  1. `contract`: Contract author produces an architectural decision and a compiling, failing seam test (runtime exit code 101).
-  2. `build`: Builder implements the functionality until the task seam test and project checks pass (exit code 0).
-  3. `review`: An independent reviewer (`worker_id` strictly separated from builder) inspects the candidate diff against 5 review contours (`paths`, `claims`, `concurrency`, `project_isolation`, `administration`).
-  4. `deliver`: Validates delivery subtask completion, records immutable cryptographic proofs in SQLite and milestone Markdown, and cleans up scratch context.
-  All default gates, commands, proofs, and roles are defined in the [built-in profile (`crates/forge-tasks/src/tasks/acdd.default.yaml`)](crates/forge-tasks/src/tasks/acdd.default.yaml). Repositories can customize, extend, or replace them via a workspace profile (`.forge/acdd/profile.yaml` or `acdd_profile` in `forge-mcp.yaml`) in two modes:
-  - **Extension & Override** (default, when `inherit` is omitted): inherits the built-in profile, merging project-defined commands, roles, proofs, and gates over defaults.
-  - **Full Replacement** (`inherit: none`): completely replaces the built-in profile, allowing teams to build bespoke, multi-gate lifecycles entirely from scratch without inherited gates.
-  A starter template is available in [acdd_profile.yaml.example](skills/contextunity-forge/references/acdd_profile.yaml.example), and comprehensive multi-domain patterns (milestones, plans, workflows) are documented in the companion skill's [ACDD profile examples directory (`skills/contextunity-forge/references/acdd-profile-examples/`)](skills/contextunity-forge/references/acdd-profile-examples/) (see [profile-milestone.example.yaml](skills/contextunity-forge/references/acdd-profile-examples/profile-milestone.example.yaml), [profile-plan.example.yaml](skills/contextunity-forge/references/acdd-profile-examples/profile-plan.example.yaml), and [profile-workflow.example.yaml](skills/contextunity-forge/references/acdd-profile-examples/profile-workflow.example.yaml)).
-- **Topological DAG Waves and Path Isolation**: Milestones declare task dependencies (`depends_on`), which Forge resolves into topological execution waves. Autonomous milestone runners execute waves with state verification, while multi-agent workflows operate in isolated Git worktrees under `.worktrees/` protected by exclusive path locking to prevent merge conflicts.
-- **Cyclic Repair Loops Without Context Loss (`reject_routing`)**:
-  - When an independent reviewer rejects a candidate with structured findings, Forge routes the rejection back to the *same* builder session.
-  - The builder resumes with its full reasoning history, active workspace state, and structured reviewer findings without cold restarts or lost context.
-- **Dynamic Contextual Guidance (`workflow_guidance`)**:
-  - Every atomic gate claim delivers tailored role instructions, concrete acceptance criteria, and a lean context bundle (contract symbols, candidate diffs, or receipt rules).
-  - Agents collaborate asynchronously via `task_blackboard` to exchange technical notes and blockers in SQLite without polluting Git history.
-- **Delivery Guard**: Enforces that all subtasks and gate proof requirements are fully satisfied before landing changes.
-- **Execution Tiers: Milestones, Plans, and Workflows**: Delivery operates across three distinct operational layers:
-  1. **Milestones (`docs/milestones/*.md`)**: Durable, reviewed team delivery contracts tracked in Git. Milestones define strict task perimeters, dependency waves, isolated worktree concurrency, independent review contours, and cryptographically verified handoff receipts.
-  2. **Documentation Plans (`docs/plans/*.md`)**: Structured, multi-step documentation-driven plans (`doc_type: plan`) executed in-place with snapshot persistence (*currently under active alpha testing*).
-  3. **Standalone Workflows (`docs/workflows/*.yaml`)**: Lightweight, taskless root-gate pipelines with ephemeral observations for automated sweeps, linting, and checks without persistent task queue state (*currently under active alpha testing*).
+- **Composable Gates & Universal Profiles**: Workflows are assembled from hierarchical agent, command, and container gates. Repositories inherit and specialize the embedded baseline (`crates/forge-tasks/src/tasks/acdd.default.yaml`) through a thin `.forge/acdd/profile.yaml` overlay or replace it via `inherit: none`.
+- **Topological DAG Waves & Path Isolation**: Task dependencies (`depends_on`) resolve into execution waves running inside isolated `.worktrees/` protected by exclusive path locks.
+- **Session-Preserving Repair Loops & Dynamic Context**: Every gate claim delivers tailored `workflow_guidance`, an isolated `context_bundle`, and persistent `task_blackboard` notes; reviewer rejections resume the builder session with full context intact.
+- **Three Execution Tiers**:
+  1. **Milestones (`docs/milestones/*.md`)**: Reviewed team delivery contracts with upfront blueprint synthesis, isolated task DAG waves, independent integration review, and cryptographic handoff receipts.
+  2. **Documentation Plans (`docs/plans/*.md`)**: Structured documentation-driven step execution in-place with snapshot persistence (*under active alpha testing*).
+  3. **Standalone Workflows (`docs/workflows/*.yaml`)**: Lightweight taskless root-gate pipelines with ephemeral observations for sweeps, linting, authoring, and checks (*under active alpha testing*).
 
-> [!TIP] Complete Tool & CLI References
-> For exhaustive parameter specifications, schemas, error invariants, and copy-ready examples:
+> [!TIP] Complete ACDD, Profile & Tool References
+> - [**ACDD Architecture & Default Profile Guide (`docs/reference/acdd.md`)**](docs/reference/acdd.md) — full explanation of ACDD, how gates and universal profiles work, and a gate-by-gate walkthrough of `acdd.default.yaml`.
+> - [**ACDD Profiles Reference (`docs/reference/profiles.md`)**](docs/reference/profiles.md) — profile schema, command pattern rules, and validation constraints.
 > - [**MCP Tools Reference (`docs/reference/mcp-tools.md`)**](docs/reference/mcp-tools.md) — full reference for all 20 MCP tools exposed to AI agents.
 > - [**CLI Reference (`docs/reference/cli.md`)**](docs/reference/cli.md) — complete reference for all command-line operations and terminal automation.
 > - [**Task Lifecycle Reference (`docs/reference/tasks.md`)**](docs/reference/tasks.md) — in-depth guide to task state machines, blackboard, and evidence envelopes.
@@ -243,7 +230,7 @@ cargo test -p forge-tasks --lib
 cargo test --locked
 ```
 
-Refer to [TESTS.md](TESTS.md) for domain-specific verification commands and count rules, and [docs/AGENTS.md](docs/AGENTS.md) for documentation authoring governance.
+Refer to [TESTS.md](TESTS.md) for domain-specific verification commands and count rules, [docs/AGENTS.md](docs/AGENTS.md) for documentation authoring governance, and [CHANGELOG.md](CHANGELOG.md) for release notes.
 
 ---
 

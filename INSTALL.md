@@ -72,11 +72,11 @@ The installer performs the following operations atomically:
 
 #### Installing a Specific Tag or Using a Mirror
 
-To install a specific version tag (e.g. `v0.5.1-alpha.2`) or download from an internal company mirror:
+To install a specific version tag (e.g. `v0.5.2`) or download from an internal company mirror:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/ContextUnity/contextunity-forge-mcp/main/install.sh -o /tmp/forge-install.sh
-FORGE_RELEASE_BASE_URL="https://github.com/ContextUnity/contextunity-forge-mcp/releases/download/v0.5.1-alpha.2" sh /tmp/forge-install.sh
+FORGE_RELEASE_BASE_URL="https://github.com/ContextUnity/contextunity-forge-mcp/releases/download/v0.5.2" sh /tmp/forge-install.sh
 ```
 
 #### Post-Installation & Verification
@@ -339,10 +339,11 @@ Create `.forge/acdd/profile.yaml` to tailor commands, roles, and review contours
 
 ```yaml
 version: 2
+inherit: default
 
-# Scoped command mappings referenced by gates and verification contours
+# Scoped command mappings referenced by inherited gates
 commands:
-  check-and-test:
+  rust-check-and-test:
     by_pattern:
       "**/*.py": "pytest"
       "**/*.{ts,tsx,js,jsx,vue}": "npm test"
@@ -351,61 +352,36 @@ commands:
     description: "Run strict checks and tests across project languages."
     timeout_seconds: 300
     output:
-      counts: {passed: '(\d+) passed', failed: '(\d+) failed'}
+      counts: {passed: '(?m)\b(\d+) passed\b', failed: '(?m)\b(\d+) failed\b'}
       require_counts: true
 
-# Role configurations with optional model targets and agent runners
-roles:
-  contract_author:
-    mode: subagent
-    reuse_on_reject: true
-    guidance: "Synthesize contracts and author compiling runtime-red seam tests (exit code 101/1)."
-  builder:
-    mode: subagent
-    reuse_on_reject: true
-    guidance: "Implement functionality inside declared allowed_write_scope and pass all tests."
-  independent_reviewer:
-    mode: subagent
-    reuse_on_reject: true
-    guidance: "Review diff independently across contours; route findings back on rejection."
+  check_full_repo:
+    by_pattern:
+      "**/*.py": "pytest"
+      "**/*.{ts,tsx,js,jsx,vue}": "npm test"
+      "**/*.go": "go test ./..."
+      "**/*.rs": "cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets"
+    description: "Run full-repository verification before milestone handoff."
+    timeout_seconds: 1800
 
-# Gate definitions and task container
+# Overlay command bindings onto the embedded acdd.default.yaml gate tree
 gates:
-  - id: tasks
-    gates:
-      - id: contract
-        role: contract_author
-        proof: contract
-        persistence:
-          post: snapshot
-      - id: build
-        role: builder
-        command: check-and-test
-        proof: command
-        persistence:
-          pre: snapshot
-          post: snapshot
-      - id: review
-        role: independent_reviewer
-        proof: review
-        contours: guidance.contours
-        independent_from: build
-        fail: build
-        persistence:
-          immutable: true
-      - id: deliver
-        role: independent_reviewer
-        proof: delivery
-        receipt: true
-        independent_from: build
-        persistence:
-          immutable: true
-          post: commit
+  - tasks:
+      gates:
+        - id: build
+          command: rust-check-and-test
+        - id: seam
+          when: seam
+          gates:
+            - id: integrate
+              command: rust-check-and-test
+  - id: verify
+    command: check_full_repo
 ```
 
 > [!TIP]
-> Always validate custom profiles using `contextunity-forge-mcp validate .forge/acdd/profile.yaml`.
-> For the complete, comprehensive reference template with cognitive contours, HITL escalation policies, subtask DoD, and runners, inspect [`skills/contextunity-forge/references/acdd_profile.yaml.example`](skills/contextunity-forge/references/acdd_profile.yaml.example).
+> Always validate custom profiles using `contextunity-forge-mcp validate --profile .forge/acdd/profile.yaml`.
+> See [ACDD Architecture & Default Profile Guide](docs/reference/acdd.md) and [ACDD Profiles Reference](docs/reference/profiles.md) for gate mechanics and inheritance details, or inspect [`skills/contextunity-forge/references/acdd_profile.yaml.example`](skills/contextunity-forge/references/acdd_profile.yaml.example) for a standalone `inherit: none` template.
 
 ---
 

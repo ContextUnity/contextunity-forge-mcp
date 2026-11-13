@@ -1,0 +1,123 @@
+# =============================================================================
+# STANDALONE WORKFLOW: Milestone Authoring & Validation
+#
+# ADR 0021 Work Model 1: Standalone root-gate workflow (inherit: none, save: none).
+# Role architect synthesizes a structured milestone document with acyclic waves,
+# disjoint scopes, grounded symbols, and Clean Architecture layer boundaries.
+# Role independent_reviewer audits the draft for invariants and scope disjointness.
+# Gate preflight validates the milestone manifest via `milestone init --in-place`.
+# =============================================================================
+
+version: 2
+inherit: none
+save: none
+
+roles:
+  architect:
+    mode: subagent
+    reuse_on_reject: true
+    runner: 'codex exec -C "{worktree}" -m "{model}" -c model_reasoning_effort="{reasoning}" "{prompt}"'
+    prompt_template: >-
+      Execute {role} for standalone workflow {task_id}, gate {stage}, in {worktree}.
+      Goal: {goal}. {role_guidance}
+    guidance: "Synthesize an actionable milestone manifest in docs/milestones/<id>.md. Ground symbols with code_map_inspect and invariants with search_docs. Partition tasks into acyclic waves with disjoint same-wave scopes. Forbid protected files (Cargo.toml, build.rs, .forge/**)."
+    models:
+      - 'gpt-6.1-sol:high'
+
+  independent_reviewer:
+    mode: subagent
+    reuse_on_reject: true
+    runner: 'codex exec -C "{worktree}" -m "{model}" -c model_reasoning_effort="{reasoning}" "{prompt}"'
+    prompt_template: >-
+      Execute {role} for standalone workflow {task_id}, gate {stage}, in {worktree}.
+      Goal: {goal}. {role_guidance}
+    guidance: "Audit the authored milestone manifest for acyclic waves, disjoint write scopes, layer isolation, negative boundaries, and authentic symbol citations."
+    models:
+      - 'gpt-6.1-sol:xhigh'
+
+commands:
+  validate_milestone:
+    command: "contextunity-forge-mcp milestone init {manifest_path} --in-place"
+    timeout_seconds: 60
+
+policies:
+  default_review:
+    independent_worker: true
+    require_all_contours: true
+
+gates:
+  - id: synthesize
+    role: architect
+    max_attempts: 3
+    tools:
+      - code_map_inspect
+      - code_map_impact
+      - code_map_overview
+      - code_map_search
+      - ast_grep_search
+      - forge_read
+      - get_doc
+      - search_docs
+      - task_blackboard
+    proof:
+      scheme:
+        type: object
+        required:
+          - milestone_id
+          - manifest_path
+          - wave_dag
+          - scopes_disjoint
+          - protected_files_excluded
+        properties:
+          milestone_id:
+            type: string
+          manifest_path:
+            type: string
+          wave_dag:
+            type: array
+            items:
+              type: array
+              items:
+                type: string
+          scopes_disjoint:
+            type: boolean
+          protected_files_excluded:
+            type: boolean
+    pass: review
+
+  - id: review
+    role: independent_reviewer
+    max_attempts: 3
+    policy: default_review
+    independent_from: synthesize
+    tools:
+      - code_map_inspect
+      - code_map_impact
+      - code_map_search
+      - ast_grep_search
+      - forge_read
+      - get_doc
+      - search_docs
+      - task_blackboard
+    proof:
+      scheme:
+        type: object
+        required:
+          - decision
+          - summary
+          - scope_findings
+        properties:
+          decision:
+            type: string
+            enum: ["pass", "reject"]
+          summary:
+            type: string
+          scope_findings:
+            type: array
+            items:
+              type: string
+    pass: preflight
+    fail: synthesize
+
+  - id: preflight
+    command: validate_milestone

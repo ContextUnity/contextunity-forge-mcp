@@ -2,8 +2,7 @@
 # STANDALONE WORKFLOW EXAMPLE: Code Quality & Polish Loop
 #
 # ADR 0021 Work Model 1: Pure gate graph without tasks.
-# Planned for AC-003: `contextunity-forge-mcp workflow run docs/workflows/code-quality-and-polish.workflow.yaml`
-# Autonomous dispatch and run logs are not yet available.
+# Run via: `contextunity-forge-mcp workflow run code-quality-and-polish`
 # =============================================================================
 
 version: 2

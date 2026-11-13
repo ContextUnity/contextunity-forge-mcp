@@ -1,0 +1,124 @@
+# =============================================================================
+# STANDALONE WORKFLOW: Implementation Plan Authoring & Validation
+#
+# ADR 0021 Work Model 1: Standalone root-gate workflow (inherit: none, save: none).
+# Role architect synthesizes a structured markdown plan in docs/plans/<slug>.md
+# with doc_type: plan, numbered '## N. <Step Title>' sections, valid targets,
+# write scopes, and acyclic depends_on dependencies matching PlanDocument.
+# Role independent_reviewer audits step granularity, in-place safety, and scope validity.
+# Gate preflight validates the plan document via `plan show`.
+# =============================================================================
+
+version: 2
+inherit: none
+save: none
+
+roles:
+  architect:
+    mode: subagent
+    reuse_on_reject: true
+    runner: 'codex exec -C "{worktree}" -m "{model}" -c model_reasoning_effort="{reasoning}" "{prompt}"'
+    prompt_template: >-
+      Execute {role} for standalone workflow {task_id}, gate {stage}, in {worktree}.
+      Goal: {goal}. {role_guidance}
+    guidance: "Author an actionable implementation plan in docs/plans/<slug>.md with frontmatter doc_type: plan, numbered '## N. <Step Title>' headings, valid Target, Scope, Status: ready, and acyclic Depends On references."
+    models:
+      - 'gpt-6.1-sol:high'
+
+  independent_reviewer:
+    mode: subagent
+    reuse_on_reject: true
+    runner: 'codex exec -C "{worktree}" -m "{model}" -c model_reasoning_effort="{reasoning}" "{prompt}"'
+    prompt_template: >-
+      Execute {role} for standalone workflow {task_id}, gate {stage}, in {worktree}.
+      Goal: {goal}. {role_guidance}
+    guidance: "Audit the authored implementation plan for step granularity, acyclic dependency topology, in-place snapshot safety, and valid write scopes."
+    models:
+      - 'gpt-6.1-sol:xhigh'
+
+commands:
+  validate_plan:
+    command: "contextunity-forge-mcp plan show {plan_name}"
+    timeout_seconds: 60
+
+policies:
+  default_review:
+    independent_worker: true
+    require_all_contours: true
+
+gates:
+  - id: synthesize
+    role: architect
+    max_attempts: 3
+    tools:
+      - code_map_inspect
+      - code_map_impact
+      - code_map_overview
+      - code_map_search
+      - ast_grep_search
+      - forge_read
+      - get_doc
+      - search_docs
+      - task_blackboard
+    proof:
+      scheme:
+        type: object
+        required:
+          - plan_slug
+          - plan_path
+          - step_count
+          - dependency_dag
+          - scopes_valid
+        properties:
+          plan_slug:
+            type: string
+          plan_path:
+            type: string
+          step_count:
+            type: integer
+          dependency_dag:
+            type: object
+            additionalProperties:
+              type: array
+              items:
+                type: string
+          scopes_valid:
+            type: boolean
+    pass: review
+
+  - id: review
+    role: independent_reviewer
+    max_attempts: 3
+    policy: default_review
+    independent_from: synthesize
+    tools:
+      - code_map_inspect
+      - code_map_impact
+      - code_map_search
+      - ast_grep_search
+      - forge_read
+      - get_doc
+      - search_docs
+      - task_blackboard
+    proof:
+      scheme:
+        type: object
+        required:
+          - decision
+          - summary
+          - step_findings
+        properties:
+          decision:
+            type: string
+            enum: ["pass", "reject"]
+          summary:
+            type: string
+          step_findings:
+            type: array
+            items:
+              type: string
+    pass: preflight
+    fail: synthesize
+
+  - id: preflight
+    command: validate_plan

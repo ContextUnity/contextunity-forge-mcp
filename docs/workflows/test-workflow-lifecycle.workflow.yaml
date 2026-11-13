@@ -4,7 +4,7 @@
 # Invariants:
 #   1. save: log (emits structured run logs into .forge/runs/)
 #   2. Zero task table rows, zero task claims.
-#   3. Forward/cyclic rejection routing: verify (reject_to: polish) -> polish -> review.
+#   3. Forward/cyclic rejection routing: verify (fail: polish) -> polish -> review.
 # =============================================================================
 
 version: 2

@@ -9,6 +9,7 @@
 # =============================================================================
 
 version: 2
+inherit: none
 
 # =============================================================================
 # 1. ROLES CATALOG (`roles`)
@@ -129,7 +130,6 @@ gates:
         role: architect
         guidance: [commerce.contract]
         proof: contract
-        command: test
 
       # Step 2: Implementation & Code Verification
       - id: implement

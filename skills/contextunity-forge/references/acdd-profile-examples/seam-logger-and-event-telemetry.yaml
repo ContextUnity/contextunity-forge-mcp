@@ -23,6 +23,7 @@
 # =============================================================================
 
 version: 2
+inherit: none
 
 # =============================================================================
 # 0. GIT COMMIT NOTE & RESOURCE BUDGETS
@@ -253,14 +254,24 @@ policies:
 # 6. HIERARCHICAL GATES TREE (`gates`)
 # =============================================================================
 gates:
-  # Gate 1: Upfront Milestone Synthesis & Seam Matrix Creation (Agent Gate)
-  - id: contract_synthesis
-    role: architect
-    guidance: [milestone.synthesis]
-    proof: contract
-    save:
-      pre: snapshot
-      post: commit
+  # Gate 1: Upfront Blueprint Synthesis Container (synthesize -> review)
+  - id: blueprint_synthesis
+    gates:
+      - id: synthesize
+        role: architect
+        guidance: [milestone.synthesis]
+        save:
+          pre: snapshot
+          post: snapshot
+      - id: review
+        role: reviewer
+        policy: default_review
+        proof: review
+        contours: guidance.contours
+        independent_from: synthesize
+        fail: synthesize
+        save:
+          immutable: true
 
   # Gate 2: Milestone Tasks Container (First-class declarative task lifecycle)
   # Default task type: type: ["code"]. Heterogeneous tasks declare type: ["doc"] or type: ["observer"].

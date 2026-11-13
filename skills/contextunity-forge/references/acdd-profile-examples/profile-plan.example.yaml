@@ -1,13 +1,14 @@
 # =============================================================================
-# ACDD PROFILE EXAMPLE: Plan Profile (Only Tasks Container, No Level 0 Gates)
+# ACDD PROFILE EXAMPLE: Plan Profile (Only Tasks Container, No Root Gates)
 #
-# ADR 0021 Work Model 2: Plan executes in-place steps without Level 0 preflight
-# (contract_synthesis) or post-verification (verify/handoff).
+# ADR 0021 Work Model 2: Plan executes in-place steps without pre-task synthesis
+# (blueprint_synthesis) or post-task closure (verify/polish/milestone_review/handoff).
 # The plan document (docs/plans/*.md) is already the architectural decision.
 # It consists strictly of the `tasks:` container.
 # =============================================================================
 
 version: 2
+inherit: none
 
 # Plans execute in-place and use `save: snapshot` (snapshots + logs, strictly no auto-commits):
 save: snapshot
@@ -55,7 +56,7 @@ policies:
     require_all_contours: true
     audit_extended_scope: true
 
-# Plan workflow: Strictly the `tasks:` container, zero Level 0 milestone gates!
+# Plan workflow: Strictly the `tasks:` container, zero root milestone gates!
 gates:
   - tasks:
       gates:

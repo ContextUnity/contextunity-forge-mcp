@@ -23,7 +23,7 @@ informed:
 
 ### Workflow
 
-A Workflow is a pure root `gates:` graph with no `tasks:` container, task IDs, task rows, or task claims. The native runner executes it in memory with `save: none`, including configured role runners. Autonomous run logs are not implemented; a valid profile is not evidence that it has run.
+A Workflow is a pure root `gates:` graph (`inherit: none`, `save: none`) with no `tasks:` container, task IDs, task rows, or task claims. The native runner executes it in memory with `save: none`, including configured role runners. Standalone workflows also govern artifact authoring and structural validation (`author-milestone.workflow.yaml`, `author-plan.workflow.yaml`, `author-workflow.workflow.yaml`) through a three-gate cycle (`synthesize` (`role: architect`, referencing a `proofs:` schema or inline `proof: { scheme: ... }`) $\to$ `review` (`role: independent_reviewer`, `independent_from: synthesize`, `fail: synthesize`) $\to$ `preflight` (registered validation command)). Autonomous run logs are not implemented; a valid profile is not evidence that it has run.
 
 ### Plan
 
@@ -31,19 +31,42 @@ A Plan uses only a `tasks:` container and executes its steps in the active worki
 
 ### Milestone
 
-A Milestone combines root contract synthesis, a task DAG, engine verification, independent integration review, a delivery commit, and handoff context binding and archival. The headless runner executes the root `gates:` graph and its declared transitions, and the existing handoff validator checks content-bound verification and review.
+A Milestone combines a pre-task root blueprint synthesis container (`blueprint_synthesis`: `synthesize` $\to$ `review`), a per-task DAG container (`- tasks:` including conditional `- id: seam` for parallel/speculative seam reconciliation), engine verification, independent integration review, a delivery commit, and handoff context binding and archival. Pre-task root gates (`cursor.root_index < task_position`) execute with `subject = "milestone"` before any task can be claimed (`MILESTONE_PRE_TASK_GATE_PENDING`), and fan out per-task proof entries (`proof.tasks["<task_ref>"]`) into `gate_transitions` (`subject = <full_task_id>`) so each task automatically receives only its own architectural blueprint slice in `context_bundle` upon `task claim`. Post-task root gates (`cursor.root_index > task_position`) unlock after all non-cancelled tasks complete.
 
 ```yaml
 gates:
-  - id: contract_synthesis
-    role: architect
+  - id: blueprint_synthesis
+    gates:
+      - id: synthesize
+        role: architect
+        proof: blueprint
+      - id: review
+        role: independent_reviewer
+        independent_from: synthesize
+        fail: synthesize
   - tasks:
       gates:
+        - id: contract
+          role: contract_author
+          proof: contract
         - id: build
           role: builder
+          command: check_task
         - id: review
           role: independent_reviewer
+          independent_from: build
           fail: build
+        - id: seam
+          when: seam
+          gates:
+            - id: integrate
+              role: builder
+              proof: seam_test
+              command: check_task
+            - id: review
+              role: independent_reviewer
+              independent_from: integrate
+              fail: integrate
         - id: deliver
           receipt: true
           need: [review]
@@ -53,12 +76,18 @@ gates:
     pass: milestone_review
     fail: polish
   - id: polish
-    role: builder
+    role: architect
     pass: verify
+    save:
+      pre: snapshot
+      post: snapshot
   - id: milestone_review
     role: independent_reviewer
+    independent_from: polish
     pass: handoff
     fail: polish
+    save:
+      immutable: true
   - id: handoff
     receipt: true
     absorb: true

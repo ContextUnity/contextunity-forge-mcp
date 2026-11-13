@@ -189,17 +189,29 @@ persistence belong to the active embedded/repository profile. Read
 Repository `AGENTS.md` owns verification commands and Git permissions.
 
 To customize a repository or task workflow, copy the
-[canonical v2 profile example](references/acdd_profile.yaml.example), select it
+[canonical ACDD profile example](references/acdd_profile.yaml.example), select it
 through the repository adapter's `acdd_profile` (or the owning milestone's
 `acdd_profile`), and validate it before claiming work. Start with `version: 2`;
-configure `modules`, worker `roles`, registered `commands`, path-scoped command
-arguments in `scope_args_by_pattern`, and reusable `guidance`. Define review
+with `inherit: default` (the default when `inherit` is omitted), repository profiles
+overlay `acdd.default.yaml` by merging `roles`, `commands`, `guidance`, `policies`,
+and `scope_args_by_pattern` by key and recursively merging `gates:` by gate `id`
+and `- tasks:` container before normalization (`inherit: none` compiles a standalone
+workflow without base inheritance). Define review
 contours through `guidance.contour.<name>` and reference `guidance.contours` on
-review gates. Compose `gates` with an upfront `contract_synthesis` gate and a
-nested `- tasks:` container for task gates. Command gates and reusable templates
+review gates. Compose milestone `gates` with a pre-task `blueprint_synthesis` container
+(`synthesize` $\to$ `review`) and a nested `- tasks:` container (`contract`, `build`,
+`review`, conditional `seam` (`integrate` $\to$ `review`), and `deliver`). Gate
+verification modes (`ProofKind`) are inferred automatically from structural gate fields
+(`receipt`, `expected_failure`, `command`, `policy`/`contours`), while custom JSON
+schemas are declared in the reusable top-level `proofs:` catalog (`proof: <name>`, e.g.
+`proof: blueprint`) or inline on the gate via `proof: { scheme: { ... } }`. When
+a pre-task root gate passes with `proof.tasks[<task_ref>]`, the engine records each
+task's slice in `gate_transitions` (`subject = <full_task_id>`) and injects only that
+task's slice into `context_bundle` upon `task_claim`. Command gates and reusable templates
 supply verification and retry contours. Use the
 [ACDD domain profile examples catalog](references/acdd-profile-examples/README.md)
 for domain-specific starting points; verify examples against the live schema.
+Dedicated standalone authoring workflows (`author-milestone.workflow.yaml`, `author-plan.workflow.yaml`, `author-workflow.workflow.yaml`) under `docs/workflows/` (and mirrored in `references/acdd-profile-examples/`) execute as taskless root-gate workflows (`inherit: none`, `save: none`) to synthesize, review, and preflight manifests, plans, and workflows before execution.
 Custom profiles (never the embedded default profile) may also configure optional
 `roles.<name>.runner` and `roles.<name>.prompt_template` strings using `{task_id}`,
 `{stage}`, `{role}`, `{worktree}`, `{model}`, `{reasoning}`, `{role_guidance}`,
@@ -259,7 +271,7 @@ them. MCP uses `task_submit(..., action="reject", findings=<JSON>)`; CLI uses
 --findings '<JSON>'`. Respect the active profile's evidence and routing rules.
 
 Read applicable messages after claim and inspect IDs for full payloads. A
-`contract_synthesis` architect records `topic="decisions"`; build drafts may
+`blueprint_synthesis` architect records `topic="decisions"`; build drafts may
 target `gate="build"`. Active `decisions`, `findings`, and `blockers` remain
 eligible across gates in `context_bundle.blackboard`, preserving the original
 gate within response bounds. Other topics follow untargeted/current-gate

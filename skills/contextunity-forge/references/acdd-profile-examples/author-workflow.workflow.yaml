@@ -1,0 +1,120 @@
+# =============================================================================
+# STANDALONE WORKFLOW: Root-Gate Workflow Authoring & Validation
+#
+# ADR 0021 Work Model 1: Standalone root-gate workflow (inherit: none, save: none).
+# Role architect synthesizes a standalone root-gate workflow in docs/workflows/<name>.workflow.yaml
+# with inherit: none, save: none, no tasks: container, no receipt: true, and valid
+# pass:, fail:, and independent_from transitions.
+# Role independent_reviewer audits gate graph transitions, role separation, and inline proof schemas.
+# Gate preflight validates the workflow document via `workflow show`.
+# =============================================================================
+
+version: 2
+inherit: none
+save: none
+
+roles:
+  architect:
+    mode: subagent
+    reuse_on_reject: true
+    runner: 'codex exec -C "{worktree}" -m "{model}" -c model_reasoning_effort="{reasoning}" "{prompt}"'
+    prompt_template: >-
+      Execute {role} for standalone workflow {task_id}, gate {stage}, in {worktree}.
+      Goal: {goal}. {role_guidance}
+    guidance: "Author a standalone root-gate workflow in docs/workflows/<name>.workflow.yaml with version: 2, inherit: none, save: none, pure gate graph without tasks, no receipts, and valid pass/fail/independent_from transitions."
+    models:
+      - 'gpt-6.1-sol:high'
+
+  independent_reviewer:
+    mode: subagent
+    reuse_on_reject: true
+    runner: 'codex exec -C "{worktree}" -m "{model}" -c model_reasoning_effort="{reasoning}" "{prompt}"'
+    prompt_template: >-
+      Execute {role} for standalone workflow {task_id}, gate {stage}, in {worktree}.
+      Goal: {goal}. {role_guidance}
+    guidance: "Audit the authored workflow profile for pure gate graph topology, absence of tasks container, role independence, and valid inline proof schemas."
+    models:
+      - 'gpt-6.1-sol:xhigh'
+
+commands:
+  validate_workflow:
+    command: "contextunity-forge-mcp workflow show {workflow_name}"
+    timeout_seconds: 60
+
+policies:
+  default_review:
+    independent_worker: true
+    require_all_contours: true
+
+gates:
+  - id: synthesize
+    role: architect
+    max_attempts: 3
+    tools:
+      - code_map_inspect
+      - code_map_impact
+      - code_map_overview
+      - code_map_search
+      - ast_grep_search
+      - forge_read
+      - get_doc
+      - search_docs
+      - task_blackboard
+    proof:
+      scheme:
+        type: object
+        required:
+          - workflow_name
+          - workflow_path
+          - gate_count
+          - transitions_valid
+          - taskless
+        properties:
+          workflow_name:
+            type: string
+          workflow_path:
+            type: string
+          gate_count:
+            type: integer
+          transitions_valid:
+            type: boolean
+          taskless:
+            type: boolean
+    pass: review
+
+  - id: review
+    role: independent_reviewer
+    max_attempts: 3
+    policy: default_review
+    independent_from: synthesize
+    tools:
+      - code_map_inspect
+      - code_map_impact
+      - code_map_search
+      - ast_grep_search
+      - forge_read
+      - get_doc
+      - search_docs
+      - task_blackboard
+    proof:
+      scheme:
+        type: object
+        required:
+          - decision
+          - summary
+          - structural_findings
+        properties:
+          decision:
+            type: string
+            enum: ["pass", "reject"]
+          summary:
+            type: string
+          structural_findings:
+            type: array
+            items:
+              type: string
+    pass: preflight
+    fail: synthesize
+
+  - id: preflight
+    command: validate_workflow

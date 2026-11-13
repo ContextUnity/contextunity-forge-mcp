@@ -170,20 +170,20 @@ Before opening downstream parallel waves, the contract author and architect must
 
 ---
 
-## 4. Two-Loop ACDD Governance & Reject Routing
+## 4. Two-Loop ACDD Governance & Loop Routing
 
 Milestone execution follows the Two-Loop Model ([ADR 0020 Pillar 13](../adr/0020-hierarchical-acdd-gates-and-milestone-orchestration.md)):
 
 ```
 Fast Inner Loop:  builder (build) -> review -> (scope/test defect) -> builder (build)
-Long Outer Loop:  reviewer -> (symbols violation) -> architect -> seam test -> builder
+Long Outer Loop:  reviewer -> (symbols violation) -> contract -> seam test -> builder
 ```
 
-### Reject Routing:
+### Loop Routing:
 ```yaml
-reject_routing:
+loop:
   scope: build         # Implementation bugs or unadmitted files -> builder reverts or extends scope
-  symbols: contract    # Unadmitted public interface mutation or architectural gap -> architect
+  symbols: contract    # Unadmitted public interface mutation or architectural gap -> contract_author / architect
 ```
 
 ### HITL Governance Tiers (`guidance.hitl`):

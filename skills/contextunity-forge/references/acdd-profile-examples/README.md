@@ -1,6 +1,6 @@
 # Hierarchical ACDD Profile Catalog & Domain Examples
 
-This catalog provides production-ready, domain-tailored ACDD v2 profile examples implementing the **Universal Hierarchical Gate Architecture** ([ADR 0020](../../../../docs/adr/0020-hierarchical-acdd-gates-and-milestone-orchestration.md)).
+This catalog provides production-ready, domain-tailored ACDD profile examples implementing the **Universal Hierarchical Gate Architecture** ([ADR 0020](../../../../docs/adr/0020-hierarchical-acdd-gates-and-milestone-orchestration.md)).
 
 ---
 
@@ -71,8 +71,8 @@ contextunity-forge-mcp workflow init docs/milestones/060-hierarchical-acdd-gates
    - Reads `repositories:` and `required_skills:` upfront.
    - Sets up worktrees and base branches automatically across backend, frontend, and infra.
 
-2. **Upfront Cross-Repo Synthesis (`contract_synthesis`)**:
-   - The architect runs `contract_synthesis` at the umbrella workspace level.
+2. **Upfront Cross-Repo Synthesis (`blueprint_synthesis`)**:
+   - The architect runs `blueprint_synthesis.synthesize` (and `blueprint_synthesis.review` approves it) at the umbrella workspace level.
    - Declares boundary interfaces (e.g. backend publishes OpenAPI schema / HTMX endpoint contract to SQLite `milestone_contract_matrix`).
    - Consumer repositories (frontend) bind their seam tests to this published contract schema before backend implementation starts.
 

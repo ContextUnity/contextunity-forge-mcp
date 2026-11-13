@@ -83,7 +83,7 @@ repository. Do not add scanners or template-rendering code to Forge.
 
 ## Synthesize a project profile
 
-For ACDD setup, adapt the [canonical v2 profile](acdd_profile.yaml.example) to
+For ACDD setup, adapt the [canonical ACDD profile](acdd_profile.yaml.example) to
 `.forge/acdd/profile.yaml` and select it through the adapter's `acdd_profile`.
 Use the [domain examples catalog](acdd-profile-examples/README.md) only for a
 relevant domain; examples are starting points, and the installed schema is the
@@ -99,9 +99,10 @@ full repository verification distinct from focused task checks. For example,
 derive a JavaScript check from that package's script and lockfile rather than
 guessing `npm test`, and preserve its existing package manager.
 
-Keep `version: 2`, module requirements, roles, reusable guidance, proofs,
+Keep `version: 2`, roles, reusable guidance, proofs,
 commands, and gate references consistent. Adapt the canonical upfront
-`contract_synthesis` and nested `tasks` structure to the admitted workflow;
+`blueprint_synthesis` (`synthesize` and `review`), nested `tasks`, and post-task
+verification structure to the admitted workflow;
 resolve every referenced command, role, proof, guidance key, and failure target.
 Preserve independent review and the chosen persistence/immutable candidate
 boundaries. Optional role runners must match tools actually available to the

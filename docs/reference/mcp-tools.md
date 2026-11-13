@@ -79,10 +79,10 @@ evidence. See the [task lifecycle Markdown contract](mcp-markdown-contracts.md#t
 
 Claim/context blackboard bundles include untargeted and current-gate messages.
 Active `decisions`, `findings`, and `blockers` also remain eligible across gates,
-retaining their original gate and subject to context response bounds. The
-`contract_synthesis` architect records architectural decisions with `topic=decisions`.
-The guide lists `contract_synthesis`, `contract`, `build`, `review`, and `deliver`;
-the active profile determines the configured sequence.
+retaining their original gate and subject to context response bounds. The `blueprint_synthesis.synthesize` architect records architectural decisions with
+`topic=decisions`. The guide lists `blueprint_synthesis`, `contract`, `build`, `review`,
+`deliver`, `verify`, `polish`, `milestone_review`, and `handoff`; the active profile
+determines the configured sequence.
 
 Explicit gate `tools` are module requirements. Empty lists on contract, command,
 and review proof gates receive advisory navigation tools filtered by enabled

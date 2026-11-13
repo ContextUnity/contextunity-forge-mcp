@@ -31,42 +31,26 @@ Forge resolves the active profile in the following order:
 
 ---
 
-## Profile Structure
+## Profile Structure and Inheritance (`inherit: default` vs `inherit: none`)
 
-Profiles merge with the embedded or workspace base by default. Set `inherit: none`
-to compile a clean-room profile from its own declarations, without inheriting the
-base roles, gates, commands, policies, proofs, or guidance entries. The profile
-must then declare the roles and gates it needs. An explicit `commands: {}` clears
-an inherited command catalog; omit `commands` to keep the inherited catalog. A
-profile with an empty catalog must not declare gates that require command proof.
+Profiles inherit from the embedded baseline (`acdd.default.yaml`) by default (`inherit: default` or omitted `inherit`). Under `inherit: default`:
+- `roles`, `proofs`, `commands`, `guidance`, `policies`, and `scope_args_by_pattern` merge by key.
+- `gates:` merges **recursively by gate `id` (and `- tasks:` container)** before hierarchy normalization: matching child gates update only the specified fields (such as binding `command: rust-check-and-test`), while preserving inherited roles, guidance, policies, contours, `save` hooks, and `proof` definitions.
 
-A complete profile YAML consists of the primary sections shown below:
+Set `inherit: none` to compile a standalone profile (such as `author-milestone.workflow.yaml`, `author-plan.workflow.yaml`, or `author-workflow.workflow.yaml`) strictly from its own declarations without inheriting base roles, gates, commands, policies, proofs, or guidance entries. An explicit `commands: {}` clears an inherited command catalog; omit `commands` to keep the inherited catalog. A profile with an empty catalog must not declare gates that require command proof.
+
+Because `inherit: default` deep-merges `gates:` by `id`, a repository `.forge/acdd/profile.yaml` overlay only needs to declare project-specific commands, `scope_args_by_pattern`, and gate command bindings:
 
 ```yaml
-# .forge/acdd/profile.yaml
+# .forge/acdd/profile.yaml (concise repository overlay over acdd.default.yaml)
 version: 2
+inherit: default
 
-roles:
-  contract_author:
-    mode: subagent
-    reuse_on_reject: true
-    models:
-      - 'sol-6.1:high'
-    guidance: "As contract author, define the production-seam contract and runtime-red proof."
-
-  builder:
-    mode: subagent
-    reuse_on_reject: true
-    models:
-      - 'gpt6-luna:xhigh'
-    guidance: "Implement the approved contract inside declared allowed_write_scope."
-
-  independent_reviewer:
-    mode: subagent
-    reuse_on_reject: true
-    models:
-      - 'sol-6.1:xhigh'
-    guidance: "Review independently, then claim and submit delivery in the same reviewer session."
+scope_args_by_pattern:
+  "src/lib.rs": "--lib"
+  "src/main.rs": "--bin contextunity-forge-mcp"
+  "tests/*.rs": "--test {file_stem}"
+  "tests/**/*.rs": "--test acdd"
 
 commands:
   rust-check-and-test:
@@ -78,113 +62,21 @@ commands:
       "**/*.rs": "cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets"
     description: "Run milestone handoff verification commands from TESTS.md."
 
-guidance:
-  task.contract: "Define a production-seam proof and keep the task contract inside admitted scope."
-  task.code: "Implement the accepted seam with the smallest change that satisfies the contract."
-  task.review: "Review the candidate against scope, contract, concurrency, isolation, and administration evidence."
-  hitl.pro: "HITL level PRO: allow internal helpers and non-breaking implementation changes; escalate public APIs."
-  contour.paths:
-    description: "Verify changes stay within the task's admitted write perimeter."
-    criteria:
-      - "Compare every changed file with the task's initial scope."
-  contour.claims:
-    description: "Verify each accepted contract claim is implemented."
-    criteria:
-      - "Trace every invariant to the production code path."
-
-policies:
-  default_review:
-    independent_worker: true
-    require_all_contours: true
-    audit_extended_scope: true
-
 gates:
-  - id: contract_synthesis
-    role: architect
-    guidance: [milestone.synthesis, hitl.pro]
-    expected_failure:
-      exit_codes: [101]
-    save:
-      pre: snapshot
-      post: snapshot
-
   - tasks:
       gates:
-        - id: contract
-          role: contract_author
-          guidance: [task.contract, hitl.pro]
-          proof: contract
-          save: snapshot
-
         - id: build
-          role: builder
-          guidance: [task.code, hitl.pro]
           command: rust-check-and-test
-          save:
-            pre: snapshot
-            post: snapshot
-
-        - id: review
-          role: independent_reviewer
-          guidance: [task.review, hitl.pro]
-          policy: default_review
-          contours: guidance.contours
-          independent_from: build
-          fail: build
-          loop:
-            scope: build
-            symbols: contract
-          save:
-            immutable: true
-
-        - id: deliver
-          role: independent_reviewer
-          guidance: [hitl.pro]
-          receipt: true
-          need: [review]
-          independent_from: build
-          fail: build
-          save:
-            immutable: true
-            post: commit
-            git_commit_note: telemetry
-
+        - id: seam
+          when: seam
+          gates:
+            - id: integrate
+              command: rust-check-and-test
   - id: verify
     command: check_full_repo
-    max_attempts: 2
-    pass: documentation
-    fail: polish
-
-  - id: polish
-    role: architect
-    guidance: [milestone.polish, hitl]
-    pass: milestone_review
-    save:
-      pre: snapshot
-      post: snapshot
-
-  - id: milestone_review
-    role: independent_reviewer
-    policy: default_review
-    guidance: [milestone.review]
-    contours: guidance.contours
-    independent_from: polish
-    pass: verify
-    fail: polish
-    save:
-      immutable: true
-
-  - id: documentation
-    role: doc_writer
-    when: doc
-    guidance: [milestone.doc]
-    pass: handoff
-
-  - id: handoff
-    receipt: true
-    absorb: true
-    save: commit
 ```
+
+The full canonical gate hierarchy resolved from [`acdd.default.yaml`](../../crates/forge-tasks/src/tasks/acdd.default.yaml) (`blueprint_synthesis` $\to$ `tasks:` $\to$ `verify` / `polish` / `milestone_review` / `handoff`) is documented gate-by-gate in [Built-in Default Profile Walkthrough](acdd.md#built-in-default-profile-walkthrough-acdddefaultyaml). See [`acdd_profile.yaml.example`](acdd_profile.yaml.example) (symlinked from the Forge skill) for a complete standalone `inherit: none` reference template.
 
 Workflow guidance selects `rust-check-and-test`, the canonical strict Clippy-plus-test command. Profiles may define
 `scope_args_by_pattern` as project-relative path patterns mapped to command
@@ -230,7 +122,7 @@ Failure signatures use complete-output facts when available.
 The embedded pattern commands carry
 declarative output rules for Rust, Python, and JavaScript test summaries.
 
-`limits.diagnostic_inline_bytes` defaults to 4096 and accepts 1..=65536 bytes.
+`limits.diagnostic_inline_bytes` defaults to 4096 and accepts 1..=98304 bytes.
 Passing commands and matching contract failures produce compact summaries without
 logs. Short failures remain inline; larger cleaned diagnostics retain head and
 tail excerpts and link the raw log under the claimed worktree's
@@ -243,14 +135,22 @@ when omitted). See [task verification](tasks.md) for CLI and MCP operations.
 
 ## Key Concepts
 
-### 1. Gates and Proof Kinds
+### 1. Gates, Automatic Proof Inference, and `proofs:` Catalog / Inline Schemas
 
-Each gate declares a stable identifier (`id`) and a proof specification (`proof`):
-- `contract`: Verifies a red seam test (default `seam-test-first` expecting non-zero exit code) or invariant baseline (`direct-proof`).
-- `command`: Executes and verifies a registered CLI command (must exit with code 0).
-- `review`: Evaluates cognitive review contours (`contours: guidance.contours`) and enforces worker separation (`independent_from`).
-- `delivery`: Terminal gate that writes the durable receipt into SQLite and milestone Markdown.
-- `scheme`: A custom recursive JSON schema validation under `proof: { scheme: ... }`.
+Each gate declares a stable identifier (`id`). The `proof` field is optional because [`infer_gate_proof`](../../crates/forge-tasks/src/tasks/profile/normalize.rs) automatically infers the internal verification mode (`ProofKind`) from the gate's structural attributes during profile normalization in this priority order:
+1. `receipt: true` $\implies$ `delivery`: Terminal gate that writes the durable receipt into SQLite and milestone Markdown and creates the delivery commit (`save.post: commit`).
+2. `expected_failure` present $\implies$ `contract`: Verifies a runtime-red seam test matching `expected_failure.exit_codes` (or invariant baseline when `proof_policy` is `direct-proof`).
+3. `command` present $\implies$ `command`: Executes and verifies a registered CLI command (must exit with code `0` and satisfy configured `output` count rules).
+4. `policy` or `contours` present $\implies$ `review`: Evaluates cognitive review contours (`contours: guidance.contours`) and enforces worker separation (`independent_from`).
+5. Otherwise $\implies$ `none`: Informational step or container gate.
+
+An explicit `proof` declaration is used when overriding the inferred behavior, referencing a reusable schema in the top-level `proofs:` catalog, or attaching an inline JSON Schema directly to the gate:
+- `proof: contract`: Explicitly marks a contract gate when it relies on task `proof_policy` rather than inline `expected_failure`.
+- `proof: seam_test`: Used on `seam.integrate` (`when: seam`) to verify element-by-element that every test identifier in `seam_test_refs` executed and passed (`exit_code == 0`) in the captured trace.
+- `proof: <catalog_name>` (e.g. `proof: blueprint`): References a reusable schema declared under top-level `proofs.<catalog_name>.schema` (`ProofCatalogDef`), allowing multiple gates and inherited profiles to share the same schema definition.
+- `proof: { scheme: { ... } }`: Declares an inline recursive JSON Schema directly inside a single gate.
+
+When any pre-task root gate (`cursor.root_index < task_position`, such as `blueprint_synthesis.synthesize`) passes with a `proof` schema payload (`proof: blueprint` or `proof: { scheme: ... }`) containing a per-task dictionary `tasks: { "<task_ref>": { ... } }`, the engine automatically records a `gate_transitions` row per task (`subject = <full_task_id>`) and injects strictly that task's slice into `context_bundle` upon `task claim`.
 
 ### 2. Review Focus Lenses (`contours: guidance.contours`)
 
@@ -311,5 +211,5 @@ For auditability and protection against prompt injection or rogue agents alterin
 
 ## Reference Examples
 
-- See the canonical executable profile example in [`skills/contextunity-forge/references/acdd_profile.yaml.example`](../../skills/contextunity-forge/references/acdd_profile.yaml.example).
+- See the canonical executable profile template in [`acdd_profile.yaml.example`](acdd_profile.yaml.example) (symlink to the full specification in `skills/contextunity-forge/`).
 - See [Workspace configuration](configuration.md#declarative-acdd-profile-and-role-configuration) for full schema details and adapter settings.

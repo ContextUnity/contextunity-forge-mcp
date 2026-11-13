@@ -9,6 +9,7 @@
 # =============================================================================
 
 version: 2
+inherit: none
 
 # =============================================================================
 # 1. ROLES CATALOG (`roles`)
@@ -115,7 +116,6 @@ gates:
       - id: contract
         role: lead_architect
         proof: contract
-        command: test
 
       # 2.2 In-Repo Implementation & Local Verification
       - id: implement

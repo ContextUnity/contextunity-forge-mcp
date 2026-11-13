@@ -9,7 +9,7 @@ doc_type: guide
 - [CLI](cli.md): commands and arguments.
 - [MCP tools](mcp-tools.md): registered requests, selectors, and pagination.
 - [Markdown and JSON presentation](mcp-markdown-contracts.md): format selection, domain layouts, evidence preservation, and continuations.
-- [ACDD](acdd.md): milestone contracts, gate claims, and the context a claim returns.
+- [ACDD](acdd.md): what ACDD is, how gates and universal profiles work, and a complete walkthrough of the embedded default profile.
 - [ACDD profiles](profiles.md): gates, roles, contours, and pins for a milestone or task.
 - [Repository tasks](tasks.md): lifecycle, receipts, shared storage, and CLI administration.
 - [MCP setup](mcp-setup.md): client installation and workspace selection.

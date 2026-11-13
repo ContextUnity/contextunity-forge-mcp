@@ -99,5 +99,5 @@ subtasks:
 
 ### 3. Review & Verification Governance
 
-- **Gate progression**: The active profile defines task gates and milestone containers. Task dependencies determine execution waves, and review findings route through the configured `reject_routing` policy.
+- **Gate progression**: The active profile defines task gates and milestone containers. Task dependencies determine execution waves, and review findings route through the configured `loop` / `fail` policy.
 - **Review and escalation**: Reviewers evaluate every configured contour and explicitly approve non-empty `extended_scope`. Escalate unadmitted public-interface changes through the milestone's architect and HITL guidance.

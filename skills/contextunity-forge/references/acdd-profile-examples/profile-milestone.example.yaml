@@ -1,12 +1,14 @@
 # =============================================================================
-# ACDD PROFILE EXAMPLE: Full Milestone Profile (Level 0 Boundaries + Tasks Container)
+# ACDD PROFILE EXAMPLE: Full Milestone Profile (Root Gates + Tasks Container)
 #
-# ADR 0021 Work Model 3: Milestone contains Level 0 preflight (contract_synthesis),
-# the per-task execution container (`tasks:` executed via DAG waves), and Level 0
-# closure (milestone_verification with autonomous verify, polish, and handoff).
+# ADR 0021 Work Model 3: Milestone contains upfront blueprint_synthesis
+# (`synthesize` -> `review`), the per-task execution container (`tasks:` executed
+# via DAG waves), and post-task closure (`verify`, `polish`, `milestone_review`,
+# `handoff`).
 # =============================================================================
 
 version: 2
+inherit: none
 
 # Milestones execute in isolated worktrees and use `save: commit` (commits + receipts + snapshots + logs):
 save: commit
@@ -35,12 +37,6 @@ roles:
     reuse_on_reject: true
     models:
       - 'gpt-6.1-sol:xhigh'
-
-  doc_writer:
-    mode: subagent
-    reuse_on_reject: true
-    models:
-      - 'gpt-6.1-sol:high'
 
 scope_args_by_pattern:
   "src/main.rs": "--bin contextunity-forge-mcp"
@@ -72,6 +68,60 @@ commands:
     command: "cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets"
     timeout_seconds: 1800
 
+  test:
+    command: "cargo test"
+    description: "Compatibility command for task contract and seam testing."
+
+proofs:
+  blueprint:
+    description: "Architectural blueprint with grounded citations and per-task slices"
+    schema:
+      type: object
+      required:
+        - cited_invariants
+        - cited_symbols
+        - global_negative_boundaries
+        - blackboard_decision_id
+        - tasks
+      properties:
+        cited_invariants:
+          type: array
+          items: { type: string }
+        cited_symbols:
+          type: array
+          items: { type: string }
+        global_negative_boundaries:
+          type: array
+          items: { type: string }
+        blackboard_decision_id: { type: string }
+        tasks:
+          type: object
+          additionalProperties:
+            type: object
+            required:
+              - layer
+              - summary
+              - exported_interfaces
+              - negative_boundaries
+              - incoming_seams
+              - outgoing_seams
+            properties:
+              layer: { type: string }
+              summary: { type: string }
+              exported_interfaces:
+                type: array
+                items: { type: string }
+              negative_boundaries:
+                type: array
+                items: { type: string }
+              verification_seam: { type: string }
+              incoming_seams:
+                type: array
+                items: { type: object }
+              outgoing_seams:
+                type: array
+                items: { type: object }
+
 policies:
   default_review:
     independent_worker: true
@@ -80,16 +130,23 @@ policies:
 
 gates:
   # ---------------------------------------------------------------------------
-  # Level 0 Preflight Gate (Executed ONCE at Milestone Start by Architect)
+  # Upfront Blueprint Synthesis Container (Executed ONCE before task claims)
   # ---------------------------------------------------------------------------
-  - id: contract_synthesis
-    role: architect
-    proof: contract
-    expected_failure:
-      exit_codes: [1, 101, 134]
-    save:
-      pre: snapshot
-      post: snapshot
+  - id: blueprint_synthesis
+    gates:
+      - id: synthesize
+        role: architect
+        proof: blueprint
+        save:
+          pre: snapshot
+          post: snapshot
+      - id: review
+        role: independent_reviewer
+        policy: default_review
+        independent_from: synthesize
+        fail: synthesize
+        save:
+          immutable: true
 
   # ---------------------------------------------------------------------------
   # Per-Task Execution Container (Executed per Task in DAG Wave Order)
@@ -100,8 +157,6 @@ gates:
           role: contract_author
           proof: contract
           command: test
-          expected_failure:
-            exit_codes: [1, 101, 134]
           save:
             post: snapshot
 
@@ -157,17 +212,17 @@ gates:
             git_commit_note: telemetry
 
   # ---------------------------------------------------------------------------
-  # Milestone Verification & Closure Pipeline (LangGraph Transitions: pass, fail)
+  # Milestone Verification & Closure Pipeline (Option 1B cycle)
   # ---------------------------------------------------------------------------
   - id: verify
     command: check_full_repo
     max_attempts: 2
-    pass: documentation
+    pass: milestone_review
     fail: polish
 
   - id: polish
     role: architect
-    pass: milestone_review
+    pass: verify
     save:
       pre: snapshot
       post: snapshot
@@ -176,15 +231,10 @@ gates:
     role: independent_reviewer
     policy: default_review
     independent_from: polish
-    pass: verify
+    pass: handoff
     fail: polish
     save:
       immutable: true
-
-  - id: documentation
-    role: doc_writer
-    when: doc
-    pass: handoff
 
   - id: handoff
     receipt: true

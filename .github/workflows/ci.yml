@@ -116,6 +116,8 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
+      - uses: actions/checkout@v4
+        if: github.ref_type == 'tag'
       - name: Download target packages separately
         uses: actions/download-artifact@v4
         with:
@@ -142,8 +144,26 @@ jobs:
           set -euo pipefail
           if [ "$REF_TYPE" = tag ]; then
             tag="$REF_NAME"
+            version="${tag#v}"
+            notes_file=$(mktemp)
+            trap 'rm -f "$notes_file"' EXIT
+            python3 - "$version" "$notes_file" <<'PY'
+          import pathlib, re, sys
+          version, out_path = sys.argv[1], sys.argv[2]
+          changelog = pathlib.Path("CHANGELOG.md")
+          if changelog.is_file():
+              text = changelog.read_text(encoding="utf-8")
+              pattern = re.compile(rf"(?ms)^## \[{re.escape(version)}\][^\n]*\n(.*?)(?=^## \[|\Z)")
+              match = pattern.search(text)
+              if match and match.group(1).strip():
+                  pathlib.Path(out_path).write_text(match.group(1).strip() + "\n", encoding="utf-8")
+          PY
             if ! gh release view "$tag" >/dev/null 2>&1; then
-              gh release create "$tag" --verify-tag --title "$tag" --generate-notes
+              if [ -s "$notes_file" ]; then
+                gh release create "$tag" --verify-tag --title "$tag" --notes-file "$notes_file"
+              else
+                gh release create "$tag" --verify-tag --title "$tag" --generate-notes
+              fi
             fi
           else
             tag=nightly

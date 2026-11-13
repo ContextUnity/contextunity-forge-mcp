@@ -37,15 +37,15 @@ The embedded ACDD profile registers `rust-check-and-test` as strict Clippy follo
 When authoring contracts or testing capabilities:
 - **Additive parameterized cases**: Extend existing table-driven test cases (`for case in cases`) ONLY when testing the same unit or input variation.
 - **Dedicated domain tests**: NEVER append distinct sub-scenarios, multi-step workflows, or new feature requirements into an existing test function. Create a separate, descriptively-named `#[test]` function in the appropriate domain module to preserve parallel test execution and isolated failure diagnostics.
-- **Runtime-red contract proof**: Contract tests must compile cleanly and produce runtime assertion failures (exit code 101) for `contract` gate proof.
+- **Runtime-red contract proof**: Contract tests must compile cleanly and produce runtime assertion failures for `contract` gate proof.
 - **Autonomous scope extension**: Agents should extend scope autonomously via `extend_scope` to include necessary files, fixtures, tests, and documentation within admitted roots to unblock implementation or verification without halting execution or requesting human permission.
 <!-- acdd-forge:agents-verification:end -->
 
 <!-- acdd-forge:contract-synthesis:start -->
-## Architectural Contract Synthesis Gate (contract_synthesis)
+## Architectural Blueprint Synthesis Gate (`blueprint_synthesis`)
 
-The initial gate of the milestone workflow is `contract_synthesis` (role: `architect`).
-Load and execute the [`contract-planning`](skills/contract-planning/SKILL.md) skill (with [`ADDON.md`](skills/contract-planning/ADDON.md)) during milestone authoring and contract synthesis:
+The initial container of the milestone workflow is `blueprint_synthesis` (`synthesize` (role: `architect`) $\to$ `review` (role: `independent_reviewer`)).
+Load and execute the [`contract-planning`](skills/contract-planning/SKILL.md) skill (with [`ADDON.md`](skills/contract-planning/ADDON.md)) during milestone authoring and blueprint synthesis:
 1. Architectural Viability Audit: Critically evaluate design appropriateness and minimal complexity (Occam's razor).
 2. ADR & Invariant Reconciliation: Reconcile proposals against `docs/adr/`, `docs/architecture/`, and active repository invariants before defining tasks.
 3. Risk & Ambiguity Discovery: Probe for vague completion criteria, operational pitfalls, and failure semantics.
@@ -54,7 +54,7 @@ Load and execute the [`contract-planning`](skills/contract-planning/SKILL.md) sk
 6. Minimal intervention principle (no duplicate registries or parallel tables).
 7. Scope integrity (protected files `Cargo.toml`, `build.rs` are strictly off-limits).
 8. Recording the architectural decision on `task_blackboard` before submission.
-9. Authoring a compiling runtime-red seam test (exit code 101).
+9. Establishing per-task blueprint slices (`proof.tasks[<task_ref>]`), cross-task seam boundaries (`incoming_seams`, `outgoing_seams`), and invariant specifications recorded in `gate_transitions` (`subject = <full_task_id>`) and injected automatically on `task claim`.
 <!-- acdd-forge:contract-synthesis:end -->
 
 ## Documentation scan before handoff
@@ -136,6 +136,11 @@ When every milestone task is completed with accepted proofs or identically cance
 - Remote publications: `git push`, tagging, releases, and credential publication require explicit user approval.
 
 Do not run benchmarks without explicit user approval. Read [benchmark instructions](benchmarks/AGENTS.md) before benchmarking.
+
+## Versioning and Release Notes
+
+- **Mandatory Changelog Update**: Whenever bumping crate versions in `Cargo.toml` / workspace member manifests or preparing a release tag, update [`CHANGELOG.md`](CHANGELOG.md) in the same change with user-visible additions, behavioral changes, fixes, and migration/breaking notes under `## [<version>] - YYYY-MM-DD` (moving relevant entries out of `[Unreleased]`).
+- **Workspace Version Sync**: Keep `Cargo.toml`, `crates/*/Cargo.toml`, installation guides (`INSTALL.md`), and workspace contract tests synchronized to the same version.
 
 ## Launching Codex agents (Antigravity Managed Background Task)
 

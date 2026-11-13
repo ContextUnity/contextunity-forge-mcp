@@ -1,6 +1,6 @@
 [package]
 name = "forge-index"
-version = "0.5.1-alpha.2"
+version = "0.5.2"
 edition = "2021"
 authors = ["Oleksii Pylypchuk <oleksii.pylypchuk@tuta.com>"]
 description = "Pure Rust ContextUnity Forge AST extraction, linking, and index persistence"
