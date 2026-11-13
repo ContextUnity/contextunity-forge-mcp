@@ -224,9 +224,5 @@ fn is_valid_timestamp_suffix(ts: &str) -> bool {
         }
     }
 
-    if chrono::DateTime::parse_from_rfc3339(ts).is_ok() {
-        return true;
-    }
-
-    false
+    chrono::DateTime::parse_from_rfc3339(ts).is_ok()
 }

@@ -1417,10 +1417,7 @@ pub(super) fn is_receiver_registration(
         handler_name,
         facts,
     );
-    if !local_class && !imported_class {
-        return false;
-    }
-    true
+    local_class || imported_class
 }
 
 #[cfg(test)]

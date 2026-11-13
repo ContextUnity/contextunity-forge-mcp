@@ -14,7 +14,7 @@ fn compacted_details(details: &Value, kind: &str, remove_column: bool) -> Value 
     };
     let mut details = details.clone();
     details.retain(|key, value| {
-        if (key == "column" && remove_column)
+        !((key == "column" && remove_column)
             || (key == "is_method" && kind == "method" && value == &json!(true))
             || ((key == "async"
                 || key == "default_export"
@@ -31,11 +31,7 @@ fn compacted_details(details: &Value, kind: &str, remove_column: bool) -> Value 
                 && value.as_array().is_some_and(Vec::is_empty))
             || ((key == "doc" || key == "receiver" || key == "receiver_name")
                 && value.as_str().is_some_and(str::is_empty))
-            || (key == "param_types" && value.as_object().is_some_and(serde_json::Map::is_empty))
-        {
-            return false;
-        }
-        true
+            || (key == "param_types" && value.as_object().is_some_and(serde_json::Map::is_empty)))
     });
     if details.is_empty() {
         Value::Null
