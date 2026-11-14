@@ -181,6 +181,7 @@ fn matching_servers(executable: &std::path::Path, uid: libc::uid_t) -> Result<Ve
             std::io::Error::last_os_error()
         );
     }
+    let canonical_executable = crate::core::fs::resolve_path_with_existing_prefix(executable);
     let mut arguments = vec![0u8; argmax as usize];
     let mut path = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
     let mut matches = Vec::new();
@@ -217,7 +218,8 @@ fn matching_servers(executable: &std::path::Path, uid: libc::uid_t) -> Result<Ve
         let Some(end) = path.iter().position(|byte| *byte == 0) else {
             continue;
         };
-        if &path[..end] != executable.as_os_str().as_bytes() {
+        let proc_path = std::path::Path::new(std::ffi::OsStr::from_bytes(&path[..end]));
+        if !executable_matches(proc_path, executable, &canonical_executable) {
             continue;
         }
         let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
@@ -245,6 +247,17 @@ fn matching_servers(executable: &std::path::Path, uid: libc::uid_t) -> Result<Ve
         }
     }
     Ok(matches)
+}
+
+#[cfg(any(target_os = "macos", all(test, unix)))]
+fn executable_matches(
+    proc_path: &std::path::Path,
+    executable: &std::path::Path,
+    canonical_executable: &std::path::Path,
+) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    proc_path.as_os_str().as_bytes() == executable.as_os_str().as_bytes()
+        || crate::core::fs::resolve_path_with_existing_prefix(proc_path) == canonical_executable
 }
 
 #[cfg(any(target_os = "macos", all(test, unix)))]
@@ -330,8 +343,60 @@ mod tests {
                 b.extend_from_slice(b"/forge\0\0unterminated");
                 b
             },
+            1i32.to_ne_bytes()[..2].to_vec(),
+            {
+                let mut b = 1i32.to_ne_bytes().to_vec();
+                b.extend_from_slice(b"/forge");
+                b
+            },
+            {
+                let mut b = 1i32.to_ne_bytes().to_vec();
+                b.extend_from_slice(b"/forge\0\0\0");
+                b
+            },
         ] {
             assert!(darwin_argv(&corrupt).is_none(), "{corrupt:?}");
         }
+    }
+
+    #[test]
+    fn darwin_argv_excludes_environment_from_cli_grammar() {
+        let mut bytes = 2i32.to_ne_bytes().to_vec();
+        bytes.extend_from_slice(b"/forge\0\0forge\0read\0serve\0");
+        let argv = darwin_argv(&bytes).unwrap();
+        assert_eq!(argv, ["forge", "read"]);
+        assert!(!server_invocation(argv));
+        bytes.truncate(bytes.len() - b"serve\0".len() - 1);
+        assert!(darwin_argv(&bytes).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn executable_matches_resolves_symlink_aliases() {
+        use super::executable_matches;
+        use std::os::unix::fs::symlink;
+
+        let base = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("forge_reload_exe_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let real_dir = base.join("private_var/bin");
+        let alias_dir = base.join("var_bin");
+        std::fs::create_dir_all(&real_dir).unwrap();
+        let real_bin = real_dir.join("forge");
+        std::fs::write(&real_bin, b"").unwrap();
+        symlink(&real_dir, &alias_dir).unwrap();
+
+        let alias_bin = alias_dir.join("forge");
+        let canonical = crate::core::fs::resolve_path_with_existing_prefix(&alias_bin);
+        assert!(executable_matches(&real_bin, &alias_bin, &canonical));
+        assert!(!executable_matches(
+            &base.join("other/forge"),
+            &alias_bin,
+            &canonical
+        ));
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

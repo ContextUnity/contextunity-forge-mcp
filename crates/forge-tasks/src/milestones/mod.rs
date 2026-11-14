@@ -321,15 +321,18 @@ fn quote(value: &str) -> Result<String> {
 
 /// Creates the next numbered milestone contract from explicit or plan inputs.
 pub fn init(root: &Path, options: Init) -> Result<Value> {
+    let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let root = canonical_root.as_path();
     let target_dir = if let Some(d) = &options.dir {
         let path = if d.is_absolute() {
-            if !d.starts_with(root) {
+            let resolved = d.canonicalize().unwrap_or_else(|_| d.to_path_buf());
+            if !resolved.starts_with(root) {
                 bail!(
                     "milestone directory must be within workspace root: {}",
                     d.display()
                 );
             }
-            d.clone()
+            resolved
         } else {
             crate::core::tasks::confined_path(root, &d.to_string_lossy())?
         };

@@ -98,10 +98,11 @@ fn mcp_task_claim_guidance_includes_rules_without_schema_bloat() {
     ).expect("MCP payload should succeed");
 
     const PROTECTED_RULE: &str = "PROTECTED: milestone id, invariants, owners, depends_on, and acdd_profile are immutable while tasks are active. Declare task invariants inside task.invariants.";
+    let canonical_workspace = workspace.root().canonicalize().unwrap();
     let expected_rules = [
         format!(
             "ISOLATION: Develop exclusively inside dedicated worktree '{}'.",
-            workspace.root().display()
+            canonical_workspace.display()
         ),
         "IMMUTABILITY: Keep admitted scope unchanged after review pass and during deliver."
             .to_owned(),

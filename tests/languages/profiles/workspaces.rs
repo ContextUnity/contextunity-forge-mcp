@@ -159,6 +159,7 @@ fn check_root_cargo_crate_import_cases(cases: &[(&str, &str, bool, i64)]) {
         assert_eq!(parity.incremental_verification, Ok(()));
         assert_eq!(parity.cold_verification, Ok(()));
         assert_eq!(parity.incremental, parity.cold);
+        drop(parity);
         if expected > 0 {
             w.write("Cargo.toml", "[package]\nname='renamed-fixture'\n");
             let parity = w.delta_cold("Cargo.toml");

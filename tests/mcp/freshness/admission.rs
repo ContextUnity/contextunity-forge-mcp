@@ -1,9 +1,99 @@
 use super::*;
 
 #[test]
-fn failed_query_keeps_next_read_usable_and_database_changes_are_fenced() {
+fn worktree_churn_keeps_one_registration_for_the_shared_slot() {
+    let first = Workspace::with_files(&[("main.rs", "pub fn first() {}\n")]);
+    let server = in_process_server(&first);
+    snapshot(&server).unwrap();
+    let mut workspaces = Vec::new();
+    for _ in 0..5 {
+        let workspace = Workspace::with_files(&[("main.rs", "pub fn other() {}\n")]);
+        let mut rebound = server.clone();
+        rebound.root = workspace.root().to_path_buf();
+        rebound.db = workspace.root().join(".forge/index.sqlite");
+        snapshot(&rebound).unwrap();
+        assert_eq!(server.reader_registration_count().unwrap(), 1);
+        workspaces.push(workspace);
+    }
+}
+
+#[test]
+fn receipt_failures_report_reason_and_read_recovers() {
+    let ws = Workspace::with_files(&[("main.rs", "pub fn before() {}\n")]);
+    let db_path = in_process_server(&ws).db;
+    ws.build_to(&db_path);
+    let receipt = PathBuf::from(format!("{}.verified.json", db_path.display()));
+    for publication_failure in [false, true] {
+        if publication_failure {
+            if receipt.exists() {
+                fs::remove_file(&receipt).unwrap();
+            }
+            fs::create_dir(&receipt).unwrap();
+        } else {
+            fs::write(&receipt, b"invalid json").unwrap();
+        }
+        let response = snapshot(&in_process_server(&ws)).unwrap();
+        let diagnostics = response["diagnostics"].to_string();
+        assert!(
+            diagnostics.contains(if publication_failure {
+                "verified receipt publication failed"
+            } else {
+                "verified receipt unavailable"
+            }),
+            "{diagnostics}"
+        );
+        assert!(
+            diagnostics.contains(&db_path.display().to_string()),
+            "{diagnostics}"
+        );
+        assert!(
+            diagnostics.contains(if publication_failure {
+                "os error"
+            } else {
+                "expected value"
+            }),
+            "{diagnostics}"
+        );
+        assert_eq!(response["nodes"][0]["name"], "before");
+        if publication_failure {
+            fs::remove_dir(&receipt).unwrap();
+        }
+    }
+}
+
+#[test]
+fn warm_queries_reuse_the_same_sqlite_connection() {
     let ws = Workspace::with_files(&[("main.rs", "pub fn before() {}\n")]);
     let server = in_process_server(&ws);
+    server
+        .read(|conn| {
+            conn.busy_timeout(Duration::from_millis(1234))?;
+            Ok(json!({}))
+        })
+        .unwrap();
+    let response = server
+        .read(|conn| {
+            let timeout: i64 = conn.query_row("PRAGMA busy_timeout", [], |row| row.get(0))?;
+            Ok(json!({"timeout": timeout}))
+        })
+        .unwrap();
+    assert_eq!(response["timeout"], 1234);
+}
+
+#[test]
+fn query_failure_preserves_error_when_rollback_also_fails() {
+    let ws = Workspace::with_files(&[("main.rs", "pub fn before() {}\n")]);
+    let server = in_process_server(&ws);
+    let error = server
+        .read(|conn| {
+            conn.execute_batch("ROLLBACK")?;
+            anyhow::bail!("intentional query failure")
+        })
+        .unwrap_err();
+    let message = format!("{error:#}");
+    assert!(message.contains("intentional query failure"), "{message}");
+    assert!(message.contains("query rollback failed"), "{message}");
+    assert_eq!(snapshot(&server).unwrap()["nodes"][0]["name"], "before");
     snapshot(&server).unwrap();
     assert!(server
         .read(|_| anyhow::bail!("intentional query failure"))

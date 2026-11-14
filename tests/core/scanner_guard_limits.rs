@@ -215,10 +215,9 @@ fn scanner_rejects_a_workspace_over_the_default_file_limit() {
     let error = scanner::scan(workspace.root(), None)
         .map(|report| report.files)
         .expect_err("one path beyond the default limit must be rejected");
-    assert_eq!(
-        error.to_string(),
-        "workspace exceeds file limit (100001 > max_files 100000)"
-    );
+    let msg = error.to_string();
+    let prefix = "workspace exceeds file limit (100001 > max_files 100000) at src/";
+    assert!(msg.starts_with(prefix) && msg.len() > prefix.len(), "{msg}");
 }
 
 #[test]

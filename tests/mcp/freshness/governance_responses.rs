@@ -193,10 +193,9 @@ fn mcp_document_governance_inspection_and_reference_identity() {
                 assert!(markdown.contains(rule["id"].as_str().unwrap()));
                 assert!(markdown.contains(rule["rule"].as_str().unwrap()));
                 let source = &rule["source"];
-                let coordinate = format!(
-                    "file://{}#L{}",
-                    ws.root().join(source["path"].as_str().unwrap()).display(),
-                    source["line"].as_u64().unwrap()
+                let coordinate = ws.file_uri(
+                    source["path"].as_str().unwrap(),
+                    Some(source["line"].as_u64().unwrap().try_into().unwrap()),
                 );
                 assert!(
                     markdown.contains(&coordinate),
@@ -219,7 +218,7 @@ fn mcp_document_governance_inspection_and_reference_identity() {
                 let source = &reference["source"];
                 let path = source["path"].as_str().unwrap();
                 let line = source["line"].as_u64().unwrap();
-                let coordinate = format!("file://{}#L{}", ws.root().join(path).display(), line);
+                let coordinate = ws.file_uri(path, Some(line.try_into().unwrap()));
                 let source_row = format!("- `{id}`: [{path}#L{line}]({coordinate})");
                 assert!(
                     markdown.contains(&source_row),

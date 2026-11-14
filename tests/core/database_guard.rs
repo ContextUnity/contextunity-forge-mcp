@@ -2,6 +2,232 @@ use crate::common::Workspace;
 use contextunity_forge_mcp::db::tasks_store::TasksStore;
 use contextunity_forge_mcp::db::writer::{build, validate_code_map_target};
 
+#[test]
+fn stage_cleanup_and_failure_recovery() {
+    use contextunity_forge_mcp::{
+        db::cache,
+        engine::pipeline::{build_with_test_hooks, PipelineTestHooks},
+    };
+    use std::sync::{Arc, Mutex};
+    let ws = Workspace::new();
+    std::fs::create_dir_all(ws.path("src")).unwrap();
+    std::fs::write(ws.path("src/unit_00.rs"), "fn original() {}\n").unwrap();
+    let db = ws.path("index.sqlite");
+    let old = build(ws.root(), &db, None).unwrap();
+    let before = std::fs::read(&db).unwrap();
+    let receipt = ws.path("index.sqlite.verified.json");
+    std::fs::write(ws.path("src/unit_00.rs"), "fn changed() {}\n").unwrap();
+    let unrelated = ws.path("unrelated.txt");
+    std::fs::write(&unrelated, b"preserve").unwrap();
+    for case in ["publication", "consumer", "obstructed"] {
+        std::fs::write(&db, &before).unwrap();
+        let conn = contextunity_forge_mcp::db::reader::open(&db, ws.root()).unwrap();
+        contextunity_forge_mcp::core::commitments::verify(&conn).unwrap();
+        drop(conn);
+        let seal = old["output_root"].as_str().unwrap();
+        assert!(cache::publish_verified(&db, ws.root(), seal).unwrap());
+        assert!(cache::matches(
+            &db,
+            ws.root(),
+            seal,
+            &cache::identity(&db).unwrap()
+        ));
+        let receipt_before = std::fs::read(&receipt).unwrap();
+        let recorded = Arc::new(Mutex::new(None));
+        let hook_recorded = Arc::clone(&recorded);
+        let obstruct = move |stage: &std::path::Path| {
+            let displaced = stage.with_extension("displaced");
+            std::fs::rename(stage, &displaced).unwrap();
+            std::fs::write(stage, b"obstruction").unwrap();
+            *hook_recorded.lock().unwrap() = Some((stage.to_owned(), displaced));
+        };
+        let hooks = match case {
+            "publication" => PipelineTestHooks::before_cleanup(obstruct),
+            "consumer" => PipelineTestHooks::fail_consumer(),
+            _ => PipelineTestHooks::fail_consumer_before_cleanup(obstruct),
+        };
+        let result = build_with_test_hooks(ws.root(), &db, None, hooks);
+        if case == "consumer" {
+            assert!(result.is_err());
+            assert_eq!(std::fs::read(&db).unwrap(), before);
+            assert_eq!(std::fs::read(&receipt).unwrap(), receipt_before);
+            assert!(cache::matches(
+                &db,
+                ws.root(),
+                seal,
+                &cache::identity(&db).unwrap()
+            ));
+        } else {
+            let (stage, displaced) = recorded.lock().unwrap().take().unwrap();
+            if case == "publication" {
+                let report = result.unwrap();
+                let cleanup = report["cleanup_error"]
+                    .as_str()
+                    .expect("cleanup error must be reported");
+                assert!(cleanup.contains(&stage.display().to_string()), "{cleanup}");
+                assert_ne!(report["output_root"], old["output_root"]);
+                assert_eq!(report["verification_cache"], true);
+                let seal = report["output_root"].as_str().unwrap();
+                assert!(cache::matches(
+                    &db,
+                    ws.root(),
+                    seal,
+                    &cache::identity(&db).unwrap()
+                ));
+            } else {
+                let diagnostic = format!("{:#}", result.unwrap_err());
+                assert!(
+                    diagnostic.contains("stage cleanup also failed"),
+                    "{diagnostic}"
+                );
+                assert!(
+                    diagnostic.contains(&stage.display().to_string()),
+                    "{diagnostic}"
+                );
+                assert!(
+                    diagnostic.contains("injected pipeline SQLite consumer failure"),
+                    "{diagnostic}"
+                );
+                assert_eq!(std::fs::read(&stage).unwrap(), b"obstruction");
+                assert_eq!(std::fs::read(&db).unwrap(), before);
+                assert_eq!(std::fs::read(&receipt).unwrap(), receipt_before);
+                assert!(cache::matches(
+                    &db,
+                    ws.root(),
+                    seal,
+                    &cache::identity(&db).unwrap()
+                ));
+            }
+            assert_eq!(std::fs::read(&unrelated).unwrap(), b"preserve");
+            std::fs::remove_file(&stage).unwrap();
+            std::fs::rename(&displaced, &stage).unwrap();
+            std::fs::remove_dir_all(&stage).unwrap();
+        }
+        let recovered = build(ws.root(), &db, None).unwrap();
+        let conn = contextunity_forge_mcp::db::reader::open(&db, ws.root()).unwrap();
+        contextunity_forge_mcp::core::commitments::verify(&conn).unwrap();
+        drop(conn);
+        assert!(cache::matches(
+            &db,
+            ws.root(),
+            recovered["output_root"].as_str().unwrap(),
+            &cache::identity(&db).unwrap()
+        ));
+        assert_eq!(std::fs::read(&unrelated).unwrap(), b"preserve");
+        assert!(!std::fs::read_dir(ws.root()).unwrap().any(|e| e
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".forge-stage-")));
+    }
+}
+
+#[test]
+fn output_sidecar_hazards_preserve_generation() {
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink;
+    let ws = Workspace::new();
+    let db = ws.path("index.sqlite");
+    build(ws.root(), &db, None).unwrap();
+    let before = std::fs::read(&db).unwrap();
+    for suffix in ["directory", "-wal", "-shm", "-journal"] {
+        let directory = suffix == "directory";
+        if !cfg!(unix) && !directory {
+            continue;
+        }
+        let suffix = if suffix == "directory" {
+            "-wal"
+        } else {
+            suffix
+        };
+        let sidecar = ws.path(format!("index.sqlite{suffix}"));
+
+        if directory {
+            std::fs::create_dir(&sidecar).unwrap();
+            std::fs::write(sidecar.join("unrelated"), "keep").unwrap();
+        } else {
+            #[cfg(unix)]
+            symlink(ws.path("missing"), &sidecar).unwrap();
+        }
+        let error = build(ws.root(), &db, None).unwrap_err();
+        assert!(format!("{error:#}").contains(&sidecar.display().to_string()));
+        assert_eq!(std::fs::read(&db).unwrap(), before);
+        if directory {
+            assert_eq!(std::fs::read(sidecar.join("unrelated")).unwrap(), b"keep");
+            std::fs::remove_dir_all(sidecar).unwrap();
+        } else {
+            std::fs::remove_file(sidecar).unwrap();
+        }
+    }
+    build(ws.root(), &db, None).unwrap();
+    assert!(!std::fs::read_dir(ws.root()).unwrap().any(|entry| entry
+        .unwrap()
+        .file_name()
+        .to_string_lossy()
+        .starts_with(".forge-stage-")));
+}
+
+#[cfg(unix)]
+#[test]
+fn staged_sidecar_cleanup_reports_all_errors_and_removes_dangling_symlink() {
+    use contextunity_forge_mcp::engine::pipeline::{build_with_test_hooks, PipelineTestHooks};
+    use std::os::unix::fs::symlink;
+    use std::sync::{Arc, Mutex};
+    let ws = Workspace::new();
+    let db = ws.path("index.sqlite");
+    let stage_path = Arc::new(Mutex::new(None));
+    let recorded = Arc::clone(&stage_path);
+    let hooks = PipelineTestHooks::before_cleanup(move |stage| {
+        for suffix in ["-wal", "-shm"] {
+            std::fs::create_dir(stage.join(format!("generation.sqlite{suffix}"))).unwrap();
+        }
+        symlink(
+            stage.join("missing"),
+            stage.join("generation.sqlite-journal"),
+        )
+        .unwrap();
+        *recorded.lock().unwrap() = Some(stage.to_owned());
+    });
+    let report = build_with_test_hooks(ws.root(), &db, None, hooks).unwrap();
+    let stage = stage_path.lock().unwrap().take().unwrap();
+    let error = report["cleanup_error"].as_str().unwrap();
+    for suffix in ["-wal", "-shm"] {
+        assert!(
+            error.contains(
+                &stage
+                    .join(format!("generation.sqlite{suffix}"))
+                    .display()
+                    .to_string()
+            ),
+            "{error}"
+        );
+    }
+    assert!(!error.contains("generation.sqlite-journal"), "{error}");
+    assert!(!stage.exists());
+}
+
+#[test]
+fn checkpoint_rejects_active_reader_and_succeeds_after_release() {
+    let ws = Workspace::new();
+    let path = ws.path("checkpoint.sqlite");
+    let writer = rusqlite::Connection::open(&path).unwrap();
+    writer
+        .execute_batch(
+            "PRAGMA journal_mode=WAL; CREATE TABLE t (v INTEGER); INSERT INTO t VALUES (1);",
+        )
+        .unwrap();
+    let reader = rusqlite::Connection::open(&path).unwrap();
+    reader.execute_batch("BEGIN; SELECT * FROM t;").unwrap();
+    writer.execute_batch("INSERT INTO t VALUES (2);").unwrap();
+    for truncate in [false, true] {
+        let error = contextunity_forge_mcp::db::cache::checkpoint(&writer, truncate).unwrap_err();
+        assert!(error.to_string().contains("incomplete"), "{error:#}");
+    }
+    reader.execute_batch("ROLLBACK").unwrap();
+    drop(reader);
+    contextunity_forge_mcp::db::cache::checkpoint(&writer, true).unwrap();
+}
+
 #[cfg(unix)]
 #[test]
 fn task_store_initialization_serializes_with_index_publication() {
@@ -292,4 +518,26 @@ fn code_map_target_rejects_non_canonical_and_configured_tasks_db() {
         "{err:#}"
     );
     assert!(!custom.exists());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        let real_repo = ws.path("private_var/repo");
+        std::fs::create_dir_all(&real_repo).unwrap();
+        std::fs::write(
+            real_repo.join("forge-mcp.yaml"),
+            "task_repository: repo\ntasks_db: .forge/state.sqlite\n",
+        )
+        .unwrap();
+        let alias_repo = ws.path("var_repo");
+        symlink(&real_repo, &alias_repo).unwrap();
+
+        let canonical_root = real_repo.canonicalize().unwrap();
+        let alias_target = alias_repo.join(".forge/state.sqlite");
+        let err = validate_code_map_target(&canonical_root, &alias_target).unwrap_err();
+        assert!(
+            err.to_string().contains("TASK_DATABASE_COLLISION"),
+            "expected TASK_DATABASE_COLLISION across canonical/alias roots, got: {err:#}"
+        );
+        assert!(!real_repo.join(".forge/state.sqlite").exists());
+    }
 }

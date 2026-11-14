@@ -570,12 +570,20 @@ pub fn resolve_file_path(
     }
     let p = Path::new(file_path);
     if p.is_absolute() {
+        if p.components()
+            .any(|comp| matches!(comp, std::path::Component::ParentDir))
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "path must be a relative plain path without parent traversal",
+            ));
+        }
         // Reject any absolute path that traverses a symlink before considering fallback.
         let mut cur = PathBuf::new();
         for comp in p.components() {
             cur.push(comp);
             if let Ok(meta) = std::fs::symlink_metadata(&cur) {
-                if meta.file_type().is_symlink() {
+                if meta.file_type().is_symlink() && !crate::fs::is_system_root_symlink(&cur) {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::InvalidInput,
                         "path must not traverse a symlink",
@@ -586,9 +594,19 @@ pub fn resolve_file_path(
         if let Ok(rel) = p.strip_prefix(root) {
             return checked_child(root, rel);
         }
+        if let (Ok(can_p), Ok(can_root)) = (p.canonicalize(), root.canonicalize()) {
+            if let Ok(rel) = can_p.strip_prefix(&can_root) {
+                return checked_child(&can_root, rel);
+            }
+        }
         for lw in &adapter.linked_workspaces {
             if let Ok(rel) = p.strip_prefix(&lw.path) {
                 return checked_child(&lw.path, rel);
+            }
+            if let (Ok(can_p), Ok(can_lw)) = (p.canonicalize(), lw.path.canonicalize()) {
+                if let Ok(rel) = can_p.strip_prefix(&can_lw) {
+                    return checked_child(&can_lw, rel);
+                }
             }
         }
         return Err(std::io::Error::new(
@@ -617,18 +635,20 @@ pub fn check_root_scope(root: &Path, allow_broad: bool) -> std::io::Result<()> {
         ));
     }
 
-    // 2. Direct parent is / or /home or /Users
+    // 2. Direct parent is / or /home or /Users, or macOS canonical /private/{var,tmp,etc}
     if let Some(parent) = root.parent() {
-        if parent == Path::new("/") {
-            let name = root.file_name().unwrap_or_default().to_string_lossy();
-            if matches!(
+        let name = root.file_name().unwrap_or_default().to_string_lossy();
+        let is_top_system_dir = parent == Path::new("/")
+            && matches!(
                 name.as_ref(),
                 "home" | "Users" | "var" | "tmp" | "usr" | "etc" | "opt"
-            ) {
-                return Err(error(format!(
-                    "refusing to index system directory '{root:?}'; specify a repository directory or set limits.allow_broad_root: true"
-                )));
-            }
+            );
+        let is_macos_private_system_dir =
+            parent == Path::new("/private") && matches!(name.as_ref(), "var" | "tmp" | "etc");
+        if is_top_system_dir || is_macos_private_system_dir {
+            return Err(error(format!(
+                "refusing to index system directory '{root:?}'; specify a repository directory or set limits.allow_broad_root: true"
+            )));
         } else if parent == Path::new("/home") || parent == Path::new("/Users") {
             return Err(error(format!(
                 "refusing to index user home directory '{root:?}'; specify a repository directory or set limits.allow_broad_root: true"
@@ -678,9 +698,22 @@ pub fn check_root_scope(root: &Path, allow_broad: bool) -> std::io::Result<()> {
 
 /// Formats the adapter configuration for serialization into SQLite database metadata.
 pub fn policy(root: &Path, adapter: &Adapter) -> Value {
+    let canonical_root = root.canonicalize().ok();
+    let strip = |path: &Path| {
+        path.strip_prefix(root)
+            .ok()
+            .or_else(|| {
+                canonical_root
+                    .as_deref()
+                    .and_then(|can| path.strip_prefix(can).ok())
+            })
+            .unwrap_or(path)
+            .to_string_lossy()
+            .into_owned()
+    };
     json!({
-        "adapter_path": adapter.adapter_path.as_ref().map(|path| path.strip_prefix(root).unwrap_or(path).to_string_lossy()),
-        "roots": adapter.roots.iter().map(|p| p.strip_prefix(root).unwrap_or(p).to_string_lossy()).collect::<Vec<_>>(),
+        "adapter_path": adapter.adapter_path.as_ref().map(|path| strip(path)),
+        "roots": adapter.roots.iter().map(|p| strip(p)).collect::<Vec<_>>(),
         "sensitive": adapter.sensitive,
         "limits": &adapter.limits,
         "ignored_names": adapter.ignored_names,
@@ -698,10 +731,13 @@ pub fn policy(root: &Path, adapter: &Adapter) -> Value {
 pub fn persisted_adapter_path(root: &Path, value: &Value) -> Result<Option<PathBuf>> {
     match value.get("adapter_path") {
         None | Some(Value::Null) => Ok(None),
-        Some(path) => Ok(Some(checked_child(
-            root,
-            Path::new(path.as_str().context("invalid persisted adapter path")?),
-        )?)),
+        Some(path) => {
+            let base = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+            Ok(Some(checked_child(
+                &base,
+                Path::new(path.as_str().context("invalid persisted adapter path")?),
+            )?))
+        }
     }
 }
 
@@ -809,9 +845,18 @@ pub fn local_template_target(owner: &str, target: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    struct TempDirDrop(PathBuf);
+
+    impl Drop for TempDirDrop {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     #[test]
     fn resolve_file_path_handles_dot_slash_and_absolute_paths() {
         let temp_dir = std::env::temp_dir().join(format!("forge_test_{}", std::process::id()));
+        let _cleanup = TempDirDrop(temp_dir.clone());
         std::fs::create_dir_all(&temp_dir).unwrap();
         let file_path = temp_dir.join("test.rs");
         std::fs::write(&file_path, "pub fn test() {}").unwrap();
@@ -871,5 +916,35 @@ mod tests {
         limits.max_metadata_bytes = 2049;
         let err_large = limits.validate().unwrap_err();
         assert!(err_large.to_string().contains("must be 1..=2048"));
+    }
+
+    #[test]
+    fn check_root_scope_rejects_system_and_macos_private_roots_but_allows_projects() {
+        for system in [
+            "/var",
+            "/tmp",
+            "/etc",
+            "/private/var",
+            "/private/tmp",
+            "/private/etc",
+        ] {
+            let err = check_root_scope(Path::new(system), false).unwrap_err();
+            assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput, "{system}");
+        }
+
+        let temp_project = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("forge_scope_ok_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp_project);
+        let _cleanup = TempDirDrop(temp_project.clone());
+        std::fs::create_dir_all(&temp_project).unwrap();
+        std::fs::write(
+            temp_project.join("Cargo.toml"),
+            "[package]\nname = \"ok\"\n",
+        )
+        .unwrap();
+        assert!(check_root_scope(&temp_project, false).is_ok());
+        let _ = std::fs::remove_dir_all(&temp_project);
     }
 }

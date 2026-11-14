@@ -167,11 +167,7 @@ fn same_server_refreshes_non_source_manifests_outside_source_roots() {
         }
     }
     for (path, line) in [("docs/guide.md", Some(hub_line)), ("rust", None)] {
-        let coordinate = format!(
-            "file://{}{}",
-            packages.root().join(path).display(),
-            line.map_or_else(String::new, |line| format!("#L{line}"))
-        );
+        let coordinate = packages.file_uri(path, line.map(|line| line.try_into().unwrap()));
         if !package_markdown.contains(&coordinate) {
             missing.push(format!(
                 "overview must resolve the actual coordinate {coordinate}"
@@ -202,10 +198,7 @@ fn same_server_refreshes_non_source_manifests_outside_source_roots() {
         "{package_markdown}"
     );
     assert!(
-        package_markdown.contains(&format!(
-            "file://{}/weird%2B%25%231/pyproject.toml",
-            linked_packages.root().display()
-        )),
+        package_markdown.contains(&linked_packages.file_uri("weird+%#1/pyproject.toml", None)),
         "linked manifest URI must resolve against its owning root: {package_markdown}"
     );
     let full_manifest_page = &overview["discovery"]["manifest_components"];
@@ -235,8 +228,10 @@ fn same_server_refreshes_non_source_manifests_outside_source_roots() {
         .expect("bounded manifest page continuation");
     assert!(
         manifest_continuation.contains("aspects=[\"manifest_components\"]")
-            && manifest_continuation
-                .contains(&format!("workspace_root={}", packages.root().display())),
+            && manifest_continuation.contains(&format!(
+                "workspace_root={}",
+                packages.canonical_root().display()
+            )),
         "overview continuation must retain its aspect selection and workspace: {manifest_continuation}"
     );
 

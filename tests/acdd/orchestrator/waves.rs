@@ -846,7 +846,10 @@ fn selected_config_reaches_cli_and_mcp_guide_validation() {
         &["--config", "configs/index.yaml", "guide", "validate"],
     )
     .unwrap();
-    assert_eq!(result["roots"], serde_json::json!([root.path("selected")]));
+    assert_eq!(
+        result["roots"],
+        serde_json::json!([root.path("selected").canonicalize().unwrap()])
+    );
     let selection = harness::selected_settings(
         root.root(),
         "configs/index.yaml",
@@ -1026,7 +1029,7 @@ fn server_selection_survives_transport_lifetime_and_refreshes() {
         contextunity_forge_mcp::core::config::read_policy(root.root(), &conn)
             .unwrap()
             .adapter_path,
-        Some(root.path("configs/index.yaml"))
+        Some(root.path("configs/index.yaml").canonicalize().unwrap())
     );
 }
 
@@ -1134,7 +1137,7 @@ fn cli_query_rebuilds_existing_index_with_the_selected_policy() {
         contextunity_forge_mcp::core::config::read_policy(root.root(), &conn)
             .unwrap()
             .adapter_path,
-        Some(root.path("configs/index.yaml"))
+        Some(root.path("configs/index.yaml").canonicalize().unwrap())
     );
 }
 
@@ -1163,7 +1166,12 @@ fn cli_delta_selects_policy_and_preserves_legacy_persisted_selection() {
     let selected = contextunity_forge_mcp::core::config::read_policy(root.root(), &conn).unwrap();
     assert_eq!(
         selected.adapter_path.as_deref(),
-        Some(root.path("configs/index.yaml").as_path())
+        Some(
+            root.path("configs/index.yaml")
+                .canonicalize()
+                .unwrap()
+                .as_path()
+        )
     );
     assert_eq!(
         contextunity_forge_mcp::db::reader::inventory_snapshot(&conn)
@@ -1671,6 +1679,7 @@ fn global_selections_reach_role_children_without_parent_environment_mutation() {
         ],
     )
     .unwrap();
+    let canonical_root = root.root().canonicalize().unwrap();
     let records = fs::read_to_string(root.path("workflow-role-sessions.jsonl")).unwrap();
     for record in records
         .lines()
@@ -1678,15 +1687,18 @@ fn global_selections_reach_role_children_without_parent_environment_mutation() {
     {
         assert_eq!(
             record["config"],
-            root.path("configs/custom.yaml").to_str().unwrap()
+            canonical_root.join("configs/custom.yaml").to_str().unwrap()
         );
         assert_eq!(
             record["profile"],
-            root.path("profiles/plan.yaml").to_str().unwrap()
+            canonical_root.join("profiles/plan.yaml").to_str().unwrap()
         );
         assert_eq!(
             record["db"],
-            root.path(".forge/selected-index.sqlite").to_str().unwrap()
+            canonical_root
+                .join(".forge/selected-index.sqlite")
+                .to_str()
+                .unwrap()
         );
     }
     assert_eq!(

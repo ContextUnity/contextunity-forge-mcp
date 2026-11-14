@@ -198,7 +198,10 @@ fn task_guidance_follows_agent_metadata_workspace_config_and_active_stage() {
             None,
             "forge-mcp",
             "gpt-6-sol",
-            root.root().join("docs/team-guidance.md"),
+            root.root()
+                .canonicalize()
+                .unwrap()
+                .join("docs/team-guidance.md"),
             false,
         ),
         (
@@ -207,7 +210,11 @@ fn task_guidance_follows_agent_metadata_workspace_config_and_active_stage() {
             Some("linked"),
             "linked",
             "reviewer",
-            linked.root().join("docs/linked-guidance.md"),
+            linked
+                .root()
+                .canonicalize()
+                .unwrap()
+                .join("docs/linked-guidance.md"),
             false,
         ),
         (
@@ -216,7 +223,7 @@ fn task_guidance_follows_agent_metadata_workspace_config_and_active_stage() {
             None,
             "forge-mcp",
             "flash",
-            missing.root().join("AGENTS.md"),
+            missing.root().canonicalize().unwrap().join("AGENTS.md"),
             true,
         ),
     ] {
@@ -394,7 +401,13 @@ fn task_guidance_follows_agent_metadata_workspace_config_and_active_stage() {
     .unwrap();
     assert_eq!(
         configured_missing["agents_guidance"],
-        missing.root().join("docs/unavailable.md").to_str().unwrap()
+        missing
+            .root()
+            .canonicalize()
+            .unwrap()
+            .join("docs/unavailable.md")
+            .to_str()
+            .unwrap()
     );
     assert_eq!(
         configured_missing["workflow_guidance"]["warning"]["code"],

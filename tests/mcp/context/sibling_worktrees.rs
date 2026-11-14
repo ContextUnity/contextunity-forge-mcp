@@ -223,12 +223,15 @@ fn mcp_server_keeps_its_linked_worktree_and_resolves_registered_sibling_names() 
     ).expect("MCP transport");
     assert_eq!(sibling_continuation["result"]["isError"], true);
 
-    let expected_sibling_source = format!("file://{}/src/lib.rs#L1", sibling.display());
-    let expected_special_source = format!(
-        "file://{}/src/space%20dir/%23unicode-%CE%BB.rs#L1",
-        sibling.display()
+    let expected_sibling_source =
+        crate::common::workspace::canonical_file_uri(&sibling, "src/lib.rs", Some(1));
+    let expected_special_source = crate::common::workspace::canonical_file_uri(
+        &sibling,
+        "src/space dir/#unicode-λ.rs",
+        Some(1),
     );
-    let expected_linked_source = format!("file://{}/src/lib.rs#L1", linked.display());
+    let expected_linked_source =
+        crate::common::workspace::canonical_file_uri(&linked, "src/lib.rs", Some(1));
     let uri_cases = [
         (
             "relative root symbol",
@@ -258,31 +261,31 @@ fn mcp_server_keeps_its_linked_worktree_and_resolves_registered_sibling_names() 
             "inspect symbol",
             "code_map_inspect",
             json!({"selector":"shared_source","worktree":"external","format":"markdown"}),
-            format!("file://{}/src/lib.rs#L2", sibling.display()),
+            crate::common::workspace::canonical_file_uri(&sibling, "src/lib.rs", Some(2)),
         ),
         (
             "impact traversal node",
             "code_map_impact",
             json!({"selector":"sibling_only","direction":"inbound","worktree":"external","format":"markdown"}),
-            format!("file://{}/src/lib.rs#L2", sibling.display()),
+            crate::common::workspace::canonical_file_uri(&sibling, "src/lib.rs", Some(2)),
         ),
         (
             "traversal call edge",
             "code_map_explain",
             json!({"selector":"shared_source","direction":"outbound","worktree":"external","format":"markdown"}),
-            format!("file://{}/src/lib.rs#L3", sibling.display()),
+            crate::common::workspace::canonical_file_uri(&sibling, "src/lib.rs", Some(3)),
         ),
         (
             "test edge",
             "code_map_tests",
             json!({"selector":"sibling_only","direction":"inbound","worktree":"external","format":"markdown"}),
-            format!("file://{}/src/lib.rs#L11", sibling.display()),
+            crate::common::workspace::canonical_file_uri(&sibling, "src/lib.rs", Some(11)),
         ),
         (
             "documentation section",
             "search_docs",
             json!({"query":"linked symbol reference","format":"markdown"}),
-            format!("file://{}/docs/linked%20symbols.md", linked.display()),
+            crate::common::workspace::canonical_file_uri(&linked, "docs/linked symbols.md", None),
         ),
     ];
     let mut uri_failures = Vec::new();
@@ -327,9 +330,10 @@ fn mcp_server_keeps_its_linked_worktree_and_resolves_registered_sibling_names() 
     let doc_line = doc_json["sections"]["items"][0]["line"]
         .as_u64()
         .unwrap_or(1);
-    let expected_doc_uri = format!(
-        "file://{}/docs/linked%20symbols.md#L{doc_line}",
-        linked.display()
+    let expected_doc_uri = crate::common::workspace::canonical_file_uri(
+        &linked,
+        "docs/linked symbols.md",
+        Some(doc_line.try_into().unwrap()),
     );
     let (_, doc_markdown_response) = client
         .call(
@@ -343,7 +347,7 @@ fn mcp_server_keeps_its_linked_worktree_and_resolves_registered_sibling_names() 
         .expect("get_doc should return Markdown text");
     for expected_uri in [
         expected_doc_uri,
-        format!("file://{}/src/lib.rs#L1", linked.display()),
+        crate::common::workspace::canonical_file_uri(&linked, "src/lib.rs", Some(1)),
     ] {
         if !doc_markdown.contains(&expected_uri) {
             uri_failures.push(format!(

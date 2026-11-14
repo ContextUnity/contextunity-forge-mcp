@@ -490,10 +490,9 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
     assert_ne!(response["result"]["isError"], true, "{response}");
     let markdown = response["result"]["content"][0]["text"].as_str().unwrap();
     for item in exact_nodes {
-        let coordinate = format!(
-            "file://{}#L{}",
-            ws.root().join(item["path"].as_str().unwrap()).display(),
-            item["line"].as_u64().unwrap()
+        let coordinate = ws.file_uri(
+            item["path"].as_str().unwrap(),
+            Some(item["line"].as_u64().unwrap().try_into().unwrap()),
         );
         assert!(
             markdown.contains(&coordinate),
@@ -565,10 +564,7 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
         "Marks a test search result."
     );
     assert_eq!(test_hit["match_reason"], "exact_name");
-    let linked_uri = format!(
-        "file://{}/linked%20module%2B%25%231.py#L1",
-        linked.root().display()
-    );
+    let linked_uri = linked.file_uri("linked module+%#1.py", Some(1));
     let (_, linked_response) = client.call(
         "code_map_search",
         serde_json::json!({"pattern":"linked_uri_symbol","kind":"function","limit":10,"format":"markdown"}),

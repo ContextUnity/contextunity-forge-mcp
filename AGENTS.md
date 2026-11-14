@@ -35,8 +35,8 @@ The embedded ACDD profile registers `rust-check-and-test` as strict Clippy follo
 
 <!-- acdd-forge:agents-verification:start -->
 When authoring contracts or testing capabilities:
-- **Additive parameterized cases**: Extend existing table-driven test cases (`for case in cases`) ONLY when testing the same unit or input variation.
-- **Dedicated domain tests**: NEVER append distinct sub-scenarios, multi-step workflows, or new feature requirements into an existing test function. Create a separate, descriptively-named `#[test]` function in the appropriate domain module to preserve parallel test execution and isolated failure diagnostics.
+- **Table-driven contract matrices**: Use a single table-driven `#[test]` (`for case in cases`) — sharing one base workspace, cold index snapshot, or harness built once outside the loop — whenever testing homogeneous input, error, alias, spelling, hook, or boundary variants of the same contract or seam. Do NOT clone heavy `#[test]` functions (`Workspace::new`, `cold_build`, `InstallerHarness::new`, `McpTestHarness::new`, subprocess spawns) per variant.
+- **Dedicated domain tests**: Author a separate `#[test]` in the owning domain module ONLY for a genuinely distinct domain contract, independent workflow, or orthogonal failure seam — never to split a matrix of variations of the same rule, and never by appending unrelated requirements into an existing workflow test.
 - **Runtime-red contract proof**: Contract tests must compile cleanly and produce runtime assertion failures for `contract` gate proof.
 - **Autonomous scope extension**: Agents should extend scope autonomously via `extend_scope` to include necessary files, fixtures, tests, and documentation within admitted roots to unblock implementation or verification without halting execution or requesting human permission.
 <!-- acdd-forge:agents-verification:end -->

@@ -57,7 +57,9 @@ pub fn strip_root_path(path: &str, root: &Path) -> Option<String> {
         return None;
     }
     if p.ancestors().any(|component| {
-        std::fs::symlink_metadata(component).is_ok_and(|metadata| metadata.file_type().is_symlink())
+        !forge_core::fs::is_system_root_symlink(component)
+            && std::fs::symlink_metadata(component)
+                .is_ok_and(|metadata| metadata.file_type().is_symlink())
     }) {
         return None;
     }
@@ -121,8 +123,9 @@ impl ReadRequest {
     }
 }
 
-fn sensitive(adapter: &Adapter, path: &str) -> Result<()> {
+fn sensitive_with_case(adapter: &Adapter, path: &str, case_insensitive: bool) -> Result<()> {
     let mut builder = ignore::gitignore::GitignoreBuilder::new("");
+    builder.case_insensitive(case_insensitive)?;
     for pattern in &adapter.sensitive {
         builder.add_line(None, pattern)?;
     }
@@ -136,22 +139,41 @@ fn sensitive(adapter: &Adapter, path: &str) -> Result<()> {
     Ok(())
 }
 
+fn sensitive(adapter: &Adapter, root: &Path, path: &str) -> Result<()> {
+    sensitive_with_case(
+        adapter,
+        path,
+        forge_core::fs::is_case_insensitive_volume(root),
+    )
+}
+
 fn admitted_file(root: &Path, adapter: &Adapter, path: &str) -> Result<std::path::PathBuf> {
     let stripped = strip_root_path(path, root);
     let path = stripped.as_deref().unwrap_or(path);
-    sensitive(adapter, path)?;
+    sensitive(adapter, root, path)?;
     let file = resolve_file_path(root, adapter, path)?;
     ensure!(
         file.exists(),
         "FILE_NOT_FOUND: file '{path}' does not exist"
     );
     ensure!(file.is_file(), "reader path must name a regular file");
-    // Check canonical-relative names as well as linked-path aliases.
-    let relative = file.strip_prefix(root).unwrap_or(&file).to_string_lossy();
-    sensitive(adapter, &relative)?;
+    let file_str = file.to_string_lossy();
+    let file_ci = forge_core::fs::is_case_insensitive_volume(&file);
+    let relative = strip_root_path(&file_str, root).unwrap_or_else(|| {
+        file.strip_prefix(root)
+            .unwrap_or(&file)
+            .to_string_lossy()
+            .into_owned()
+    });
+    sensitive_with_case(adapter, &relative, file_ci)?;
     for linked in &adapter.linked_workspaces {
-        if let Ok(relative) = file.strip_prefix(&linked.path) {
-            sensitive(adapter, &relative.to_string_lossy())?;
+        if let Some(relative) = strip_root_path(&file_str, &linked.path).or_else(|| {
+            file.strip_prefix(&linked.path)
+                .ok()
+                .map(|rel| rel.to_string_lossy().into_owned())
+        }) {
+            let linked_ci = forge_core::fs::is_case_insensitive_volume(&linked.path) || file_ci;
+            sensitive_with_case(adapter, &relative, linked_ci)?;
         }
     }
     let mut prefix = [0; 8192];
@@ -222,12 +244,12 @@ pub fn forge_read_tool(
                 .collect();
             let paths = &normalized_paths;
             if let Some(output) = &request.output_file {
-                sensitive(adapter, output)?;
+                sensitive(adapter, root, output)?;
                 let destination = forge_core::fs::checked_child(root, Path::new(output))?;
                 for p in paths {
                     if let Ok(input_res) = resolve_file_path(root, adapter, p) {
                         ensure!(
-                            destination != input_res,
+                            !forge_core::fs::same_filesystem_path(&destination, &input_res),
                             "output_file must differ from any input file in paths"
                         );
                     }
@@ -550,10 +572,11 @@ fn forge_read_single(
         value["Hints"] = json!(hints);
     }
     if let Some(output) = &request.output_file {
-        sensitive(adapter, output)?;
+        sensitive(adapter, root, output)?;
         let destination = forge_core::fs::checked_child(root, Path::new(output))?;
+        let input_res = resolve_file_path(root, adapter, &path)?;
         ensure!(
-            destination != resolve_file_path(root, adapter, &path)?,
+            !forge_core::fs::same_filesystem_path(&destination, &input_res),
             "output_file must differ from input"
         );
         let content = exportable_content(&value).context("read has no exportable content")?;
@@ -871,4 +894,24 @@ pub fn render_read_hints(
         .map(|group| group.join("; "))
         .collect::<Vec<_>>()
         .join("\n"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sensitive_with_case;
+    use forge_core::config::Adapter;
+
+    #[test]
+    fn sensitive_policy_honors_case_insensitive_volume_flag() {
+        let adapter = Adapter {
+            sensitive: vec![".env*".into(), "secrets/**".into()],
+            ..Default::default()
+        };
+
+        assert!(sensitive_with_case(&adapter, ".env.local", false).is_err());
+        assert!(sensitive_with_case(&adapter, ".ENV.local", false).is_ok());
+        assert!(sensitive_with_case(&adapter, ".ENV.local", true).is_err());
+        assert!(sensitive_with_case(&adapter, "SECRETS/token.txt", true).is_err());
+        assert!(sensitive_with_case(&adapter, "src/lib.rs", true).is_ok());
+    }
 }

@@ -20,7 +20,7 @@ defaults:
 jobs:
   test:
     name: test (${{ matrix.os }})
-    timeout-minutes: 25
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -32,8 +32,7 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal --component clippy --no-self-update
           rustup default stable
-      - name: Check workspace
-        run: cargo check --workspace --all-targets --all-features
+      - uses: Swatinem/rust-cache@v2
       - name: Lint workspace
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: Test workspace

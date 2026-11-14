@@ -9,6 +9,7 @@ The architecture documentation describes verified system structure, contracts, a
 
 - [Indexing and resolution](indexing.md): Scanner, AST fact extraction, symbol linking, and storage boundaries.
 - [SQLite concurrency and isolation](concurrency.md): Reader isolation, generation locking, RAII guards, and WAL mode pragmas.
+- [Cross-platform and macOS boundaries](cross-platform.md): Canonical root and URI boundaries, volume-dependent case and Unicode spelling, SQLite WAL/`Identity` lifecycle, BSD socket portability, and fail-loud diagnostics.
 - [Engine modularity and traits](modularity.md): `LanguageProfile`, `TemplatePreprocessor`, and `LanguageLinker` extensibility contracts.
 - [Test harness and seam architecture](test-harness.md): Declarative `<Domain>Harness` contracts, in-memory lifecycle stepping, session isolation, and test-suite decomposition.
 - [Performance guidance and compaction](performance.md): Recommended latency values, FTS5 BM25 hybrid search, inventory debouncing, and Zstd storage compaction.

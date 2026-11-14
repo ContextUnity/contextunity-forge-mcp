@@ -108,6 +108,7 @@ fn exact_symbol_match_filters_text_only_candidates_by_default() {
     );
     workspace.write("types.py", "class as_str: pass\n");
     workspace.write("README.md", "# as_str\n\nConversion.\n");
+    drop(conn);
     workspace.build();
     let conn = workspace.open();
     let qualified: String = conn.query_row(
@@ -309,6 +310,7 @@ fn natural_document_search_ignores_stop_words_and_boosts_section_titles() {
     }
 
     workspace.write("c.md", "# Delivery\n\nSubscribers receive events.\n");
+    drop(conn);
     workspace.build();
     let conn = workspace.open();
     let conceptual = reader::search_docs_with_options(

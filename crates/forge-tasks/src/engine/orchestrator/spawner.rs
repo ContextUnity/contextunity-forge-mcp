@@ -339,6 +339,13 @@ mod unix {
     }
 
     impl RunnerProcess {
+        fn is_harmless_exited_kill_error(&self, error: &io::Error) -> bool {
+            error.raw_os_error() == Some(libc::ESRCH)
+                || (cfg!(target_os = "macos")
+                    && error.raw_os_error() == Some(libc::EPERM)
+                    && self.has_exited().unwrap_or(false))
+        }
+
         // Kill the group even after leader exit: descendants may still own output pipes.
         pub(super) fn cleanup(&mut self) -> io::Result<ExitStatus> {
             if self.cleaned_up {
@@ -353,13 +360,18 @@ mod unix {
                 if error.kind() == io::ErrorKind::Interrupted {
                     continue;
                 }
-                break (error.raw_os_error() != Some(libc::ESRCH)).then_some(error);
+                if self.is_harmless_exited_kill_error(&error) {
+                    break None;
+                }
+                break Some(error);
             };
             // The directly owned child may have moved itself out of its original
             // group. Its unreaped pid is still ours; never signal its new group.
-            if let Err(error) = self.child.kill() {
-                if error.raw_os_error() != Some(libc::ESRCH) {
-                    return Err(error);
+            if !self.has_exited().unwrap_or(false) {
+                if let Err(error) = self.child.kill() {
+                    if !self.is_harmless_exited_kill_error(&error) {
+                        return Err(error);
+                    }
                 }
             }
             let status = loop {

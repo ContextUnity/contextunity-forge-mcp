@@ -372,6 +372,7 @@ fn assert_nuxt_vue_pinia_manifest_family(family: &str, renamed: bool) {
                     assert_eq!(parity.incremental_verification, Ok(()));
                     assert_eq!(parity.cold_verification, Ok(()));
                     assert_eq!(parity.incremental, parity.cold);
+                    drop(parity);
                     workspace.write(rewrite(provider), &rewrite(original));
                     workspace.delta(&[&rewrite(provider)]);
                     observe(true, true, false);
@@ -387,6 +388,7 @@ fn assert_nuxt_vue_pinia_manifest_family(family: &str, renamed: bool) {
                 assert_eq!(parity.incremental_verification, Ok(()));
                 assert_eq!(parity.cold_verification, Ok(()));
                 assert_eq!(parity.incremental, parity.cold);
+                drop(parity);
                 workspace.write("package.json", &package);
                 workspace.delta(&["package.json"]);
                 observe(true, true, false);
@@ -402,6 +404,7 @@ fn assert_nuxt_vue_pinia_manifest_family(family: &str, renamed: bool) {
                 assert_eq!(parity.incremental_verification, Ok(()));
                 assert_eq!(parity.cold_verification, Ok(()));
                 assert_eq!(parity.incremental, parity.cold);
+                drop(parity);
                 for (name, source) in packs {
                     override_pack(name, source, false);
                 }
@@ -414,6 +417,7 @@ fn assert_nuxt_vue_pinia_manifest_family(family: &str, renamed: bool) {
                 assert_eq!(parity.incremental_verification, Ok(()));
                 assert_eq!(parity.cold_verification, Ok(()));
                 assert_eq!(parity.incremental, parity.cold);
+                drop(parity);
                 workspace.write("control.ts","import {helper} from './ordinary';\nexport function ordinary() { return helper() + 1; }\n");
                 workspace.delta(&["control.ts"]);
                 observe(true, true, false);

@@ -43,8 +43,7 @@ fn document_references_keep_distinct_sections_and_ambiguous_candidate_sources() 
     assert!(reference_rows
         .iter()
         .all(|reference| reference["line"] == 1));
-    let target_declaration_uri =
-        format!("file://{}#L1)", ws.root().join("src/overview.py").display());
+    let target_declaration_uri = format!("{})", ws.file_uri("src/overview.py", Some(1)));
     for detail in [None, Some("compact")] {
         let mut arguments =
             json!({"path_or_id":"docs/reference/mcp-tools.md","limit":100,"format":"markdown"});
@@ -103,8 +102,7 @@ fn document_references_keep_distinct_sections_and_ambiguous_candidate_sources() 
 fn document_reference_pages_preserve_every_section_in_full_and_compact_detail() {
     let ws = reference_workspace();
     let mut client = McpTestHarness::new(ws).expect("MCP initialize");
-    let target_declaration_uri =
-        format!("file://{}#L1)", ws.root().join("src/overview.py").display());
+    let target_declaration_uri = format!("{})", ws.file_uri("src/overview.py", Some(1)));
     for detail in ["full", "compact"] {
         let mut offset = 0_u64;
         let mut generation = Value::Null;

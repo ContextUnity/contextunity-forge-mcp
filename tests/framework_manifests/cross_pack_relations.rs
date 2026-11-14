@@ -592,6 +592,7 @@ fn django_include_deltas_preserve_owner_prefix_deletion_and_manifest_reclassific
     );
     drop(conn);
     drop(cold);
+    drop(observed.incremental_connection);
 
     workspace.write(
         "shop/urls.py",

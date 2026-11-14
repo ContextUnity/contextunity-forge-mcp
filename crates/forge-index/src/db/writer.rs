@@ -677,7 +677,7 @@ pub fn populate_owned(
             libc::malloc_trim(0);
         }
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
-        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+        crate::db::cache::checkpoint(conn, true)?;
         let index_and_seal = Instant::now();
         let index_sql = format!("CREATE INDEX{indexes}");
         let index_candidate = |conn: &mut Connection| -> Result<f64> {

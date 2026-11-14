@@ -1,3 +1,4 @@
+use contextunity_forge_mcp::core::format::file_uri_for_path;
 use contextunity_forge_mcp::db::reader;
 use contextunity_forge_mcp::engine::pipeline;
 use rusqlite::Connection;
@@ -30,6 +31,37 @@ enum WorkspaceInput {
 /// Owns one isolated source workspace and its default Forge index.
 pub struct Workspace {
     root: PathBuf,
+}
+
+/// Builds a production-encoded URI for a relative coordinate under a canonical root.
+pub fn canonical_file_uri(root: &Path, relative: impl AsRef<Path>, line: Option<usize>) -> String {
+    let relative = relative.as_ref();
+    assert_relative(relative);
+    let canonical_root = root.canonicalize().unwrap_or_else(|error| {
+        panic!(
+            "could not canonicalize fixture root {}: {error}",
+            root.display()
+        )
+    });
+    let path = canonical_root.join(relative);
+    file_uri_for_path(&path, line).unwrap_or_else(|| {
+        panic!(
+            "could not encode fixture path as a file URI: {}",
+            path.display()
+        )
+    })
+}
+
+fn assert_relative(relative: &Path) {
+    assert!(
+        !relative.is_absolute()
+            && !relative.components().any(|part| matches!(
+                part,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )),
+        "test workspace paths must stay relative to the workspace root: {}",
+        relative.display()
+    );
 }
 
 impl Workspace {
@@ -69,19 +101,30 @@ impl Workspace {
         &self.root
     }
 
+    /// Returns the canonical root of this workspace (resolving OS temp symlinks such as macOS `/var`).
+    pub fn canonical_root(&self) -> PathBuf {
+        self.root
+            .canonicalize()
+            .expect("workspace root should canonicalize")
+    }
+
     /// Resolves a workspace-relative path and rejects paths that escape its root.
     pub fn path(&self, relative: impl AsRef<Path>) -> PathBuf {
         let relative = relative.as_ref();
-        assert!(
-            !relative.is_absolute()
-                && !relative.components().any(|part| matches!(
-                    part,
-                    Component::ParentDir | Component::RootDir | Component::Prefix(_)
-                )),
-            "test workspace paths must stay relative to the workspace root: {}",
-            relative.display()
-        );
+        assert_relative(relative);
         self.root.join(relative)
+    }
+
+    /// Resolves a workspace-relative path under [`Workspace::canonical_root`].
+    pub fn canonical_path(&self, relative: impl AsRef<Path>) -> PathBuf {
+        let relative = relative.as_ref();
+        let _ = self.path(relative);
+        self.canonical_root().join(relative)
+    }
+
+    /// Returns a production-encoded URI for a workspace-relative coordinate.
+    pub fn file_uri(&self, relative: impl AsRef<Path>, line: Option<usize>) -> String {
+        canonical_file_uri(self.root(), relative, line)
     }
 
     /// Writes UTF-8 source or fixture data, creating parent directories as needed.

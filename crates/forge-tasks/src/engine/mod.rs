@@ -593,18 +593,21 @@ impl TaskSettings {
             {
                 bail!("TASK_SCOPE_INVALID: expected path without traversal");
             }
-            if path.starts_with(root) || path.starts_with(&canon_root) || path.starts_with(&base) {
-                crate::tasks::confined_target(&base, path)?
-            } else if let Ok(canon) = path.canonicalize() {
-                canon
-            } else if let Some(parent) = path.parent() {
-                if let Ok(canon_parent) = parent.canonicalize() {
-                    canon_parent.join(path.file_name().unwrap_or_default())
+            if let Some(confined) = confined_alias_candidate(path, root, &canon_root, &base) {
+                crate::tasks::confined_target(&base, &confined)?
+            } else {
+                reject_external_symlinks(path)?;
+                if let Ok(canon) = path.canonicalize() {
+                    canon
+                } else if let Some(parent) = path.parent() {
+                    if let Ok(canon_parent) = parent.canonicalize() {
+                        canon_parent.join(path.file_name().unwrap_or_default())
+                    } else {
+                        path.to_path_buf()
+                    }
                 } else {
                     path.to_path_buf()
                 }
-            } else {
-                path.to_path_buf()
             }
         } else {
             crate::tasks::confined_target(&base, path)?
@@ -619,6 +622,51 @@ impl TaskSettings {
         }
         Ok(resolved)
     }
+}
+
+fn confined_alias_candidate(
+    path: &Path,
+    root: &Path,
+    canon_root: &Path,
+    base: &Path,
+) -> Option<std::path::PathBuf> {
+    if path.starts_with(root) || path.starts_with(canon_root) || path.starts_with(base) {
+        return Some(path.to_path_buf());
+    }
+    // An absolute tasks_db configured under an OS-aliased workspace root (e.g. /var vs /private/var)
+    // must still pass through confined_target so internal workspace symlinks cannot escape.
+    let mut prefix = std::path::PathBuf::new();
+    for comp in path.components() {
+        prefix.push(comp);
+        if let Ok(canon_prefix) = prefix.canonicalize() {
+            let matched = if canon_prefix == canon_root {
+                Some(canon_root)
+            } else if canon_prefix == base {
+                Some(base)
+            } else {
+                None
+            };
+            if let Some(target_root) = matched {
+                if let Ok(rel) = path.strip_prefix(&prefix) {
+                    return Some(target_root.join(rel));
+                }
+            }
+        }
+    }
+    None
+}
+
+fn reject_external_symlinks(path: &Path) -> Result<()> {
+    let mut cur = std::path::PathBuf::new();
+    for comp in path.components() {
+        cur.push(comp);
+        if let Ok(meta) = std::fs::symlink_metadata(&cur) {
+            if meta.file_type().is_symlink() && !forge_core::fs::is_system_root_symlink(&cur) {
+                bail!("TASK_SCOPE_INVALID: symlink escape");
+            }
+        }
+    }
+    Ok(())
 }
 /// Performs database path.
 pub fn database_path(root: &Path) -> Result<std::path::PathBuf> {

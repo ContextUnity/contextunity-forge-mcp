@@ -441,9 +441,22 @@ pub fn check_root_scope(root: &Path, allow_broad: bool) -> std::io::Result<()> {
 
 /// Formats the adapter configuration for serialization into SQLite database metadata.
 pub fn policy(root: &Path, adapter: &Adapter) -> Value {
+    let canonical_root = root.canonicalize().ok();
+    let strip = |path: &Path| {
+        path.strip_prefix(root)
+            .ok()
+            .or_else(|| {
+                canonical_root
+                    .as_deref()
+                    .and_then(|can| path.strip_prefix(can).ok())
+            })
+            .unwrap_or(path)
+            .to_string_lossy()
+            .into_owned()
+    };
     json!({
-        "adapter_path": adapter.adapter_path.as_ref().map(|path| path.strip_prefix(root).unwrap_or(path).to_string_lossy()),
-        "roots": adapter.roots.iter().map(|p| p.strip_prefix(root).unwrap_or(p).to_string_lossy()).collect::<Vec<_>>(),
+        "adapter_path": adapter.adapter_path.as_ref().map(|path| strip(path)),
+        "roots": adapter.roots.iter().map(|p| strip(p)).collect::<Vec<_>>(),
         "limits": &adapter.limits,
         "ignored_names": adapter.ignored_names,
         "adapter_version": adapter.adapter_version,
@@ -460,10 +473,13 @@ pub fn policy(root: &Path, adapter: &Adapter) -> Value {
 pub fn persisted_adapter_path(root: &Path, value: &Value) -> Result<Option<PathBuf>> {
     match value.get("adapter_path") {
         None | Some(Value::Null) => Ok(None),
-        Some(path) => Ok(Some(checked_child(
-            root,
-            Path::new(path.as_str().context("invalid persisted adapter path")?),
-        )?)),
+        Some(path) => {
+            let base = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+            Ok(Some(checked_child(
+                &base,
+                Path::new(path.as_str().context("invalid persisted adapter path")?),
+            )?))
+        }
     }
 }
 

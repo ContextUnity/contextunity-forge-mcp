@@ -290,6 +290,7 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
 
     // Kill the real delivery process at its provisional receipt via FIFO rendezvous, before SQL commit.
     use std::{
+        os::unix::process::CommandExt,
         process::{Command, Stdio},
         sync::mpsc,
         time::Duration,
@@ -311,8 +312,7 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
         "#!/bin/sh\nprintf ready > \"$FORGE_CRASH_READY\"\nread answer < \"$FORGE_CRASH_RESUME\"\n",
     )
     .unwrap();
-    let mut child = Command::new("setsid")
-        .arg(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
         .args([
             "--root",
             root.root().to_str().unwrap(),
@@ -334,6 +334,7 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
         )
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .process_group(0)
         .spawn()
         .unwrap();
     let (sent, received) = mpsc::channel();

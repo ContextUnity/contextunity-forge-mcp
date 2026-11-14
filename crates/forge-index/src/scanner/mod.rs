@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -39,6 +39,9 @@ pub struct ScanReport {
     pub entries: Vec<FileEntry>,
     /// Dependency manifest paths discovered during the same inventory walk.
     pub dependency_manifests: Vec<PathBuf>,
+    /// Watched exact entries observed during the inventory traversal.
+    #[serde(skip)]
+    pub matched_excluded: BTreeSet<String>,
 }
 
 /// Source metadata captured by the cold-build walk before opening file content.
@@ -99,6 +102,85 @@ pub struct BuildReport {
 }
 
 pub use crate::core::config::resolve_file_path;
+
+/// Classify a batch of keys using one bounded cache of directory entries.
+pub fn exact_paths_exist<'a>(
+    root: &Path,
+    adapter: &Adapter,
+    paths: impl IntoIterator<Item = &'a str>,
+) -> std::io::Result<BTreeSet<String>> {
+    let mut directories: BTreeMap<PathBuf, BTreeMap<std::ffi::OsString, fs::FileType>> =
+        BTreeMap::new();
+    let mut count = 0usize;
+    let mut existing = BTreeSet::new();
+    for path in paths {
+        let context =
+            |err: std::io::Error| std::io::Error::new(err.kind(), format!("inspect {path}: {err}"));
+        let resolved = resolve_file_path(root, adapter, path).map_err(context)?;
+        let base = if let Some((prefix, _)) = path.split_once("]/") {
+            adapter
+                .linked_workspaces
+                .iter()
+                .find(|workspace| prefix.strip_prefix('[') == Some(workspace.name.as_str()))
+                .map(|workspace| workspace.path.as_path())
+                .unwrap_or(root)
+        } else {
+            root
+        };
+        let relative = resolved
+            .strip_prefix(base)
+            .map_err(|_| error(format!("inspect {path}: path outside workspace")))?;
+        let mut current = base.to_path_buf();
+        let mut found = true;
+        for component in relative.components() {
+            let std::path::Component::Normal(name) = component else {
+                return Err(error(format!("inspect {path}: invalid path")));
+            };
+            if !directories.contains_key(&current) {
+                let mut entries = BTreeMap::new();
+                for entry in fs::read_dir(&current).map_err(context)? {
+                    let entry = entry.map_err(context)?;
+                    count += 1;
+                    if count > adapter.limits.max_files {
+                        return Err(error(format!(
+                            "inspect {path}: exact directory cache exceeds max_files {}",
+                            adapter.limits.max_files
+                        )));
+                    }
+                    entries.insert(entry.file_name(), entry.file_type().map_err(context)?);
+                }
+                directories.insert(current.clone(), entries);
+            }
+            let Some(kind) = directories
+                .get(&current)
+                .and_then(|entries| entries.get(name))
+            else {
+                found = false;
+                break;
+            };
+            if kind.is_symlink() {
+                return Err(error(format!(
+                    "inspect {path}: path must not traverse a symlink"
+                )));
+            }
+            current.push(name);
+            if !kind.is_dir() && current != resolved {
+                found = false;
+                break;
+            }
+        }
+        if found {
+            existing.insert(path.to_owned());
+        }
+    }
+    Ok(existing)
+}
+
+/// Determine whether every component has the exact spelling reported by its directory.
+/// Errors inspecting a boundary are propagated rather than interpreted as absence.
+pub fn exact_path_exists(root: &Path, adapter: &Adapter, path: &str) -> std::io::Result<bool> {
+    Ok(exact_paths_exist(root, adapter, [path])?.contains(path))
+}
 
 fn ensure_bounds(files: usize, bytes: u64, limits: &ScannerLimits) -> std::io::Result<()> {
     if files > limits.max_files {
@@ -327,8 +409,29 @@ pub fn scan_reusing(
     adapter: &Adapter,
     previous: &[FileEntry],
 ) -> std::io::Result<ScanReport> {
+    scan_reusing_watching(root, adapter, previous, &BTreeSet::new())
+}
+
+/// Scan while observing exact spellings of requested inventory keys.
+pub fn scan_reusing_watching(
+    root: &Path,
+    adapter: &Adapter,
+    previous: &[FileEntry],
+    watched: &BTreeSet<String>,
+) -> std::io::Result<ScanReport> {
     let started = Instant::now();
-    let (candidates, dependency_manifests) = collect_candidates(root, adapter)?;
+    let watch = std::sync::Arc::new(WatchedEntries {
+        keys: watched.clone(),
+        found: std::sync::Mutex::new(BTreeSet::new()),
+        symlinks: std::sync::Mutex::new(BTreeSet::new()),
+    });
+    let (candidates, dependency_manifests) = collect_candidates(root, adapter, Some(&watch))?;
+    if let Some(path) = watch.symlinks.lock().unwrap().first() {
+        return Err(error(format!(
+            "inspect {path}: path must not traverse a symlink"
+        )));
+    }
+    let matched_excluded = watch.found.lock().unwrap().clone();
 
     let previous: std::collections::BTreeMap<_, _> =
         previous.iter().map(|f| (f.path.as_str(), f)).collect();
@@ -342,7 +445,9 @@ pub fn scan_reusing(
         let batch_entries: std::io::Result<Vec<_>> = batch
             .par_iter()
             .map(|(full_path, rel_path)| {
-                cached_entry(full_path, rel_path, &previous, max_file_bytes)
+                cached_entry(full_path, rel_path, &previous, max_file_bytes).map_err(|err| {
+                    std::io::Error::new(err.kind(), format!("inspect {rel_path}: {err}"))
+                })
             })
             .collect();
         let batch_entries = batch_entries?;
@@ -370,6 +475,7 @@ pub fn scan_reusing(
         elapsed_ms: started.elapsed().as_millis(),
         entries,
         dependency_manifests,
+        matched_excluded,
     })
 }
 
@@ -381,42 +487,43 @@ pub fn stream_for_build(
 ) -> std::io::Result<BuildStreamReport> {
     let mut files = 0usize;
     let mut bytes = 0u64;
-    let _dependency_manifests = walk_candidate_paths(root, adapter, |full_path, relative_path| {
-        let metadata = fs::symlink_metadata(&full_path)?;
-        if metadata.file_type().is_symlink() || !metadata.is_file() {
-            return Ok(());
-        }
-        let Some((language, is_doc)) = language(&full_path) else {
-            return Ok(());
-        };
-        if metadata.len() > adapter.limits.max_file_bytes {
-            return Err(error(format!(
-                "file exceeds byte limit: {} ({} > max_file_bytes {})",
-                full_path.display(),
-                metadata.len(),
-                adapter.limits.max_file_bytes
-            )));
-        }
-        bytes = bytes
-            .checked_add(metadata.len())
-            .ok_or_else(|| error("workspace byte count overflow"))?;
-        if bytes > adapter.limits.max_total_bytes {
-            return Err(error(format!(
-                "workspace exceeds total byte limit ({} > max_total_bytes {})",
-                bytes, adapter.limits.max_total_bytes
-            )));
-        }
-        files += 1;
-        visit(BuildCandidate {
-            path: relative_path,
-            bytes: metadata.len(),
-            mtime_ns: metadata_mtime_ns(&metadata),
-            identity: metadata_identity(&metadata),
-            language: language.to_owned(),
-            is_doc,
+    let _dependency_manifests =
+        walk_candidate_paths(root, adapter, None, |full_path, relative_path| {
+            let metadata = fs::symlink_metadata(&full_path)?;
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                return Ok(());
+            }
+            let Some((language, is_doc)) = language(&full_path) else {
+                return Ok(());
+            };
+            if metadata.len() > adapter.limits.max_file_bytes {
+                return Err(error(format!(
+                    "file exceeds byte limit: {} ({} > max_file_bytes {})",
+                    full_path.display(),
+                    metadata.len(),
+                    adapter.limits.max_file_bytes
+                )));
+            }
+            bytes = bytes
+                .checked_add(metadata.len())
+                .ok_or_else(|| error("workspace byte count overflow"))?;
+            if bytes > adapter.limits.max_total_bytes {
+                return Err(error(format!(
+                    "workspace exceeds total byte limit ({} > max_total_bytes {})",
+                    bytes, adapter.limits.max_total_bytes
+                )));
+            }
+            files += 1;
+            visit(BuildCandidate {
+                path: relative_path,
+                bytes: metadata.len(),
+                mtime_ns: metadata_mtime_ns(&metadata),
+                identity: metadata_identity(&metadata),
+                language: language.to_owned(),
+                is_doc,
+            })?;
+            Ok(())
         })?;
-        Ok(())
-    })?;
     ensure_bounds(files, bytes, &adapter.limits)?;
     Ok(BuildStreamReport { files, bytes })
 }
@@ -426,23 +533,54 @@ pub fn dependency_manifests_for_build(
     root: &Path,
     adapter: &Adapter,
 ) -> std::io::Result<Vec<PathBuf>> {
-    walk_candidate_paths(root, adapter, |_, _| Ok(()))
+    walk_candidate_paths(root, adapter, None, |_, _| Ok(()))
 }
 
 type ScanCandidates = (Vec<(PathBuf, String)>, Vec<PathBuf>);
 
-fn collect_candidates(root: &Path, adapter: &Adapter) -> std::io::Result<ScanCandidates> {
+fn collect_candidates(
+    root: &Path,
+    adapter: &Adapter,
+    watch: Option<&std::sync::Arc<WatchedEntries>>,
+) -> std::io::Result<ScanCandidates> {
     let mut candidates = Vec::new();
-    let dependency_manifests = walk_candidate_paths(root, adapter, |full, relative| {
+    let dependency_manifests = walk_candidate_paths(root, adapter, watch, |full, relative| {
         candidates.push((full, relative));
         Ok(())
     })?;
     Ok((candidates, dependency_manifests))
 }
 
+struct WatchedEntries {
+    keys: BTreeSet<String>,
+    found: std::sync::Mutex<BTreeSet<String>>,
+    symlinks: std::sync::Mutex<BTreeSet<String>>,
+}
+
+impl WatchedEntries {
+    fn observe(&self, item: &ignore::DirEntry, root: &Path, prefix: &str) {
+        let Ok(relative) = item.path().strip_prefix(root) else {
+            return;
+        };
+        let Some(relative) = relative.to_str() else {
+            return;
+        };
+        let key = format!("{prefix}{}", relative.replace('\\', "/"));
+        if self.keys.contains(&key) {
+            let target = if item.path_is_symlink() {
+                &self.symlinks
+            } else {
+                &self.found
+            };
+            target.lock().unwrap().insert(key);
+        }
+    }
+}
+
 fn walk_candidate_paths(
     root: &Path,
     adapter: &Adapter,
+    watch: Option<&std::sync::Arc<WatchedEntries>>,
     mut visit: impl FnMut(PathBuf, String) -> std::io::Result<()>,
 ) -> std::io::Result<Vec<PathBuf>> {
     let mut candidate_count = 0usize;
@@ -456,7 +594,7 @@ fn walk_candidate_paths(
     collect_documentation_paths(
         root,
         "",
-        &adapter.ignored_names,
+        (&adapter.ignored_names, watch),
         adapter.limits.max_files,
         &mut candidate_count,
         &mut seen_rel_paths,
@@ -475,7 +613,12 @@ fn walk_candidate_paths(
             .git_ignore(true)
             .require_git(false);
         let ignored_names = adapter.ignored_names.clone();
+        let watch_entry = watch.cloned();
+        let watch_root = root.to_path_buf();
         builder.filter_entry(move |item| {
+            if let Some(watch) = &watch_entry {
+                watch.observe(item, &watch_root, "");
+            }
             !item.path_is_symlink()
                 && !ignored_names.contains(&item.file_name().to_string_lossy().to_string())
         });
@@ -544,7 +687,13 @@ fn walk_candidate_paths(
                 .git_ignore(true)
                 .require_git(false);
             let ignored_names = workspace.ignored_names.clone();
+            let watch_entry = watch.cloned();
+            let watch_root = workspace.path.clone();
+            let watch_prefix = format!("[{}]/", workspace.name);
             builder.filter_entry(move |item| {
+                if let Some(watch) = &watch_entry {
+                    watch.observe(item, &watch_root, &watch_prefix);
+                }
                 !item.path_is_symlink()
                     && !ignored_names.contains(&item.file_name().to_string_lossy().to_string())
             });
@@ -607,7 +756,7 @@ fn walk_candidate_paths(
         collect_documentation_paths(
             &workspace.path,
             &format!("[{}]/", workspace.name),
-            &workspace.ignored_names,
+            (&workspace.ignored_names, watch),
             adapter.limits.max_files,
             &mut candidate_count,
             &mut seen_rel_paths,
@@ -626,12 +775,13 @@ fn walk_candidate_paths(
 fn collect_documentation_paths(
     workspace_root: &Path,
     prefix: &str,
-    ignored_names: &BTreeSet<String>,
+    policy: (&BTreeSet<String>, Option<&std::sync::Arc<WatchedEntries>>),
     max_files: usize,
     candidate_count: &mut usize,
     seen_rel_paths: &mut BTreeSet<String>,
     visit: &mut impl FnMut(PathBuf, String) -> std::io::Result<()>,
 ) -> std::io::Result<()> {
+    let (ignored_names, watch) = policy;
     let agents = workspace_root.join("AGENTS.md");
     if agents.is_file() && !agents.is_symlink() {
         visit_candidate(
@@ -656,7 +806,13 @@ fn collect_documentation_paths(
         .git_ignore(true)
         .require_git(false);
     let ignored = ignored_names.clone();
+    let watch_entry = watch.cloned();
+    let watch_root = workspace_root.to_path_buf();
+    let watch_prefix = prefix.to_owned();
     builder.filter_entry(move |item| {
+        if let Some(watch) = &watch_entry {
+            watch.observe(item, &watch_root, &watch_prefix);
+        }
         !item.path_is_symlink()
             && !ignored.contains(&item.file_name().to_string_lossy().to_string())
     });
@@ -701,8 +857,8 @@ fn visit_candidate(
         *candidate_count += 1;
         if *candidate_count > max_files {
             return Err(error(format!(
-                "workspace exceeds file limit ({} > max_files {})",
-                *candidate_count, max_files
+                "workspace exceeds file limit ({} > max_files {}) at {}",
+                *candidate_count, max_files, relative_path
             )));
         }
         visit(full_path, relative_path)?;
@@ -780,6 +936,97 @@ pub fn scan(root: &Path, adapter_path: Option<&Path>) -> std::io::Result<ScanRep
 mod tests {
     use super::*;
 
+    struct TempDirDrop(PathBuf);
+
+    impl Drop for TempDirDrop {
+        fn drop(&mut self) {
+            if let Err(err) = fs::remove_dir_all(&self.0) {
+                eprintln!("remove test directory {}: {err}", self.0.display());
+            }
+        }
+    }
+
+    #[test]
+    fn exact_path_requires_reported_component_spelling() {
+        let root = std::env::temp_dir().join(format!(
+            "forge_exact_spelling_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let _cleanup = TempDirDrop(root.clone());
+        fs::create_dir_all(root.join("Parent")).unwrap();
+        fs::write(root.join("Parent/Foo.rs"), "").unwrap();
+        let root = root.canonicalize().unwrap();
+        let adapter = load_adapter(&root, None).unwrap();
+        assert!(exact_path_exists(&root, &adapter, "Parent/Foo.rs").unwrap());
+        assert!(!exact_path_exists(&root, &adapter, "parent/Foo.rs").unwrap());
+        assert!(!exact_path_exists(&root, &adapter, "Parent/foo.rs").unwrap());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            fs::write(root.join("Foo.rs"), "pub fn source() {}\n").unwrap();
+            fs::hard_link(root.join("Foo.rs"), root.join("other.rs")).unwrap();
+            assert_eq!(
+                fs::metadata(root.join("Foo.rs")).unwrap().ino(),
+                fs::metadata(root.join("other.rs")).unwrap().ino()
+            );
+            assert!(exact_path_exists(&root, &adapter, "Foo.rs").unwrap());
+            assert!(exact_path_exists(&root, &adapter, "other.rs").unwrap());
+            assert!(!exact_path_exists(&root, &adapter, "foo.rs").unwrap());
+        }
+    }
+
+    #[test]
+    fn watched_excluded_entries_are_collected_by_inventory_walk() {
+        let root = std::env::temp_dir().join(format!(
+            "forge_watch_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let _cleanup = TempDirDrop(root.clone());
+        fs::write(root.join("notes.txt"), "excluded").unwrap();
+        fs::write(root.join("forge-mcp.yaml"), "ignore: [ignored.rs]\n").unwrap();
+        fs::write(root.join("ignored.rs"), "pub fn ignored() {}\n").unwrap();
+        let root = root.canonicalize().unwrap();
+        let adapter = load_adapter(&root, None).unwrap();
+        let watched = ["notes.txt".to_owned(), "ignored.rs".to_owned()]
+            .into_iter()
+            .collect();
+        let report = scan_reusing_watching(&root, &adapter, &[], &watched).unwrap();
+        assert_eq!(report.matched_excluded, watched);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn watched_symlink_is_rejected_with_its_key() {
+        use std::os::unix::fs::symlink;
+        let root = std::env::temp_dir().join(format!(
+            "forge_watch_symlink_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let _cleanup = TempDirDrop(root.clone());
+        fs::write(root.join("target.rs"), "pub fn target() {}\n").unwrap();
+        symlink(root.join("target.rs"), root.join("leaf.rs")).unwrap();
+        let root = root.canonicalize().unwrap();
+        let adapter = load_adapter(&root, None).unwrap();
+        let watched = ["leaf.rs".to_owned()].into_iter().collect();
+        let err = scan_reusing_watching(&root, &adapter, &[], &watched).unwrap_err();
+        assert!(err.to_string().contains("leaf.rs"), "{err}");
+    }
+
     #[test]
     fn bounded_batch_size_accounts_for_item_expansion_and_caps() {
         assert_eq!(
@@ -812,6 +1059,7 @@ mod tests {
             std::process::id(),
             nonce
         ));
+        let _cleanup = TempDirDrop(root.clone());
         let source = root.join("packages/pkg/src");
         fs::create_dir_all(&source).unwrap();
         fs::write(

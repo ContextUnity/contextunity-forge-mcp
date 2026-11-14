@@ -32,6 +32,20 @@ impl Drop for ObserveFts {
     }
 }
 
+fn canonical_observer_path(path: PathBuf) -> PathBuf {
+    if let Ok(canonical) = std::fs::canonicalize(&path) {
+        return canonical;
+    }
+    if let (Some(parent), Some(name)) = (path.parent(), path.file_name()) {
+        if !parent.as_os_str().is_empty() {
+            if let Ok(canonical_parent) = std::fs::canonicalize(parent) {
+                return canonical_parent.join(name);
+            }
+        }
+    }
+    path
+}
+
 pub(super) unsafe extern "C" fn observe_connection(
     db: *mut ffi::sqlite3,
     _: *mut *const c_char,
@@ -43,11 +57,11 @@ pub(super) unsafe extern "C" fn observe_connection(
     if filename.is_null() {
         return ffi::SQLITE_OK;
     }
-    let filename = PathBuf::from(
+    let filename = canonical_observer_path(PathBuf::from(
         unsafe { CStr::from_ptr(filename) }
             .to_string_lossy()
             .as_ref(),
-    );
+    ));
     let matches = FTS_READS.lock().ok().is_some_and(|state| {
         state
             .as_ref()
@@ -90,11 +104,11 @@ unsafe extern "C" fn observe_read(
     }
     let filename = unsafe { ffi::sqlite3_db_filename(db, c"main".as_ptr()) };
     if !filename.is_null() {
-        let filename = PathBuf::from(
+        let filename = canonical_observer_path(PathBuf::from(
             unsafe { CStr::from_ptr(filename) }
                 .to_string_lossy()
                 .as_ref(),
-        );
+        ));
         if let Ok(mut state) = FTS_READS.lock() {
             if let Some(reads) = state.as_mut() {
                 reads.invalid_reader |= filename == reads.published;
@@ -121,8 +135,8 @@ pub const FTS_DOMAINS: [&str; 4] = [
 
 fn start_observer(directory: PathBuf, published: PathBuf) -> Result<ObserveFts, c_int> {
     *FTS_READS.lock().unwrap() = Some(FtsReads {
-        directory,
-        published,
+        directory: canonical_observer_path(directory),
+        published: canonical_observer_path(published),
         domains: BTreeMap::new(),
         invalid_reader: false,
         deny_domain: None,

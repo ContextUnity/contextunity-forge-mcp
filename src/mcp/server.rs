@@ -24,7 +24,7 @@ fn same_request_adapter(left: &scanner::Adapter, right: &scanner::Adapter) -> bo
 /// Represents cached connection data.
 pub struct CachedConnection {
     identity: Identity,
-    connection: rusqlite::Connection,
+    connection: Option<rusqlite::Connection>,
     adapter_digest: String,
     adapter_path: Option<PathBuf>,
     workspace_root: PathBuf,
@@ -33,10 +33,51 @@ pub struct CachedConnection {
     linked_workspaces: Vec<scanner::LinkedWorkspace>,
     inventory_checked_at: Option<Instant>,
     freshness: Option<Freshness>,
+    diagnostics: Vec<String>,
 }
 
 /// Names the connection slot type.
 pub type ConnectionSlot = Option<CachedConnection>;
+
+thread_local! {
+    static ADMITTING_SLOT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+struct AdmissionGuard(usize);
+impl Drop for AdmissionGuard {
+    fn drop(&mut self) {
+        ADMITTING_SLOT.with(|slot| slot.set(self.0));
+    }
+}
+
+fn reader_evictor(slot: &Arc<Mutex<ConnectionSlot>>) -> Arc<crate::db::cache::IdleReader> {
+    let slot = Arc::downgrade(slot);
+    Arc::new(move |db| {
+        let Some(slot) = slot.upgrade() else {
+            return Ok(());
+        };
+        match slot.try_lock() {
+            Ok(mut slot) => {
+                if slot.as_ref().is_some_and(|cached| {
+                    crate::db::cache::registry_path(&cached.database_path) == db
+                }) {
+                    *slot = None;
+                }
+            }
+            Err(std::sync::TryLockError::WouldBlock) => {
+                let own_slot =
+                    ADMITTING_SLOT.with(|current| current.get() == Arc::as_ptr(&slot) as usize);
+                if !own_slot {
+                    anyhow::bail!("reader admission is busy; retry database publication");
+                }
+            }
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                anyhow::bail!("database connection lock poisoned")
+            }
+        }
+        Ok(())
+    })
+}
 
 #[derive(Clone)]
 pub(crate) enum RequestAdapter {
@@ -67,20 +108,29 @@ pub struct Server {
     pub db: PathBuf,
     /// The connection value.
     pub connection: Arc<Mutex<ConnectionSlot>>,
+    reader_evictor: Arc<crate::db::cache::IdleReader>,
     request_adapter: Option<RequestAdapter>,
     extraction_cache_dir: Option<PathBuf>,
     pub(crate) invocation: Option<crate::forge_tasks::tasks::configuration::InvocationSettings>,
     pub(crate) session_fingerprint: Option<String>,
 }
 impl Server {
+    /// Returns this server slot's active registry entry count.
+    #[doc(hidden)]
+    pub fn reader_registration_count(&self) -> Result<usize> {
+        crate::db::cache::idle_reader_registration_count(&self.reader_evictor)
+    }
     /// Creates a new instance.
     pub fn new(root: PathBuf, db: PathBuf) -> Self {
         let invocation = crate::forge_tasks::tasks::configuration::current(&root)
             .map(|settings| (*settings).clone());
+        let connection = Arc::new(Mutex::new(None));
+        let reader_evictor = reader_evictor(&connection);
         Self {
             root,
             db,
-            connection: Arc::new(Mutex::new(None)),
+            connection,
+            reader_evictor,
             request_adapter: None,
             extraction_cache_dir: None,
             invocation,
@@ -166,6 +216,7 @@ impl Server {
             root,
             db,
             connection: Arc::clone(&self.connection),
+            reader_evictor: Arc::clone(&self.reader_evictor),
             request_adapter: Some(adapter),
             extraction_cache_dir: self.extraction_cache_dir.clone(),
             invocation,
@@ -195,8 +246,9 @@ impl Server {
             Ok(_) => {}
         }
         let _generation_lock = crate::db::cache::shared_lock(&self.db)?;
+        let open_path = crate::core::fs::confined_database_open_path(&self.db)?;
         let conn = rusqlite::Connection::open_with_flags(
-            &self.db,
+            &open_path,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
         )?;
         conn.execute_batch("PRAGMA query_only=ON; PRAGMA trusted_schema=OFF; BEGIN DEFERRED")?;
@@ -278,6 +330,7 @@ impl Server {
             .iter()
             .map(|path| {
                 path.strip_prefix(&root)
+                    .or_else(|_| path.strip_prefix(&self.root))
                     .unwrap_or(path)
                     .to_string_lossy()
                     .into_owned()
@@ -352,16 +405,25 @@ impl Server {
                 refresh = "rebuild";
                 continue;
             }
-            let identity =
+            let mut identity =
                 admitted_identity.map_or_else(|| crate::db::cache::identity(&self.db), Ok)?;
             if slot
                 .as_ref()
                 .is_none_or(|cached| cached.identity != identity)
             {
                 *slot = None;
+                // Sample identity after closing any stale reader connection so WAL close
+                // cleanup on the dropped connection does not invalidate our own baseline.
+                identity = crate::db::cache::identity(&self.db)?;
+                let mut diagnostics = Vec::new();
+                let connection =
+                    crate::db::reader::open_with_diagnostics(&self.db, &root, &mut |message| {
+                        eprintln!("{message}");
+                        diagnostics.push(message);
+                    })?;
                 *slot = Some(CachedConnection {
                     identity: identity.clone(),
-                    connection: crate::db::reader::open(&self.db, &root)?,
+                    connection: Some(connection),
                     adapter_digest: adapter.digest.clone(),
                     adapter_path: adapter.adapter_path.clone(),
                     workspace_root: root.clone(),
@@ -370,14 +432,28 @@ impl Server {
                     linked_workspaces: adapter.linked_workspaces.clone(),
                     inventory_checked_at: None,
                     freshness: None,
+                    diagnostics,
                 });
-            } else if let Some(cached) = slot.as_ref() {
-                cached.connection.execute_batch("BEGIN DEFERRED")?;
+            } else if let Some(cached) = slot.as_mut() {
+                if let Some(connection) = &cached.connection {
+                    connection.execute_batch("BEGIN DEFERRED")?;
+                } else {
+                    cached.connection = Some(crate::db::reader::open_with_diagnostics(
+                        &self.db,
+                        &root,
+                        &mut |message| {
+                            eprintln!("{message}");
+                            cached.diagnostics.push(message);
+                        },
+                    )?);
+                }
             }
             let conn = &slot
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("database unavailable"))?
-                .connection;
+                .connection
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("database connection unavailable"))?;
             if let Some(cached) = slot.as_ref().filter(|cached| {
                 cached.adapter_digest == adapter.digest
                     && cached
@@ -400,7 +476,8 @@ impl Server {
             };
             let previous = crate::db::reader::inventory_snapshot(conn)?;
             let started = Instant::now();
-            let scan = scanner::scan_reusing(&root, adapter, &previous)?;
+            let watched = previous.iter().map(|entry| entry.path.clone()).collect();
+            let scan = scanner::scan_reusing_watching(&root, adapter, &previous, &watched)?;
             let manifests =
                 crate::engine::languages::dependency_registry::DependencyRegistry::try_collect_with_paths(
                     &root,
@@ -443,8 +520,12 @@ impl Server {
                 })
                 .copied()
                 .collect();
-            if crate::db::cache::identity(&self.db)? != identity {
-                anyhow::bail!("generation changed during source admission; retry against the current snapshot");
+            let current_identity = crate::db::cache::identity(&self.db)?;
+            if current_identity != identity {
+                anyhow::bail!(
+                    "generation changed during source admission ({}); retry against the current snapshot",
+                    crate::db::cache::describe_diff(&identity, &current_identity)
+                );
             }
             let latest_adapter = self.load_adapter(&root)?;
             if !same_request_adapter(&latest_adapter, adapter) {
@@ -469,16 +550,17 @@ impl Server {
                 }
                 return Ok(freshness);
             }
-            let mut rebuild = false;
-            for path in &changed {
-                if !current.contains_key(path)
-                    && scanner::resolve_file_path(&root, adapter, path)?
-                        .symlink_metadata()
-                        .is_ok()
-                {
-                    rebuild = true;
-                }
-            }
+            let has_excluded = changed
+                .iter()
+                .any(|path| !current.contains_key(path) && scan.matched_excluded.contains(*path));
+            let exact_unresolved = scanner::exact_paths_exist(
+                &root,
+                adapter,
+                changed.iter().copied().filter(|path| {
+                    !current.contains_key(path) && !scan.matched_excluded.contains(*path)
+                }),
+            )?;
+            let rebuild = has_excluded || !exact_unresolved.is_empty();
             let modified: Vec<_> = changed.into_iter().map(PathBuf::from).collect();
             *slot = None;
             if rebuild {
@@ -524,33 +606,66 @@ impl Server {
             .connection
             .lock()
             .map_err(|_| anyhow::anyhow!("database connection lock poisoned"))?;
-        let freshness = match self.admit(&mut slot, adapter) {
+        crate::db::cache::register_idle_reader(&self.db, &self.reader_evictor)?;
+        let previous =
+            ADMITTING_SLOT.with(|current| current.replace(Arc::as_ptr(&self.connection) as usize));
+        let admission_guard = AdmissionGuard(previous);
+        let admitted = self.admit(&mut slot, adapter);
+        drop(admission_guard);
+        let freshness = match admitted {
             Ok(freshness) => freshness,
             Err(error) => {
                 *slot = None;
                 return Err(error);
             }
         };
+        // Initial admission can create the database parent; refresh its canonical key.
+        crate::db::cache::register_idle_reader(&self.db, &self.reader_evictor)?;
         let _read_lock = crate::db::cache::shared_lock(&self.db)?;
         let cached = slot
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("database unavailable"))?;
-        let result = f(&cached.connection);
-        let unchanged = crate::db::cache::identity(&self.db).map(|after| after == cached.identity);
-        let ended = cached.connection.execute_batch("ROLLBACK");
+        let connection = cached
+            .connection
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("database connection unavailable"))?;
+        let result = f(connection);
+        let after = crate::db::cache::identity(&self.db);
+        let ended = connection.execute_batch("ROLLBACK");
         if let Err(error) = ended {
             *slot = None;
-            return Err(error.into());
+            return match result {
+                Err(original) => Err(original.context(format!("query rollback failed: {error}"))),
+                Ok(_) => Err(error.into()),
+            };
         }
-        if !unchanged.as_ref().is_ok_and(|value| *value) {
+        let after = match after {
+            Ok(after) => after,
+            Err(error) => {
+                *slot = None;
+                return Err(error);
+            }
+        };
+        if after != cached.identity {
+            let diff = crate::db::cache::describe_diff(&cached.identity, &after);
             *slot = None;
-            unchanged?;
-            anyhow::bail!("generation changed during query; retry against the current snapshot");
+            anyhow::bail!(
+                "generation changed during query ({diff}); retry against the current snapshot"
+            );
         }
         let mut result = result?;
         if let Some(object) = result.as_object_mut() {
             object.insert("freshness".into(), serde_json::to_value(freshness)?);
+            if let Some(cached) = slot.as_mut() {
+                if !cached.diagnostics.is_empty() {
+                    object.insert(
+                        "diagnostics".into(),
+                        serde_json::to_value(std::mem::take(&mut cached.diagnostics))?,
+                    );
+                }
+            }
         }
+        drop(slot);
         Ok(result)
     }
 }
@@ -864,14 +979,17 @@ async fn serve_session(
                 }
                 Some(()) = hangup.recv() => {
                     let result = (|| -> std::io::Result<()> {
-                        let mut exe = std::env::current_exe()?;
+                        let exe = std::env::current_exe()?;
                         #[cfg(target_os = "linux")]
-                        {
+                        let exe = {
                             use std::os::unix::ffi::{OsStrExt, OsStringExt};
-                            if let Some(path) = exe.as_os_str().as_bytes().strip_suffix(b" (deleted)") {
-                                exe = std::ffi::OsString::from_vec(path.to_vec()).into();
+                            match exe.as_os_str().as_bytes().strip_suffix(b" (deleted)") {
+                                Some(path) => std::path::PathBuf::from(
+                                    std::ffi::OsString::from_vec(path.to_vec()),
+                                ),
+                                None => exe,
                             }
-                        }
+                        };
                         let args: Vec<_> = std::env::args_os().skip(1).collect();
                         let mut command = std::process::Command::new(exe);
                         command.args(args).env(MCP_RELOAD_PARENT_ENV, initial_parent_pid.to_string());

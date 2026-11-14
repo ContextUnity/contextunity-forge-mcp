@@ -248,6 +248,8 @@ struct PipelineMetrics {
     scanned_bytes: u64,
 }
 
+type StageCleanupHook = Box<dyn Fn(&Path) + Send + Sync>;
+
 /// Test synchronization and fault-injection hooks for pipeline concurrency.
 pub struct PipelineTestHooks {
     /// Forces producer, worker, and consumer synchronization.
@@ -258,6 +260,13 @@ pub struct PipelineTestHooks {
     pub overlap_barrier: std::sync::Barrier,
     /// Tracks count of participants that reached the overlap barrier.
     pub overlap_participants: AtomicUsize,
+    /// Runs immediately before stage cleanup for filesystem fault injection.
+    before_stage_cleanup: Option<StageCleanupHook>,
+    before_delta_persist: Option<StageCleanupHook>,
+    after_delta_failure: Option<StageCleanupHook>,
+    during_delta_verification: Option<StageCleanupHook>,
+    before_delta_receipt_publish: Option<StageCleanupHook>,
+    before_generation_lock: Option<StageCleanupHook>,
 }
 
 impl PipelineTestHooks {
@@ -268,6 +277,12 @@ impl PipelineTestHooks {
             fail_consumer: false,
             overlap_barrier: std::sync::Barrier::new(3),
             overlap_participants: AtomicUsize::new(0),
+            before_stage_cleanup: None,
+            before_delta_persist: None,
+            after_delta_failure: None,
+            during_delta_verification: None,
+            before_delta_receipt_publish: None,
+            before_generation_lock: None,
         })
     }
 
@@ -278,7 +293,79 @@ impl PipelineTestHooks {
             fail_consumer: true,
             overlap_barrier: std::sync::Barrier::new(3),
             overlap_participants: AtomicUsize::new(0),
+            before_stage_cleanup: None,
+            before_delta_persist: None,
+            after_delta_failure: None,
+            during_delta_verification: None,
+            before_delta_receipt_publish: None,
+            before_generation_lock: None,
         })
+    }
+
+    /// Injects a consumer failure and a filesystem action before stage cleanup.
+    pub fn fail_consumer_before_cleanup(
+        action: impl Fn(&Path) + Send + Sync + 'static,
+    ) -> Arc<Self> {
+        let mut hooks = Self::fail_consumer();
+        Arc::get_mut(&mut hooks)
+            .expect("new hook is uniquely owned")
+            .before_stage_cleanup = Some(Box::new(action));
+        hooks
+    }
+
+    /// Runs a filesystem action before cleanup after a normal build.
+    pub fn before_cleanup(action: impl Fn(&Path) + Send + Sync + 'static) -> Arc<Self> {
+        let mut hooks = Self::fail_consumer_before_cleanup(action);
+        Arc::get_mut(&mut hooks)
+            .expect("new hook is uniquely owned")
+            .fail_consumer = false;
+        hooks
+    }
+
+    /// Runs immediately before a cold build acquires the generation lock.
+    pub fn before_generation_lock(action: impl Fn(&Path) + Send + Sync + 'static) -> Arc<Self> {
+        let mut hooks = Self::before_cleanup(|_| {});
+        Arc::get_mut(&mut hooks)
+            .expect("new hook is uniquely owned")
+            .before_generation_lock = Some(Box::new(action));
+        hooks
+    }
+
+    /// Runs test actions immediately before delta persistence and after its failure.
+    pub fn delta_failure(
+        before: impl Fn(&Path) + Send + Sync + 'static,
+        after: impl Fn(&Path) + Send + Sync + 'static,
+    ) -> Arc<Self> {
+        let mut hooks = Self::fail_consumer();
+        let hooks_mut = Arc::get_mut(&mut hooks).expect("new hook is uniquely owned");
+        hooks_mut.fail_consumer = false;
+        hooks_mut.before_delta_persist = Some(Box::new(before));
+        hooks_mut.after_delta_failure = Some(Box::new(after));
+        hooks
+    }
+
+    /// Adds a filesystem action before rollback receipt publication.
+    pub fn delta_failure_before_publication(
+        after: impl Fn(&Path) + Send + Sync + 'static,
+        before_publication: impl Fn(&Path) + Send + Sync + 'static,
+    ) -> Arc<Self> {
+        let mut hooks = Self::delta_failure(|_| {}, after);
+        Arc::get_mut(&mut hooks)
+            .expect("new hook is uniquely owned")
+            .before_delta_receipt_publish = Some(Box::new(before_publication));
+        hooks
+    }
+
+    /// Injects an identity change between rollback recovery samples.
+    pub fn delta_failure_during_verification(
+        after: impl Fn(&Path) + Send + Sync + 'static,
+        during: impl Fn(&Path) + Send + Sync + 'static,
+    ) -> Arc<Self> {
+        let mut hooks = Self::delta_failure(|_| {}, after);
+        Arc::get_mut(&mut hooks)
+            .expect("new hook is uniquely owned")
+            .during_delta_verification = Some(Box::new(during));
+        hooks
     }
 }
 
@@ -1017,12 +1104,7 @@ pub fn validate_code_map_target(root: &Path, output: &Path) -> Result<()> {
         } else {
             base.join(&settings.tasks_db)
         };
-        let norm_task_db = crate::core::fs::normalize_path(&task_db_path);
-        let same_path = norm_output == norm_task_db
-            || match (output_abs.canonicalize(), task_db_path.canonicalize()) {
-                (Ok(c1), Ok(c2)) => c1 == c2,
-                _ => false,
-            };
+        let same_path = crate::core::fs::same_filesystem_path(&output_abs, &task_db_path);
         if same_path {
             bail!(
                 "TASK_DATABASE_COLLISION: Refusing to use configured tasks database '{}' as code map output. The code map database must be separate (default: '.forge/code-map.sqlite').",
@@ -1030,11 +1112,11 @@ pub fn validate_code_map_target(root: &Path, output: &Path) -> Result<()> {
             );
         }
         if let Err(err) = settings.path(root) {
-            let default_db_path =
-                crate::core::fs::normalize_path(&root.join(".forge/code-map.sqlite"));
-            let default_base_db_path =
-                crate::core::fs::normalize_path(&base.join(".forge/code-map.sqlite"));
-            if norm_output == default_db_path || norm_output == default_base_db_path {
+            let default_db_path = root.join(".forge/code-map.sqlite");
+            let default_base_db_path = base.join(".forge/code-map.sqlite");
+            if crate::core::fs::same_filesystem_path(&output_abs, &default_db_path)
+                || crate::core::fs::same_filesystem_path(&output_abs, &default_base_db_path)
+            {
                 bail!(
                     "TASK_DATABASE_COLLISION: Configured tasks database conflicts with code map output '{}' ({}).",
                     output.display(),
@@ -1069,8 +1151,9 @@ pub fn validate_code_map_target(root: &Path, output: &Path) -> Result<()> {
                 }
             }
             if header.is_ok() {
+                let open_path = crate::core::fs::confined_database_open_path(&output_abs)?;
                 let conn = Connection::open_with_flags(
-                    &output_abs,
+                    &open_path,
                     OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
                 )
                 .and_then(|c| {
@@ -1130,6 +1213,26 @@ pub fn validate_code_map_target(root: &Path, output: &Path) -> Result<()> {
     Ok(())
 }
 
+fn ensure_no_publication_sidecars(output: &Path, allow_files: bool) -> Result<()> {
+    for suffix in ["-wal", "-shm", "-journal"] {
+        let mut name = output.as_os_str().to_owned();
+        name.push(suffix);
+        let sidecar = PathBuf::from(name);
+        match fs::symlink_metadata(&sidecar) {
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
+                return Err(err).with_context(|| format!("inspect sidecar {}", sidecar.display()))
+            }
+            Ok(metadata) if allow_files && metadata.is_file() => {}
+            Ok(_) => bail!(
+                "cannot replace database with existing sidecar {}",
+                sidecar.display()
+            ),
+        }
+    }
+    Ok(())
+}
+
 fn atomic_build(
     root: &Path,
     output: &Path,
@@ -1149,7 +1252,9 @@ fn atomic_build(
     let mut ancestor = PathBuf::new();
     for part in parent.components() {
         ancestor.push(part);
-        if fs::symlink_metadata(&ancestor).is_ok_and(|m| m.file_type().is_symlink()) {
+        if !crate::core::fs::is_system_root_symlink(&ancestor)
+            && fs::symlink_metadata(&ancestor).is_ok_and(|m| m.file_type().is_symlink())
+        {
             bail!("output parent must not traverse a symlink");
         }
     }
@@ -1293,29 +1398,95 @@ fn atomic_build(
             bail!("candidate database failed integrity check: {integrity}");
         }
         report["verify_ms"] = json!(verifying.elapsed().as_secs_f64() * 1000.);
-        streamed
-            .connection
-            .execute_batch("PRAGMA wal_checkpoint(PASSIVE);")?;
+        crate::db::cache::checkpoint(&streamed.connection, false)?;
         streamed.connection.close().map_err(|(_, e)| e)?;
+        if let Some(action) = test_hooks
+            .as_ref()
+            .and_then(|hooks| hooks.before_generation_lock.as_ref())
+        {
+            action(&output);
+        }
         let _generation_lock = crate::db::cache::exclusive_lock(&output)?;
+        let _idle_readers_guard = crate::db::cache::release_idle_readers(&output)?;
         validate_code_map_target(root, &output)?;
-        let wal = PathBuf::from(format!("{}-wal", output.display()));
-        let shm = PathBuf::from(format!("{}-shm", output.display()));
-        let _ = fs::remove_file(&wal);
-        let _ = fs::remove_file(&shm);
+        if ensure_no_publication_sidecars(&output, false).is_err() {
+            let open_path = crate::core::fs::confined_database_open_path(&output)?;
+            let connection = Connection::open_with_flags(
+                open_path,
+                OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+            )?;
+            crate::db::cache::checkpoint(&connection, true)?;
+            connection.close().map_err(|(_, err)| err)?;
+        }
+        ensure_no_publication_sidecars(&output, false)?;
         fs::rename(&temporary, &output)?;
-        report["verification_cache"] = json!(crate::db::cache::publish_verified(
+        let receipt = crate::db::cache::publish_verified(
             &output,
             root,
             report["output_root"]
                 .as_str()
-                .context("missing output root")?
-        )
-        .unwrap_or(false));
+                .context("missing output root")?,
+        );
+        report["verification_cache"] = json!(match receipt {
+            Ok(true) => true,
+            Ok(false) => {
+                eprintln!(
+                    "database published; verified receipt publication refused for {}",
+                    output.display()
+                );
+                false
+            }
+            Err(err) => {
+                eprintln!(
+                    "database published; verified receipt publication failed for {}: {err:#}",
+                    output.display()
+                );
+                false
+            }
+        });
         Ok(report)
     })();
-    let _ = fs::remove_dir_all(stage);
-    result
+    if let Some(action) = test_hooks
+        .as_ref()
+        .and_then(|hooks| hooks.before_stage_cleanup.as_ref())
+    {
+        action(&stage);
+    }
+    let mut cleanup_errors = Vec::new();
+    for suffix in ["-wal", "-shm", "-journal"] {
+        let sidecar = stage.join(format!("generation.sqlite{suffix}"));
+        match fs::symlink_metadata(&sidecar) {
+            Ok(_) => {
+                if let Err(err) = fs::remove_file(&sidecar) {
+                    cleanup_errors.push(format!("remove sidecar {}: {err}", sidecar.display()));
+                }
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
+                cleanup_errors.push(format!("inspect sidecar {}: {err}", sidecar.display()))
+            }
+        }
+    }
+    if let Err(err) = fs::remove_dir_all(&stage) {
+        cleanup_errors.push(format!("remove stage {}: {err}", stage.display()));
+    }
+    let cleanup = if cleanup_errors.is_empty() {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(cleanup_errors.join("; ")))
+    };
+    match (result, cleanup) {
+        (Err(err), Err(cleanup)) => {
+            Err(err.context(format!("stage cleanup also failed: {cleanup:#}")))
+        }
+        (Err(err), Ok(())) => Err(err),
+        (Ok(mut report), Err(err)) => {
+            eprintln!("database published; stage cleanup failed: {err:#}");
+            report["cleanup_error"] = json!(format!("{err:#}"));
+            Ok(report)
+        }
+        (Ok(report), Ok(())) => Ok(report),
+    }
 }
 
 /// Builds and publishes a sealed index for the workspace.
@@ -1371,6 +1542,7 @@ fn build_inner_with_cache(
     extraction_cache: Arc<ExtractionCache>,
     test_hooks: Option<Arc<PipelineTestHooks>>,
 ) -> Result<Value> {
+    ensure_no_publication_sidecars(output, true)?;
     validate_code_map_target(root, output)?;
     let started = Instant::now();
     let root = canonical_root(root)?;
@@ -2044,7 +2216,7 @@ fn reference_keys(facts: &TypedFacts) -> Vec<&str> {
 
 /// Performs incremental delta indexing for modified source files.
 pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
-    delta_inner(root, db, modified, None, None)
+    delta_inner(root, db, modified, None, None, None)
 }
 
 /// Applies a delta while preserving an explicit cache directory during rebuilds.
@@ -2054,7 +2226,7 @@ pub fn delta_with_cache_dir(
     modified: &[PathBuf],
     cache_dir: &Path,
 ) -> Result<Value> {
-    delta_inner(root, db, modified, None, Some(cache_dir))
+    delta_inner(root, db, modified, None, Some(cache_dir), None)
 }
 
 /// Applies a delta with an explicit adapter selection, retaining legacy persisted-policy defaults.
@@ -2065,7 +2237,18 @@ pub fn delta_with_selection(
     adapter: Option<&Path>,
     cache_dir: Option<&Path>,
 ) -> Result<Value> {
-    delta_inner(root, db, modified, adapter, cache_dir)
+    delta_inner(root, db, modified, adapter, cache_dir, None)
+}
+
+/// Applies a delta with test synchronization around a persistence failure.
+pub fn delta_with_test_hooks(
+    root: &Path,
+    db: &Path,
+    modified: &[PathBuf],
+    cache_dir: &Path,
+    hooks: &PipelineTestHooks,
+) -> Result<Value> {
+    delta_inner(root, db, modified, None, Some(cache_dir), Some(hooks))
 }
 
 fn rebuild_with_cache_dir(
@@ -2086,6 +2269,7 @@ fn delta_inner(
     modified: &[PathBuf],
     selected_adapter: Option<&Path>,
     cache_dir: Option<&Path>,
+    test_hooks: Option<&PipelineTestHooks>,
 ) -> Result<Value> {
     validate_code_map_target(root, db)?;
     let started = Instant::now();
@@ -2098,9 +2282,11 @@ fn delta_inner(
         .map(|path| load_adapter(&root, Some(path)))
         .transpose()?;
     let generation_lock = crate::db::cache::exclusive_lock(db)?;
+    let _idle_readers_guard = crate::db::cache::release_idle_readers(db)?;
     let (schema_compatible, previous_adapter_path) = {
+        let open_path = crate::core::fs::confined_database_open_path(db)?;
         let probe = Connection::open_with_flags(
-            db,
+            &open_path,
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
         )?;
         let schema_compatible = probe
@@ -2129,6 +2315,7 @@ fn delta_inner(
         (schema_compatible, adapter_path)
     };
     if !schema_compatible {
+        drop(_idle_readers_guard);
         drop(generation_lock);
         let adapter_path = selected_adapter
             .as_ref()
@@ -2150,7 +2337,7 @@ fn delta_inner(
     };
     config::check_root_scope(&root, current_adapter.limits.allow_broad_root)?;
     for path in modified {
-        checked_child(&root, path)?;
+        checked_child(&root, path).with_context(|| format!("inspect {}", path.display()))?;
     }
     let manifests_changed = modified.iter().any(|path| {
         path.file_name().and_then(|name| name.to_str()).is_some_and(
@@ -2163,6 +2350,7 @@ fn delta_inner(
         || manifests_changed
     {
         drop(admitted);
+        drop(_idle_readers_guard);
         drop(generation_lock);
         return rebuild_with_cache_dir(
             &root,
@@ -2172,8 +2360,17 @@ fn delta_inner(
         );
     }
     let previous = crate::db::reader::inventory_snapshot(&admitted)?;
+    let watched: BTreeSet<String> = previous
+        .iter()
+        .map(|entry| entry.path.clone())
+        .chain(
+            modified
+                .iter()
+                .map(|path| path.to_string_lossy().replace('\\', "/")),
+        )
+        .collect();
     let scanning = Instant::now();
-    let scan = scanner::scan_reusing(&root, &adapter, &previous)?;
+    let scan = scanner::scan_reusing_watching(&root, &adapter, &previous, &watched)?;
     let scan_ms = scanning.elapsed().as_secs_f64() * 1000.;
     let dependencies = DependencyRegistry::try_collect_with_paths(
         &root,
@@ -2189,13 +2386,14 @@ fn delta_inner(
         .optional()?;
     if previous_manifest_digest.as_deref() != Some(dependencies.digest()) {
         drop(admitted);
+        drop(_idle_readers_guard);
         drop(generation_lock);
         return rebuild_with_cache_dir(&root, db, adapter.adapter_path.as_deref(), cache_dir);
     }
     let modified: BTreeSet<String> = modified
         .iter()
         .map(|p| {
-            checked_child(&root, p)?;
+            checked_child(&root, p).with_context(|| format!("inspect {}", p.display()))?;
             Ok(p.to_string_lossy().replace('\\', "/"))
         })
         .collect::<Result<_>>()?;
@@ -2211,9 +2409,19 @@ fn delta_inner(
             return Err(SourceSnapshotMismatch(format!("unlisted source addition: {path}")).into());
         }
     }
+    let existing = scanner::exact_paths_exist(
+        &root,
+        &adapter,
+        modified
+            .iter()
+            .filter(|path| {
+                !inventory.contains_key(path.as_str()) && !scan.matched_excluded.contains(*path)
+            })
+            .map(String::as_str),
+    )?;
     for path in &modified {
         if !inventory.contains_key(path.as_str()) {
-            if root.join(path).exists() {
+            if scan.matched_excluded.contains(path) || existing.contains(path) {
                 bail!("modified path outside admitted inventory: {path}");
             }
             if !previous.contains_key(path.as_str()) {
@@ -3027,12 +3235,30 @@ fn delta_inner(
 
     drop(admitted);
 
+    if let Some(hook) = test_hooks.and_then(|hooks| hooks.before_delta_persist.as_ref()) {
+        hook(db);
+    }
+
+    // Only a receipt matching the admitted generation may be recovered after
+    // SQLite has rolled back and closed its writer.
+    let trusted_receipt =
+        match crate::db::cache::matches_with_reason(db, &root, &expected, &admitted_identity) {
+            Ok(()) => true,
+            Err(reason) => {
+                eprintln!(
+                    "delta receipt is not trusted for {}: {reason:#}",
+                    db.display()
+                );
+                false
+            }
+        };
+
     let persist_result = crate::db::writer::delta_persist::persist_delta(
         crate::db::writer::delta_persist::DeltaPersistenceInputs {
             db,
             root: &root,
             expected: &expected,
-            admitted_identity,
+            admitted_identity: admitted_identity.clone(),
             entries: &scan.entries,
             affected: &affected,
             replace_files: &replace_files,
@@ -3050,8 +3276,79 @@ fn delta_inner(
             }
             Ok(())
         },
-    )?;
+    );
+    let persist_result = match persist_result {
+        Ok(result) => result,
+        Err(error) => {
+            if let Some(hook) = test_hooks.and_then(|hooks| hooks.after_delta_failure.as_ref()) {
+                hook(db);
+            }
+            if trusted_receipt {
+                let recovery = (|| -> anyhow::Result<()> {
+                    let after = crate::db::cache::identity(db)?;
+                    if after == admitted_identity {
+                        return crate::db::cache::matches_with_reason(db, &root, &expected, &after);
+                    }
+                    crate::db::cache::matches_with_reason(
+                        db,
+                        &root,
+                        &expected,
+                        &admitted_identity,
+                    )?;
+                    let open_path = crate::core::fs::confined_database_open_path(db)?;
+                    let conn = rusqlite::Connection::open_with_flags(
+                        open_path,
+                        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                            | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
+                    )?;
+                    let seal: String = conn.query_row(
+                        "SELECT value FROM metadata WHERE key='output_root'",
+                        [],
+                        |row| row.get(0),
+                    )?;
+                    anyhow::ensure!(seal == expected, "rollback output root changed");
+                    crate::core::commitments::verify(&conn)?;
+                    drop(conn);
+                    if let Some(hook) =
+                        test_hooks.and_then(|hooks| hooks.during_delta_verification.as_ref())
+                    {
+                        hook(db);
+                    }
+                    let stable = crate::db::cache::identity(db)?;
+                    anyhow::ensure!(
+                        after == stable,
+                        "database changed during rollback verification ({})",
+                        crate::db::cache::describe_diff(&after, &stable)
+                    );
+                    if let Some(hook) =
+                        test_hooks.and_then(|hooks| hooks.before_delta_receipt_publish.as_ref())
+                    {
+                        hook(db);
+                    }
+                    anyhow::ensure!(
+                        crate::db::cache::publish_verified_identity(db, &root, &expected, &stable)?,
+                        "rollback receipt publication refused"
+                    );
+                    Ok(())
+                })();
+                if let Err(recovery_error) = recovery {
+                    if let Err(invalidation_error) = crate::db::cache::invalidate_checked(db) {
+                        eprintln!(
+                            "delta receipt invalidation failed for {}: {invalidation_error:#}",
+                            db.display()
+                        );
+                    }
+                    eprintln!(
+                        "delta receipt recovery failed for {}: {recovery_error:#}",
+                        db.display()
+                    );
+                }
+            }
+            return Err(error);
+        }
+    };
 
+    drop(_idle_readers_guard);
     drop(generation_lock);
 
     let mut report = json!({

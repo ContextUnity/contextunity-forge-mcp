@@ -276,8 +276,9 @@ pub fn validate_database_integrity(conn: &Connection) -> Result<()> {
         bail!("database integrity check failed: {source_integrity}");
     }
     let snapshot = IntegritySnapshot::create()?;
+    let snapshot_open_path = crate::core::fs::confined_database_open_path(&snapshot.path)?;
     let mut copy = Connection::open_with_flags(
-        &snapshot.path,
+        &snapshot_open_path,
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )?;
     {
@@ -324,13 +325,20 @@ pub fn open_locked(path: &Path, root: &Path) -> Result<LockedConnection> {
 ///
 /// Rejects incompatible, corrupt, changed, or foreign workspace databases.
 pub fn open(path: &Path, root: &Path) -> Result<Connection> {
-    if std::fs::symlink_metadata(path)?.file_type().is_symlink() {
-        bail!("database must not be a symlink");
-    }
-    let before = super::cache::identity(path)?;
-    validate_database_header(path)?;
+    open_with_diagnostics(path, root, &mut |message| eprintln!("{message}"))
+}
+
+/// Opens a reader and reports recoverable receipt diagnostics to the supplied sink.
+pub fn open_with_diagnostics(
+    path: &Path,
+    root: &Path,
+    diagnostic: &mut dyn FnMut(String),
+) -> Result<Connection> {
+    let open_path = crate::core::fs::confined_database_open_path(path)?;
+    let before = super::cache::identity(&open_path)?;
+    validate_database_header(&open_path)?;
     let conn = Connection::open_with_flags(
-        path,
+        &open_path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )?;
     conn.execute_batch(
@@ -393,15 +401,38 @@ pub fn open(path: &Path, root: &Path) -> Result<Connection> {
         [],
         |r| r.get(0),
     )?;
-    let receipt_missing = !super::cache::matches(path, root, &seal, &before);
+    let receipt_missing = match super::cache::matches_with_reason(path, root, &seal, &before) {
+        Ok(()) => false,
+        Err(error) => {
+            diagnostic(format!(
+                "verified receipt unavailable for {}: {error:#}",
+                path.display()
+            ));
+            true
+        }
+    };
     if receipt_missing {
         crate::core::commitments::verify(&conn)?;
     }
-    if super::cache::identity(path)? != before {
-        bail!("database changed during reader admission");
+    let current = super::cache::identity(path)?;
+    if current != before {
+        bail!(
+            "database changed during reader admission ({})",
+            super::cache::describe_diff(&before, &current)
+        );
     }
     if receipt_missing {
-        let _ = super::cache::publish_verified_identity(path, root, &seal, &before);
+        match super::cache::publish_verified_identity(path, root, &seal, &before) {
+            Ok(true) => {}
+            Ok(false) => diagnostic(format!(
+                "verified receipt publication refused for {}: generation changed or WAL is present",
+                path.display()
+            )),
+            Err(error) => diagnostic(format!(
+                "verified receipt publication failed for {}: {error:#}",
+                path.display()
+            )),
+        }
     }
     conn.set_limit(
         rusqlite::limits::Limit::SQLITE_LIMIT_LENGTH,

@@ -213,10 +213,14 @@ fn linked_task_workspaces_share_storage_and_confine_local_scope() {
         serde_json::from_value(json!({"action":"inspect","task_id":id})).unwrap(),
     )
     .unwrap();
-    assert_eq!(inspect["workspace_root"], linked.root().to_str().unwrap());
+    let canonical_linked = linked.root().canonicalize().unwrap();
+    assert_eq!(
+        inspect["workspace_root"],
+        canonical_linked.to_str().unwrap()
+    );
     assert_eq!(
         inspect["agents_guidance"],
-        linked.root().join("docs/AGENTS.md").to_str().unwrap()
+        canonical_linked.join("docs/AGENTS.md").to_str().unwrap()
     );
     assert_eq!(inspect["applicable_invariants"], json!(["linked-rules"]));
     let extend = |path: &str| {
@@ -355,9 +359,10 @@ fn nested_repository_tasks_preserve_distinct_write_perimeters() {
         },
     )
     .unwrap();
+    let canonical_library = main.root().join("src/library").canonicalize().unwrap();
     assert_eq!(
         claimed["workspace_root"],
-        main.root().join("src/library").to_str().unwrap()
+        canonical_library.to_str().unwrap()
     );
     main.write(
         "docs/010-wide.md",
@@ -377,7 +382,10 @@ fn task_configuration_defaults_and_crlf_preserve_operational_identity() {
     root.write("forge-mcp.yaml", "roots: [src]\n");
     assert_eq!(
         tasks::database_path(root.root()).unwrap(),
-        root.root().join(".forge/tasks.sqlite")
+        root.root()
+            .canonicalize()
+            .unwrap()
+            .join(".forge/tasks.sqlite")
     );
     let crlf = Milestone::parse(&SPEC.replace('\n', "\r\n"), "forge-mcp").unwrap();
     assert_eq!(

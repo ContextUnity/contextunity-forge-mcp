@@ -614,6 +614,21 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
             }
         }
     }
+    workspace.write("code.py", "def selected(): return 99\n");
+    assert!(symbols::inspect_with_options(
+        &conn,
+        workspace.root(),
+        "selected",
+        &symbols::InspectOptions {
+            show_doc: false,
+            source: &preview,
+            coverage: CoverageOptions::default(),
+            page: &query
+        }
+    )
+    .is_err());
+    drop(conn);
+    client.finish().expect("server must finish successfully");
     workspace.write(
         "preview_201.py",
         "def selected_201():\n    replacement = True\n    return replacement\n",
@@ -633,24 +648,10 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
         ],
     );
     assert!(!cli_stale.status.success());
-    workspace.write("code.py", "def selected(): return 99\n");
-    assert!(symbols::inspect_with_options(
-        &conn,
-        workspace.root(),
-        "selected",
-        &symbols::InspectOptions {
-            show_doc: false,
-            source: &preview,
-            coverage: CoverageOptions::default(),
-            page: &query
-        }
-    )
-    .is_err());
     assert!(failures.is_empty(), "{}", failures.join("\n"));
     bounded_client
         .finish()
         .expect("server must finish successfully");
-    client.finish().expect("server must finish successfully");
     line_client
         .finish()
         .expect("server must finish successfully");

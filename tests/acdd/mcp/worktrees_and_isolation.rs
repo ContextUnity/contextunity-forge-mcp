@@ -249,6 +249,7 @@ fn parking_preserves_and_resumes_the_original_worktree() {
                 "default MCP status must remain ready and exclude parked work"
             );
             let store = TasksStore::open(&parking.root().join("tasks.sqlite")).unwrap();
+            let canonical_parking = parking.root().canonicalize().unwrap();
             let descriptor = serde_json::to_value(store.inspect(&ids[1]).unwrap()).unwrap();
             assert!(
                 descriptor["parked_worker_id"] == "park-worker",
@@ -256,7 +257,7 @@ fn parking_preserves_and_resumes_the_original_worktree() {
                 "parking must retain the builder identity"
             );
             assert!(
-                descriptor["parked_worktree"] == parking.root().to_str().unwrap(),
+                descriptor["parked_worktree"] == canonical_parking.to_str().unwrap(),
                 "{}",
                 "parking must retain the original worktree"
             );
@@ -331,7 +332,7 @@ fn parking_preserves_and_resumes_the_original_worktree() {
                 "same-worker parked work must outrank ordinary build work after unblocking"
             );
             assert!(
-                resumed["worktree"] == parking.root().to_str().unwrap(),
+                resumed["worktree"] == canonical_parking.to_str().unwrap(),
                 "{}",
                 "resume must use the preserved worktree rather than the dispatch argument"
             );

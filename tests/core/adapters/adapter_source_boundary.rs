@@ -92,7 +92,7 @@ fn custom_adapter_exclusion_survives_delta_and_linked_configs_remain_sources() {
         json!([{"path":"[library]/forge-mcp.yaml"},{"path":"src/settings.yaml"}])
     );
     let adapter = scanner::load_adapter(workspace.root(), Some(&config)).unwrap();
-    assert_eq!(adapter.adapter_path, Some(config));
+    assert_eq!(adapter.adapter_path, Some(config.canonicalize().unwrap()));
 }
 
 #[cfg(feature = "lang-rust")]

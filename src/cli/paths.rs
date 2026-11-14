@@ -33,10 +33,27 @@ impl ResolvedPaths {
         let configured = value.as_ref().and_then(|value| value.get("acdd_profile"));
         let selected = match profile {
             Some(path) => Some(if path.is_absolute() {
-                path.strip_prefix(root)
+                let raw = path.to_string_lossy();
+                let (target, pin) = match raw.rsplit_once(':') {
+                    Some((prefix, suffix))
+                        if !prefix.is_empty()
+                            && !suffix.is_empty()
+                            && !suffix.contains(['/', '\\']) =>
+                    {
+                        (Path::new(prefix), Some(suffix))
+                    }
+                    _ => (path, None),
+                };
+                let confined = confined_file(root, target)?;
+                let canonical_root = root.canonicalize()?;
+                let relative = confined
+                    .strip_prefix(&canonical_root)
                     .context("CLI_PATH_INVALID: profile escapes root")?
-                    .to_string_lossy()
-                    .into_owned()
+                    .to_string_lossy();
+                match pin {
+                    Some(pin) => format!("{relative}:{pin}"),
+                    None => relative.into_owned(),
+                }
             } else {
                 path.to_string_lossy().into_owned()
             }),
@@ -158,4 +175,42 @@ pub(super) fn verify_no_symlink_traversal(
         );
     }
     Ok(target)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_accepts_absolute_profile_through_canonical_vs_alias_root() {
+        use std::os::unix::fs::symlink;
+
+        let base = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("forge_cli_paths_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let real_repo = base.join("private_var/repo");
+        fs::create_dir_all(real_repo.join(".forge/acdd")).unwrap();
+        let profile_file = real_repo.join(".forge/acdd/profile.yaml");
+        fs::write(&profile_file, "version: 2\n").unwrap();
+
+        let alias_repo = base.join("var_repo");
+        symlink(&real_repo, &alias_repo).unwrap();
+
+        let canonical_root = real_repo.canonicalize().unwrap();
+        let alias_profile = alias_repo.join(".forge/acdd/profile.yaml");
+        let resolved = ResolvedPaths::resolve(&canonical_root, None, Some(&alias_profile)).unwrap();
+        assert!(resolved.explicit_profile);
+
+        let outside = base.join("outside-profile.yaml");
+        fs::write(&outside, "version: 2\n").unwrap();
+        let err = ResolvedPaths::resolve(&canonical_root, None, Some(&outside))
+            .err()
+            .expect("outside profile must fail");
+        assert!(err.to_string().contains("CLI_PATH_INVALID"), "{err:#}");
+
+        let _ = fs::remove_dir_all(&base);
+    }
 }

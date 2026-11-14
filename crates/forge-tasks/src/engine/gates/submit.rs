@@ -12,6 +12,19 @@ use anyhow::{bail, Context, Result};
 use rusqlite::{params, OptionalExtension};
 use std::path::Path;
 
+fn same_worktree(active: &str, submitted: &str) -> bool {
+    if active == submitted {
+        return true;
+    }
+    matches!(
+        (
+            Path::new(active).canonicalize(),
+            Path::new(submitted).canonicalize(),
+        ),
+        (Ok(left), Ok(right)) if left == right
+    )
+}
+
 impl TasksStore {
     /// Performs submit.
     pub fn submit(
@@ -164,7 +177,11 @@ impl TasksStore {
                 evidence.worker_id.clone(),
                 task.worker_id.clone().unwrap_or_default(),
             ))
-        } else if task.worktree.as_deref() != Some(&evidence.worktree) {
+        } else if !task
+            .worktree
+            .as_deref()
+            .is_some_and(|active| same_worktree(active, &evidence.worktree))
+        {
             Some((
                 "worktree",
                 evidence.worktree.clone(),

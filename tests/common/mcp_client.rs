@@ -3,9 +3,13 @@ use contextunity_forge_mcp::mcp::server::Server;
 use serde_json::{json, Value};
 use std::{
     ffi::OsStr,
-    io::{BufRead, BufReader, Write},
+    io::{Read, Write},
+    os::unix::process::CommandExt,
     process::{Child, ChildStdin, Command, Output, Stdio},
-    sync::mpsc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc,
+    },
     time::Duration,
 };
 
@@ -89,6 +93,14 @@ enum ReadEvent {
     Frame(String),
     Eof,
     Io(std::io::Error),
+    Oversized(usize),
+}
+
+fn kill_group(child: &mut Child) {
+    // SAFETY: each child is started as leader of its own process group.
+    unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -102,6 +114,8 @@ pub struct StdioClient {
     child: Child,
     input: ChildStdin,
     output: mpsc::Receiver<ReadEvent>,
+    reader: Option<std::thread::JoinHandle<()>>,
+    reader_stop: Arc<AtomicBool>,
     id: u64,
 }
 
@@ -129,6 +143,7 @@ impl StdioClient {
         let spawn_deadline = std::time::Instant::now() + Duration::from_secs(1);
         let mut child = loop {
             match command
+                .process_group(0)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
@@ -144,26 +159,73 @@ impl StdioClient {
                 Err(error) => return Err(error.into()),
             }
         };
-        let input = child
-            .stdin
-            .take()
-            .ok_or_else(|| std::io::Error::other("server stdin is not piped"))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| std::io::Error::other("server stdout is not piped"))?;
+        let (Some(input), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
+            kill_group(&mut child);
+            return Err(std::io::Error::other("server stdio is not piped").into());
+        };
+        use std::os::fd::AsRawFd;
+        // SAFETY: stdout owns a live descriptor; fcntl reads and updates its flags.
+        let flags = unsafe { libc::fcntl(stdout.as_raw_fd(), libc::F_GETFL) };
+        if flags < 0
+            || unsafe { libc::fcntl(stdout.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) }
+                < 0
+        {
+            let error = std::io::Error::last_os_error();
+            kill_group(&mut child);
+            return Err(error.into());
+        }
         let (sender, output) = mpsc::channel();
-        std::thread::spawn(move || {
-            let mut reader = BufReader::new(stdout);
+        let reader_stop = Arc::new(AtomicBool::new(false));
+        let stop = Arc::clone(&reader_stop);
+        let reader = std::thread::spawn(move || {
+            let mut reader = stdout;
+            let mut pending = Vec::new();
+            let mut chunk = [0u8; 4096];
             loop {
-                let mut line = String::new();
-                let event = match reader.read_line(&mut line) {
-                    Ok(0) => ReadEvent::Eof,
-                    Ok(_) => ReadEvent::Frame(line),
-                    Err(error) => ReadEvent::Io(error),
+                if stop.load(Ordering::Acquire) {
+                    break;
+                }
+                let count = match reader.read(&mut chunk) {
+                    Ok(count) => count,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(10));
+                        continue;
+                    }
+                    Err(error) => {
+                        let _ = sender.send(ReadEvent::Io(error));
+                        break;
+                    }
                 };
-                let terminal = !matches!(event, ReadEvent::Frame(_));
-                if sender.send(event).is_err() || terminal {
+                for &byte in &chunk[..count] {
+                    pending.push(byte);
+                    if pending.len() > contextunity_forge_mcp::core::response::MAX_OUTPUT_BYTES {
+                        let _ = sender.send(ReadEvent::Oversized(pending.len()));
+                        return;
+                    }
+                    if byte == b'\n' {
+                        let event = match String::from_utf8(std::mem::take(&mut pending)) {
+                            Ok(line) => ReadEvent::Frame(line),
+                            Err(error) => ReadEvent::Io(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                error,
+                            )),
+                        };
+                        let terminal = !matches!(event, ReadEvent::Frame(_));
+                        if sender.send(event).is_err() || terminal {
+                            return;
+                        }
+                    }
+                }
+                if count == 0 {
+                    let event = if pending.is_empty() {
+                        ReadEvent::Eof
+                    } else {
+                        ReadEvent::Io(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "unterminated stdout frame",
+                        ))
+                    };
+                    let _ = sender.send(event);
                     break;
                 }
             }
@@ -172,6 +234,8 @@ impl StdioClient {
             child,
             input,
             output,
+            reader: Some(reader),
+            reader_stop,
             id: 0,
         };
         let (_, response) = client.request(
@@ -191,6 +255,7 @@ impl StdioClient {
     #[cfg(test)]
     pub fn with_dropped_reader_for_test(command: &mut Command) -> StdioResult<Self> {
         let mut child = command
+            .process_group(0)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -198,16 +263,14 @@ impl StdioClient {
         let input = match child.stdin.take() {
             Some(input) => input,
             None => {
-                let _ = child.kill();
-                let _ = child.wait();
+                kill_group(&mut child);
                 return Err(std::io::Error::other("server stdin is not piped").into());
             }
         };
         match child.stdout.take() {
             Some(stdout) => drop(stdout),
             None => {
-                let _ = child.kill();
-                let _ = child.wait();
+                kill_group(&mut child);
                 return Err(std::io::Error::other("server stdout is not piped").into());
             }
         }
@@ -219,6 +282,8 @@ impl StdioClient {
             child,
             input,
             output,
+            reader: None,
+            reader_stop: Arc::new(AtomicBool::new(false)),
             id: 0,
         })
     }
@@ -229,11 +294,21 @@ impl StdioClient {
         self.write_message(
             json!({"jsonrpc":"2.0", "id":request_id, "method":method, "params":params}),
         )?;
+        let deadline = std::time::Instant::now() + RESPONSE_TIMEOUT;
         loop {
-            let line = match self.output.recv_timeout(RESPONSE_TIMEOUT) {
+            let line = match self
+                .output
+                .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+            {
                 Ok(ReadEvent::Frame(line)) => line,
                 Ok(ReadEvent::Eof) => return Err(StdioError::Eof),
                 Ok(ReadEvent::Io(error)) => return Err(error.into()),
+                Ok(ReadEvent::Oversized(actual)) => {
+                    return Err(StdioError::OversizedFrame {
+                        actual,
+                        limit: contextunity_forge_mcp::core::response::MAX_OUTPUT_BYTES,
+                    })
+                }
                 Err(mpsc::RecvTimeoutError::Timeout) => return Err(StdioError::Timeout),
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
                     return Err(StdioError::ReaderDisconnected);
@@ -275,6 +350,12 @@ impl StdioClient {
             {
                 Ok(ReadEvent::Eof) => return Ok(TransportEnd::CleanEof),
                 Ok(ReadEvent::Io(error)) => return Err(error.into()),
+                Ok(ReadEvent::Oversized(actual)) => {
+                    return Err(StdioError::OversizedFrame {
+                        actual,
+                        limit: contextunity_forge_mcp::core::response::MAX_OUTPUT_BYTES,
+                    })
+                }
                 Ok(ReadEvent::Frame(_)) => {}
                 Err(mpsc::RecvTimeoutError::Timeout) => return Ok(TransportEnd::TimedOut),
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
@@ -296,7 +377,10 @@ impl StdioClient {
 
 impl Drop for StdioClient {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        self.reader_stop.store(true, Ordering::Release);
+        kill_group(&mut self.child);
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
     }
 }

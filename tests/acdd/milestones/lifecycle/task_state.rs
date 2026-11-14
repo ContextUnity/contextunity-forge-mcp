@@ -21,10 +21,11 @@ fn first_crlf_task_claim_activates_planned_milestone_and_includes_guidance() {
     const PROTECTED_RULE: &str = "PROTECTED: milestone id, invariants, owners, depends_on, and acdd_profile are immutable while tasks are active. Declare task invariants inside task.invariants.";
     let guidance_text = serde_json::to_string(guidance).unwrap();
     let actual_rules = guidance["rules"].as_array().cloned().unwrap_or_default();
+    let canonical_root = root.root().canonicalize().unwrap();
     let expected_rules = [
         format!(
             "ISOLATION: Develop exclusively inside dedicated worktree '{}'.",
-            root.root().display()
+            canonical_root.display()
         ),
         "IMMUTABILITY: Keep admitted scope unchanged after review pass and during deliver."
             .to_owned(),

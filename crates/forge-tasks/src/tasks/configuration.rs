@@ -24,6 +24,20 @@ thread_local! {
     static INVOCATIONS: RefCell<Vec<Arc<InvocationSettings>>> = const { RefCell::new(Vec::new()) };
 }
 
+fn rebase_path(path: &Path, from_root: &Path, to_root: &Path) -> PathBuf {
+    if let Ok(relative) = path.strip_prefix(from_root) {
+        return to_root.join(relative);
+    }
+    if path.is_absolute() {
+        if let Some(canon_path) = forge_core::fs::canonicalize_with_missing_tail(path) {
+            if let Ok(relative) = canon_path.strip_prefix(from_root) {
+                return to_root.join(relative);
+            }
+        }
+    }
+    path.to_owned()
+}
+
 impl InvocationSettings {
     pub fn new(
         root: PathBuf,
@@ -32,6 +46,10 @@ impl InvocationSettings {
         profile_argument: Option<PathBuf>,
         code_db: PathBuf,
     ) -> Self {
+        let root = root.canonicalize().unwrap_or(root);
+        let config = config.map(|path| rebase_path(&path, &root, &root));
+        let profile_argument = profile_argument.map(|path| rebase_path(&path, &root, &root));
+        let code_db = rebase_path(&code_db, &root, &root);
         Self {
             root,
             config,
@@ -77,17 +95,19 @@ impl InvocationSettings {
 
     /// Keep root-relative selections when dispatching into an owned worktree.
     pub fn rebase(&self, root: &Path) -> Self {
-        let rebase = |path: &Path| {
-            path.strip_prefix(&self.root)
-                .map(|relative| root.join(relative))
-                .unwrap_or_else(|_| path.to_owned())
-        };
+        let rebased_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
         Self {
-            root: root.to_owned(),
-            config: self.config.as_deref().map(rebase),
+            root: rebased_root.clone(),
+            config: self
+                .config
+                .as_deref()
+                .map(|path| rebase_path(path, &self.root, &rebased_root)),
             profile: self.profile.clone(),
-            profile_argument: self.profile_argument.as_deref().map(rebase),
-            code_db: rebase(&self.code_db),
+            profile_argument: self
+                .profile_argument
+                .as_deref()
+                .map(|path| rebase_path(path, &self.root, &rebased_root)),
+            code_db: rebase_path(&self.code_db, &self.root, &rebased_root),
         }
     }
 

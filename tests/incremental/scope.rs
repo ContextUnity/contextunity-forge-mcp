@@ -9,19 +9,25 @@ use std::fs;
 
 use crate::common::Workspace;
 
-fn assert_cold_equivalent(workspace: &Workspace) {
+type FactObservations = Vec<(String, Vec<u8>)>;
+type ParityObservations = Vec<(&'static str, Vec<String>, Vec<String>)>;
+
+fn cold_comparison(
+    workspace: &Workspace,
+) -> (bool, bool, i64, FactObservations, ParityObservations) {
     let receipt = workspace.db().with_extension("sqlite.verified.json");
     if receipt.exists() {
         fs::remove_file(receipt).unwrap();
     }
     let incremental = workspace.open();
-    commitments::verify(&incremental).unwrap();
+    let incremental_verified = commitments::verify(&incremental).is_ok();
     let dangling: i64 = incremental.query_row("SELECT count(*) FROM edges e LEFT JOIN nodes s ON s.node_hash=e.src_hash LEFT JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.id IS NULL OR d.id IS NULL", [], |r| r.get(0)).unwrap();
-    assert_eq!(dangling, 0);
+
     let cold_path = workspace.path(".forge/cold.sqlite");
     workspace.build_to(&cold_path);
     let cold = reader::open(&cold_path, workspace.root()).unwrap();
-    commitments::verify(&cold).unwrap();
+    let cold_verified = commitments::verify(&cold).is_ok();
+    let mut facts = Vec::new();
     for conn in [&incremental, &cold] {
         let mut statement = conn
             .prepare("SELECT path,facts_blob FROM local_facts")
@@ -33,14 +39,10 @@ fn assert_cold_equivalent(workspace: &Workspace) {
             .unwrap();
         for row in rows {
             let (path, facts_blob) = row.unwrap();
-            assert!(
-                facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"),
-                "{path}: newly written local facts use the typed binary format"
-            );
-            reader::decode_local_facts(&facts_blob).unwrap();
-            assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
+            facts.push((path, facts_blob));
         }
     }
+    let mut parity = Vec::new();
     for sql in [
         "SELECT p.path||'|'||n.id||'|'||n.kind||'|'||np.path FROM nodes n JOIN path_dictionary p ON p.path_id=n.owner_path_id JOIN path_dictionary np ON np.path_id=n.path_id ORDER BY p.path,n.id",
         "SELECT path||'|'||hex(facts_blob) FROM local_facts ORDER BY path",
@@ -48,8 +50,22 @@ fn assert_cold_equivalent(workspace: &Workspace) {
         "SELECT (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)||'|'||line||'|'||(SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)||'|'||status||'|'||(SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id) FROM resolution_coverage ORDER BY (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id),line,(SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id),status,(SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id)",
         "SELECT p.path||'|'||c.domain||'|'||hex(c.digest) FROM domain_commitments c JOIN path_dictionary p ON p.path_id=c.owner_id ORDER BY p.path,c.domain",
     ] {
-        assert_eq!(strings(&incremental, sql), strings(&cold, sql), "{sql}");
+        parity.push((sql, strings(&incremental, sql), strings(&cold, sql)));
     }
+    drop(cold);
+    drop(incremental);
+    for suffix in ["-wal", "-shm", "-journal"] {
+        let sidecar = std::path::PathBuf::from(format!("{}{suffix}", cold_path.display()));
+        if sidecar.exists() {
+            fs::remove_file(sidecar).unwrap();
+        }
+    }
+    fs::remove_file(&cold_path).unwrap();
+    let receipt = cold_path.with_extension("sqlite.verified.json");
+    if receipt.exists() {
+        fs::remove_file(receipt).unwrap();
+    }
+    (incremental_verified, cold_verified, dangling, facts, parity)
 }
 fn strings(conn: &Connection, sql: &str) -> Vec<String> {
     conn.prepare(sql)
@@ -58,6 +74,291 @@ fn strings(conn: &Connection, sql: &str) -> Vec<String> {
         .unwrap()
         .collect::<Result<_, _>>()
         .unwrap()
+}
+
+#[test]
+#[cfg(feature = "lang-rust")]
+fn outside_inventory_paths_are_not_admitted_as_deletions() {
+    let w = Workspace::new();
+    w.write("source.rs", "pub fn source() {}\n");
+    w.write("notes.txt", "excluded\n");
+    w.build();
+    let error = delta(w.root(), &w.db(), &["notes.txt".into()]).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("modified path outside admitted inventory: notes.txt"),
+        "{error:#}"
+    );
+    w.write(".gitignore", "source.rs\n");
+    let error = delta(w.root(), &w.db(), &["source.rs".into()]).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("modified path outside admitted inventory: source.rs"),
+        "{error:#}"
+    );
+}
+
+#[test]
+#[cfg(feature = "lang-rust")]
+fn delta_exact_spelling_and_alias_renames_match_cold_inventory() {
+    let w = Workspace::new();
+    let linked = Workspace::new();
+    let linked_alias_root = Workspace::new();
+    let cases = [
+        ("case/Foo.rs", "case/foo.rs"),
+        ("unicode/caf\u{e9}.rs", "unicode/cafe\u{301}.rs"),
+        ("reserved/a #%.rs", "reserved/b #%.rs"),
+        ("old.rs", "a #%.rs"),
+        ("Parent/source.rs", "parent/source.rs"),
+        ("alias/Foo.rs", "alias/foo.rs"),
+    ];
+    for (old, _) in cases {
+        w.write(old, "pub fn renamed() {}\n");
+    }
+    linked.write("Parent/Foo.rs", "pub fn parent() {}\n");
+    linked.write("Foo.rs", "pub fn leaf() {}\n");
+    linked_alias_root.write("Foo.rs", "pub fn linked() {}\n");
+    fs::create_dir_all(w.path(".forge")).unwrap();
+    #[cfg(unix)]
+    let (root_alias, linked_alias) = {
+        use std::os::unix::fs::symlink;
+        let root_alias = w.path(".forge/root-alias");
+        let linked_alias = w.path(".forge/linked-alias");
+        symlink(w.root(), &root_alias).unwrap();
+        symlink(linked_alias_root.root(), &linked_alias).unwrap();
+        (root_alias, linked_alias)
+    };
+    #[cfg(not(unix))]
+    let linked_alias = linked_alias_root.root().to_path_buf();
+    w.write(
+        "forge-mcp.yaml",
+        &format!(
+        "linked_workspaces:\n  - name: library\n    path: {}\n  - name: aliased\n    path: {}\n",
+        linked.root().display(), linked_alias.display()
+    ),
+    );
+    w.build();
+
+    let mut renamed_files = Vec::new();
+    for (old, new) in cases {
+        let old_dir = std::path::Path::new(old).parent().unwrap();
+        let new_dir = std::path::Path::new(new).parent().unwrap();
+        let old_name = fs::read_dir(w.path(old_dir))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .filter_map(|name| name.into_string().ok())
+            .find(|name| name.ends_with(".rs"))
+            .unwrap();
+        if old.starts_with("Parent/") {
+            fs::rename(w.path("Parent"), w.path("parent")).unwrap();
+        } else {
+            fs::rename(w.path(old), w.path(new)).unwrap();
+        }
+        let new_key = if old.starts_with("Parent/") {
+            new.to_owned()
+        } else {
+            let name = fs::read_dir(w.path(new_dir))
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .filter_map(|name| name.into_string().ok())
+                .find(|name| name.ends_with(".rs"))
+                .unwrap();
+            new_dir.join(name).to_string_lossy().into_owned()
+        };
+        let old_key = old_dir.join(old_name).to_string_lossy().into_owned();
+        if old_key != new_key {
+            #[cfg(unix)]
+            if old.starts_with("alias/") {
+                delta(
+                    &root_alias,
+                    &w.db(),
+                    &[old_key.clone().into(), new_key.clone().into()],
+                )
+                .unwrap();
+            } else {
+                w.delta(&[&old_key, &new_key]);
+            }
+            #[cfg(not(unix))]
+            w.delta(&[&old_key, &new_key]);
+            let paths = strings(&w.open(), "SELECT path FROM files");
+            assert!(paths.contains(&new_key), "{paths:?}");
+            assert!(!paths.contains(&old_key), "{paths:?}");
+        }
+        if new == "a #%.rs" {
+            let uri = w.file_uri("a #%.rs", Some(1));
+            assert!(uri.ends_with("/a%20%23%25.rs#L1"), "{uri}");
+        }
+        if old != "Parent/source.rs" && !old.starts_with("alias/") {
+            renamed_files.push(new_key);
+        }
+    }
+    fs::rename(linked.path("Parent"), linked.path("parent")).unwrap();
+    fs::rename(linked.path("Foo.rs"), linked.path("foo.rs")).unwrap();
+    fs::rename(
+        linked_alias_root.path("Foo.rs"),
+        linked_alias_root.path("foo.rs"),
+    )
+    .unwrap();
+    w.delta(&[
+        "[library]/Parent/Foo.rs",
+        "[library]/parent/Foo.rs",
+        "[library]/Foo.rs",
+        "[library]/foo.rs",
+        "[aliased]/Foo.rs",
+        "[aliased]/foo.rs",
+    ]);
+    let paths = strings(&w.open(), "SELECT path FROM files ORDER BY path");
+    for expected in [
+        "parent/source.rs",
+        "alias/foo.rs",
+        "[library]/foo.rs",
+        "[library]/parent/Foo.rs",
+        "[aliased]/foo.rs",
+    ] {
+        assert!(paths.iter().any(|path| path == expected), "{paths:?}");
+    }
+    {
+        let (incremental_verified, cold_verified, dangling, facts, parity) = cold_comparison(&w);
+        assert!(incremental_verified);
+        assert!(cold_verified);
+        assert_eq!(dangling, 0);
+        for (path, facts_blob) in facts {
+            assert!(
+                facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"),
+                "{path}: newly written local facts use the typed binary format"
+            );
+            reader::decode_local_facts(&facts_blob).unwrap();
+            assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
+        }
+        for (sql, incremental, cold) in parity {
+            assert_eq!(incremental, cold, "{sql}");
+        }
+    }
+    for path in &renamed_files {
+        fs::remove_file(w.path(path)).unwrap();
+    }
+    let removed: Vec<_> = renamed_files.iter().map(String::as_str).collect();
+    w.delta(&removed);
+    let paths = strings(&w.open(), "SELECT path FROM files");
+    for path in &renamed_files {
+        assert!(!paths.contains(path), "{paths:?}");
+    }
+    {
+        let (incremental_verified, cold_verified, dangling, facts, parity) = cold_comparison(&w);
+        assert!(incremental_verified);
+        assert!(cold_verified);
+        assert_eq!(dangling, 0);
+        for (path, facts_blob) in facts {
+            assert!(
+                facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"),
+                "{path}: newly written local facts use the typed binary format"
+            );
+            reader::decode_local_facts(&facts_blob).unwrap();
+            assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
+        }
+        for (sql, incremental, cold) in parity {
+            assert_eq!(incremental, cold, "{sql}");
+        }
+    }
+    #[cfg(unix)]
+    {
+        fs::remove_file(root_alias).unwrap();
+        fs::remove_file(linked_alias).unwrap();
+    }
+}
+
+#[test]
+#[cfg(feature = "lang-rust")]
+fn distinct_filesystem_spellings_coexist_through_delta() {
+    let w = Workspace::new();
+    w.write("Foo.rs", "pub fn upper() {}\n");
+    w.write("caf\u{e9}.rs", "pub fn nfc() {}\n");
+    w.build();
+    if contextunity_forge_mcp::core::fs::is_case_insensitive_volume(w.root()) {
+        eprintln!("case coexistence unavailable on case-insensitive volume");
+    } else {
+        w.write("foo.rs", "pub fn lower() {}\n");
+        w.delta(&["foo.rs"]);
+        assert_eq!(
+            strings(
+                &w.open(),
+                "SELECT path FROM files WHERE path IN ('Foo.rs', 'foo.rs') ORDER BY path"
+            ),
+            ["Foo.rs", "foo.rs"]
+        );
+        {
+            let (incremental_verified, cold_verified, dangling, facts, parity) =
+                cold_comparison(&w);
+            assert!(incremental_verified);
+            assert!(cold_verified);
+            assert_eq!(dangling, 0);
+            for (path, facts_blob) in facts {
+                assert!(
+                    facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"),
+                    "{path}: newly written local facts use the typed binary format"
+                );
+                reader::decode_local_facts(&facts_blob).unwrap();
+                assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
+            }
+            for (sql, incremental, cold) in parity {
+                assert_eq!(incremental, cold, "{sql}");
+            }
+        }
+    }
+    w.write("cafe\u{301}.rs", "pub fn nfd() {}\n");
+    let names: Vec<_> = fs::read_dir(w.root())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .filter(|name| name.to_string_lossy().starts_with("caf"))
+        .collect();
+    if names.len() == 1 {
+        eprintln!("Unicode coexistence unavailable on normalization-folding volume");
+        return;
+    }
+    assert_eq!(names.len(), 2);
+    w.delta(&["cafe\u{301}.rs"]);
+    let paths = strings(&w.open(), "SELECT path FROM files ORDER BY path");
+    for path in ["caf\u{e9}.rs", "cafe\u{301}.rs"] {
+        assert!(paths.iter().any(|p| p == path), "{paths:?}");
+    }
+    {
+        let (incremental_verified, cold_verified, dangling, facts, parity) = cold_comparison(&w);
+        assert!(incremental_verified);
+        assert!(cold_verified);
+        assert_eq!(dangling, 0);
+        for (path, facts_blob) in facts {
+            assert!(
+                facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"),
+                "{path}: newly written local facts use the typed binary format"
+            );
+            reader::decode_local_facts(&facts_blob).unwrap();
+            assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
+        }
+        for (sql, incremental, cold) in parity {
+            assert_eq!(incremental, cold, "{sql}");
+        }
+    }
+}
+
+#[test]
+#[cfg(all(feature = "lang-rust", unix))]
+fn delta_rejects_unlisted_changes_and_symlink_boundaries() {
+    use std::os::unix::fs::symlink;
+    let w = Workspace::new();
+    w.write("source.rs", "pub fn before() {}\n");
+    w.build();
+    w.write("source.rs", "pub fn changed() {}\n");
+    w.write("other.rs", "pub fn other() {}\n");
+    let error = delta(w.root(), &w.db(), &["other.rs".into()]).unwrap_err();
+    assert!(format!("{error:#}").contains("unlisted source change: source.rs"));
+    fs::remove_file(w.path("other.rs")).unwrap();
+    w.write("source.rs", "pub fn before() {}\n");
+    symlink(w.path("source.rs"), w.path("leaf.rs")).unwrap();
+    let error = delta(w.root(), &w.db(), &["leaf.rs".into()]).unwrap_err();
+    assert!(format!("{error:#}").contains("leaf.rs"), "{error:#}");
+    fs::remove_file(w.path("leaf.rs")).unwrap();
+    symlink(std::env::temp_dir(), w.path("escape")).unwrap();
+    let error = delta(w.root(), &w.db(), &["escape/out.rs".into()]).unwrap_err();
+    assert!(format!("{error:#}").contains("escape/out.rs"), "{error:#}");
+    fs::remove_file(w.path("escape")).unwrap();
 }
 
 #[test]
@@ -94,7 +395,23 @@ fn one_file_edit_does_not_rewrite_unrelated_component_owners() {
     assert_eq!(report["reparsed_files"], 1);
     assert_eq!(report["loaded_fact_files"], 0);
     assert_eq!(report["rewritten_files"], 1);
-    assert_cold_equivalent(&w);
+    {
+        let (incremental_verified, cold_verified, dangling, facts, parity) = cold_comparison(&w);
+        assert!(incremental_verified);
+        assert!(cold_verified);
+        assert_eq!(dangling, 0);
+        for (path, facts_blob) in facts {
+            assert!(
+                facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"),
+                "{path}: newly written local facts use the typed binary format"
+            );
+            reader::decode_local_facts(&facts_blob).unwrap();
+            assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
+        }
+        for (sql, incremental, cold) in parity {
+            assert_eq!(incremental, cold, "{sql}");
+        }
+    }
 }
 
 #[test]
@@ -124,7 +441,23 @@ fn src_namespace_edit_relinks_its_consumer_without_invalidating_siblings() {
     assert_eq!(report["rewritten_files"], 1, "{report}");
     assert_eq!(report["affected_owners"], 2, "{report}");
     assert_eq!(report["loaded_fact_files"], 1, "{report}");
-    assert_cold_equivalent(&w);
+    {
+        let (incremental_verified, cold_verified, dangling, facts, parity) = cold_comparison(&w);
+        assert!(incremental_verified);
+        assert!(cold_verified);
+        assert_eq!(dangling, 0);
+        for (path, facts_blob) in facts {
+            assert!(
+                facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"),
+                "{path}: newly written local facts use the typed binary format"
+            );
+            reader::decode_local_facts(&facts_blob).unwrap();
+            assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
+        }
+        for (sql, incremental, cold) in parity {
+            assert_eq!(incremental, cold, "{sql}");
+        }
+    }
 }
 
 #[test]
@@ -168,7 +501,23 @@ fn python_import_frontier_uses_semicolon_and_continuation_facts() {
         report["loaded_fact_files"].as_u64().unwrap_or_default() >= 2,
         "both intermediate import owners should be evaluated from indexed facts: {report}"
     );
-    assert_cold_equivalent(&w);
+    {
+        let (incremental_verified, cold_verified, dangling, facts, parity) = cold_comparison(&w);
+        assert!(incremental_verified);
+        assert!(cold_verified);
+        assert_eq!(dangling, 0);
+        for (path, facts_blob) in facts {
+            assert!(
+                facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"),
+                "{path}: newly written local facts use the typed binary format"
+            );
+            reader::decode_local_facts(&facts_blob).unwrap();
+            assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
+        }
+        for (sql, incremental, cold) in parity {
+            assert_eq!(incremental, cold, "{sql}");
+        }
+    }
 
     w.write(
         "pkg/nested.py",
@@ -182,7 +531,23 @@ fn python_import_frontier_uses_semicolon_and_continuation_facts() {
             >= 2,
         "plain dotted module import should expand from indexed facts: {dotted_report}"
     );
-    assert_cold_equivalent(&w);
+    {
+        let (incremental_verified, cold_verified, dangling, facts, parity) = cold_comparison(&w);
+        assert!(incremental_verified);
+        assert!(cold_verified);
+        assert_eq!(dangling, 0);
+        for (path, facts_blob) in facts {
+            assert!(
+                facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"),
+                "{path}: newly written local facts use the typed binary format"
+            );
+            reader::decode_local_facts(&facts_blob).unwrap();
+            assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
+        }
+        for (sql, incremental, cold) in parity {
+            assert_eq!(incremental, cold, "{sql}");
+        }
+    }
 }
 
 #[test]
@@ -206,7 +571,23 @@ fn indexed_reexport_frontier_matches_cold_build() {
         report["loaded_fact_files"], 2,
         "the direct import owner and its indexed re-export consumer should be evaluated: {report}"
     );
-    assert_cold_equivalent(&w);
+    {
+        let (incremental_verified, cold_verified, dangling, facts, parity) = cold_comparison(&w);
+        assert!(incremental_verified);
+        assert!(cold_verified);
+        assert_eq!(dangling, 0);
+        for (path, facts_blob) in facts {
+            assert!(
+                facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"),
+                "{path}: newly written local facts use the typed binary format"
+            );
+            reader::decode_local_facts(&facts_blob).unwrap();
+            assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
+        }
+        for (sql, incremental, cold) in parity {
+            assert_eq!(incremental, cold, "{sql}");
+        }
+    }
 }
 
 #[test]
@@ -233,7 +614,23 @@ fn python_missing_module_export_facts_expand_conservatively() {
         2,
         "the direct import owner and its consumer should be evaluated because module export facts are unavailable: {report}"
     );
-    assert_cold_equivalent(&w);
+    {
+        let (incremental_verified, cold_verified, dangling, facts, parity) = cold_comparison(&w);
+        assert!(incremental_verified);
+        assert!(cold_verified);
+        assert_eq!(dangling, 0);
+        for (path, facts_blob) in facts {
+            assert!(
+                facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"),
+                "{path}: newly written local facts use the typed binary format"
+            );
+            reader::decode_local_facts(&facts_blob).unwrap();
+            assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
+        }
+        for (sql, incremental, cold) in parity {
+            assert_eq!(incremental, cold, "{sql}");
+        }
+    }
 }
 
 #[test]
@@ -253,11 +650,44 @@ fn linked_component_transfer_preserves_unmodified_containment_edges() {
     assert_eq!(report["rewritten_files"], 2, "{report}");
     assert_eq!(report["loaded_fact_files"], 1, "{report}");
     assert_eq!(before, strings(&w.open(), untouched_sql));
-    assert_cold_equivalent(&w);
+    {
+        let (incremental_verified, cold_verified, dangling, facts, parity) = cold_comparison(&w);
+        assert!(incremental_verified);
+        assert!(cold_verified);
+        assert_eq!(dangling, 0);
+        for (path, facts_blob) in facts {
+            assert!(
+                facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"),
+                "{path}: newly written local facts use the typed binary format"
+            );
+            reader::decode_local_facts(&facts_blob).unwrap();
+            assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
+        }
+        for (sql, incremental, cold) in parity {
+            assert_eq!(incremental, cold, "{sql}");
+        }
+    }
     for path in ["src/a.py", "src/b.py", "src/c.py"] {
         linked.remove(path);
         w.delta(&[&format!("[linked]/{path}")]);
-        assert_cold_equivalent(&w);
+        {
+            let (incremental_verified, cold_verified, dangling, facts, parity) =
+                cold_comparison(&w);
+            assert!(incremental_verified);
+            assert!(cold_verified);
+            assert_eq!(dangling, 0);
+            for (path, facts_blob) in facts {
+                assert!(
+                    facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"),
+                    "{path}: newly written local facts use the typed binary format"
+                );
+                reader::decode_local_facts(&facts_blob).unwrap();
+                assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
+            }
+            for (sql, incremental, cold) in parity {
+                assert_eq!(incremental, cold, "{sql}");
+            }
+        }
     }
 }
 
@@ -278,13 +708,47 @@ fn provider_addition_ambiguity_and_removal_relink_consumers_and_docs() {
     ] {
         w.write(path, source);
         w.delta(&[path]);
-        assert_cold_equivalent(&w);
+        {
+            let (incremental_verified, cold_verified, dangling, facts, parity) =
+                cold_comparison(&w);
+            assert!(incremental_verified);
+            assert!(cold_verified);
+            assert_eq!(dangling, 0);
+            for (path, facts_blob) in facts {
+                assert!(
+                    facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"),
+                    "{path}: newly written local facts use the typed binary format"
+                );
+                reader::decode_local_facts(&facts_blob).unwrap();
+                assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
+            }
+            for (sql, incremental, cold) in parity {
+                assert_eq!(incremental, cold, "{sql}");
+            }
+        }
     }
     assert_eq!(strings(&w.open(), "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='consumer.py' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='provide' ORDER BY line"), ["ambiguous", "unresolved"]);
     for path in ["lib/__init__.py", "lib.py"] {
         w.remove(path);
         w.delta(&[path]);
-        assert_cold_equivalent(&w);
+        {
+            let (incremental_verified, cold_verified, dangling, facts, parity) =
+                cold_comparison(&w);
+            assert!(incremental_verified);
+            assert!(cold_verified);
+            assert_eq!(dangling, 0);
+            for (path, facts_blob) in facts {
+                assert!(
+                    facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"),
+                    "{path}: newly written local facts use the typed binary format"
+                );
+                reader::decode_local_facts(&facts_blob).unwrap();
+                assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
+            }
+            for (sql, incremental, cold) in parity {
+                assert_eq!(incremental, cold, "{sql}");
+            }
+        }
     }
     assert_eq!(
         strings(
@@ -310,15 +774,65 @@ fn component_representative_mutations_match_cold_builds() {
     ] {
         w.write(changed, source);
         w.delta(&[changed]);
-        assert_cold_equivalent(&w);
+        {
+            let (incremental_verified, cold_verified, dangling, facts, parity) =
+                cold_comparison(&w);
+            assert!(incremental_verified);
+            assert!(cold_verified);
+            assert_eq!(dangling, 0);
+            for (path, facts_blob) in facts {
+                assert!(
+                    facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"),
+                    "{path}: newly written local facts use the typed binary format"
+                );
+                reader::decode_local_facts(&facts_blob).unwrap();
+                assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
+            }
+            for (sql, incremental, cold) in parity {
+                assert_eq!(incremental, cold, "{sql}");
+            }
+        }
     }
     fs::rename(w.path("part/a.py"), w.path("part/d.py")).unwrap();
     w.delta(&["part/a.py", "part/d.py"]);
-    assert_cold_equivalent(&w);
+    {
+        let (incremental_verified, cold_verified, dangling, facts, parity) = cold_comparison(&w);
+        assert!(incremental_verified);
+        assert!(cold_verified);
+        assert_eq!(dangling, 0);
+        for (path, facts_blob) in facts {
+            assert!(
+                facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"),
+                "{path}: newly written local facts use the typed binary format"
+            );
+            reader::decode_local_facts(&facts_blob).unwrap();
+            assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
+        }
+        for (sql, incremental, cold) in parity {
+            assert_eq!(incremental, cold, "{sql}");
+        }
+    }
     for path in ["part/b.py", "part/c.py", "part/d.py"] {
         w.remove(path);
         w.delta(&[path]);
-        assert_cold_equivalent(&w);
+        {
+            let (incremental_verified, cold_verified, dangling, facts, parity) =
+                cold_comparison(&w);
+            assert!(incremental_verified);
+            assert!(cold_verified);
+            assert_eq!(dangling, 0);
+            for (path, facts_blob) in facts {
+                assert!(
+                    facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"),
+                    "{path}: newly written local facts use the typed binary format"
+                );
+                reader::decode_local_facts(&facts_blob).unwrap();
+                assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
+            }
+            for (sql, incremental, cold) in parity {
+                assert_eq!(incremental, cold, "{sql}");
+            }
+        }
     }
     let conn = w.open();
     assert_eq!(
@@ -379,7 +893,20 @@ fn dyn_trait_dispatch_add_change_and_remove_impls_match_cold_builds() {
         let expected_candidates = strings(&cold, candidates);
         assert_eq!(expected_candidates.len(), expected, "{operation}: cold build fixture must retain bounded dispatch");
         assert_eq!(strings(&w.open(), candidates), expected_candidates, "{operation}: unchanged caller must match cold-build candidate edges; delta={report}");
-        assert_cold_equivalent(&w);
+        {
+        let (incremental_verified, cold_verified, dangling, facts, parity) = cold_comparison(&w);
+        assert!(incremental_verified);
+        assert!(cold_verified);
+        assert_eq!(dangling, 0);
+        for (path, facts_blob) in facts {
+            assert!(facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"), "{path}: newly written local facts use the typed binary format");
+            reader::decode_local_facts(&facts_blob).unwrap();
+            assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
+        }
+        for (sql, incremental, cold) in parity {
+            assert_eq!(incremental, cold, "{sql}");
+        }
+    }
     }
 }
 
@@ -412,11 +939,45 @@ fn shared_aggregate_deletion_reseals_transferred_and_unchanged_owners() {
         assert_eq!(report["loaded_fact_files"], 0, "{report}");
         assert_eq!(report["rewritten_files"], 0, "{report}");
         assert_aggregate(&w, surviving, 1);
-        assert_cold_equivalent(&w);
+        {
+            let (incremental_verified, cold_verified, dangling, facts, parity) =
+                cold_comparison(&w);
+            assert!(incremental_verified);
+            assert!(cold_verified);
+            assert_eq!(dangling, 0);
+            for (path, facts_blob) in facts {
+                assert!(
+                    facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"),
+                    "{path}: newly written local facts use the typed binary format"
+                );
+                reader::decode_local_facts(&facts_blob).unwrap();
+                assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
+            }
+            for (sql, incremental, cold) in parity {
+                assert_eq!(incremental, cold, "{sql}");
+            }
+        }
         w.remove(surviving);
         w.delta(&[surviving]);
         assert_aggregate(&w, "", 0);
-        assert_cold_equivalent(&w);
+        {
+            let (incremental_verified, cold_verified, dangling, facts, parity) =
+                cold_comparison(&w);
+            assert!(incremental_verified);
+            assert!(cold_verified);
+            assert_eq!(dangling, 0);
+            for (path, facts_blob) in facts {
+                assert!(
+                    facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"),
+                    "{path}: newly written local facts use the typed binary format"
+                );
+                reader::decode_local_facts(&facts_blob).unwrap();
+                assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
+            }
+            for (sql, incremental, cold) in parity {
+                assert_eq!(incremental, cold, "{sql}");
+            }
+        }
     }
 }
 
@@ -438,7 +999,24 @@ fn shared_aggregate_addition_reseals_prior_and_resulting_owners() {
         assert_eq!(report["loaded_fact_files"], 0, "{report}");
         assert_eq!(report["rewritten_files"], 1, "{report}");
         assert_aggregate(&w, owner, 3);
-        assert_cold_equivalent(&w);
+        {
+            let (incremental_verified, cold_verified, dangling, facts, parity) =
+                cold_comparison(&w);
+            assert!(incremental_verified);
+            assert!(cold_verified);
+            assert_eq!(dangling, 0);
+            for (path, facts_blob) in facts {
+                assert!(
+                    facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"),
+                    "{path}: newly written local facts use the typed binary format"
+                );
+                reader::decode_local_facts(&facts_blob).unwrap();
+                assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
+            }
+            for (sql, incremental, cold) in parity {
+                assert_eq!(incremental, cold, "{sql}");
+            }
+        }
     }
 }
 
@@ -456,7 +1034,24 @@ fn shared_aggregate_edit_reseals_transferred_and_unchanged_owners() {
         assert_eq!(report["loaded_fact_files"], 0, "{report}");
         assert_eq!(report["rewritten_files"], 1, "{report}");
         assert_aggregate(&w, surviving, 1);
-        assert_cold_equivalent(&w);
+        {
+            let (incremental_verified, cold_verified, dangling, facts, parity) =
+                cold_comparison(&w);
+            assert!(incremental_verified);
+            assert!(cold_verified);
+            assert_eq!(dangling, 0);
+            for (path, facts_blob) in facts {
+                assert!(
+                    facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"),
+                    "{path}: newly written local facts use the typed binary format"
+                );
+                reader::decode_local_facts(&facts_blob).unwrap();
+                assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
+            }
+            for (sql, incremental, cold) in parity {
+                assert_eq!(incremental, cold, "{sql}");
+            }
+        }
     }
 }
 
@@ -475,7 +1070,24 @@ fn shared_aggregate_rename_reseals_prior_and_resulting_owners() {
         assert_eq!(report["loaded_fact_files"], 0, "{report}");
         assert_eq!(report["rewritten_files"], 1, "{report}");
         assert_aggregate(&w, owner, 2);
-        assert_cold_equivalent(&w);
+        {
+            let (incremental_verified, cold_verified, dangling, facts, parity) =
+                cold_comparison(&w);
+            assert!(incremental_verified);
+            assert!(cold_verified);
+            assert_eq!(dangling, 0);
+            for (path, facts_blob) in facts {
+                assert!(
+                    facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"),
+                    "{path}: newly written local facts use the typed binary format"
+                );
+                reader::decode_local_facts(&facts_blob).unwrap();
+                assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
+            }
+            for (sql, incremental, cold) in parity {
+                assert_eq!(incremental, cold, "{sql}");
+            }
+        }
     }
 }
 
@@ -513,5 +1125,21 @@ fn vue_setup_body_edits_refresh_calls_and_preserve_consumer_contracts() {
     assert_eq!(report["reparsed_files"], 1, "{report}");
     assert_eq!(consumer_hashes(&w.open()), before);
     assert_eq!(strings(&w.open(), "SELECT status||'|'||(SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id) FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='Provider.vue' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='defineOptions'"), ["external|builtin:vue_macro; rule:vue-runtime:component-macros built-in: defineOptions"]);
-    assert_cold_equivalent(&w);
+    {
+        let (incremental_verified, cold_verified, dangling, facts, parity) = cold_comparison(&w);
+        assert!(incremental_verified);
+        assert!(cold_verified);
+        assert_eq!(dangling, 0);
+        for (path, facts_blob) in facts {
+            assert!(
+                facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"),
+                "{path}: newly written local facts use the typed binary format"
+            );
+            reader::decode_local_facts(&facts_blob).unwrap();
+            assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
+        }
+        for (sql, incremental, cold) in parity {
+            assert_eq!(incremental, cold, "{sql}");
+        }
+    }
 }

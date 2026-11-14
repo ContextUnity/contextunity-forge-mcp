@@ -11,19 +11,28 @@ Rules for placing, creating, refactoring, and maintaining tests in
 - Prove admitted milestone requirements. Do not invent uncontracted requirements
   to justify a new subsystem.
 <!-- acdd-forge:test-invariants:start -->
-- **Additive seam evolution**: Extend an existing table-driven case
-  (`for case in cases`) only for new input variations of the same capability.
-- **Domain decomposition**: Never append unrelated sub-scenarios or multi-step
-  workflows into an existing test. Author a separate `#[test]` in the owning
-  domain module.
+- **Table-driven contract matrices**: Consolidate homogeneous variations of the
+  same capability, boundary rule, error diagnostic, alias/spelling case, or hook
+  mode into one table-driven `#[test]` (`for case in cases`). Ban cloning
+  heavy `#[test]` functions (`Workspace::new`, cold builds,
+  `InstallerHarness::new`, `McpTestHarness::new`, subprocess spawns) per row;
+  build shared immutable base state once outside the loop and copy/mutate only
+  the case-specific delta.
+- **Domain decomposition**: Author a separate `#[test]` in the owning domain
+  module only for genuinely distinct domain contracts or orthogonal multi-step
+  workflows — never by appending unrelated scenarios into an existing workflow
+  test, and never by splitting one homogeneous matrix into sibling heavy tests.
 - **Fixture boundaries**: Keep unit/extractor tests in-memory. Do not build
-  heavy filesystem fixtures or `Workspace::new()` inside pure syntax/AST tests.
-- **Subsume duplicates**: When a stronger seam covers the contract, delete the
-  weaker test in the same diff.
+  heavy filesystem fixtures or `Workspace::new()` inside pure syntax/AST or
+  path-helper tests, and place unit tests inside the owning crate module rather
+  than integration crates.
+- **Subsume duplicates**: When a stronger seam covers the contract, fold any
+  unique edge case into it and delete the weaker/duplicate test in the same diff.
 - **Runtime-red contract proof**: Contract tests compile and fail at runtime
   (exit 101). Do not use compile failures as red proof.
-- **Anti-fake-gating**: Do not hide unoptimized matrices behind `#[ignore]` or
-  env filters. Build shared base state once; mutate one field per row.
+- **Anti-fake-gating**: Do not hide unoptimized matrices behind `#[ignore]`,
+  env filters, hardcoded `thread::sleep`, or `#[test]`-as-subprocess `libtest`
+  hacks. Build shared base state once; mutate one field per row.
 - **No inline milestone heredocs**: Use fixtures / `MilestoneFixtureBuilder`,
   not raw multi-line milestone strings in tests.
 - **In-process engine**: Prefer `milestone_engine::*` / `tasks::*`. Reserve

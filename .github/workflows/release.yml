@@ -24,13 +24,72 @@ defaults:
     shell: bash
 
 jobs:
+  prepare:
+    name: prepare
+    timeout-minutes: 5
+    runs-on: ubuntu-24.04
+    outputs:
+      should_build: ${{ steps.decide.outputs.should_build }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      EVENT_NAME: ${{ github.event_name }}
+      REF: ${{ github.ref }}
+      PUBLISH_NIGHTLY: ${{ inputs.publish_nightly }}
+    steps:
+      - name: Decide whether release build is needed
+        id: decide
+        run: |
+          set -euo pipefail
+          resolve_tag_sha() {
+            local tag="$1"
+            local obj_type obj_sha
+            read -r obj_type obj_sha < <(
+              gh api "repos/$GH_REPO/git/ref/tags/$tag" --jq '[.object.type, .object.sha] | @tsv' 2>/dev/null
+            ) || return 1
+            if [ "$obj_type" = tag ]; then
+              gh api "repos/$GH_REPO/git/tags/$obj_sha" --jq '.object.sha' 2>/dev/null
+            else
+              printf '%s\n' "$obj_sha"
+            fi
+          }
+
+          if [[ "$REF" == refs/tags/v* ]]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$EVENT_NAME" = workflow_dispatch ] && [ "$PUBLISH_NIGHTLY" != true ]; then
+            echo "Nightly publication disabled via workflow_dispatch input."
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          main_sha=$(gh api "repos/$GH_REPO/git/ref/heads/main" --jq '.object.sha')
+          if [ "$main_sha" != "$GITHUB_SHA" ]; then
+            echo "Skipping superseded nightly check for $GITHUB_SHA (main is at $main_sha)"
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          latest_tag=$(gh api "repos/$GH_REPO/releases/latest" --jq '.tag_name // empty' 2>/dev/null || true)
+          recent_tag=$(gh api "repos/$GH_REPO/releases?per_page=1" --jq '.[0].tag_name // empty' 2>/dev/null || true)
+          for release_tag in "$latest_tag" "$recent_tag" nightly; do
+            [ -n "$release_tag" ] || continue
+            release_sha=$(resolve_tag_sha "$release_tag" || true)
+            if [ "$release_sha" = "$GITHUB_SHA" ]; then
+              echo "Skipping nightly build: release $release_tag already matches commit $GITHUB_SHA"
+              echo "should_build=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+
+          echo "should_build=true" >> "$GITHUB_OUTPUT"
+
   build-release:
     name: build (${{ matrix.target }})
+    needs: prepare
     timeout-minutes: 30
-    if: |
-      startsWith(github.ref, 'refs/tags/v') ||
-      github.event_name == 'schedule' ||
-      (github.event_name == 'workflow_dispatch' && inputs.publish_nightly)
+    if: needs.prepare.outputs.should_build == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -82,7 +141,8 @@ jobs:
 
   publish:
     name: publish
-    needs: build-release
+    needs: [prepare, build-release]
+    if: needs.prepare.outputs.should_build == 'true'
     timeout-minutes: 15
     runs-on: ubuntu-24.04
     permissions:

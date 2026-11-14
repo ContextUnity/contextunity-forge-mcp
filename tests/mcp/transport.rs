@@ -1,8 +1,98 @@
 #[cfg(unix)]
+use super::installer::{fixture_stopped, wait_for_fixture_pid};
+#[cfg(unix)]
+use crate::common::{mcp_client::StdioClient, Workspace};
+#[cfg(unix)]
+use std::{
+    fs,
+    process::Command,
+    time::{Duration, Instant},
+};
+#[cfg(unix)]
+#[test]
+fn stdio_client_accepts_fragmented_utf8_frame() {
+    let mut command = Command::new("/bin/sh");
+    command.args(["-c", "read -r request; printf '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":\"\\342'; sleep 0.1; printf '\\202\\254\"}\\n'; read -r request"]);
+    let client = StdioClient::with_pending_initialization(&mut command).unwrap();
+    drop(client);
+}
+
+#[cfg(unix)]
+#[test]
+fn stdio_client_cleans_up_noisy_pipe_descendant() {
+    let workspace = Workspace::new();
+    let pid_file = workspace.path("stdio-descendant.pid");
+    let mut command = Command::new("/bin/sh");
+    command.arg("-c").arg("read -r request; printf '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\\n'; (while :; do printf 01234567890123456789; done) & echo $! > \"$1.tmp\" && mv \"$1.tmp\" \"$1\"; wait").arg("fixture").arg(&pid_file);
+    let client = StdioClient::with_pending_initialization(&mut command).unwrap();
+    let parent = client.child().id() as i32;
+    let descendant = wait_for_fixture_pid(&pid_file);
+    let start = Instant::now();
+    drop(client);
+    assert!(
+        start.elapsed() < Duration::from_secs(3),
+        "reader teardown exceeded deadline"
+    );
+    assert!(
+        fixture_stopped(parent),
+        "fixture process {parent} survived teardown"
+    );
+    assert!(
+        fixture_stopped(descendant),
+        "fixture process {descendant} survived teardown"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn stdio_client_reaps_after_timeout_and_early_exit() {
+    use crate::common::mcp_client::TransportEnd;
+
+    let workspace = Workspace::new();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"));
+    command.arg("--root").arg(workspace.root()).arg("serve");
+    let client = StdioClient::with_command(&mut command).unwrap();
+    let pid = client.child().id() as i32;
+    assert_eq!(
+        client
+            .wait_for_transport_close(Duration::from_millis(50))
+            .unwrap(),
+        TransportEnd::TimedOut
+    );
+    drop(client);
+    // SAFETY: kill with signal zero probes the owned, reaped fixture PID.
+    assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ESRCH)
+    );
+
+    let pid_file = workspace.path("early-exit.pid");
+    let mut early = Command::new("/bin/sh");
+    early
+        .arg("-c")
+        .arg("read -r request; echo $$ > \"$1\"; exit 0")
+        .arg("fixture")
+        .arg(&pid_file);
+    assert!(StdioClient::with_command(&mut early).is_err());
+    let pid: i32 = fs::read_to_string(pid_file)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    // SAFETY: kill with signal zero probes the owned, reaped fixture PID.
+    assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ESRCH)
+    );
+}
+
+#[cfg(unix)]
 #[test]
 fn stdio_transport_smoke() {
     use crate::common::mcp_client::{StdioClient, StdioError, TransportEnd};
-    use serde_json::{json, Value};
+    use serde_json::json;
     use std::{
         fs, io,
         os::unix::process::ExitStatusExt,
@@ -52,6 +142,7 @@ fn stdio_transport_smoke() {
 
     #[cfg(target_os = "linux")]
     {
+        use serde_json::Value;
         use std::os::unix::fs::MetadataExt;
 
         let workspace = crate::common::Workspace::with_files(&[]);
@@ -63,10 +154,22 @@ fn stdio_transport_smoke() {
         let new_inode = fs::metadata(&binary)
             .expect("replacement image metadata")
             .ino();
-        let reload = Command::new(&binary)
-            .args(["--format", "json", "reload"])
-            .output()
-            .expect("run reload CLI");
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let reload = loop {
+            match Command::new(&binary)
+                .args(["--format", "json", "reload"])
+                .output()
+            {
+                Ok(output) => break output,
+                Err(error)
+                    if error.kind() == io::ErrorKind::ExecutableFileBusy
+                        && Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("run reload CLI: {error:?}"),
+            }
+        };
         assert!(
             reload.status.success(),
             "{}",
@@ -101,6 +204,7 @@ fn stdio_transport_smoke() {
     #[derive(Debug, PartialEq, Eq)]
     enum ServerState {
         Absent,
+        #[cfg(target_os = "linux")]
         Zombie,
         Running,
     }
@@ -247,8 +351,12 @@ fn stdio_transport_smoke() {
             }
             std::thread::sleep(Duration::from_millis(10));
         };
+        #[cfg(target_os = "linux")]
+        let exited = matches!(server_state, ServerState::Absent | ServerState::Zombie);
+        #[cfg(not(target_os = "linux"))]
+        let exited = matches!(server_state, ServerState::Absent);
         assert!(
-            matches!(server_state, ServerState::Absent | ServerState::Zombie),
+            exited,
             "{case}: server closed stdout but kept running: {server_state:?}"
         );
     }

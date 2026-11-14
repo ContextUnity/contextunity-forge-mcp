@@ -103,7 +103,7 @@ impl TaskHarness {
                 "isolate post-SQL keeper failure\n",
             );
         }
-        workspace.write("fixture-bin/git", r#"#!/usr/bin/python
+        workspace.write("fixture-bin/git", r#"#!/usr/bin/env python3
 import subprocess,sys,pathlib,json
 r=subprocess.run(['/usr/bin/git',*sys.argv[1:]],capture_output=True)
 if r.returncode==0 and 'commit-tree' in sys.argv and pathlib.Path('fixture-publication-fault').exists() and '-m' not in sys.argv:

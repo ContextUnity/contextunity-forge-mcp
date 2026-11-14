@@ -10,6 +10,87 @@ use forge_tasks::blackboard::BlackboardScope;
 use forge_tasks::lifecycle::{TaskStage, TaskStatus};
 use forge_tasks::verification::ProofPolicy;
 
+#[test]
+fn workspace_file_uris_encode_canonical_relative_coordinates() {
+    use crate::common::workspace::canonical_file_uri;
+    use contextunity_forge_mcp::core::format::file_uri_for_path;
+
+    let workspace = crate::common::Workspace::new();
+    let relative = "space quote\" plus+ percent% hash# café.rs";
+    for line in [None, Some(42)] {
+        let uri = workspace.file_uri(relative, line);
+        assert_eq!(
+            uri,
+            file_uri_for_path(&workspace.canonical_root().join(relative), line).unwrap()
+        );
+        assert_eq!(uri, canonical_file_uri(workspace.root(), relative, line));
+        assert!(uri.contains("space%20quote%22%20plus%2B%20percent%25%20hash%23%20caf%C3%A9.rs"));
+        assert_eq!(uri.ends_with("#L42"), line.is_some());
+    }
+    for relative in ["/absolute", "../outside", "child/../outside"] {
+        assert!(std::panic::catch_unwind(|| workspace.file_uri(relative, None)).is_err());
+        assert!(
+            std::panic::catch_unwind(|| crate::common::workspace::canonical_file_uri(
+                workspace.root(),
+                relative,
+                None
+            ))
+            .is_err()
+        );
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        let alias = workspace.path("root alias");
+        symlink(workspace.root(), &alias).unwrap();
+        assert_eq!(
+            crate::common::workspace::canonical_file_uri(&alias, "source.rs", None),
+            workspace.file_uri("source.rs", None)
+        );
+        std::fs::remove_file(&alias).unwrap();
+        assert!(!alias.exists());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn workspace_database_open_confines_aliases_and_symlinks() {
+    use std::os::unix::fs::symlink;
+
+    let workspace = crate::common::Workspace::new();
+    let outside = crate::common::Workspace::new();
+    workspace.write("src/lib.rs", "pub fn indexed() {}\n");
+    workspace.build();
+    let root = workspace.root().to_path_buf();
+    let outside_root = outside.root().to_path_buf();
+    let reader = forge_index::db::reader::open(&workspace.db(), workspace.root()).unwrap();
+    drop(reader);
+    assert_eq!(
+        forge_core::fs::confined_database_open_path(&workspace.db()).unwrap(),
+        workspace.canonical_root().join(".forge/code-map.sqlite")
+    );
+
+    outside.write_bytes("foreign.sqlite", b"foreign");
+    let ancestor = workspace.path("escape");
+    let leaf = workspace.path(".forge/escape.sqlite");
+    symlink(outside.root(), &ancestor).unwrap();
+    symlink(outside.path("foreign.sqlite"), &leaf).unwrap();
+    assert!(forge_core::fs::confined_database_open_path(&ancestor.join("foreign.sqlite")).is_err());
+    assert!(forge_core::fs::confined_database_open_path(&leaf).is_err());
+    assert!(
+        forge_index::db::reader::open(&ancestor.join("foreign.sqlite"), workspace.root()).is_err()
+    );
+    assert!(forge_index::db::reader::open(&leaf, workspace.root()).is_err());
+    std::fs::remove_file(&ancestor).unwrap();
+    std::fs::remove_file(&leaf).unwrap();
+    assert!(!ancestor.exists() && !leaf.exists());
+    drop(workspace);
+    assert!(!root.exists());
+    assert!(outside.path("foreign.sqlite").exists());
+    drop(outside);
+    assert!(!outside_root.exists());
+}
+
 #[cfg(feature = "lang-rust")]
 #[test]
 fn workspace_build_cache_is_isolated_and_removed_with_its_workspace() {

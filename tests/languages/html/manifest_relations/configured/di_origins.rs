@@ -108,6 +108,7 @@ fn configured_di_origins_follow_effective_rules_and_delta() {
             (path, facts)
         })
         .collect();
+    drop(observations);
     workspace.rename_file(first, renamed).unwrap();
     workspace.rename_file(second, renamed_second).unwrap();
     let registry =

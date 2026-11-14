@@ -362,10 +362,11 @@ fn forge_read_core_modes_and_cli_share_bounded_text_and_exports() {
 
 #[test]
 fn forge_read_handles_path_aliases_and_rejects_unsafe_paths() {
+    let linked = Workspace::with_files(&[("secrets/token.txt", "linked-secret\n")]);
     let (w, harness) = McpTestHarness::with_files(&[
         (
             "forge-mcp.yaml",
-            "profile: minimal\nsensitive: ['secrets/**', '.env*']\n",
+            &format!("profile: minimal\nsensitive: ['secrets/**', '.env*']\nlinked_workspaces:\n  - name: linked\n    path: {}\n", linked.root().display()),
         ),
         ("notes.txt", "safe\n"),
         ("small.txt", "inside\n"),
@@ -478,6 +479,35 @@ fn forge_read_handles_path_aliases_and_rejects_unsafe_paths() {
         }
     }
     assert!(!w.path("leaked.txt").exists());
+    std::fs::hard_link(w.path("notes.txt"), w.path("notes-hardlink.txt"))
+        .expect("create hardlink alias");
+    for args in [
+        json!({"path": "notes.txt", "mode": "raw", "output_file": "notes-hardlink.txt"}),
+        json!({"paths": ["notes.txt"], "mode": "outline", "output_file": "notes-hardlink.txt"}),
+    ] {
+        let response = read_response(&mut client, args);
+        assert_eq!(response["result"]["isError"], true, "{response}");
+    }
+    assert_eq!(
+        std::fs::read_to_string(w.path("notes.txt")).expect("read notes.txt"),
+        "safe\n"
+    );
+    if forge_core::fs::is_case_insensitive_volume(w.root()) {
+        for args in [
+            json!({"path": "notes.txt", "mode": "raw", "output_file": "NOTES.TXT"}),
+            json!({"paths": ["notes.txt"], "mode": "outline", "output_file": "NOTES.TXT"}),
+            json!({"path": ".ENV.local", "mode": "raw"}),
+            json!({"paths": [".ENV.local"], "mode": "outline"}),
+            json!({"path": "[linked]/SECRETS/token.txt", "mode": "raw"}),
+        ] {
+            let response = read_response(&mut client, args);
+            assert_eq!(response["result"]["isError"], true, "{response}");
+        }
+        assert_eq!(
+            std::fs::read_to_string(w.path("notes.txt")).expect("notes intact"),
+            "safe\n"
+        );
+    }
     client.finish().expect("server must finish successfully");
 }
 

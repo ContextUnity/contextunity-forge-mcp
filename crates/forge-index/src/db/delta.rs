@@ -134,11 +134,16 @@ pub fn persist_delta(
     } = inputs;
 
     let persisting = Instant::now();
-    if crate::db::cache::identity(db)? != admitted_identity {
-        bail!("database changed during delta admission");
+    let current_identity = crate::db::cache::identity(db)?;
+    if current_identity != admitted_identity {
+        bail!(
+            "database changed during delta admission ({})",
+            crate::db::cache::describe_diff(&admitted_identity, &current_identity)
+        );
     }
+    let open_path = crate::core::fs::confined_database_open_path(db)?;
     let mut conn = Connection::open_with_flags(
-        db,
+        &open_path,
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )?;
     conn.set_prepared_statement_cache_capacity(128);
@@ -337,10 +342,27 @@ pub fn persist_delta(
 
     let committing = Instant::now();
     tx.commit()?;
-    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")?;
+    crate::db::cache::checkpoint(&conn, true)
+        .map_err(|err| anyhow::anyhow!("delta committed but checkpoint failed: {err:#}"))?;
     let commit_ms = committing.elapsed().as_secs_f64() * 1000.;
     drop(conn);
-    let verification_cache = crate::db::cache::publish_verified(db, root, &seal).unwrap_or(false);
+    let verification_cache = match crate::db::cache::publish_verified(db, root, &seal) {
+        Ok(true) => true,
+        Ok(false) => {
+            eprintln!(
+                "delta committed; verified receipt publication refused for {}",
+                db.display()
+            );
+            false
+        }
+        Err(err) => {
+            eprintln!(
+                "delta committed; verified receipt publication failed for {}: {err:#}",
+                db.display()
+            );
+            false
+        }
+    };
 
     Ok(DeltaPersistResult {
         delete_ms,

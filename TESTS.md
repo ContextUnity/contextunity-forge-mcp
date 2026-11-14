@@ -224,3 +224,80 @@ for focused development on its native handoff seam.
 The milestone tests live in `tests/acdd/milestones/`. Run their default cases
 with `cargo test --test acdd milestones`; select an individual module with
 `cargo test --test acdd milestones::<module>::`.
+
+## Cross-checking macOS targets from Linux
+
+For cross-platform boundary verification, record the host locale, the original
+`TMPDIR` spelling, filesystem type and observed case behavior with the test
+results. Do not override locale or temporary-directory settings to hide aliases.
+Native macOS execution remains pending until a macOS runner exercises APFS
+case-folding and Darwin live reload; cross-compilation is compilation evidence only.
+
+The boundary failure matrix includes the following independent seams:
+
+| Failure | Test owner |
+| --- | --- |
+| Busy or incomplete WAL checkpoint, retry, stage and sidecar cleanup obstruction | `tests/core/database_guard.rs` |
+| Rollback trust recovery, tampering, malformed or obstructed receipt publication | `tests/mcp/freshness/incremental_freshness.rs` and `tests/mcp/freshness/admission.rs` |
+| Escaping and leaf symlinks, excluded paths, case and Unicode spelling | `tests/incremental/scope.rs` and `tests/mcp/freshness/incremental_freshness.rs` |
+| Truncated HTTP, installer interruption, timeout and early child exit | `tests/mcp/installer.rs` |
+| Optional debug-log obstruction | `tests/core/debug_logging.rs` |
+
+Verify fixture teardown and preservation assertions alongside each failure case;
+the existence of a test alone does not establish that it passed on a given host.
+The MCP freshness modules are nested under `freshness::freshness_and_admission`;
+use `cargo test --test mcp freshness::freshness_and_admission::admission::` and
+`cargo test --test mcp freshness::freshness_and_admission::incremental_freshness::`
+to select those cases. The shorter `freshness::admission::` and
+`freshness::incremental_freshness::` filters select no tests.
+
+Use `rustup` with `zig cc` on Linux hosts to verify `#[cfg(target_os = "macos")]`
+compilation and strict Clippy across all crates and integration test targets
+before pushing changes that touch platform-gated code.
+
+1. Install the macOS target standard library and ensure `zig` (tested with
+   `0.15.2`) is active in `PATH`:
+
+   ```bash
+   rustup target add x86_64-apple-darwin
+   rustup target add aarch64-apple-darwin
+   zig version
+   ```
+
+2. Create an executable wrapper (for example `/tmp/zig-macos-cc.sh`) that strips
+   `cc`-injected `--target=*-apple-darwin` and `-mmacosx-version-min=*` flags
+   before calling `zig cc` for the selected target:
+
+   ```bash
+   #!/usr/bin/env bash
+   args=()
+   for arg in "$@"; do
+     case "$arg" in
+       --target=x86_64-apple-darwin|--target=aarch64-apple-darwin|--target=arm64-apple-darwin) ;;
+       -mmacosx-version-min=*) ;;
+       *) args+=("$arg") ;;
+     esac
+   done
+   exec zig cc -target "$FORGE_ZIG_TARGET" "${args[@]}"
+   ```
+
+   Use `x86_64-macos` or `aarch64-macos` without a single-component version suffix (such as
+   `x86_64-macos.14`), which `zig cc` rejects with
+   `InvalidOperatingSystemVersion`, and strip `--target=*-apple-darwin`, which
+   `zig cc` rejects with `UnknownOperatingSystem`.
+
+3. Mark the wrapper executable and run Clippy with `CC` and `CXX` pointing to it:
+
+   ```bash
+   chmod +x /tmp/zig-macos-cc.sh
+   FORGE_ZIG_TARGET=x86_64-macos CC=/tmp/zig-macos-cc.sh CXX=/tmp/zig-macos-cc.sh \
+     cargo clippy --target x86_64-apple-darwin --tests --all-features -- -D warnings
+   FORGE_ZIG_TARGET=aarch64-macos CC=/tmp/zig-macos-cc.sh CXX=/tmp/zig-macos-cc.sh \
+     cargo clippy --target aarch64-apple-darwin --tests --all-features -- -D warnings
+   ```
+
+This local cross-check compiles C dependencies (`tree-sitter`, `zstd-sys`,
+`libsqlite3-sys`) and catches macOS-only `unused_mut`, `unused_imports`, and
+`dead_code` lints in the selected package's test targets. Runtime execution of native macOS
+tests (such as `kqueue`, `proc_pidinfo`, and `KERN_PROCARGS2`) remains scoped to
+the `macos-15` runner in [.github/workflows/ci.yml](.github/workflows/ci.yml).

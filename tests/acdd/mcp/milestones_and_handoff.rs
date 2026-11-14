@@ -113,9 +113,10 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
     assert_eq!(first_workspace_page["pagination"]["returned"], 1);
     assert_eq!(first_workspace_page["pagination"]["next_offset"], 1);
     assert_eq!(first_workspace_page["pagination"]["has_more"], true);
+    let canonical_linked = linked.root().canonicalize().unwrap();
     assert_eq!(
         first_workspace_page["workspaces"]["traverse/traverse"]["workspace_root"],
-        linked.root().to_str().unwrap()
+        canonical_linked.to_str().unwrap()
     );
     let cli_first_workspace_page = in_process_cli::run_cli_json(
         &main,
@@ -188,11 +189,14 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
             || worktree_mixed_token.1["result"]["isError"] == true
     );
     let selected = mcp_payload!(client, "task_list", json!({"repository":"traverse"}));
-    assert_eq!(selected["workspace_root"], linked.root().to_str().unwrap());
+    assert_eq!(
+        selected["workspace_root"],
+        canonical_linked.to_str().unwrap()
+    );
     assert_eq!(selected["workspace"], "traverse");
     assert_eq!(
         selected["agents_guidance"],
-        linked.root().join("AGENTS.md").to_str().unwrap()
+        canonical_linked.join("AGENTS.md").to_str().unwrap()
     );
     assert_eq!(selected["tasks"][0]["task_id"], id);
     assert!(selected["tasks"][0]["target"]
@@ -211,7 +215,10 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
         json!({"action":"inspect","task_id":id})
     );
     assert!(inspected.get("digest").is_none());
-    assert_eq!(inspected["workspace_root"], linked.root().to_str().unwrap());
+    assert_eq!(
+        inspected["workspace_root"],
+        canonical_linked.to_str().unwrap()
+    );
     let (_, markdown_response) = mcp_call!(
         client,
         "task_manage",
@@ -236,15 +243,15 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
         .unwrap()
         .iter()
         .all(Value::is_string));
-    let expected_scope_uris = ["src", "src/lib.rs", "src/space%20%23%20%CE%BB.rs"]
-        .map(|path| format!("file://{}/{path}", linked.root().display()));
+    let expected_scope_uris =
+        ["src", "src/lib.rs", "src/space # λ.rs"].map(|path| linked.file_uri(path, None));
     for uri in &expected_scope_uris {
         assert_eq!(inspect_markdown.matches(&format!("({uri})")).count(), 1);
     }
     if !inspect_markdown.contains("src/missing.rs") {
         panic!("MCP task inspect omitted the unresolved scope path: {inspect_markdown}");
     }
-    let unresolved_uri = format!("(file://{}/src/missing.rs)", linked.root().display());
+    let unresolved_uri = format!("({})", linked.file_uri("src/missing.rs", None));
     assert!(!inspect_markdown.contains(&unresolved_uri));
     assert!(!inspect_markdown.contains("(link unavailable)"));
 
@@ -457,7 +464,7 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
 
     assert_eq!(
         inspected["agents_guidance"],
-        linked.root().join("AGENTS.md").to_str().unwrap()
+        canonical_linked.join("AGENTS.md").to_str().unwrap()
     );
     client = restart_mcp_session(client, &main, &TaskHarness::session_for("builder"))
         .expect("MCP session restart should succeed");

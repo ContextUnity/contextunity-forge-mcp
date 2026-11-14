@@ -161,6 +161,7 @@ fn configured_template_rules_follow_effective_rules_and_delta() {
             && matches!(&reference.receiver_hint, Some(contextunity_forge_mcp::core::models::ReceiverHint::ConfiguredReference { origin }) if origin.pack == "zcustom" && origin.rule == "dialect")),
         "late pack retains actual typed include origin"
     );
+    drop(observations);
     workspace.rename_file(late_manifest, manifest).unwrap();
     workspace.delta(&[manifest, late_manifest]);
     assert_active(true);
@@ -184,6 +185,7 @@ fn configured_template_rules_follow_effective_rules_and_delta() {
         conflicting_locals, 0,
         "conflicting directory-owning dialects fail closed"
     );
+    drop(observations);
     workspace.remove_file(conflict_path).unwrap();
     workspace.delta(&[conflict_path]);
     assert_active(true);
@@ -203,6 +205,7 @@ fn configured_template_rules_follow_effective_rules_and_delta() {
             .is_none(),
         "removed configured directive cannot retain an exact include"
     );
+    drop(observations);
     workspace.write(
         "app/screens/card.html",
         &card_source.replace("{% pull ", "{% draw "),

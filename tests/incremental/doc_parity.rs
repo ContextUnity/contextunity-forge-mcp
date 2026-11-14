@@ -262,7 +262,7 @@ fn source_delta_relinks_affected_docs_with_bare_suffix_references() {
         "# Separate claims\n[`alpha`](../claims.py#L1) [`beta`](../claims.py#L1)\n",
     );
     identity_workspace.build();
-    let mut live = reader::open(&identity_workspace.db(), identity_workspace.root()).unwrap();
+    let live = reader::open(&identity_workspace.db(), identity_workspace.root()).unwrap();
     let mut regressions = Vec::new();
     let exact = reader::get_doc_paged(&live, "docs/exact-file.md", None, &options).unwrap();
     if !exact["referenced_symbols"]["items"]
@@ -470,6 +470,9 @@ fn source_delta_relinks_affected_docs_with_bare_suffix_references() {
         regressions.push(format!("separate one-symbol links should be independently stale, got {separate_count}: {separate}"));
     }
 
+    drop(statement);
+    drop(conn);
+    drop(live);
     identity_workspace.write(
         "docs/exact-file.md",
         &format!("{exact_doc}\nA harmless delta keeps the same explicit source claim.\n"),
@@ -482,7 +485,7 @@ fn source_delta_relinks_affected_docs_with_bare_suffix_references() {
         "document identity facts must match after a cold build"
     );
     assert_eq!(doc_edges(&identity_workspace.db()), doc_edges(&cold_path));
-    live = reader::open(&identity_workspace.db(), identity_workspace.root()).unwrap();
+    let live = reader::open(&identity_workspace.db(), identity_workspace.root()).unwrap();
     let cold = reader::open(&cold_path, identity_workspace.root()).unwrap();
     let exact = reader::get_doc_paged(&live, "docs/exact-file.md", None, &options).unwrap();
     if !exact["referenced_symbols"]["items"]
@@ -619,6 +622,8 @@ fn source_delta_relinks_affected_docs_with_bare_suffix_references() {
             regressions.push(format!("document workspace/path eligibility must precede name tiers for {path}: {document}"));
         }
     }
+    drop(live);
+    drop(cold);
     let unchanged_document = std::fs::read(linked.path("docs/header.md")).unwrap();
     for (source, expected_verified, expected_candidates) in [
         (Some(header_source), 0, 2),

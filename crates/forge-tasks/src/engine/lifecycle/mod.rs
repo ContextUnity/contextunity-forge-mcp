@@ -139,12 +139,9 @@ fn bound_task_response_with_budget(mut value: Value, budget: usize) -> Value {
             })
             .max()
     }
-    let mut omitted = Vec::new();
-    let mut omitted_count = 0;
-    let target = budget.saturating_sub((budget / 6).clamp(256, 4096));
-    while task_response_bytes(&value) > target {
-        let Some((_, _, path)) = largest_field(&value, "") else {
-            break;
+    fn strip_next(value: &mut Value, omitted: &mut Vec<String>, omitted_count: &mut usize) -> bool {
+        let Some((_, _, path)) = largest_field(value, "") else {
+            return false;
         };
         let (parent, field) = path.rsplit_once('/').expect("field pointer");
         let field = field.replace("~1", "/").replace("~0", "~");
@@ -153,19 +150,35 @@ fn bound_task_response_with_budget(mut value: Value, budget: usize) -> Value {
             .and_then(Value::as_object_mut)
             .expect("field object")
             .remove(&field);
-        omitted_count += 1;
+        *omitted_count += 1;
         if omitted.len() < 16 && serde_json::to_string(&path).expect("JSON pointer").len() <= 128 {
             omitted.push(path);
         }
+        true
+    }
+    let mut omitted = Vec::new();
+    let mut omitted_count = 0;
+    let target = budget.saturating_sub((budget / 5).clamp(384, 4096));
+    while task_response_bytes(&value) > target {
+        if !strip_next(&mut value, &mut omitted, &mut omitted_count) {
+            break;
+        }
     }
     value["byte_limited"] = json!(true);
-    value["omitted_fields"] = json!(omitted);
+    value["omitted_fields"] = json!(&omitted);
     value["omitted_field_count"] = json!(omitted_count);
     value["retrieval_hint"] = json!(if budget < 2048 {
         "Context is incomplete. Read the milestone file or inspect the task for full details."
     } else {
         "Context is incomplete. Read the milestone file for full authority and use CLI task inspect <task_id> for full stored details; use task_blackboard inspect for message payloads. Do not infer missing authority from this summary."
     });
+    while task_response_bytes(&value) > budget {
+        if !strip_next(&mut value, &mut omitted, &mut omitted_count) {
+            break;
+        }
+        value["omitted_fields"] = json!(&omitted);
+        value["omitted_field_count"] = json!(omitted_count);
+    }
     value
 }
 

@@ -2473,6 +2473,23 @@ fn canonical_dependency_ref(
     ))
 }
 
+fn relative_archive_path(root: &Path, path: &Path) -> Result<PathBuf> {
+    if let Ok(rel) = path.strip_prefix(root) {
+        return Ok(rel.to_path_buf());
+    }
+    if let Ok(canon_root) = root.canonicalize() {
+        if let Ok(rel) = path.strip_prefix(&canon_root) {
+            return Ok(rel.to_path_buf());
+        }
+        if let Ok(canon_path) = path.canonicalize() {
+            if let Ok(rel) = canon_path.strip_prefix(&canon_root) {
+                return Ok(rel.to_path_buf());
+            }
+        }
+    }
+    Ok(path.to_path_buf())
+}
+
 /// Read archive authority under the same canonical namespace rules as live manifests.
 pub fn read_milestone_archive(
     root: &Path,
@@ -2480,7 +2497,8 @@ pub fn read_milestone_archive(
     repository: &str,
     project: &str,
 ) -> Result<Option<Milestone>> {
-    let path = crate::core::fs::checked_child(root, path.strip_prefix(root).unwrap_or(path))?;
+    let relative = relative_archive_path(root, path)?;
+    let path = crate::core::fs::checked_child(root, &relative)?;
     let text = std::fs::read_to_string(&path)?;
     configured_milestone_archive(root, &text, &path, repository, project)
 }
@@ -2493,9 +2511,10 @@ pub(crate) fn configured_milestone_archive(
     repository: &str,
     project: &str,
 ) -> Result<Option<Milestone>> {
-    let path = crate::core::fs::checked_child(root, path.strip_prefix(root).unwrap_or(path))?;
+    let relative = relative_archive_path(root, path)?;
+    let _path = crate::core::fs::checked_child(root, &relative)?;
     let settings = ArchiveSettings::load(root)?;
-    let Ok(milestone) = settings.parse(text, path.strip_prefix(root)?, repository) else {
+    let Ok(milestone) = settings.parse(text, &relative, repository) else {
         return Ok(None);
     };
     Ok((milestone.repository == repository
